@@ -18,7 +18,8 @@ jobs:
         with:
           app-id: ${{ vars.DJCONNECT_TRUSTED_DELIVERY_APP_ID }}
           private-key: ${{ secrets.DJCONNECT_TRUSTED_DELIVERY_PRIVATE_KEY }}
-          installation-id: ${{ vars.DJCONNECT_TRUSTED_DELIVERY_INSTALLATION_ID }}
+          owner: pcvantol
+          repositories: djconnect
       - name: Validate installation and bounded branch/PR access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
