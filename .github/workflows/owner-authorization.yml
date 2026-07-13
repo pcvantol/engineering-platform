@@ -45,6 +45,29 @@ jobs:
     name: Authorize exact HIGH_RISK candidate
     runs-on: ubuntu-latest
     steps:
+      - id: target
+        name: Validate selected platform repository
+        env:
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+        run: |
+          case "$TARGET_REPOSITORY" in
+            pcvantol/djconnect|pcvantol/djconnect-api|pcvantol/djconnect-app|pcvantol/djconnect-app-releases|pcvantol/djconnect-esp32|pcvantol/djconnect-firmware|pcvantol/djconnect-pi|pcvantol/djconnect-pi-releases|pcvantol/djconnect-website|pcvantol/djconnect-windows)
+              echo "repository_name=${TARGET_REPOSITORY#pcvantol/}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Repository is not in the selected DJConnect Trusted Delivery installation: $TARGET_REPOSITORY" >&2
+              exit 1
+              ;;
+          esac
+      - id: app-token
+        if: github.repository == 'pcvantol/djconnect'
+        name: Mint scoped central authorization token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.DJCONNECT_TRUSTED_DELIVERY_APP_ID }}
+          private-key: ${{ secrets.DJCONNECT_TRUSTED_DELIVERY_PRIVATE_KEY }}
+          owner: pcvantol
+          repositories: ${{ steps.target.outputs.repository_name }}
       - name: Collect Trusted Delivery authorization request
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
@@ -54,29 +77,55 @@ jobs:
           TARGET_SHA: ${{ inputs.candidate_sha }}
           TARGET_PR: ${{ inputs.pr_number }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const fs = require("fs");
-            if (process.env.TARGET_REPOSITORY !== process.env.GITHUB_REPOSITORY) throw new Error("repository must equal this workflow repository");
+            const [targetOwner, targetRepo] = process.env.TARGET_REPOSITORY.split("/");
+            if (!targetOwner || !targetRepo) throw new Error("repository must use owner/name form");
+            const centralDispatch = context.repo.owner === "pcvantol" && context.repo.repo === "djconnect";
+            if (!centralDispatch && process.env.TARGET_REPOSITORY !== process.env.GITHUB_REPOSITORY) throw new Error("reusable authorization may only target its caller repository");
             if (!/^[0-9a-f]{40}$/.test(process.env.TARGET_SHA)) throw new Error("candidate_sha must be a full SHA");
             if (context.actor !== process.env.OWNER_LOGIN) throw new Error("GitHub actor is not the configured repository owner");
-            const pr = await github.rest.pulls.get({owner: context.repo.owner, repo: context.repo.repo, pull_number: Number(process.env.TARGET_PR)});
+            const pr = await github.rest.pulls.get({owner: targetOwner, repo: targetRepo, pull_number: Number(process.env.TARGET_PR)});
             if (pr.data.base.ref !== process.env.TARGET_BRANCH || pr.data.head.sha !== process.env.TARGET_SHA) throw new Error("branch or candidate SHA does not match the current pull request");
-            const statuses = await github.rest.repos.listCommitStatusesForRef({owner: context.repo.owner, repo: context.repo.repo, ref: process.env.TARGET_SHA});
+            const statuses = await github.rest.repos.listCommitStatusesForRef({owner: targetOwner, repo: targetRepo, ref: process.env.TARGET_SHA});
             const ownerStatus = statuses.data
               .filter(status => status.context === "Owner Authorization")
               .sort((left, right) => right.id - left.id)[0];
             if (!ownerStatus || ownerStatus.state !== "failure" || !ownerStatus.description?.startsWith("HIGH_RISK")) throw new Error("Trusted Delivery does not require Owner Authorization for this exact HIGH_RISK SHA");
-            const checks = await github.rest.checks.listForRef({owner: context.repo.owner, repo: context.repo.repo, ref: process.env.TARGET_SHA});
-            const trustedDelivery = checks.data.check_runs.find(check => check.name === "Trusted Delivery qualification / Qualify trusted delivery");
-            if (!trustedDelivery || trustedDelivery.status !== "completed" || trustedDelivery.conclusion !== "success") throw new Error("Trusted Delivery technical qualification is not PASS");
+            const rollup = await github.graphql(`
+              query($owner: String!, $repo: String!, $sha: String!) {
+                repository(owner: $owner, name: $repo) {
+                  object(expression: $sha) {
+                    ... on Commit {
+                      statusCheckRollup {
+                        contexts(first: 100) {
+                          nodes {
+                            __typename
+                            ... on CheckRun { name status conclusion }
+                            ... on StatusContext { context state }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `, {owner: targetOwner, repo: targetRepo, sha: process.env.TARGET_SHA});
+            const contexts = rollup.repository.object?.statusCheckRollup?.contexts?.nodes || [];
+            const trustedDelivery = contexts.find(context => context.__typename === "CheckRun" && context.name === "Trusted Delivery qualification / Qualify trusted delivery");
+            if (!trustedDelivery || trustedDelivery.status !== "COMPLETED" || trustedDelivery.conclusion !== "SUCCESS") throw new Error("Trusted Delivery technical qualification is not PASS");
             fs.writeFileSync("owner-authorization-evidence.json", JSON.stringify({schema_version: 1, kind: "trusted_delivery_owner_authorization", repository: process.env.TARGET_REPOSITORY, branch: process.env.TARGET_BRANCH, pr_number: Number(process.env.TARGET_PR), candidate_sha: process.env.TARGET_SHA, classification: "HIGH_RISK", owner: process.env.OWNER_LOGIN, github_actor: context.actor, workflow_run_id: String(context.runId), timestamp: new Date().toISOString(), result: "PASS"}, null, 2));
       - name: Publish Owner Authorization status
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
+          TARGET_REPOSITORY: ${{ inputs.repository }}
           TARGET_SHA: ${{ inputs.candidate_sha }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
-            await github.rest.repos.createCommitStatus({owner: context.repo.owner, repo: context.repo.repo, sha: process.env.TARGET_SHA, context: "Owner Authorization", state: "success", description: "HIGH_RISK authorized for this exact SHA", target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});
+            const [targetOwner, targetRepo] = process.env.TARGET_REPOSITORY.split("/");
+            await github.rest.repos.createCommitStatus({owner: targetOwner, repo: targetRepo, sha: process.env.TARGET_SHA, context: "Owner Authorization", state: "success", description: "HIGH_RISK authorized for this exact SHA", target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: trusted-delivery-owner-authorization-evidence
