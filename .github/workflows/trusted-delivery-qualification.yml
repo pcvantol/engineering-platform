@@ -1,0 +1,78 @@
+name: Trusted Delivery qualification
+
+on:
+  workflow_call:
+    inputs:
+      owner_login:
+        description: GitHub login allowed to explicitly approve HIGH_RISK work.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  qualify:
+    name: Qualify trusted delivery
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Classify risk and qualify the pull request
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          OWNER_LOGIN: ${{ inputs.owner_login }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed("Trusted Delivery qualification requires a pull_request event.");
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const exactProtected = new Set([
+              "PLATFORM_STRATEGY.md", "DJCONNECT_CONSTITUTION.md", "FOUNDATION_INDEX.md",
+              "CANONICAL_REFERENCES.md", "PRODUCT_VISION.md", "DOMAIN_MODEL.md",
+              "CLIENT_CAPABILITY_MATRIX.md", "REPOSITORY_OWNERSHIP.md",
+              "PLATFORM_GOVERNANCE.md", "CI_CD_RELEASE_GOVERNANCE.md",
+              "SOFTWARE_ASSURANCE_GOVERNANCE.md", "SOFTWARE_ASSURANCE_QUALITY_GATES.md",
+              "CODEOWNERS", ".github/CODEOWNERS", ".github/dependabot.yml",
+            ]);
+            const protectedPrefix = [
+              "docs/verification/", "tools/verification/", "software_assurance/policy/",
+              "software_assurance/schema/", "software_assurance/templates/",
+              "tools/software_assurance/", "prompts/deferred/software_assurance/",
+            ];
+            const protectedName = /^(ARCHITECTURE_|DESIGN_|SOFTWARE_ASSURANCE_IMPLEMENTATION)/;
+            const workflowOnlyPins = (patch = "") => patch.split("\n")
+              .filter(line => /^[+-](?![+-])/.test(line))
+              .every(line => /^[+-]\s*uses:\s+[^\s]+@[0-9a-f]{40}(?:\s+#.*)?$/.test(line));
+            const protectedFiles = files.filter(file => {
+              const path = file.filename;
+              if (exactProtected.has(path) || protectedPrefix.some(prefix => path.startsWith(prefix)) || protectedName.test(path)) return true;
+              if (path.startsWith(".github/workflows/") && !workflowOnlyPins(file.patch)) return true;
+              return false;
+            }).map(file => file.filename);
+            const risk = protectedFiles.length ? "HIGH_RISK" : (files.length <= 3 ? "LOW_RISK" : "NORMAL_RISK");
+            const freshness = await github.rest.repos.compareCommits({
+              owner: context.repo.owner, repo: context.repo.repo, base: pr.base.sha, head: pr.head.sha,
+            });
+            if (freshness.data.behind_by !== 0) core.setFailed("Pull request branch is not current with its base branch.");
+
+            if (risk === "HIGH_RISK") {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100,
+              });
+              const approved = reviews.some(review => review.user?.login === process.env.OWNER_LOGIN && review.state === "APPROVED" && review.commit_id === pr.head.sha);
+              if (!approved) core.setFailed("HIGH_RISK work requires an explicit owner approval for the current head SHA.");
+            }
+            await core.summary
+              .addHeading("Trusted Delivery qualification")
+              .addTable([[{data: "Field", header: true}, {data: "Value", header: true}], ["Risk class", risk], ["Protected paths", protectedFiles.join(", ") || "none"], ["Head SHA", pr.head.sha], ["Fresh branch", String(freshness.data.behind_by === 0)]])
+              .write();
