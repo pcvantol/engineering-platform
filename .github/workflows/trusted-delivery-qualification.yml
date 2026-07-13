@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   qualify:
@@ -20,8 +21,6 @@ jobs:
     steps:
       - name: Classify risk and qualify the pull request
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          OWNER_LOGIN: ${{ inputs.owner_login }}
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -65,14 +64,19 @@ jobs:
             });
             if (freshness.data.behind_by !== 0) core.setFailed("Pull request branch is not current with its base branch.");
 
-            if (risk === "HIGH_RISK") {
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100,
-              });
-              const approved = reviews.some(review => review.user?.login === process.env.OWNER_LOGIN && review.state === "APPROVED" && review.commit_id === pr.head.sha);
-              if (!approved) core.setFailed("HIGH_RISK work requires an explicit owner approval for the current head SHA.");
-            }
+            const authorizationRequired = risk === "HIGH_RISK";
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pr.head.sha,
+              context: "Owner Authorization",
+              state: authorizationRequired ? "failure" : "success",
+              description: authorizationRequired
+                ? "HIGH_RISK authorization required for this exact SHA"
+                : "Not required for LOW_RISK or NORMAL_RISK",
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
             await core.summary
               .addHeading("Trusted Delivery qualification")
-              .addTable([[{data: "Field", header: true}, {data: "Value", header: true}], ["Risk class", risk], ["Protected paths", protectedFiles.join(", ") || "none"], ["Head SHA", pr.head.sha], ["Fresh branch", String(freshness.data.behind_by === 0)]])
+              .addTable([[{data: "Field", header: true}, {data: "Value", header: true}], ["Risk class", risk], ["Protected paths", protectedFiles.join(", ") || "none"], ["Head SHA", pr.head.sha], ["Fresh branch", String(freshness.data.behind_by === 0)], ["Owner Authorization", authorizationRequired ? "REQUIRED" : "NOT_REQUIRED"]])
               .write();
