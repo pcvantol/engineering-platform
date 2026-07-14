@@ -62,14 +62,14 @@ jobs:
       - id: app-token
         if: github.repository == 'pcvantol/djconnect'
         name: Mint scoped central authorization token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.DJCONNECT_TRUSTED_DELIVERY_APP_ID }}
           private-key: ${{ secrets.DJCONNECT_TRUSTED_DELIVERY_PRIVATE_KEY }}
           owner: pcvantol
           repositories: ${{ steps.target.outputs.repository_name }}
       - name: Collect Trusted Delivery authorization request
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OWNER_LOGIN: pcvantol
           TARGET_BRANCH: ${{ inputs.branch }}
@@ -117,7 +117,7 @@ jobs:
             if (!trustedDelivery || trustedDelivery.status !== "COMPLETED" || trustedDelivery.conclusion !== "SUCCESS") throw new Error("Trusted Delivery technical qualification is not PASS");
             fs.writeFileSync("owner-authorization-evidence.json", JSON.stringify({schema_version: 1, kind: "trusted_delivery_owner_authorization", repository: process.env.TARGET_REPOSITORY, branch: process.env.TARGET_BRANCH, pr_number: Number(process.env.TARGET_PR), candidate_sha: process.env.TARGET_SHA, classification: "HIGH_RISK", owner: process.env.OWNER_LOGIN, github_actor: context.actor, workflow_run_id: String(context.runId), timestamp: new Date().toISOString(), result: "PASS"}, null, 2));
       - name: Publish Owner Authorization status
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TARGET_REPOSITORY: ${{ inputs.repository }}
           TARGET_SHA: ${{ inputs.candidate_sha }}
@@ -126,7 +126,7 @@ jobs:
           script: |
             const [targetOwner, targetRepo] = process.env.TARGET_REPOSITORY.split("/");
             await github.rest.repos.createCommitStatus({owner: targetOwner, repo: targetRepo, sha: process.env.TARGET_SHA, context: "Owner Authorization", state: "success", description: "HIGH_RISK authorized for this exact SHA", target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trusted-delivery-owner-authorization-evidence
           path: owner-authorization-evidence.json
