@@ -1,0 +1,64 @@
+name: Advisory Golden Qualification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  golden-smoke:
+    name: Advisory Golden Smoke
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Run existing Golden Smoke profile
+        id: qualification
+        run: |
+          report_path="$(mktemp "${RUNNER_TEMP}/golden-smoke.XXXXXX.md")"
+          echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
+          python tools/verification/run_golden_ci_qualification.py \
+            --profile golden_smoke \
+            --report-path "${report_path}"
+      - name: Publish bounded qualification summary
+        if: ${{ success() && steps.qualification.outcome == 'success' }}
+        run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary qualification report
+        if: ${{ always() }}
+        run: rm -f "${{ steps.qualification.outputs.report_path }}"
+
+  golden-regression:
+    name: Advisory Golden Regression
+    if: github.event_name != 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Run existing Golden Regression profile
+        id: qualification
+        run: |
+          report_path="$(mktemp "${RUNNER_TEMP}/golden-regression.XXXXXX.md")"
+          echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
+          python tools/verification/run_golden_ci_qualification.py \
+            --profile golden_regression \
+            --report-path "${report_path}"
+      - name: Publish bounded qualification summary
+        if: ${{ success() && steps.qualification.outcome == 'success' }}
+        run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary qualification report
+        if: ${{ always() }}
+        run: rm -f "${{ steps.qualification.outputs.report_path }}"
