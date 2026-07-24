@@ -30,6 +30,7 @@ jobs:
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
           python tools/verification/run_golden_ci_qualification.py \
             --profile golden_smoke \
+            --observe-browser-e2e \
             --report-path "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
@@ -55,6 +56,7 @@ jobs:
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
           python tools/verification/run_golden_ci_qualification.py \
             --profile golden_regression \
+            --observe-browser-e2e \
             --report-path "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
