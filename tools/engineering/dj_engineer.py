@@ -44,6 +44,7 @@ class PullRequestEvidence:
     checks_passed: bool
     merge_commit: str | None = None
     is_draft: bool = False
+    failed_checks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,10 @@ class SubprocessRepositoryClient:
     def main_contains(self, root: Path, sha: str) -> bool:
         return subprocess.run(("git", "merge-base", "--is-ancestor", sha, "main"), cwd=root, check=False).returncode == 0
 
+    def synchronize_main(self, root: Path) -> None:
+        self._run(root, "git", "switch", "main")
+        self._run(root, "git", "pull", "--ff-only")
+
 
 class GhCliClient:
     def pull_request(self, number: int) -> PullRequestEvidence:
@@ -113,8 +118,9 @@ class GhCliClient:
         checks = raw.get("statusCheckRollup") or []
         terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
         passed = terminal and all(item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in checks)
+        failed = tuple(str(item.get("name") or "unnamed check") for item in checks if item.get("status") == "COMPLETED" and item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"})
         merge = raw.get("mergeCommit") or {}
-        return PullRequestEvidence(raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"])
+        return PullRequestEvidence(raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"], failed)
 
     def ready(self, number: int) -> None:
         completed = subprocess.run(("gh", "pr", "ready", str(number)), text=True, capture_output=True, check=False)
@@ -191,9 +197,10 @@ def _format_cli_failure(exit_code: int, stderr: str, stdout: str) -> str:
 def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
     resume = "No prior transaction checkpoint exists." if state is None else json.dumps(state.to_dict(), sort_keys=True)
+    authority = """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner alone marks it ready and merges it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective.""" if state and state.owner_authorized else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-Do not create merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective. Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
 Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, or external_blocked), and optional diagnostic. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -243,6 +250,11 @@ class EngineeringRunner:
             raise RunnerError("current branch conflicts with active transaction")
         if state.pull_request:
             return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", last_verified_sha=evidence.head_sha, next_action="poll_required_checks")
+        if state.transaction_kind == "FINALIZATION" and state.finalization_merge_commit and self.repository.main_contains(self.root, state.finalization_merge_commit):
+            return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+        if state.transaction_kind == "IMPLEMENTATION" and state.implementation_merge_commit and self.repository.main_contains(self.root, state.implementation_merge_commit):
+            if state.owner_authorized:
+                return self._start_finalization(state, state.implementation_pull_request or 0)
         return replace(state, phase="EXECUTE_AGENT", last_verified_sha=evidence.head_sha, next_action="invoke_agent")
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
@@ -269,11 +281,13 @@ class EngineeringRunner:
                 continue
             if not pr.checks_passed:
                 if state.owner_authorized:
-                    return self._repair(state, "Required CI check failed. Repair only the bounded transaction defects, commit and push the repair, then return the same pull request number.")
+                    failed = ", ".join(pr.failed_checks) or "required CI check"
+                    return self._repair(state, f"{failed} failed. Repair only the bounded transaction defects, commit and push the repair, then return the same pull request number.")
                 return self._save_terminal(state, "FAILED", "required_checks_failed", "Required CI check failed.")
             if pr.state == "MERGED":
                 evidence = self.repository.inspect(self.root)
                 if pr.merge_commit and self.repository.main_contains(self.root, pr.merge_commit):
+                    state = self._record_merged_evidence(state, pr, evidence)
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
                     return self._save_terminal(state, "COMPLETE", "repository_reconciled")
@@ -286,7 +300,7 @@ class EngineeringRunner:
             return self._save_terminal(state, "BLOCKED", "external_merge_authorization_required", "Merge requires explicit authorization.")
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
-        repair = replace(state, phase="REPAIR_AGENT", next_action="repair_bounded_validation_failure")
+        repair = replace(state, phase="REPAIR_AGENT", next_action="repair_bounded_validation_failure", repair_iterations=state.repair_iterations + 1)
         self.store.save(repair)
         try:
             result = self.agent.invoke(self.root, assemble_prompt(Path(repair.prompt_path), repair) + f"\n\nRepair objective: {objective}")
@@ -300,7 +314,15 @@ class EngineeringRunner:
         return self._poll(replace(repair, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks"), result)
 
     def _start_finalization(self, state: TransactionState, implementation_pr: int) -> TransactionState:
-        finalization = replace(state, phase="FINALIZE_AGENT", transaction_kind="FINALIZATION", pull_request=None, branch=None, next_action="create_finalization")
+        if state.finalization_pull_request:
+            return replace(state, transaction_kind="FINALIZATION", pull_request=state.finalization_pull_request, branch=state.finalization_branch, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks")
+        synchronize = getattr(self.repository, "synchronize_main", None)
+        if callable(synchronize):
+            synchronize(self.root)
+        evidence = self.repository.inspect(self.root)
+        if not evidence.clean or evidence.branch != "main":
+            return self._save_terminal(state, "BLOCKED", "synchronize_main", "Finalization requires a clean, synchronized main checkout.")
+        finalization = replace(state, phase="FINALIZE_AGENT", transaction_kind="FINALIZATION", pull_request=None, branch=None, next_action="create_finalization", implementation_pull_request=implementation_pr or state.implementation_pull_request, latest_repository_evidence=_repository_summary(evidence))
         self.store.save(finalization)
         instruction = f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory governance-only Finalization: reconcile the four rolling records and immutable Prompt History, create a draft Finalization PR, and return that PR number."
         try:
@@ -310,7 +332,7 @@ class EngineeringRunner:
             return self._save_terminal(finalization, "BLOCKED", "inspect_codex_cli", str(error))
         if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
             return self._save_terminal(finalization, result.terminal_state if result.terminal_state in {"BLOCKED", "FAILED"} else "BLOCKED", "finalization_pr_required", result.diagnostic or "Finalization pull request was not created.")
-        finalization = replace(finalization, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=result.branch, pull_request=result.pull_request, terminal_condition="repository_reconciled", next_action="poll_required_checks")
+        finalization = replace(finalization, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=result.branch, pull_request=result.pull_request, finalization_branch=result.branch, finalization_pull_request=result.pull_request, terminal_condition="repository_reconciled", next_action="poll_required_checks")
         self.store.save(finalization)
         self.github.ready(result.pull_request)
         return self._poll(finalization, result)
@@ -319,6 +341,12 @@ class EngineeringRunner:
         terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
         self.store.save(terminal)
         return terminal
+
+    def _record_merged_evidence(self, state: TransactionState, pr: PullRequestEvidence, evidence: RepositoryEvidence) -> TransactionState:
+        common = {"last_verified_sha": evidence.head_sha, "latest_repository_evidence": _repository_summary(evidence), "latest_github_evidence": _pull_request_summary(pr)}
+        if state.transaction_kind == "IMPLEMENTATION":
+            return replace(state, implementation_branch=state.branch, implementation_pull_request=pr.number, implementation_head_sha=state.last_verified_sha, implementation_merge_commit=pr.merge_commit, **common)
+        return replace(state, finalization_branch=state.branch, finalization_pull_request=pr.number, finalization_head_sha=state.last_verified_sha, finalization_merge_commit=pr.merge_commit, **common)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -348,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         print(_format_terminal_report(state))
         if runner.console_detail:
             print(f"\nCodex CLI details:\n{runner.console_detail}")
+    elif state.phase == "COMPLETE" and state.owner_authorized and state.finalization_merge_commit:
+        print(format_management_summary(state))
     else:
         print(json.dumps(state.to_dict(), indent=2, sort_keys=True))
     return 0 if state.phase == "COMPLETE" else 1
@@ -364,3 +394,26 @@ def _next_action_message(action: str) -> str:
 
 def _format_terminal_report(state: TransactionState) -> str:
     return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"
+
+
+def _repository_summary(evidence: RepositoryEvidence) -> str:
+    return redact_diagnostic(f"branch={evidence.branch}; head={evidence.head_sha}; clean={evidence.clean}; main_contains_head={evidence.main_contains_head}")
+
+
+def _pull_request_summary(evidence: PullRequestEvidence) -> str:
+    failed = ",".join(evidence.failed_checks) or "none"
+    return redact_diagnostic(f"pr={evidence.number}; state={evidence.state}; terminal={evidence.checks_terminal}; passed={evidence.checks_passed}; failed_checks={failed}")
+
+
+def format_management_summary(state: TransactionState) -> str:
+    """Return a checkpoint-only completion summary without exposing prompt text."""
+    return "\n".join((
+        "COMPLETE — IMPLEMENTATION_AND_FINALIZATION_RECONCILED",
+        "Objective: bounded objective recorded at the supplied prompt path.",
+        f"Implementation: branch={state.implementation_branch or state.branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
+        f"Repair iterations: {state.repair_iterations}.",
+        f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
+        "Repository: implementation and Finalization reconciled; verify main == origin/main and workspace cleanliness before handoff.",
+        "Authority: owner-authorized bounded lifecycle; ready-for-review, merge and Finalization automated.",
+        "No release, deployment or publication performed. Rolling Horizon unchanged.",
+    ))

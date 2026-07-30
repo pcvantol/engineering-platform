@@ -15,6 +15,7 @@ from tools.engineering.dj_engineer import (
     RepositoryEvidence,
     RunnerError,
     _format_terminal_report,
+    format_management_summary,
 )
 
 
@@ -61,6 +62,16 @@ class FakeAgent:
 
     def available(self) -> bool:
         return True
+
+
+class SequencedFakeAgent(FakeAgent):
+    def __init__(self, results: list[AgentResult]) -> None:
+        super().__init__(results[0])
+        self.results = results
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        self.prompts.append(prompt)
+        return self.results.pop(0)
 
 
 class LocalAgentRunnerTest(unittest.TestCase):
@@ -187,6 +198,43 @@ class LocalAgentRunnerTest(unittest.TestCase):
         result = runner._poll(state)
         self.assertEqual(github.merge_calls, [14])
         self.assertEqual(result.phase, "COMPLETE")
+
+    def test_merged_implementation_starts_and_reconciles_finalization(self) -> None:
+        implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
+        final_open = PullRequestEvidence(22, "OPEN", True, True)
+        final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)])
+        state = TransactionState("full-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation", pull_request=21, owner_authorized=True)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([implementation, final_open, final_merged]), agent, lambda _: None)
+        result = runner._poll(state)
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.implementation_pull_request, 21)
+        self.assertEqual(result.finalization_pull_request, 22)
+        self.assertEqual(result.finalization_merge_commit, "c" * 40)
+        self.assertIn("mandatory governance-only Finalization", agent.prompts[0])
+
+    def test_finalization_checkpoint_prevents_duplicate_generation(self) -> None:
+        state = TransactionState("no-duplicate", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT", owner_authorized=True, transaction_kind="FINALIZATION", finalization_branch="codex/final", finalization_pull_request=23)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([PullRequestEvidence(23, "OPEN", False, False)]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        result = runner._start_finalization(state, 21)
+        self.assertEqual(result.pull_request, 23)
+        self.assertEqual(runner.agent.prompts, [])
+
+    def test_repair_records_iterations_and_failed_check_name(self) -> None:
+        state = TransactionState("repair-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/repair", pull_request=24, owner_authorized=True)
+        github = FakeGitHub([PullRequestEvidence(24, "OPEN", True, False, failed_checks=("Ruff",))])
+        agent = SequencedFakeAgent([AgentResult("BLOCKED", "codex/repair", 24, diagnostic="External review required.")])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None)
+        repaired = runner._poll(state)
+        self.assertEqual(repaired.repair_iterations, 1)
+        self.assertIn("Ruff failed", agent.prompts[0])
+
+    def test_completion_summary_contains_lifecycle_evidence(self) -> None:
+        state = TransactionState("summary-run", "pcvantol/djconnect", str(self.prompt), "COMPLETE", owner_authorized=True, implementation_pull_request=21, implementation_merge_commit="b" * 40, finalization_pull_request=22, finalization_merge_commit="c" * 40, terminal=True)
+        summary = format_management_summary(state)
+        self.assertIn("IMPLEMENTATION_AND_FINALIZATION_RECONCILED", summary)
+        self.assertIn("PR=21", summary)
+        self.assertIn("PR=22", summary)
 
     def test_transient_polling_failure_preserves_non_terminal_state(self) -> None:
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)

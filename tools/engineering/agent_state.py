@@ -46,6 +46,17 @@ class TransactionState:
     diagnostic: str | None = None
     owner_authorized: bool = False
     transaction_kind: str = "IMPLEMENTATION"
+    implementation_branch: str | None = None
+    implementation_pull_request: int | None = None
+    implementation_head_sha: str | None = None
+    implementation_merge_commit: str | None = None
+    finalization_branch: str | None = None
+    finalization_pull_request: int | None = None
+    finalization_head_sha: str | None = None
+    finalization_merge_commit: str | None = None
+    latest_repository_evidence: str | None = None
+    latest_github_evidence: str | None = None
+    repair_iterations: int = 0
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -54,9 +65,17 @@ class TransactionState:
         if not isinstance(raw, dict):
             raise StateError("checkpoint must be a JSON object")
         expected = {field.name for field in cls.__dataclass_fields__.values()}
-        legacy_expected = expected - {"diagnostic", "owner_authorized", "transaction_kind"}
-        if set(raw) == legacy_expected:
-            raw = {**raw, "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION"}
+        defaults = {
+            "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION",
+            "implementation_branch": None, "implementation_pull_request": None,
+            "implementation_head_sha": None, "implementation_merge_commit": None,
+            "finalization_branch": None, "finalization_pull_request": None,
+            "finalization_head_sha": None, "finalization_merge_commit": None,
+            "latest_repository_evidence": None, "latest_github_evidence": None,
+            "repair_iterations": 0,
+        }
+        if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
+            raw = {**defaults, **raw}
         elif set(raw) != expected:
             raise StateError("checkpoint fields are incompatible")
         try:
@@ -79,6 +98,17 @@ class TransactionState:
             raise StateError("checkpoint diagnostic is invalid or unsafe")
         if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
+        optional_sha_fields = (state.implementation_head_sha, state.implementation_merge_commit, state.finalization_head_sha, state.finalization_merge_commit)
+        if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)) for value in optional_sha_fields):
+            raise StateError("checkpoint lifecycle SHA is invalid")
+        optional_pr_fields = (state.implementation_pull_request, state.finalization_pull_request)
+        if any(value is not None and (not isinstance(value, int) or value < 1) for value in optional_pr_fields):
+            raise StateError("checkpoint lifecycle pull request is invalid")
+        if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:
+            raise StateError("checkpoint repair iteration count is invalid")
+        for value in (state.latest_repository_evidence, state.latest_github_evidence):
+            if value is not None and (not isinstance(value, str) or len(value) > MAX_DIAGNOSTIC_LENGTH or value != redact_diagnostic(value)):
+                raise StateError("checkpoint evidence is invalid or unsafe")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state
