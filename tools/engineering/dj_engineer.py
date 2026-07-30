@@ -1,0 +1,257 @@
+"""Thin foreground orchestrator for one bounded DJConnect engineering prompt."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, replace
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+from typing import Protocol
+import uuid
+
+from .agent_state import StateError, StateStore, TransactionState
+
+
+class RunnerError(RuntimeError):
+    """A fail-closed engineering-runner diagnostic."""
+
+
+@dataclass(frozen=True)
+class RepositoryEvidence:
+    repository: str
+    branch: str
+    head_sha: str
+    clean: bool
+    main_contains_head: bool = False
+
+
+@dataclass(frozen=True)
+class PullRequestEvidence:
+    number: int
+    state: str
+    checks_terminal: bool
+    checks_passed: bool
+    merge_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    terminal_state: str
+    branch: str | None = None
+    pull_request: int | None = None
+    terminal_condition: str = "repository_reconciled"
+
+
+class RepositoryClient(Protocol):
+    def inspect(self, root: Path) -> RepositoryEvidence: ...
+
+    def main_contains(self, root: Path, sha: str) -> bool: ...
+
+
+class GitHubClient(Protocol):
+    def pull_request(self, number: int) -> PullRequestEvidence: ...
+
+
+class AgentClient(Protocol):
+    def available(self) -> bool: ...
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult: ...
+
+
+class SubprocessRepositoryClient:
+    def _run(self, root: Path, *args: str) -> str:
+        completed = subprocess.run(args, cwd=root, text=True, capture_output=True, check=False)
+        if completed.returncode:
+            raise RunnerError(completed.stderr.strip() or "repository command failed")
+        return completed.stdout.strip()
+
+    def inspect(self, root: Path) -> RepositoryEvidence:
+        if not (root / "BOOTSTRAP.md").is_file() or not (root / ".git").exists():
+            raise RunnerError("this is not a repository with canonical BOOTSTRAP.md")
+        remote = self._run(root, "git", "remote", "get-url", "origin")
+        repository = remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
+        branch = self._run(root, "git", "branch", "--show-current")
+        head_sha = self._run(root, "git", "rev-parse", "HEAD")
+        clean = not self._run(root, "git", "status", "--porcelain", "--untracked-files=all")
+        main_contains_head = subprocess.run(
+            ("git", "merge-base", "--is-ancestor", head_sha, "main"), cwd=root, check=False
+        ).returncode == 0
+        return RepositoryEvidence(repository, branch, head_sha, clean, main_contains_head)
+
+    def main_contains(self, root: Path, sha: str) -> bool:
+        return subprocess.run(("git", "merge-base", "--is-ancestor", sha, "main"), cwd=root, check=False).returncode == 0
+
+
+class GhCliClient:
+    def pull_request(self, number: int) -> PullRequestEvidence:
+        completed = subprocess.run(
+            ("gh", "pr", "view", str(number), "--json", "number,state,mergeCommit,statusCheckRollup"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise RunnerError(completed.stderr.strip() or "GitHub evidence could not be read")
+        raw = json.loads(completed.stdout)
+        checks = raw.get("statusCheckRollup") or []
+        terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
+        passed = terminal and all(item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in checks)
+        merge = raw.get("mergeCommit") or {}
+        return PullRequestEvidence(raw["number"], raw["state"], terminal, passed, merge.get("oid"))
+
+
+class CodexCliClient:
+    def available(self) -> bool:
+        return subprocess.run(("codex", "--version"), text=True, capture_output=True, check=False).returncode == 0
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        state_directory = root / ".djconnect" / "engineering-runs"
+        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["terminal_state", "branch", "pull_request", "terminal_condition"],
+            "properties": {
+                "terminal_state": {"type": "string", "enum": ["COMPLETE", "WAITING", "BLOCKED", "FAILED"]},
+                "branch": {"type": ["string", "null"]},
+                "pull_request": {"type": ["integer", "null"]},
+                "terminal_condition": {"type": "string", "enum": ["repository_reconciled", "open_pr_checks_terminal", "external_blocked"]},
+            },
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False) as handle:
+            json.dump(schema, handle)
+            schema_path = Path(handle.name)
+        try:
+            completed = subprocess.run(
+                ("codex", "exec", "--sandbox", "workspace-write", "-C", str(root), "--output-schema", str(schema_path), prompt),
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            schema_path.unlink(missing_ok=True)
+        if completed.returncode:
+            raise RunnerError("Codex CLI stopped before returning a terminal result")
+        try:
+            raw = json.loads(completed.stdout.strip().splitlines()[-1])
+            return AgentResult(**raw)
+        except (IndexError, json.JSONDecodeError, TypeError) as error:
+            raise RunnerError("Codex CLI did not return the required structured terminal result") from error
+
+
+def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
+    objective = prompt_path.read_text(encoding="utf-8")
+    resume = "No prior transaction checkpoint exists." if state is None else json.dumps(state.to_dict(), sort_keys=True)
+    return f"""You are executing one bounded DJConnect engineering transaction.
+Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
+Do not create merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective. Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, and terminal_condition (repository_reconciled, open_pr_checks_terminal, or external_blocked)."""
+
+
+class EngineeringRunner:
+    def __init__(self, root: Path, store: StateStore, repository: RepositoryClient, github: GitHubClient, agent: AgentClient, sleep=time.sleep) -> None:
+        self.root, self.store, self.repository, self.github, self.agent, self.sleep = root, store, repository, github, agent, sleep
+
+    def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False) -> TransactionState:
+        evidence = self.repository.inspect(self.root)
+        if not evidence.clean:
+            raise RunnerError("working tree is not clean; unrelated work will not be touched")
+        if not self.agent.available():
+            raise RunnerError("Codex CLI is not installed or invokable")
+        state = self.store.load(run_id) if resume else None
+        if state is not None:
+            if state.repository != evidence.repository or Path(state.prompt_path) != prompt_path:
+                raise RunnerError("checkpoint conflicts with current repository or prompt")
+            if state.terminal:
+                return state
+        else:
+            state = TransactionState(run_id or f"run-{uuid.uuid4().hex[:12]}", evidence.repository, str(prompt_path), "INITIALIZE")
+        state = self._reconcile(state, evidence)
+        self.store.save(state)
+        if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
+            return self._poll(state)
+        result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state))
+        state = replace(
+            state,
+            phase="WAIT_FOR_TERMINAL_EVIDENCE",
+            branch=result.branch or evidence.branch,
+            pull_request=result.pull_request,
+            next_action="poll_required_checks",
+            terminal_condition=result.terminal_condition,
+        )
+        self.store.save(state)
+        return self._poll(state, result)
+
+    def _reconcile(self, state: TransactionState, evidence: RepositoryEvidence) -> TransactionState:
+        if state.branch and evidence.branch not in {"main", state.branch}:
+            raise RunnerError("current branch conflicts with active transaction")
+        if state.pull_request:
+            return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", last_verified_sha=evidence.head_sha, next_action="poll_required_checks")
+        return replace(state, phase="EXECUTE_AGENT", last_verified_sha=evidence.head_sha, next_action="invoke_agent")
+
+    def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
+        if result and result.terminal_state in {"BLOCKED", "FAILED"}:
+            return self._save_terminal(state, result.terminal_state, "external_action_required")
+        if not state.pull_request:
+            if result and result.terminal_state == "COMPLETE":
+                evidence = self.repository.inspect(self.root)
+                if evidence.clean and evidence.main_contains_head:
+                    return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+            return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="obtain_repository_evidence")
+        attempts = 0
+        while True:
+            try:
+                pr = self.github.pull_request(state.pull_request)
+            except RunnerError:
+                attempts += 1
+                if attempts >= 3:
+                    return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="retry_github_evidence")
+                self.sleep(min(30, 2**attempts))
+                continue
+            if not pr.checks_terminal:
+                self.sleep(15)
+                continue
+            if not pr.checks_passed:
+                return self._save_terminal(state, "FAILED", "required_checks_failed")
+            if pr.state == "MERGED":
+                evidence = self.repository.inspect(self.root)
+                if pr.merge_commit and self.repository.main_contains(self.root, pr.merge_commit):
+                    return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+            if state.terminal_condition == "open_pr_checks_terminal":
+                return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
+            return self._save_terminal(state, "BLOCKED", "external_merge_authorization_required")
+
+    def _save_terminal(self, state: TransactionState, phase: str, action: str) -> TransactionState:
+        terminal = replace(state, phase=phase, terminal=True, next_action=action)
+        self.store.save(terminal)
+        return terminal
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="dj-engineer", description="Run one bounded DJConnect engineering transaction")
+    parser.add_argument("prompt", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--resume", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    root = Path.cwd().resolve()
+    prompt_path = args.prompt.resolve()
+    if not prompt_path.is_file():
+        raise SystemExit(f"prompt does not exist: {prompt_path}")
+    if args.resume and not args.run_id:
+        raise SystemExit("--resume requires --run-id")
+    runner = EngineeringRunner(root, StateStore(root / ".djconnect" / "engineering-runs"), SubprocessRepositoryClient(), GhCliClient(), CodexCliClient())
+    try:
+        state = runner.run(prompt_path, args.run_id, args.resume)
+    except (RunnerError, StateError) as error:
+        print(f"BLOCKED: {error}")
+        return 2
+    print(json.dumps(state.to_dict(), indent=2, sort_keys=True))
+    return 0 if state.phase == "COMPLETE" else 1
