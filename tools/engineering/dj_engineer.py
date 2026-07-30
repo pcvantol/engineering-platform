@@ -43,6 +43,7 @@ class PullRequestEvidence:
     checks_terminal: bool
     checks_passed: bool
     merge_commit: str | None = None
+    is_draft: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class RepositoryClient(Protocol):
 
 class GitHubClient(Protocol):
     def pull_request(self, number: int) -> PullRequestEvidence: ...
+
+    def ready(self, number: int) -> None: ...
+
+    def merge(self, number: int) -> None: ...
 
 
 class AgentClient(Protocol):
@@ -97,7 +102,7 @@ class SubprocessRepositoryClient:
 class GhCliClient:
     def pull_request(self, number: int) -> PullRequestEvidence:
         completed = subprocess.run(
-            ("gh", "pr", "view", str(number), "--json", "number,state,mergeCommit,statusCheckRollup"),
+            ("gh", "pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup"),
             text=True,
             capture_output=True,
             check=False,
@@ -109,7 +114,17 @@ class GhCliClient:
         terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
         passed = terminal and all(item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in checks)
         merge = raw.get("mergeCommit") or {}
-        return PullRequestEvidence(raw["number"], raw["state"], terminal, passed, merge.get("oid"))
+        return PullRequestEvidence(raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"])
+
+    def ready(self, number: int) -> None:
+        completed = subprocess.run(("gh", "pr", "ready", str(number)), text=True, capture_output=True, check=False)
+        if completed.returncode and "already ready" not in completed.stderr.lower():
+            raise RunnerError(completed.stderr.strip() or "pull request could not be marked ready")
+
+    def merge(self, number: int) -> None:
+        completed = subprocess.run(("gh", "pr", "merge", str(number), "--squash", "--delete-branch"), text=True, capture_output=True, check=False)
+        if completed.returncode:
+            raise RunnerError(completed.stderr.strip() or "pull request could not be merged")
 
 
 class CodexCliClient:
@@ -187,7 +202,7 @@ class EngineeringRunner:
         self.root, self.store, self.repository, self.github, self.agent, self.sleep = root, store, repository, github, agent, sleep
         self.console_detail: str | None = None
 
-    def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False) -> TransactionState:
+    def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False, owner_authorized: bool = False) -> TransactionState:
         evidence = self.repository.inspect(self.root)
         if not evidence.clean:
             raise RunnerError("working tree is not clean; unrelated work will not be touched")
@@ -200,7 +215,7 @@ class EngineeringRunner:
             if state.terminal:
                 return state
         else:
-            state = TransactionState(run_id or f"run-{uuid.uuid4().hex[:12]}", evidence.repository, str(prompt_path), "INITIALIZE")
+            state = TransactionState(run_id or f"run-{uuid.uuid4().hex[:12]}", evidence.repository, str(prompt_path), "INITIALIZE", owner_authorized=owner_authorized)
         state = self._reconcile(state, evidence)
         self.store.save(state)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
@@ -219,6 +234,8 @@ class EngineeringRunner:
             terminal_condition=result.terminal_condition,
         )
         self.store.save(state)
+        if state.owner_authorized and state.pull_request:
+            self.github.ready(state.pull_request)
         return self._poll(state, result)
 
     def _reconcile(self, state: TransactionState, evidence: RepositoryEvidence) -> TransactionState:
@@ -251,14 +268,52 @@ class EngineeringRunner:
                 self.sleep(15)
                 continue
             if not pr.checks_passed:
+                if state.owner_authorized:
+                    return self._repair(state, "Required CI check failed. Repair only the bounded transaction defects, commit and push the repair, then return the same pull request number.")
                 return self._save_terminal(state, "FAILED", "required_checks_failed", "Required CI check failed.")
             if pr.state == "MERGED":
                 evidence = self.repository.inspect(self.root)
                 if pr.merge_commit and self.repository.main_contains(self.root, pr.merge_commit):
+                    if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
+                        return self._start_finalization(state, pr.number)
                     return self._save_terminal(state, "COMPLETE", "repository_reconciled")
-            if state.terminal_condition == "open_pr_checks_terminal":
+            if not state.owner_authorized and state.terminal_condition == "open_pr_checks_terminal":
                 return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
+            if state.owner_authorized:
+                self.github.merge(pr.number)
+                self.sleep(2)
+                continue
             return self._save_terminal(state, "BLOCKED", "external_merge_authorization_required", "Merge requires explicit authorization.")
+
+    def _repair(self, state: TransactionState, objective: str) -> TransactionState:
+        repair = replace(state, phase="REPAIR_AGENT", next_action="repair_bounded_validation_failure")
+        self.store.save(repair)
+        try:
+            result = self.agent.invoke(self.root, assemble_prompt(Path(repair.prompt_path), repair) + f"\n\nRepair objective: {objective}")
+        except CodexInvocationError as error:
+            self.console_detail = error.console_detail
+            return self._save_terminal(repair, "BLOCKED", "inspect_codex_cli", str(error))
+        if result.terminal_state in {"BLOCKED", "FAILED"}:
+            return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
+        if result.pull_request != repair.pull_request:
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+        return self._poll(replace(repair, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks"), result)
+
+    def _start_finalization(self, state: TransactionState, implementation_pr: int) -> TransactionState:
+        finalization = replace(state, phase="FINALIZE_AGENT", transaction_kind="FINALIZATION", pull_request=None, branch=None, next_action="create_finalization")
+        self.store.save(finalization)
+        instruction = f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory governance-only Finalization: reconcile the four rolling records and immutable Prompt History, create a draft Finalization PR, and return that PR number."
+        try:
+            result = self.agent.invoke(self.root, assemble_prompt(Path(finalization.prompt_path), finalization) + instruction)
+        except CodexInvocationError as error:
+            self.console_detail = error.console_detail
+            return self._save_terminal(finalization, "BLOCKED", "inspect_codex_cli", str(error))
+        if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
+            return self._save_terminal(finalization, result.terminal_state if result.terminal_state in {"BLOCKED", "FAILED"} else "BLOCKED", "finalization_pr_required", result.diagnostic or "Finalization pull request was not created.")
+        finalization = replace(finalization, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=result.branch, pull_request=result.pull_request, terminal_condition="repository_reconciled", next_action="poll_required_checks")
+        self.store.save(finalization)
+        self.github.ready(result.pull_request)
+        return self._poll(finalization, result)
 
     def _save_terminal(self, state: TransactionState, phase: str, action: str, diagnostic: str | None = None) -> TransactionState:
         terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
@@ -271,6 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--owner-authorized", action="store_true", help="record and use the owner's bounded autonomous PR authorization")
     return parser
 
 
@@ -284,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--resume requires --run-id")
     runner = EngineeringRunner(root, StateStore(root / ".djconnect" / "engineering-runs"), SubprocessRepositoryClient(), GhCliClient(), CodexCliClient())
     try:
-        state = runner.run(prompt_path, args.run_id, args.resume)
+        state = runner.run(prompt_path, args.run_id, args.resume, args.owner_authorized)
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2

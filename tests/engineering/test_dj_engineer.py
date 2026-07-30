@@ -34,6 +34,8 @@ class FakeGitHub:
     def __init__(self, responses: list[PullRequestEvidence | RunnerError]) -> None:
         self.responses = responses
         self.calls = 0
+        self.ready_calls: list[int] = []
+        self.merge_calls: list[int] = []
 
     def pull_request(self, number: int) -> PullRequestEvidence:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -41,6 +43,12 @@ class FakeGitHub:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def ready(self, number: int) -> None:
+        self.ready_calls.append(number)
+
+    def merge(self, number: int) -> None:
+        self.merge_calls.append(number)
 
 
 class FakeAgent:
@@ -170,6 +178,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
         result = runner._poll(state)
         self.assertEqual(github.calls, 2)
+        self.assertEqual(result.phase, "COMPLETE")
+
+    def test_owner_authorization_merges_green_finalization_pr(self) -> None:
+        state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
+        github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        result = runner._poll(state)
+        self.assertEqual(github.merge_calls, [14])
         self.assertEqual(result.phase, "COMPLETE")
 
     def test_transient_polling_failure_preserves_non_terminal_state(self) -> None:

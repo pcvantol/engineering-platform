@@ -11,7 +11,7 @@ import tempfile
 
 
 SCHEMA_VERSION = 1
-PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "COMPLETE", "BLOCKED", "FAILED"})
+PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
@@ -44,6 +44,8 @@ class TransactionState:
     next_action: str = "invoke_agent"
     terminal_condition: str = "repository_reconciled"
     diagnostic: str | None = None
+    owner_authorized: bool = False
+    transaction_kind: str = "IMPLEMENTATION"
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -52,9 +54,9 @@ class TransactionState:
         if not isinstance(raw, dict):
             raise StateError("checkpoint must be a JSON object")
         expected = {field.name for field in cls.__dataclass_fields__.values()}
-        legacy_expected = expected - {"diagnostic"}
+        legacy_expected = expected - {"diagnostic", "owner_authorized", "transaction_kind"}
         if set(raw) == legacy_expected:
-            raw = {**raw, "diagnostic": None}
+            raw = {**raw, "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION"}
         elif set(raw) != expected:
             raise StateError("checkpoint fields are incompatible")
         try:
@@ -75,6 +77,8 @@ class TransactionState:
             raise StateError("checkpoint last_verified_sha is invalid")
         if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
             raise StateError("checkpoint diagnostic is invalid or unsafe")
+        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION"}:
+            raise StateError("checkpoint authorization or transaction kind is invalid")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state
