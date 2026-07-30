@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -507,15 +508,29 @@ def generate_terminal_report(root: Path, state: TransactionState) -> tuple[Path,
 def _open_report(path: Path) -> str | None:
     """Best-effort editor launch; failure is deliberately non-terminal."""
     editor = os.environ.get("EDITOR")
-    candidates = [(editor, editor) if editor else (None, None), ("code", "Visual Studio Code"), ("subl", "Sublime Text")]
-    for command, label in candidates:
-        if command and shutil.which(command.split()[0]):
-            try:
-                subprocess.Popen((*command.split(), str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return label
-            except OSError:
-                continue
+    if editor:
+        return _launch_editor(tuple(editor.split()) + (str(path),), f"EDITOR={editor}")
+    if platform.system() == "Darwin":
+        for application, label in (("Visual Studio Code", "Visual Studio Code"), ("Sublime Text", "Sublime Text")):
+            if Path("/Applications", f"{application}.app").is_dir():
+                launched = _launch_editor(("open", "-a", application, str(path)), label)
+                if launched:
+                    return launched
+    for executable in ("code", "subl"):
+        resolved = shutil.which(executable)
+        if resolved:
+            launched = _launch_editor((resolved, str(path)), f"PATH executable: {resolved}")
+            if launched:
+                return launched
     return None
+
+
+def _launch_editor(command: tuple[str, ...], label: str) -> str | None:
+    try:
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return label
+    except OSError:
+        return None
 
 
 def write_live_status(root: Path, state: TransactionState, action: str) -> Path:

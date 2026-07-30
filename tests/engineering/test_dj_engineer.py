@@ -15,6 +15,7 @@ from tools.engineering.dj_engineer import (
     RepositoryEvidence,
     RunnerError,
     _format_terminal_report,
+    _open_report,
     format_management_summary,
 )
 
@@ -182,6 +183,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertNotIn("stdout-secret", raised.exception.console_detail)
         self.assertNotIn("stderr-secret", raised.exception.console_detail)
         self.assertIn("[REDACTED]", raised.exception.console_detail)
+
+    def test_editor_env_has_deterministic_precedence(self) -> None:
+        with patch.dict("os.environ", {"EDITOR": "/opt/editor"}, clear=True), patch("tools.engineering.dj_engineer.subprocess.Popen") as launch:
+            self.assertEqual(_open_report(self.prompt), "EDITOR=/opt/editor")
+        self.assertEqual(launch.call_args.args[0], ("/opt/editor", str(self.prompt)))
+
+    def test_path_code_is_not_misidentified_as_vs_code(self) -> None:
+        with patch.dict("os.environ", {}, clear=True), patch("tools.engineering.dj_engineer.platform.system", return_value="Linux"), patch("tools.engineering.dj_engineer.shutil.which", side_effect=["/usr/local/bin/code", None]), patch("tools.engineering.dj_engineer.subprocess.Popen"):
+            self.assertEqual(_open_report(self.prompt), "PATH executable: /usr/local/bin/code")
 
     def test_sensitive_diagnostic_is_redacted_before_persistence(self) -> None:
         agent = FakeAgent(AgentResult("BLOCKED", diagnostic="authorization=top-secret API_KEY=also-secret"))
