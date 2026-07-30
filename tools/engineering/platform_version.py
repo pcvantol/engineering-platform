@@ -19,6 +19,8 @@ MANIFEST_FIELDS = frozenset(
         "memory_format",
         "report_format",
         "minimum_codex_cli",
+        "watcher_version",
+        "inbox_protocol",
     }
 )
 
@@ -50,6 +52,8 @@ class EngineeringPlatformManifest:
     memory_format: int
     report_format: int
     minimum_codex_cli: str
+    watcher_version: str
+    inbox_protocol: int
 
     @classmethod
     def load(cls, path: Path) -> "EngineeringPlatformManifest":
@@ -63,8 +67,9 @@ class EngineeringPlatformManifest:
         _semver(manifest.platform_version, "platform_version")
         _semver(manifest.runner_version, "runner_version")
         _semver(manifest.minimum_codex_cli, "minimum_codex_cli")
+        _semver(manifest.watcher_version, "watcher_version")
         _contract(manifest.bootstrap_contract, "bootstrap_contract")
-        for field in ("checkpoint_format", "memory_format", "report_format"):
+        for field in ("checkpoint_format", "memory_format", "report_format", "inbox_protocol"):
             if not isinstance(getattr(manifest, field), int) or getattr(manifest, field) < 1:
                 raise EngineeringPlatformCompatibilityError(f"Engineering Platform manifest field {field} must be a positive integer.")
         return manifest
@@ -72,9 +77,9 @@ class EngineeringPlatformManifest:
 
 @dataclass(frozen=True)
 class RunnerCompatibility:
-    platform_version: str = "1.3.0"
-    runner_version: str = "1.3.0"
-    bootstrap_contract: str = "2026.10"
+    platform_version: str = "1.4.0"
+    runner_version: str = "1.4.0"
+    bootstrap_contract: str = "2026.11"
     checkpoint_formats: frozenset[int] = frozenset({1})
     memory_formats: frozenset[int] = frozenset({1, 2})
     report_formats: frozenset[int] = frozenset({1, 2})

@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+import json
+
+from tools.engineering import inbox_watcher
+
+
+class InboxWatcherTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "cloud"
+        self.repo = Path(self.temp.name) / "repo"
+        (self.repo / "tools/engineering").mkdir(parents=True)
+        (self.repo / "tools/engineering/dj-engineer").write_text("#!/bin/sh\n", encoding="utf-8")
+        inbox = inbox_watcher.folders(self.root)["Inbox"]
+        self.inbox = inbox
+
+    def tearDown(self) -> None: self.temp.cleanup()
+
+    def test_txt_and_md_stable_prompts_are_discovered_in_order(self) -> None:
+        (self.inbox / "a.txt").write_text("# first", encoding="utf-8")
+        (self.inbox / "b.md").write_text("# second", encoding="utf-8")
+        self.assertEqual([path.suffix for path in inbox_watcher.discover(self.root, 0)], [".txt", ".md"])
+
+    def test_rejects_empty_hidden_binary_and_unsupported_input(self) -> None:
+        (self.inbox / "empty.md").write_text("", encoding="utf-8")
+        (self.inbox / ".partial.txt").write_text("text", encoding="utf-8")
+        (self.inbox / "binary.md").write_bytes(b"\xff")
+        (self.inbox / "other.pdf").write_text("text", encoding="utf-8")
+        self.assertEqual(inbox_watcher.discover(self.root, 0), [])
+
+    def test_complete_job_is_serialized_and_archived(self) -> None:
+        (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
+        run_id = "inbox-0cff9d624c2412db"
+        report_dir = self.repo / ".djconnect/reports"
+        report_dir.mkdir(parents=True)
+        (report_dir / f"report_{run_id}.md").write_text("# report", encoding="utf-8")
+        checkpoint = self.repo / ".djconnect/engineering-runs"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+            run.return_value = __import__("subprocess").CompletedProcess((), 0)
+            code = inbox_watcher.once(self.repo, self.root, 0)
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_args.args[0][-2:], ["--run-id", run_id])
+        self.assertEqual(len(list(inbox_watcher.folders(self.root)["Completed"].glob("*__job.txt"))), 1)
+        self.assertEqual(len(list(inbox_watcher.folders(self.root)["Reports"].glob("*.md"))), 1)
+        self.assertEqual(json_status(self.root)["watcher_state"], "JOB_COMPLETED")
+
+
+def json_status(root: Path) -> dict[str, object]:
+    import json
+    return json.loads((root / "status.json").read_text(encoding="utf-8"))
