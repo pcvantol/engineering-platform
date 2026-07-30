@@ -1,9 +1,9 @@
 {
-  "bootstrap_contract": "2026.08",
+  "bootstrap_contract": "2026.09",
   "checkpoint_format": 1,
   "memory_format": 2,
   "minimum_codex_cli": "0.146.0",
-  "platform_version": "1.1.0",
+  "platform_version": "1.2.0",
   "report_format": 2,
-  "runner_version": "1.1.0"
+  "runner_version": "1.2.0"
 }

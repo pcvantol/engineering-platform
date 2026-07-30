@@ -389,3 +389,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with patch("tools.engineering.dj_engineer._open_report", return_value=None):
             report, _ = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0", records)
         self.assertIn("Reviewer: documentation", report.read_text(encoding="utf-8"))
+
+    def test_product_capability_reviewers_are_selected_from_repository_evidence(self) -> None:
+        cases = (
+            ("apps/apple/View.swift", "apple_platform"),
+            ("djconnect-windows MAUI", "windows_platform"),
+            ("custom_components/djconnect config flow", "home_assistant_integration"),
+            ("djconnect-esp32 ESPHome firmware yaml", "esphome_firmware"),
+            ("djconnect-pi display lifecycle", "pi_renderer"),
+            ("VibeCast browser receiver transport", "universal_receiver"),
+            ("djconnect-website static site", "website"),
+            ("djconnect-api REST API contract", "api"),
+        )
+        for objective, reviewer in cases:
+            with self.subTest(reviewer=reviewer):
+                selected = select_reviewers(objective, Path("objective.txt"), "IMPLEMENTATION", {})
+                self.assertIn(reviewer, tuple(item.reviewer for item in selected))
+
+    def test_cross_capability_selection_preserves_product_scope_and_generic_review(self) -> None:
+        selected = select_reviewers("apps/apple/ integrates with djconnect-api REST API contract and validation", Path("objective.md"), "IMPLEMENTATION", {})
+        reviewers = {item.reviewer: item for item in selected}
+        self.assertEqual(reviewers["apple_platform"].capability, "apple_platform")
+        self.assertEqual(reviewers["api"].capability, "api")
+        self.assertIn("validation", reviewers)
+        self.assertIn("documentation", reviewers)

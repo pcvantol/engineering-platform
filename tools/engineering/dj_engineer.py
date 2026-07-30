@@ -549,6 +549,7 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...]) -> str:
     for record in records:
         lines.extend((
             f"- Reviewer: {record['reviewer']}",
+            f"  - Capability: {record.get('capability', 'engineering')}",
             f"  - Selected because: {record['selected_because']}",
             f"  - Contribution: {record['contribution']}",
             f"  - Accepted recommendations: {record['accepted_recommendations']}",
@@ -575,7 +576,7 @@ def generate_terminal_report(root: Path, state: TransactionState, manifest: Engi
         "## Authorization", f"- Owner authorization: `{state.owner_authorized}`", "- Ready for Review, merge and Finalization authority remain runner-controlled.", "",
         "## Lifecycle Timeline", f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`", "",
         "## Pull Requests", f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`", f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`", "",
-        "## Capability Reviewers", _format_reviewer_records(reviewer_records), "",
+        "## Product Capability Review", _format_reviewer_records(reviewer_records), "",
         "## Validation", "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations.", "",
         "## Repair History", "No repair iterations were required." if not state.repair_iterations else f"{state.repair_iterations} bounded repair iteration(s) were recorded.", "",
         "## Repository Cleanup", state.latest_repository_evidence or "Cleanup evidence unavailable.", "",
@@ -690,9 +691,12 @@ def capture_engineering_memory(root: Path, state: TransactionState, reviewer_rec
         previous = reviewer_index.get(reviewer, {})
         usage = int(previous.get("usage_count", 0)) + 1
         successful = int(previous.get("successful_outcomes", 0)) + (0 if record.get("failed") else 1)
+        accepted = int(previous.get("accepted_recommendations", 0)) + int(record.get("accepted_recommendations", 0))
+        recommended = int(previous.get("recommendation_count", 0)) + int(record.get("accepted_recommendations", 0)) + int(record.get("rejected_recommendations", 0))
         confidence = round(successful / usage, 2)
-        reviewer_index[reviewer] = {"reviewer": reviewer, "usage_count": usage, "successful_outcomes": successful, "average_duration": 0, "last_successful_use": datetime.now(timezone.utc).isoformat() if not record.get("failed") else previous.get("last_successful_use"), "future_confidence": confidence}
-    raw = {"schema_version": 2, "transactions": [item for item in raw.get("transactions", []) if isinstance(item, dict)][-49:] + [entry], "reviewers": list(reviewer_index.values())[-50:]}
+        reviewer_index[reviewer] = {"reviewer": reviewer, "capability": record.get("capability", "engineering"), "usage_count": usage, "successful_outcomes": successful, "accepted_recommendations": accepted, "recommendation_count": recommended, "recommendation_acceptance_rate": round(accepted / recommended, 2) if recommended else 0.0, "average_duration": 0, "last_successful_use": datetime.now(timezone.utc).isoformat() if not record.get("failed") else previous.get("last_successful_use"), "future_confidence": confidence}
+    reviewers = list(reviewer_index.values())[-50:]
+    raw = {"schema_version": 2, "transactions": [item for item in raw.get("transactions", []) if isinstance(item, dict)][-49:] + [entry], "reviewers": reviewers, "capability_metrics": {"most_frequently_used": max(reviewers, key=lambda item: item["usage_count"])["reviewer"] if reviewers else None, "highest_value": max(reviewers, key=lambda item: item["future_confidence"])["reviewer"] if reviewers else None, "repository_areas": sorted({str(item.get("capability", "engineering")) for item in reviewers})}}
     descriptor, temporary = tempfile.mkstemp(prefix=".memory.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

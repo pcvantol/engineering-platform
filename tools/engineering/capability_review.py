@@ -12,16 +12,42 @@ from .agent_state import redact_diagnostic
 
 
 REVIEWER_ORDER = (
+    "apple_platform",
+    "windows_platform",
+    "home_assistant_integration",
+    "esphome_firmware",
+    "pi_renderer",
+    "universal_receiver",
+    "website",
+    "api",
     "repository_governance",
     "validation",
     "documentation",
     "finalization",
 )
 REVIEWER_LABELS = {
+    "apple_platform": "Apple Platform Reviewer",
+    "windows_platform": "Windows Platform Reviewer",
+    "home_assistant_integration": "Home Assistant Integration Reviewer",
+    "esphome_firmware": "ESPHome Firmware Reviewer",
+    "pi_renderer": "Pi Renderer Reviewer",
+    "universal_receiver": "Universal Receiver Reviewer",
+    "website": "Website Reviewer",
+    "api": "API Reviewer",
     "repository_governance": "Repository Governance Reviewer",
     "validation": "Validation Reviewer",
     "documentation": "Documentation Reviewer",
     "finalization": "Finalization Reviewer",
+}
+PRODUCT_MATCHERS = {
+    "apple_platform": (("apps/apple/", "djconnect-app", "swiftui", "watchos", "macos", "ios"), "Apple platform capability"),
+    "windows_platform": (("apps/windows/", "djconnect-windows", "maui", "windows packaging"), "Windows platform capability"),
+    "home_assistant_integration": (("custom_components/djconnect", "home assistant", "config flow", "options flow", "coordinator", "entity model"), "Home Assistant integration capability"),
+    "esphome_firmware": (("esphome", "djconnect-esp32", "firmware yaml", ".yaml"), "ESPHome firmware capability"),
+    "pi_renderer": (("djconnect-pi", "pi renderer", "raspberry pi", "display lifecycle"), "Pi renderer capability"),
+    "universal_receiver": (("universal receiver", "vibecast", "browser receiver", "receiver transport"), "Universal Receiver capability"),
+    "website": (("djconnect-website", "website", "static site", "product messaging"), "Website capability"),
+    "api": (("djconnect-api", "rest api", "api contract", "api documentation"), "API capability"),
 }
 
 
@@ -30,6 +56,7 @@ class ReviewerSelection:
     reviewer: str
     selected_because: str
     confidence: float
+    capability: str = "engineering"
 
 
 @dataclass(frozen=True)
@@ -48,6 +75,9 @@ def select_reviewers(objective: str, prompt_path: Path, transaction_kind: str, m
     """Select only registered reviewers from objective, lifecycle and safe memory evidence."""
     text = f"{prompt_path.name} {objective}".lower()
     selected: dict[str, str] = {}
+    for reviewer, (markers, reason) in PRODUCT_MATCHERS.items():
+        if any(marker in text for marker in markers):
+            selected[reviewer] = reason
     if any(token in text for token in ("governance", "repository", "roadmap", "policy", "bootstrap")):
         selected["repository_governance"] = "repository-governance objective"
     if any(token in text for token in ("test", "ruff", "bandit", "assurance", "validation", "failure")):
@@ -63,7 +93,8 @@ def select_reviewers(objective: str, prompt_path: Path, transaction_kind: str, m
         if reason is None:
             continue
         confidence = min(1.0, 0.5 + history.get(reviewer, 0.0))
-        result.append(ReviewerSelection(reviewer, reason, confidence))
+        capability = reviewer if reviewer in PRODUCT_MATCHERS else "engineering"
+        result.append(ReviewerSelection(reviewer, reason, confidence, capability))
     return tuple(result)
 
 
@@ -112,6 +143,7 @@ def records_for_storage(selections: tuple[ReviewerSelection, ...], results: tupl
         result = by_reviewer.get(selection.reviewer, ReviewerResult(selection.reviewer, "No result.", failed=True))
         records.append({
             "reviewer": selection.reviewer,
+            "capability": selection.capability,
             "selected_because": selection.selected_because,
             "confidence": selection.confidence,
             "contribution": result.contribution,
@@ -138,7 +170,9 @@ def reviewer_prompt(selection: ReviewerSelection, objective: str) -> str:
     """Build the bounded read-only reviewer instruction without lifecycle authority."""
     return json.dumps({
         "reviewer": REVIEWER_LABELS[selection.reviewer],
+        "capability": selection.capability,
         "selected_because": selection.selected_because,
         "objective": objective,
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
+        "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
     }, sort_keys=True)
