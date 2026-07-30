@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -407,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
+    report_path, editor = generate_terminal_report(root, state) if state.terminal else (None, None)
+    if report_path:
+        print(f"Engineering report generated:\n\n{report_path}\n\nOpened in:\n\n{editor or 'not available'}\n\nReady for review.")
     if state.phase in {"BLOCKED", "FAILED"}:
         print(_format_terminal_report(state))
         if runner.console_detail:
@@ -452,3 +458,45 @@ def format_management_summary(state: TransactionState) -> str:
         "Authority: owner-authorized bounded lifecycle; ready-for-review, merge and Finalization automated.",
         "No release, deployment or publication performed. Rolling Horizon unchanged.",
     ))
+
+
+def generate_terminal_report(root: Path, state: TransactionState) -> tuple[Path, str | None]:
+    """Write one immutable, local-only report for a terminal transaction."""
+    reports = root / ".djconnect" / "reports"
+    reports.mkdir(mode=0o700, parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    path = reports / f"{timestamp}_{state.run_id}.md"
+    objective = "Objective unavailable because the prompt file is no longer local."
+    try:
+        objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    body = "\n".join((
+        "# Engineering Report", "", f"- Timestamp: {timestamp}", f"- Run ID: `{state.run_id}`", f"- Repository: `{state.repository}`", f"- Prompt: `{state.prompt_path}`", f"- Terminal state: `{state.phase}`", f"- Objective: {objective}", "",
+        "## Authorization", f"- Owner authorization: `{state.owner_authorized}`", "- Ready for Review, merge and Finalization authority remain runner-controlled.", "",
+        "## Lifecycle Timeline", f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`", "",
+        "## Pull Requests", f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`", f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`", "",
+        "## Validation", "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations.", "",
+        "## Repair History", "No repair iterations were required." if not state.repair_iterations else f"{state.repair_iterations} bounded repair iteration(s) were recorded.", "",
+        "## Repository Cleanup", state.latest_repository_evidence or "Cleanup evidence unavailable.", "",
+        "## Sub-Agent Usage", "No sub-agents were required. Sub-agents are read-only advisory helpers; the primary runner retains lifecycle authority.", "",
+        "## Management Summary", format_management_summary(state), "",
+        "## Diagnostics", state.diagnostic or "No terminal diagnostic.", f"Resume: `dj-engineer {state.prompt_path} --run-id {state.run_id} --resume`", "",
+        "## Metrics", f"- Repair iterations: {state.repair_iterations}", f"- PRs created: {sum(value is not None for value in (state.implementation_pull_request, state.finalization_pull_request))}", f"- Merges performed: {sum(value is not None for value in (state.implementation_merge_commit, state.finalization_merge_commit))}", "",
+    ))
+    path.write_text(body, encoding="utf-8")
+    return path, _open_report(path)
+
+
+def _open_report(path: Path) -> str | None:
+    """Best-effort editor launch; failure is deliberately non-terminal."""
+    editor = os.environ.get("EDITOR")
+    candidates = [(editor, editor) if editor else (None, None), ("code", "Visual Studio Code"), ("subl", "Sublime Text")]
+    for command, label in candidates:
+        if command and shutil.which(command.split()[0]):
+            try:
+                subprocess.Popen((*command.split(), str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return label
+            except OSError:
+                continue
+    return None
