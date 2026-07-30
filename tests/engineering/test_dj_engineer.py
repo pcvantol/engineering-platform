@@ -25,6 +25,13 @@ from tools.engineering.platform_version import (
     RunnerCompatibility,
     validate_compatibility,
 )
+from tools.engineering.capability_review import (
+    ReviewerResult,
+    reconciled_recommendations,
+    records_for_storage,
+    run_reviews,
+    select_reviewers,
+)
 
 
 class FakeRepository:
@@ -92,6 +99,19 @@ class SequencedFakeAgent(FakeAgent):
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         self.prompts.append(prompt)
         return self.results.pop(0)
+
+
+class FakeReviewer:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def review(self, root: Path, selection: object, objective: str) -> ReviewerResult:
+        reviewer = getattr(selection, "reviewer")
+        self.calls.append(reviewer)
+        if self.fail:
+            raise RuntimeError("reviewer unavailable")
+        return ReviewerResult(reviewer, "Bounded review complete.", ("Use canonical wording.",))
 
 
 class LocalAgentRunnerTest(unittest.TestCase):
@@ -337,3 +357,35 @@ class LocalAgentRunnerTest(unittest.TestCase):
         body = report.read_text(encoding="utf-8")
         self.assertIn("Platform Version: `1.0.0`", body)
         self.assertIn("Detected Codex CLI Version: `0.146.0`", body)
+
+    def test_capability_selection_covers_documentation_validation_governance_and_finalization(self) -> None:
+        selections = select_reviewers("Update governance documentation and validation diagnostics.", self.prompt, "FINALIZATION", {})
+        self.assertEqual(tuple(item.reviewer for item in selections), ("repository_governance", "validation", "documentation", "finalization"))
+
+    def test_capability_selection_uses_memory_confidence_and_allows_no_reviewer(self) -> None:
+        memory = {"reviewers": [{"reviewer": "documentation", "future_confidence": 0.4}]}
+        documented = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", memory)
+        self.assertEqual(documented[0].confidence, 0.9)
+        self.assertEqual(select_reviewers("binary objective", Path("objective.txt"), "IMPLEMENTATION", {}), ())
+
+    def test_parallel_reviews_are_advisory_and_reconcile_conflicts(self) -> None:
+        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        reviewer = FakeReviewer()
+        results = run_reviews(self.root, selections, "objective", reviewer)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
+        records = records_for_storage(selections, results)
+        self.assertEqual(records[0]["accepted_recommendations"], 1)
+
+    def test_reviewer_failure_never_blocks_selection(self) -> None:
+        selections = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        results = run_reviews(self.root, selections, "objective", FakeReviewer(fail=True))
+        self.assertTrue(results[0].failed)
+        self.assertEqual(reconciled_recommendations(results), ())
+
+    def test_terminal_report_records_selected_reviewers(self) -> None:
+        state = TransactionState("review-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        records = ({"reviewer": "documentation", "selected_because": "documentation-oriented objective", "contribution": "Navigation checked.", "accepted_recommendations": 3, "rejected_recommendations": 1, "failed": False},)
+        with patch("tools.engineering.dj_engineer._open_report", return_value=None):
+            report, _ = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0", records)
+        self.assertIn("Reviewer: documentation", report.read_text(encoding="utf-8"))

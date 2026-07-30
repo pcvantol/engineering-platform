@@ -17,6 +17,15 @@ from typing import Protocol
 import uuid
 
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
+from .capability_review import (
+    ReviewerResult,
+    ReviewerSelection,
+    reconciled_recommendations,
+    records_for_storage,
+    reviewer_prompt,
+    run_reviews,
+    select_reviewers,
+)
 from .platform_version import (
     EngineeringPlatformCompatibilityError,
     EngineeringPlatformManifest,
@@ -185,6 +194,25 @@ class CodexCliClient:
             raise RunnerError("Codex CLI version could not be detected")
         return detected_codex_cli_version(completed.stdout)
 
+    def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult:
+        schema = {"type": "object", "additionalProperties": False, "required": ["contribution", "recommendations"], "properties": {"contribution": {"type": "string", "maxLength": 240}, "recommendations": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}}}}
+        state_directory = root / ".djconnect"
+        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False) as handle:
+            json.dump(schema, handle)
+            schema_path = Path(handle.name)
+        try:
+            completed = subprocess.run(("codex", "exec", "--sandbox", "read-only", "-C", str(root), "--output-schema", str(schema_path), reviewer_prompt(selection, objective)), cwd=root, text=True, capture_output=True, check=False)
+        finally:
+            schema_path.unlink(missing_ok=True)
+        if completed.returncode:
+            return ReviewerResult(selection.reviewer, "Reviewer invocation failed; primary review continues.", failed=True)
+        try:
+            raw = json.loads(completed.stdout.strip().splitlines()[-1])
+            return ReviewerResult(selection.reviewer, str(raw["contribution"]), tuple(str(value) for value in raw["recommendations"]))
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+            return ReviewerResult(selection.reviewer, "Reviewer returned invalid advice; primary review continues.", failed=True)
+
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         state_directory = root / ".djconnect" / "engineering-runs"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -258,6 +286,7 @@ class EngineeringRunner:
         self.compatibility = compatibility
         self.platform_manifest: EngineeringPlatformManifest | None = None
         self.detected_codex_cli: str | None = None
+        self.reviewer_records: tuple[dict[str, object], ...] = ()
         self.console_detail: str | None = None
 
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False, owner_authorized: bool = False) -> TransactionState:
@@ -275,13 +304,20 @@ class EngineeringRunner:
                 return state
         else:
             state = TransactionState(run_id or f"run-{uuid.uuid4().hex[:12]}", evidence.repository, str(prompt_path), "INITIALIZE", owner_authorized=owner_authorized)
+        objective = prompt_path.read_text(encoding="utf-8")
         memory = retrieve_engineering_memory(self.root, prompt_path)
+        selections = select_reviewers(objective, prompt_path, state.transaction_kind if state else "IMPLEMENTATION", load_engineering_memory(self.root))
+        write_live_status(self.root, state or TransactionState(run_id or "pending-run", evidence.repository, str(prompt_path), "INITIALIZE"), "Capability Selection: " + (", ".join(item.reviewer for item in selections) or "No specialist reviewers required."))
+        results = run_reviews(self.root, selections, objective, self.agent if hasattr(self.agent, "review") else None)
+        self.reviewer_records = records_for_storage(selections, results)
+        recommendations = reconciled_recommendations(results)
+        reviewer_context = "" if not recommendations else "\n\nSpecialist reviewer recommendations (advisory; primary agent must reconcile with repository evidence):\n- " + "\n- ".join(recommendations)
         state = self._reconcile(state, evidence)
         self.store.save(state)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         try:
-            result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state) + memory)
+            result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context)
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
@@ -404,7 +440,7 @@ class EngineeringRunner:
         terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
         self.store.save(terminal)
         if phase == "COMPLETE":
-            capture_engineering_memory(self.root, terminal)
+            capture_engineering_memory(self.root, terminal, self.reviewer_records)
         write_live_status(self.root, terminal, action)
         print(f"[{terminal.phase}] {action}")
         return terminal
@@ -456,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    report_path, editor = generate_terminal_report(root, state, runner.platform_manifest, runner.detected_codex_cli) if state.terminal else (None, None)
+    report_path, editor = generate_terminal_report(root, state, runner.platform_manifest, runner.detected_codex_cli, runner.reviewer_records) if state.terminal else (None, None)
     if report_path:
         print(f"Engineering report generated:\n\n{report_path}\n\nOpened in:\n\n{editor or 'not available'}\n\nReady for review.")
     if state.phase in {"BLOCKED", "FAILED"}:
@@ -506,7 +542,22 @@ def format_management_summary(state: TransactionState) -> str:
     ))
 
 
-def generate_terminal_report(root: Path, state: TransactionState, manifest: EngineeringPlatformManifest | None = None, detected_cli: str | None = None) -> tuple[Path, str | None]:
+def _format_reviewer_records(records: tuple[dict[str, object], ...]) -> str:
+    if not records:
+        return "No specialist reviewers required."
+    lines: list[str] = []
+    for record in records:
+        lines.extend((
+            f"- Reviewer: {record['reviewer']}",
+            f"  - Selected because: {record['selected_because']}",
+            f"  - Contribution: {record['contribution']}",
+            f"  - Accepted recommendations: {record['accepted_recommendations']}",
+            f"  - Rejected recommendations: {record['rejected_recommendations']}",
+        ))
+    return "\n".join(lines)
+
+
+def generate_terminal_report(root: Path, state: TransactionState, manifest: EngineeringPlatformManifest | None = None, detected_cli: str | None = None, reviewer_records: tuple[dict[str, object], ...] = ()) -> tuple[Path, str | None]:
     """Write one immutable, local-only report for a terminal transaction."""
     reports = root / ".djconnect" / "reports"
     reports.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -524,6 +575,7 @@ def generate_terminal_report(root: Path, state: TransactionState, manifest: Engi
         "## Authorization", f"- Owner authorization: `{state.owner_authorized}`", "- Ready for Review, merge and Finalization authority remain runner-controlled.", "",
         "## Lifecycle Timeline", f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`", "",
         "## Pull Requests", f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`", f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`", "",
+        "## Capability Reviewers", _format_reviewer_records(reviewer_records), "",
         "## Validation", "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations.", "",
         "## Repair History", "No repair iterations were required." if not state.repair_iterations else f"{state.repair_iterations} bounded repair iteration(s) were recorded.", "",
         "## Repository Cleanup", state.latest_repository_evidence or "Cleanup evidence unavailable.", "",
@@ -601,28 +653,46 @@ def _memory_path(root: Path) -> Path:
     return root / ".djconnect" / "memory" / "engineering-memory.json"
 
 
+def load_engineering_memory(root: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(_memory_path(root).read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def retrieve_engineering_memory(root: Path, prompt_path: Path) -> str:
     """Return safe advisory metadata; repository evidence remains authoritative."""
     try:
-        entries = json.loads(_memory_path(root).read_text(encoding="utf-8")).get("transactions", [])
-    except (OSError, json.JSONDecodeError, AttributeError):
+        entries = load_engineering_memory(root).get("transactions", [])
+    except AttributeError:
         return "\n\nEngineering Memory: no prior safe transaction metadata is available."
     objective = prompt_path.stem.lower()
     relevant = [entry for entry in entries[-10:] if any(word in objective for word in entry.get("classification", "").split())]
     return "\n\nEngineering Memory (advisory only; repository evidence overrides it): " + json.dumps(relevant[-3:], sort_keys=True)
 
 
-def capture_engineering_memory(root: Path, state: TransactionState) -> None:
+def capture_engineering_memory(root: Path, state: TransactionState, reviewer_records: tuple[dict[str, object], ...] = ()) -> None:
     """Atomically store bounded metadata, never prompts, source content or credentials."""
     path = _memory_path(root)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = load_engineering_memory(root)
     except (OSError, json.JSONDecodeError):
-        raw = {"schema_version": 1, "transactions": []}
+        raw = {}
     classification = " ".join(part for part in Path(state.prompt_path).stem.lower().replace("_", "-").split("-") if part.isalpha())[:120]
     entry = {"classification": classification, "repository": state.repository, "outcome": state.phase, "repair_iterations": state.repair_iterations, "implementation_pr": state.implementation_pull_request, "finalization_pr": state.finalization_pull_request, "confidence": 1.0, "usage_count": 0, "last_successful_use": datetime.now(timezone.utc).isoformat()}
-    raw = {"schema_version": 1, "transactions": [item for item in raw.get("transactions", []) if isinstance(item, dict)][-49:] + [entry]}
+    reviewer_index = {item.get("reviewer"): dict(item) for item in raw.get("reviewers", []) if isinstance(item, dict) and isinstance(item.get("reviewer"), str)}
+    for record in reviewer_records:
+        reviewer = record.get("reviewer")
+        if not isinstance(reviewer, str):
+            continue
+        previous = reviewer_index.get(reviewer, {})
+        usage = int(previous.get("usage_count", 0)) + 1
+        successful = int(previous.get("successful_outcomes", 0)) + (0 if record.get("failed") else 1)
+        confidence = round(successful / usage, 2)
+        reviewer_index[reviewer] = {"reviewer": reviewer, "usage_count": usage, "successful_outcomes": successful, "average_duration": 0, "last_successful_use": datetime.now(timezone.utc).isoformat() if not record.get("failed") else previous.get("last_successful_use"), "future_confidence": confidence}
+    raw = {"schema_version": 2, "transactions": [item for item in raw.get("transactions", []) if isinstance(item, dict)][-49:] + [entry], "reviewers": list(reviewer_index.values())[-50:]}
     descriptor, temporary = tempfile.mkstemp(prefix=".memory.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

@@ -72,12 +72,12 @@ class EngineeringPlatformManifest:
 
 @dataclass(frozen=True)
 class RunnerCompatibility:
-    platform_version: str = "1.0.0"
-    runner_version: str = "1.0.0"
-    bootstrap_contract: str = "2026.07"
+    platform_version: str = "1.1.0"
+    runner_version: str = "1.1.0"
+    bootstrap_contract: str = "2026.08"
     checkpoint_formats: frozenset[int] = frozenset({1})
-    memory_formats: frozenset[int] = frozenset({1})
-    report_formats: frozenset[int] = frozenset({1})
+    memory_formats: frozenset[int] = frozenset({1, 2})
+    report_formats: frozenset[int] = frozenset({1, 2})
 
 
 def validate_compatibility(manifest: EngineeringPlatformManifest, runner: RunnerCompatibility, detected_codex_cli: str) -> None:
