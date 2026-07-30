@@ -366,11 +366,15 @@ class EngineeringRunner:
     def _save_terminal(self, state: TransactionState, phase: str, action: str, diagnostic: str | None = None) -> TransactionState:
         terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
         self.store.save(terminal)
+        write_live_status(self.root, terminal, action)
+        print(f"[{terminal.phase}] {action}")
         return terminal
 
     def _cleanup(self, state: TransactionState) -> TransactionState:
         cleanup = replace(state, phase="REPOSITORY_CLEANUP", next_action="fetch_prune_and_remove_transaction_branches")
         self.store.save(cleanup)
+        write_live_status(self.root, cleanup, "Repository cleanup in progress")
+        print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
         operation = getattr(self.repository, "cleanup_transaction", None)
         if not callable(operation):
             return self._save_terminal(cleanup, "BLOCKED", "cleanup_unavailable", "Cleanup client is unavailable; resume with repository cleanup evidence.")
@@ -397,7 +401,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_args = argv if argv is not None else __import__("sys").argv[1:]
+    if raw_args == ["status"]:
+        return print_live_status(Path.cwd().resolve())
+    args = build_parser().parse_args(raw_args)
     root = Path.cwd().resolve()
     prompt_path = args.prompt.resolve()
     if not prompt_path.is_file():
@@ -500,3 +507,36 @@ def _open_report(path: Path) -> str | None:
             except OSError:
                 continue
     return None
+
+
+def write_live_status(root: Path, state: TransactionState, action: str) -> Path:
+    """Atomically publish the advisory current transaction state."""
+    directory = root / ".djconnect" / "status"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / "current.json"
+    payload = {"run_id": state.run_id, "phase": state.phase, "current_action": redact_diagnostic(action), "objective": state.prompt_path, "implementation_pr": state.implementation_pull_request, "finalization_pr": state.finalization_pull_request, "repair_iteration": state.repair_iterations, "repository_state": "MERGED_RECONCILED" if state.phase == "COMPLETE" else "ACTIVE", "workspace_state": "WORKSPACE_READY" if state.phase == "COMPLETE" else "ACTIVE", "last_update": datetime.now(timezone.utc).isoformat(), "elapsed_seconds": 0, "diagnostic": state.diagnostic, "resume_command": f"dj-engineer {state.prompt_path} --run-id {state.run_id} --resume"}
+    descriptor, temporary = tempfile.mkstemp(prefix=".current.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return path
+
+
+def print_live_status(root: Path) -> int:
+    path = root / ".djconnect" / "status" / "current.json"
+    if not path.is_file():
+        print("No active engineering status is available.")
+        return 1
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        print("Current engineering status is unavailable.")
+        return 2
+    print(f"Run:\n{current['run_id']}\n\nCurrent Phase:\n{current['phase']}\n\nImplementation PR:\n{current['implementation_pr']}\n\nRepair Iteration:\n{current['repair_iteration']}\n\nCurrent Action:\n{current['current_action']}\n\nElapsed:\n{current['elapsed_seconds']}s")
+    return 0
