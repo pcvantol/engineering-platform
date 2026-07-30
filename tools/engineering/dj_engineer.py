@@ -17,6 +17,13 @@ from typing import Protocol
 import uuid
 
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
+from .platform_version import (
+    EngineeringPlatformCompatibilityError,
+    EngineeringPlatformManifest,
+    RunnerCompatibility,
+    detected_codex_cli_version,
+    validate_compatibility,
+)
 
 
 class RunnerError(RuntimeError):
@@ -76,6 +83,8 @@ class GitHubClient(Protocol):
 
 class AgentClient(Protocol):
     def available(self) -> bool: ...
+
+    def version(self) -> str: ...
 
     def invoke(self, root: Path, prompt: str) -> AgentResult: ...
 
@@ -170,6 +179,12 @@ class CodexCliClient:
     def available(self) -> bool:
         return subprocess.run(("codex", "--version"), text=True, capture_output=True, check=False).returncode == 0
 
+    def version(self) -> str:
+        completed = subprocess.run(("codex", "--version"), text=True, capture_output=True, check=False)
+        if completed.returncode:
+            raise RunnerError("Codex CLI version could not be detected")
+        return detected_codex_cli_version(completed.stdout)
+
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         state_directory = root / ".djconnect" / "engineering-runs"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -238,8 +253,11 @@ Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON objec
 
 
 class EngineeringRunner:
-    def __init__(self, root: Path, store: StateStore, repository: RepositoryClient, github: GitHubClient, agent: AgentClient, sleep=time.sleep) -> None:
+    def __init__(self, root: Path, store: StateStore, repository: RepositoryClient, github: GitHubClient, agent: AgentClient, sleep=time.sleep, compatibility: RunnerCompatibility = RunnerCompatibility()) -> None:
         self.root, self.store, self.repository, self.github, self.agent, self.sleep = root, store, repository, github, agent, sleep
+        self.compatibility = compatibility
+        self.platform_manifest: EngineeringPlatformManifest | None = None
+        self.detected_codex_cli: str | None = None
         self.console_detail: str | None = None
 
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False, owner_authorized: bool = False) -> TransactionState:
@@ -248,6 +266,7 @@ class EngineeringRunner:
             raise RunnerError("working tree is not clean; unrelated work will not be touched")
         if not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
+        self._verify_engineering_platform()
         state = self.store.load(run_id) if resume else None
         if state is not None:
             if state.repository != evidence.repository or Path(state.prompt_path) != prompt_path:
@@ -278,6 +297,16 @@ class EngineeringRunner:
         if state.owner_authorized and state.pull_request:
             self.github.ready(state.pull_request)
         return self._poll(state, result)
+
+    def _verify_engineering_platform(self) -> None:
+        try:
+            self.detected_codex_cli = self.agent.version()
+            self.platform_manifest = EngineeringPlatformManifest.load(
+                self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            )
+            validate_compatibility(self.platform_manifest, self.compatibility, self.detected_codex_cli)
+        except EngineeringPlatformCompatibilityError as error:
+            raise RunnerError(str(error)) from error
 
     def _reconcile(self, state: TransactionState, evidence: RepositoryEvidence) -> TransactionState:
         if state.branch and evidence.branch not in {"main", state.branch}:
@@ -427,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    report_path, editor = generate_terminal_report(root, state) if state.terminal else (None, None)
+    report_path, editor = generate_terminal_report(root, state, runner.platform_manifest, runner.detected_codex_cli) if state.terminal else (None, None)
     if report_path:
         print(f"Engineering report generated:\n\n{report_path}\n\nOpened in:\n\n{editor or 'not available'}\n\nReady for review.")
     if state.phase in {"BLOCKED", "FAILED"}:
@@ -477,7 +506,7 @@ def format_management_summary(state: TransactionState) -> str:
     ))
 
 
-def generate_terminal_report(root: Path, state: TransactionState) -> tuple[Path, str | None]:
+def generate_terminal_report(root: Path, state: TransactionState, manifest: EngineeringPlatformManifest | None = None, detected_cli: str | None = None) -> tuple[Path, str | None]:
     """Write one immutable, local-only report for a terminal transaction."""
     reports = root / ".djconnect" / "reports"
     reports.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -488,8 +517,10 @@ def generate_terminal_report(root: Path, state: TransactionState) -> tuple[Path,
         objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
     except OSError:
         pass
+    manifest = manifest or EngineeringPlatformManifest.load(root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
     body = "\n".join((
         "# Engineering Report", "", f"- Timestamp: {timestamp}", f"- Run ID: `{state.run_id}`", f"- Repository: `{state.repository}`", f"- Prompt: `{state.prompt_path}`", f"- Terminal state: `{state.phase}`", f"- Objective: {objective}", "",
+        "## Engineering Platform", f"- Platform Version: `{manifest.platform_version}`", f"- Runner Version: `{manifest.runner_version}`", f"- Bootstrap Contract: `{manifest.bootstrap_contract}`", f"- Checkpoint Format: `{manifest.checkpoint_format}`", f"- Memory Format: `{manifest.memory_format}`", f"- Report Format: `{manifest.report_format}`", f"- Detected Codex CLI Version: `{detected_cli or 'unavailable'}`", "",
         "## Authorization", f"- Owner authorization: `{state.owner_authorized}`", "- Ready for Review, merge and Finalization authority remain runner-controlled.", "",
         "## Lifecycle Timeline", f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`", "",
         "## Pull Requests", f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`", f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`", "",

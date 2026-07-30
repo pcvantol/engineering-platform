@@ -17,6 +17,13 @@ from tools.engineering.dj_engineer import (
     _format_terminal_report,
     _open_report,
     format_management_summary,
+    generate_terminal_report,
+)
+from tools.engineering.platform_version import (
+    EngineeringPlatformCompatibilityError,
+    EngineeringPlatformManifest,
+    RunnerCompatibility,
+    validate_compatibility,
 )
 
 
@@ -73,6 +80,9 @@ class FakeAgent:
     def available(self) -> bool:
         return True
 
+    def version(self) -> str:
+        return "0.146.0"
+
 
 class SequencedFakeAgent(FakeAgent):
     def __init__(self, results: list[AgentResult]) -> None:
@@ -90,6 +100,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.prompt = self.root / "prompt.md"
         self.prompt.write_text("# bounded objective\n", encoding="utf-8")
+        manifest = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            '{"platform_version":"1.0.0","runner_version":"1.0.0","bootstrap_contract":"2026.07","checkpoint_format":1,"memory_format":1,"report_format":1,"minimum_codex_cli":"0.146.0"}\n',
+            encoding="utf-8",
+        )
         self.store = StateStore(self.root / ".djconnect" / "engineering-runs")
 
     def tearDown(self) -> None:
@@ -287,3 +303,37 @@ class LocalAgentRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, "not clean"):
             runner.run(self.prompt, run_id="dirty-run")
         self.assertEqual(agent.prompts, [])
+
+    def test_engineering_platform_accepts_newer_compatible_runner(self) -> None:
+        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        validate_compatibility(manifest, RunnerCompatibility(runner_version="1.1.0", bootstrap_contract="2026.08", checkpoint_formats=frozenset({1, 2}), memory_formats=frozenset({1}), report_formats=frozenset({1})), "0.146.0")
+
+    def test_engineering_platform_rejects_incompatible_platform_version(self) -> None:
+        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        with self.assertRaisesRegex(EngineeringPlatformCompatibilityError, "Engineering Platform mismatch"):
+            validate_compatibility(manifest, RunnerCompatibility(platform_version="0.9.0"), "0.146.0")
+
+    def test_engineering_platform_rejects_bootstrap_checkpoint_memory_and_report_mismatches(self) -> None:
+        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        cases = (
+            (RunnerCompatibility(bootstrap_contract="2026.06"), "Bootstrap contract mismatch"),
+            (RunnerCompatibility(checkpoint_formats=frozenset({2})), "Checkpoint format mismatch"),
+            (RunnerCompatibility(memory_formats=frozenset({2})), "Engineering Memory format mismatch"),
+            (RunnerCompatibility(report_formats=frozenset({2})), "Report format mismatch"),
+        )
+        for compatibility, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(EngineeringPlatformCompatibilityError, diagnostic):
+                validate_compatibility(manifest, compatibility, "0.146.0")
+
+    def test_engineering_platform_rejects_older_runner(self) -> None:
+        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        with self.assertRaisesRegex(EngineeringPlatformCompatibilityError, "Runner version mismatch"):
+            validate_compatibility(manifest, RunnerCompatibility(runner_version="0.9.0"), "0.146.0")
+
+    def test_terminal_report_records_engineering_platform(self) -> None:
+        state = TransactionState("platform-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        with patch("tools.engineering.dj_engineer._open_report", return_value=None):
+            report, _ = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0")
+        body = report.read_text(encoding="utf-8")
+        self.assertIn("Platform Version: `1.0.0`", body)
+        self.assertIn("Detected Codex CLI Version: `0.146.0`", body)
