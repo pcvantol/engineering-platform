@@ -12,11 +12,19 @@ import time
 from typing import Protocol
 import uuid
 
-from .agent_state import StateError, StateStore, TransactionState
+from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 
 
 class RunnerError(RuntimeError):
     """A fail-closed engineering-runner diagnostic."""
+
+
+class CodexInvocationError(RunnerError):
+    """Separates transient console detail from safe checkpoint diagnostic state."""
+
+    def __init__(self, persistent_diagnostic: str, console_detail: str) -> None:
+        super().__init__(persistent_diagnostic)
+        self.console_detail = console_detail
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,7 @@ class AgentResult:
     branch: str | None = None
     pull_request: int | None = None
     terminal_condition: str = "repository_reconciled"
+    diagnostic: str | None = None
 
 
 class RepositoryClient(Protocol):
@@ -119,6 +128,7 @@ class CodexCliClient:
                 "branch": {"type": ["string", "null"]},
                 "pull_request": {"type": ["integer", "null"]},
                 "terminal_condition": {"type": "string", "enum": ["repository_reconciled", "open_pr_checks_terminal", "external_blocked"]},
+                "diagnostic": {"type": "string", "maxLength": 500},
             },
         }
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False) as handle:
@@ -135,12 +145,32 @@ class CodexCliClient:
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
-            raise RunnerError("Codex CLI stopped before returning a terminal result")
+            detail = _format_cli_failure(completed.returncode, completed.stderr, completed.stdout)
+            raise CodexInvocationError(
+                f"Codex CLI exited with code {completed.returncode}; inspect this invocation's console output.",
+                detail,
+            )
         try:
             raw = json.loads(completed.stdout.strip().splitlines()[-1])
-            return AgentResult(**raw)
+            result = AgentResult(**raw)
+            if result.diagnostic is not None:
+                result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
+            return result
         except (IndexError, json.JSONDecodeError, TypeError) as error:
-            raise RunnerError("Codex CLI did not return the required structured terminal result") from error
+            raise CodexInvocationError(
+                "Codex CLI did not return the required structured terminal result.",
+                _format_cli_failure(completed.returncode, completed.stderr, completed.stdout),
+            ) from error
+
+
+def _format_cli_failure(exit_code: int, stderr: str, stdout: str) -> str:
+    return "\n".join(
+        (
+            f"Codex CLI exit code: {exit_code}",
+            f"stderr: {redact_diagnostic(stderr, limit=300) or '(empty)'}",
+            f"stdout: {redact_diagnostic(stdout, limit=300) or '(empty)'}",
+        )
+    )
 
 
 def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
@@ -149,12 +179,13 @@ def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 Do not create merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective. Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
-Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, and terminal_condition (repository_reconciled, open_pr_checks_terminal, or external_blocked)."""
+Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, or external_blocked), and optional diagnostic. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
     def __init__(self, root: Path, store: StateStore, repository: RepositoryClient, github: GitHubClient, agent: AgentClient, sleep=time.sleep) -> None:
         self.root, self.store, self.repository, self.github, self.agent, self.sleep = root, store, repository, github, agent, sleep
+        self.console_detail: str | None = None
 
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False) -> TransactionState:
         evidence = self.repository.inspect(self.root)
@@ -174,7 +205,11 @@ class EngineeringRunner:
         self.store.save(state)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
-        result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state))
+        try:
+            result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state))
+        except CodexInvocationError as error:
+            self.console_detail = error.console_detail
+            return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
         state = replace(
             state,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -195,7 +230,7 @@ class EngineeringRunner:
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
         if result and result.terminal_state in {"BLOCKED", "FAILED"}:
-            return self._save_terminal(state, result.terminal_state, "external_action_required")
+            return self._save_terminal(state, result.terminal_state, "external_action_required", result.diagnostic)
         if not state.pull_request:
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
@@ -216,17 +251,17 @@ class EngineeringRunner:
                 self.sleep(15)
                 continue
             if not pr.checks_passed:
-                return self._save_terminal(state, "FAILED", "required_checks_failed")
+                return self._save_terminal(state, "FAILED", "required_checks_failed", "Required CI check failed.")
             if pr.state == "MERGED":
                 evidence = self.repository.inspect(self.root)
                 if pr.merge_commit and self.repository.main_contains(self.root, pr.merge_commit):
                     return self._save_terminal(state, "COMPLETE", "repository_reconciled")
             if state.terminal_condition == "open_pr_checks_terminal":
                 return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
-            return self._save_terminal(state, "BLOCKED", "external_merge_authorization_required")
+            return self._save_terminal(state, "BLOCKED", "external_merge_authorization_required", "Merge requires explicit authorization.")
 
-    def _save_terminal(self, state: TransactionState, phase: str, action: str) -> TransactionState:
-        terminal = replace(state, phase=phase, terminal=True, next_action=action)
+    def _save_terminal(self, state: TransactionState, phase: str, action: str, diagnostic: str | None = None) -> TransactionState:
+        terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
         self.store.save(terminal)
         return terminal
 
@@ -253,5 +288,23 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    print(json.dumps(state.to_dict(), indent=2, sort_keys=True))
+    if state.phase in {"BLOCKED", "FAILED"}:
+        print(_format_terminal_report(state))
+        if runner.console_detail:
+            print(f"\nCodex CLI details:\n{runner.console_detail}")
+    else:
+        print(json.dumps(state.to_dict(), indent=2, sort_keys=True))
     return 0 if state.phase == "COMPLETE" else 1
+
+
+def _next_action_message(action: str) -> str:
+    return {
+        "external_action_required": "Resolve the reported external dependency, then resume the run.",
+        "external_merge_authorization_required": "Obtain the required merge authorization.",
+        "required_checks_failed": "Inspect and resolve the failed required CI check.",
+        "inspect_codex_cli": "Inspect the redacted Codex CLI details above, then resume after correction.",
+    }.get(action, "Inspect current repository and GitHub evidence before resuming.")
+
+
+def _format_terminal_report(state: TransactionState) -> str:
+    return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"

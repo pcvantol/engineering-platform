@@ -13,10 +13,23 @@ import tempfile
 SCHEMA_VERSION = 1
 PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+MAX_DIAGNOSTIC_LENGTH = 500
+SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
+    r"(?i)\b(api[_ -]?key|oauth|access[_ -]?token|refresh[_ -]?token|secret|cookie|authorization|password)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\b[A-Z][A-Z0-9_]{2,}\s*=\s*\S+"
+)
 
 
 class StateError(ValueError):
     """Raised when local advisory state is missing, malformed, or unsafe."""
+
+
+def redact_diagnostic(value: str, *, limit: int = MAX_DIAGNOSTIC_LENGTH) -> str:
+    """Return bounded human-readable text that is safe to display or persist."""
+    if not isinstance(value, str):
+        return "Diagnostic omitted because it was not valid text."
+    compact = " ".join(value.replace("\x00", " ").split())
+    compact = SENSITIVE_DIAGNOSTIC_PATTERN.sub("[REDACTED]", compact)
+    return compact[:limit]
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,7 @@ class TransactionState:
     last_verified_sha: str | None = None
     next_action: str = "invoke_agent"
     terminal_condition: str = "repository_reconciled"
+    diagnostic: str | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -38,7 +52,10 @@ class TransactionState:
         if not isinstance(raw, dict):
             raise StateError("checkpoint must be a JSON object")
         expected = {field.name for field in cls.__dataclass_fields__.values()}
-        if set(raw) != expected:
+        legacy_expected = expected - {"diagnostic"}
+        if set(raw) == legacy_expected:
+            raw = {**raw, "diagnostic": None}
+        elif set(raw) != expected:
             raise StateError("checkpoint fields are incompatible")
         try:
             state = cls(**raw)
@@ -56,6 +73,8 @@ class TransactionState:
             raise StateError("checkpoint pull_request is invalid")
         if state.last_verified_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", state.last_verified_sha):
             raise StateError("checkpoint last_verified_sha is invalid")
+        if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
+            raise StateError("checkpoint diagnostic is invalid or unsafe")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state

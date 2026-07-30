@@ -3,14 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from tools.engineering.agent_state import StateError, StateStore, TransactionState
+from tools.engineering.agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from tools.engineering.dj_engineer import (
     AgentResult,
+    CodexCliClient,
+    CodexInvocationError,
     EngineeringRunner,
     PullRequestEvidence,
     RepositoryEvidence,
     RunnerError,
+    _format_terminal_report,
 )
 
 
@@ -103,7 +107,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             runner.run(self.prompt, run_id="resume-run", resume=True)
 
     def test_resume_recomputes_waiting_phase_from_pr_evidence(self) -> None:
-        self.store.save(TransactionState("resume-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", pull_request=11))
+        self.store.save(TransactionState("resume-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", pull_request=11, diagnostic="Prior waiting diagnostic."))
         pending = PullRequestEvidence(11, "OPEN", False, False)
         passed = PullRequestEvidence(11, "OPEN", True, True)
         github = FakeGitHub([pending, passed])
@@ -112,6 +116,51 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = runner._reconcile(self.store.load("resume-run"), FakeRepository().inspect(self.root))
         self.assertEqual(state.phase, "WAIT_FOR_TERMINAL_EVIDENCE")
         self.assertEqual(state.next_action, "poll_required_checks")
+
+    def test_blocked_diagnostic_is_persisted(self) -> None:
+        agent = FakeAgent(AgentResult("BLOCKED", diagnostic="Repository not synchronized."))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner.run(self.prompt, run_id="blocked-run")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.diagnostic, "Repository not synchronized.")
+        self.assertEqual(self.store.load("blocked-run").diagnostic, state.diagnostic)
+
+    def test_failed_diagnostic_is_persisted(self) -> None:
+        agent = FakeAgent(AgentResult("FAILED", diagnostic="Engineering policy requires approval."))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner.run(self.prompt, run_id="failed-run")
+        self.assertEqual(state.phase, "FAILED")
+        self.assertEqual(state.diagnostic, "Engineering policy requires approval.")
+
+    def test_terminal_console_report_includes_reason_and_next_action(self) -> None:
+        state = TransactionState("report-run", "pcvantol/djconnect", str(self.prompt), "BLOCKED", next_action="external_merge_authorization_required", diagnostic="Merge requires explicit authorization.", terminal=True)
+        report = _format_terminal_report(state)
+        self.assertIn("Reason:\nMerge requires explicit authorization.", report)
+        self.assertIn("Next action:\nObtain the required merge authorization.", report)
+
+    def test_complete_omits_diagnostic(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE", diagnostic="This must not be retained."))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner.run(self.prompt, run_id="complete-run")
+        self.assertEqual(state.phase, "COMPLETE")
+        self.assertIsNone(state.diagnostic)
+
+    def test_cli_failure_exposes_only_redacted_console_detail(self) -> None:
+        completed = __import__("subprocess").CompletedProcess(("codex",), 7, "ACCESS_TOKEN=stdout-secret", "Bearer stderr-secret")
+        with patch("tools.engineering.dj_engineer.subprocess.run", return_value=completed):
+            with self.assertRaises(CodexInvocationError) as raised:
+                CodexCliClient().invoke(self.root, "test")
+        self.assertIn("code 7", str(raised.exception))
+        self.assertNotIn("stdout-secret", raised.exception.console_detail)
+        self.assertNotIn("stderr-secret", raised.exception.console_detail)
+        self.assertIn("[REDACTED]", raised.exception.console_detail)
+
+    def test_sensitive_diagnostic_is_redacted_before_persistence(self) -> None:
+        agent = FakeAgent(AgentResult("BLOCKED", diagnostic="authorization=top-secret API_KEY=also-secret"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner.run(self.prompt, run_id="redacted-run")
+        self.assertEqual(state.diagnostic, "[REDACTED] [REDACTED]")
+        self.assertEqual(redact_diagnostic("Bearer private-token"), "[REDACTED]")
 
     def test_pending_ci_is_not_completion(self) -> None:
         state = TransactionState("pending-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=12, terminal_condition="open_pr_checks_terminal")
