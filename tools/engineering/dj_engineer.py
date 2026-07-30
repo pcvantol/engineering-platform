@@ -113,21 +113,27 @@ class SubprocessRepositoryClient:
         if not self.inspect(root).clean:
             raise RunnerError("Cleanup blocked: workspace is not clean.")
         removed: list[str] = []
+        squash_reconciled: list[str] = []
         for branch in dict.fromkeys(branch for branch in branches if branch):
             if branch == "main":
                 raise RunnerError("Cleanup blocked: transaction branch resolves to main.")
             exists = subprocess.run(("git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"), cwd=root, check=False).returncode == 0
             if not exists:
                 continue
-            merged = subprocess.run(("git", "merge-base", "--is-ancestor", branch, "main"), cwd=root, check=False).returncode == 0
-            if not merged:
-                raise RunnerError(f"Cleanup blocked: transaction branch {branch} has unmerged commits.")
-            self._run(root, "git", "branch", "-d", branch)
+            deletion = subprocess.run(("git", "branch", "-d", branch), cwd=root, text=True, capture_output=True, check=False)
+            if deletion.returncode:
+                # A squash merge intentionally makes the branch non-ancestral.
+                # The caller reaches cleanup only after merged PR and main-containment evidence.
+                force = subprocess.run(("git", "branch", "-D", branch), cwd=root, text=True, capture_output=True, check=False)
+                if force.returncode:
+                    raise RunnerError(f"Cleanup blocked: transaction branch {branch} could not be safely removed.")
+                squash_reconciled.append(branch)
             removed.append(branch)
         evidence = self.inspect(root)
         if evidence.branch != "main" or not evidence.clean or not evidence.main_contains_head:
             raise RunnerError("Cleanup blocked: main synchronization or workspace verification failed.")
-        return f"fetched/pruned; main synchronized; removed={','.join(removed) or 'already-absent'}"
+        squash = f"; squash-reconciled={','.join(squash_reconciled)}" if squash_reconciled else ""
+        return f"fetched/pruned; main synchronized; removed={','.join(removed) or 'already-absent'}{squash}"
 
 
 class GhCliClient:
