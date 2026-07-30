@@ -1,15 +1,15 @@
 # Engineering Platform Status
 
-**Engineering Platform:** Generation 1  
-**Status:** `FEATURE_COMPLETE`
+**Engineering Platform:** Generation 2
+**Status:** `PRODUCTIZATION_IN_PROGRESS`
 
 ## Closure
 
-Engineering Platform Generation 1 is formally complete. It is the stable,
-deterministic local engineering architecture for DJConnect. Future evolution is
-evidence-driven, not feature-driven: a capability is introduced only when
-qualification evidence and real engineering usage demonstrate that this stable
-platform is insufficient.
+Engineering Platform 1.5 productizes the stable Generation 1 foundation while
+remaining inside this repository. Platform Identity is independent; Workspace
+Identity supplies consumer branding, repository metadata and active providers.
+The Public Platform API and provider registry are the supported extension
+boundary. Existing commands remain compatibility interfaces.
 
 ## Stable capability set
 
@@ -20,6 +20,9 @@ platform is insufficient.
 - Advisory Engineering Memory.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.
+- Provider-neutral runtime, repository, service, submission and private-access
+  configuration, with Codex CLI, GitHub, launchd, iCloud Inbox and Tailscale as
+  current configured providers.
 
 ## Future governance
 
@@ -42,3 +45,10 @@ reviewer requires evidence that the current set has insufficient coverage.
 Engineering Platform versioning is mandatory. Breaking engineering-contract
 changes require a new major version; compatible improvements follow semantic
 versioning.
+
+## Bootstrap compatibility
+
+The repository bootstrap is the authoritative compatibility contract. Future
+Platform Engineering prompts require Engineering Platform `>= 1.5.0`; older
+versions are incompatible and must fail closed with an upgrade-required
+diagnostic. This records a documentation and compatibility requirement only.

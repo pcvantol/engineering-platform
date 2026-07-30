@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "platform": {
+    "id": "engineering-platform",
+    "name": "Engineering Platform",
+    "version": "1.5.0",
+    "generation": 2,
+    "documentation_namespace": "engineering-platform",
+    "capability_registry_version": 1
+  },
+  "workspace": {
+    "id": "djconnect",
+    "name": "DJConnect Engineering",
+    "repository": {"provider": "github", "owner": "pcvantol", "name": "djconnect", "default_branch": "main"},
+    "branding": {"dashboard_title": "DJConnect Engineering"}
+  },
+  "providers": {
+    "runtime": "codex_cli",
+    "repository": "github",
+    "service_manager": "launchd",
+    "remote_submission": "icloud_inbox",
+    "private_remote_access": "tailscale",
+    "dashboard": "private_http"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "platform": {
+    "id": "engineering-platform",
+    "name": "Engineering Platform",
+    "version": "1.5.0",
+    "generation": 2,
+    "documentation_namespace": "engineering-platform",
+    "capability_registry_version": 1
+  },
+  "workspace": {
+    "id": "replace-workspace-id",
+    "name": "Replace Workspace Name",
+    "repository": {"provider": "github", "owner": "replace-owner", "name": "replace-repository", "default_branch": "main"},
+    "branding": {"dashboard_title": "Replace Workspace Name"}
+  },
+  "providers": {"runtime": "codex_cli", "repository": "github", "service_manager": "launchd", "remote_submission": "icloud_inbox", "private_remote_access": "tailscale", "dashboard": "private_http"}
+}

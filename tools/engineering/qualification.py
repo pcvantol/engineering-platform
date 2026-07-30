@@ -10,6 +10,7 @@ import subprocess
 import time
 
 from .platform_version import EngineeringPlatformManifest
+from .platform_api import PlatformConfiguration
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,18 @@ SCENARIOS = tuple(
         "Private Dashboard",
         "Repository Handoff",
         "Remote Engineering Readiness",
+        "Platform Identity",
+        "Workspace Identity",
+        "Provider Registry",
+        "Capability Registry",
+        "Public Platform API",
+        "Configuration Hierarchy",
+        "Configuration Migration",
+        "Provider Compatibility",
+        "Extraction Readiness Audit",
+        "Repository Bootstrap",
+        "Project Template",
+        "Workspace Provisioning",
     )
 )
 
@@ -115,6 +128,13 @@ def latest_qualification(root: Path) -> dict[str, object] | None:
 
 
 def _default_check(root: Path, capability: str) -> bool:
+    def configuration_is_compatible() -> bool:
+        try:
+            return PlatformConfiguration.load(root).platform.version == EngineeringPlatformManifest.load(
+                root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            ).platform_version
+        except (OSError, ValueError):
+            return False
     contracts = {
         "Repository Initialization": (root / "BOOTSTRAP.md").is_file(),
         "Checkpoint Resume": (root / "tools" / "engineering" / "agent_state.py").is_file(),
@@ -128,6 +148,18 @@ def _default_check(root: Path, capability: str) -> bool:
         "Remote Engineering Readiness": (
             root / "docs" / "engineering" / "runs" / "index.json"
         ).is_file(),
+        "Platform Identity": configuration_is_compatible(),
+        "Workspace Identity": configuration_is_compatible(),
+        "Provider Registry": configuration_is_compatible(),
+        "Capability Registry": (root / "tools" / "engineering" / "platform_api.py").is_file(),
+        "Public Platform API": (root / "tools" / "engineering" / "platform_api.py").is_file(),
+        "Configuration Hierarchy": configuration_is_compatible(),
+        "Configuration Migration": configuration_is_compatible(),
+        "Provider Compatibility": configuration_is_compatible(),
+        "Extraction Readiness Audit": (root / "docs" / "development" / "ENGINEERING_PLATFORM_EXTRACTION_AUDIT.md").is_file(),
+        "Repository Bootstrap": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
+        "Project Template": (root / "tools" / "engineering" / "templates" / "workspace-config.json").is_file(),
+        "Workspace Provisioning": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
     }
     return contracts.get(capability, (root / "tools" / "engineering" / "dj_engineer.py").is_file())
 

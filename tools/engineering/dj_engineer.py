@@ -36,6 +36,8 @@ from .platform_version import (
 from .qualification import dashboard, execute_qualification, latest_qualification
 from .repository_handoff import publish as publish_repository_handoff
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
+from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
+from .providers import GitHubProvider, CodexCliProvider
 
 
 class RunnerError(RuntimeError):
@@ -102,11 +104,14 @@ class AgentClient(Protocol):
 
 
 class SubprocessRepositoryClient:
+    def __init__(self, provider: GitHubProvider | None = None) -> None:
+        self.provider = provider or GitHubProvider()
+
     def _run(self, root: Path, *args: str) -> str:
-        completed = subprocess.run(args, cwd=root, text=True, capture_output=True, check=False)
-        if completed.returncode:
-            raise RunnerError(completed.stderr.strip() or "repository command failed")
-        return completed.stdout.strip()
+        try:
+            return self.provider.command(root, *args)
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
 
     def inspect(self, root: Path) -> RepositoryEvidence:
         if not (root / "BOOTSTRAP.md").is_file() or not (root / ".git").exists():
@@ -190,23 +195,14 @@ class SubprocessRepositoryClient:
 
 
 class GhCliClient:
+    def __init__(self, provider: GitHubProvider | None = None) -> None:
+        self.provider = provider or GitHubProvider()
+
     def pull_request(self, number: int) -> PullRequestEvidence:
-        completed = subprocess.run(
-            (
-                "gh",
-                "pr",
-                "view",
-                str(number),
-                "--json",
-                "number,state,isDraft,mergeCommit,statusCheckRollup",
-            ),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode:
-            raise RunnerError(completed.stderr.strip() or "GitHub evidence could not be read")
-        raw = json.loads(completed.stdout)
+        try:
+            raw = json.loads(self.provider.github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup"))
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
         checks = raw.get("statusCheckRollup") or []
         terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
         passed = terminal and all(
@@ -224,36 +220,28 @@ class GhCliClient:
         )
 
     def ready(self, number: int) -> None:
-        completed = subprocess.run(
-            ("gh", "pr", "ready", str(number)), text=True, capture_output=True, check=False
-        )
-        if completed.returncode and "already ready" not in completed.stderr.lower():
-            raise RunnerError(completed.stderr.strip() or "pull request could not be marked ready")
+        try:
+            self.provider.github("pr", "ready", str(number))
+        except RuntimeError as error:
+            if "already ready" not in str(error).lower():
+                raise RunnerError(str(error)) from error
 
     def merge(self, number: int) -> None:
-        completed = subprocess.run(
-            ("gh", "pr", "merge", str(number), "--squash", "--delete-branch"),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode:
-            raise RunnerError(completed.stderr.strip() or "pull request could not be merged")
+        try:
+            self.provider.github("pr", "merge", str(number), "--squash", "--delete-branch")
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
 
 
 class CodexCliClient:
+    def __init__(self, provider: CodexCliProvider | None = None) -> None:
+        self.provider = provider or CodexCliProvider()
+
     def available(self) -> bool:
-        return (
-            subprocess.run(
-                ("codex", "--version"), text=True, capture_output=True, check=False
-            ).returncode
-            == 0
-        )
+        return self.provider.command("--version").returncode == 0
 
     def version(self) -> str:
-        completed = subprocess.run(
-            ("codex", "--version"), text=True, capture_output=True, check=False
-        )
+        completed = self.provider.command("--version")
         if completed.returncode:
             raise RunnerError("Codex CLI version could not be detected")
         return detected_codex_cli_version(completed.stdout)
@@ -532,7 +520,15 @@ class EngineeringRunner:
             validate_compatibility(
                 self.platform_manifest, self.compatibility, self.detected_codex_cli
             )
-        except EngineeringPlatformCompatibilityError as error:
+            configuration_path = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json"
+            if configuration_path.is_file():
+                configuration = PlatformConfiguration.load(self.root)
+                if configuration.platform.version != self.platform_manifest.platform_version:
+                    raise EngineeringPlatformCompatibilityError("Platform identity and manifest version mismatch")
+                providers = provider_registry(self.root)
+                if any(not item["status"].qualified for item in providers.values()):
+                    raise EngineeringPlatformCompatibilityError("Configured Engineering Platform provider is unavailable")
+        except (EngineeringPlatformCompatibilityError, PlatformConfigurationError) as error:
             raise RunnerError(str(error)) from error
 
     def _reconcile(self, state: TransactionState, evidence: RepositoryEvidence) -> TransactionState:
