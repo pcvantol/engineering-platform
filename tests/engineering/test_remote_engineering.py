@@ -13,7 +13,7 @@ class RemoteEngineeringTest(unittest.TestCase):
     def test_status_projections_are_atomic_and_sanitized(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = EngineeringPlatformManifest(
-                "1.4.0", "1.4.0", "2026.11", 1, 2, 2, "0.146.0", "1.0.0", 1
+                "1.4.0", "1.4.0", "2026.11", 1, 2, 2, "0.146.0", "1.0.0", 1, "1.0.0", 1, 1
             )
             root = Path(temporary)
             publish(root, build(manifest, diagnostic="token=secret", queue_depth=2))

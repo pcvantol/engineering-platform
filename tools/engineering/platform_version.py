@@ -21,6 +21,9 @@ MANIFEST_FIELDS = frozenset(
         "minimum_codex_cli",
         "watcher_version",
         "inbox_protocol",
+        "dashboard_version",
+        "handoff_protocol",
+        "status_model",
     }
 )
 
@@ -32,14 +35,18 @@ class EngineeringPlatformCompatibilityError(ValueError):
 def _semver(value: str, field: str) -> tuple[int, int, int]:
     match = SEMVER.fullmatch(value) if isinstance(value, str) else None
     if not match:
-        raise EngineeringPlatformCompatibilityError(f"Engineering Platform manifest field {field} must use MAJOR.MINOR.PATCH.")
+        raise EngineeringPlatformCompatibilityError(
+            f"Engineering Platform manifest field {field} must use MAJOR.MINOR.PATCH."
+        )
     return tuple(int(part) for part in match.groups())
 
 
 def _contract(value: str, field: str) -> tuple[int, int]:
     match = CONTRACT.fullmatch(value) if isinstance(value, str) else None
     if not match:
-        raise EngineeringPlatformCompatibilityError(f"Engineering Platform manifest field {field} must use YYYY.MM.")
+        raise EngineeringPlatformCompatibilityError(
+            f"Engineering Platform manifest field {field} must use YYYY.MM."
+        )
     return tuple(int(part) for part in match.groups())
 
 
@@ -54,24 +61,41 @@ class EngineeringPlatformManifest:
     minimum_codex_cli: str
     watcher_version: str
     inbox_protocol: int
+    dashboard_version: str
+    handoff_protocol: int
+    status_model: int
 
     @classmethod
     def load(cls, path: Path) -> "EngineeringPlatformManifest":
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise EngineeringPlatformCompatibilityError("Engineering Platform manifest cannot be read.") from error
+            raise EngineeringPlatformCompatibilityError(
+                "Engineering Platform manifest cannot be read."
+            ) from error
         if not isinstance(raw, dict) or set(raw) != MANIFEST_FIELDS:
-            raise EngineeringPlatformCompatibilityError("Engineering Platform manifest fields are incompatible.")
+            raise EngineeringPlatformCompatibilityError(
+                "Engineering Platform manifest fields are incompatible."
+            )
         manifest = cls(**raw)
         _semver(manifest.platform_version, "platform_version")
         _semver(manifest.runner_version, "runner_version")
         _semver(manifest.minimum_codex_cli, "minimum_codex_cli")
         _semver(manifest.watcher_version, "watcher_version")
+        _semver(manifest.dashboard_version, "dashboard_version")
         _contract(manifest.bootstrap_contract, "bootstrap_contract")
-        for field in ("checkpoint_format", "memory_format", "report_format", "inbox_protocol"):
+        for field in (
+            "checkpoint_format",
+            "memory_format",
+            "report_format",
+            "inbox_protocol",
+            "handoff_protocol",
+            "status_model",
+        ):
             if not isinstance(getattr(manifest, field), int) or getattr(manifest, field) < 1:
-                raise EngineeringPlatformCompatibilityError(f"Engineering Platform manifest field {field} must be a positive integer.")
+                raise EngineeringPlatformCompatibilityError(
+                    f"Engineering Platform manifest field {field} must be a positive integer."
+                )
         return manifest
 
 
@@ -85,7 +109,9 @@ class RunnerCompatibility:
     report_formats: frozenset[int] = frozenset({1, 2})
 
 
-def validate_compatibility(manifest: EngineeringPlatformManifest, runner: RunnerCompatibility, detected_codex_cli: str) -> None:
+def validate_compatibility(
+    manifest: EngineeringPlatformManifest, runner: RunnerCompatibility, detected_codex_cli: str
+) -> None:
     """Fail closed unless this runner explicitly supports every repository contract."""
     required_platform = _semver(manifest.platform_version, "platform_version")
     actual_platform = _semver(runner.platform_version, "runner platform_version")
@@ -127,5 +153,7 @@ def detected_codex_cli_version(output: str) -> str:
     """Extract a stable semantic version from the local CLI version output."""
     match = re.search(r"\b(\d+\.\d+\.\d+)\b", output)
     if not match:
-        raise EngineeringPlatformCompatibilityError("Detected Codex CLI version is invalid. Run `codex --version` and install a supported release.")
+        raise EngineeringPlatformCompatibilityError(
+            "Detected Codex CLI version is invalid. Run `codex --version` and install a supported release."
+        )
     return match.group(1)

@@ -15,3 +15,4 @@ registry and writes local, git-ignored reports under `.djconnect/qualification/`
 | Capability-aware Reviewers | documentation and product-capability objectives | relevant read-only reviewers only | local qualification report | Registered |
 | Diagnostics, BLOCKED Recovery, Failure Recovery | diagnostic and transient failure | bounded explanation and resumable evidence | local qualification report | Registered |
 | Long-running Transactions | queued checks | waiting never becomes completion | local qualification report | Registered |
+| Remote Status Model, Private Dashboard, Repository Handoff, Remote Engineering Readiness | local projection and discovery contracts | canonical status, private dashboard and sanitized handoff remain available without authority expansion | local qualification report | Registered |

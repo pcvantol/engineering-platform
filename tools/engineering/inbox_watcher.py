@@ -295,6 +295,10 @@ def doctor(repo: Path, root: Path) -> int:
         "gitignored": ".djconnect/" in (repo / ".gitignore").read_text(encoding="utf-8"),
         "dashboard_code": (repo / "tools/engineering/dashboard.py").is_file(),
         "handoff_index": (repo / "docs/engineering/runs/index.json").is_file(),
+        "handoff_latest": (repo / "docs/engineering/runs/latest.md").is_file(),
+        "dashboard_launch_agent": (
+            Path.home() / "Library/LaunchAgents" / "com.djconnect.engineering-dashboard.plist"
+        ).is_file(),
     }
     state = "REMOTE_ENGINEERING_READY" if all(checks.values()) else "REMOTE_ENGINEERING_DEGRADED"
     print(

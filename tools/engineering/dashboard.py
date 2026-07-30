@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
+import time
 
 LABEL = "com.djconnect.engineering-dashboard"
 DASHBOARD_VERSION = "1.0.0"
@@ -41,9 +43,31 @@ def handler(root: Path):
                 return self._send(_status(root), "application/json; charset=utf-8")
             if self.path == "/api/health":
                 return self._send(b'{"health":"ok"}', "application/json; charset=utf-8")
+            if self.path == "/api/events":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    for _ in range(60):
+                        self.wfile.write(b"event: status\ndata: " + _status(root) + b"\n\n")
+                        self.wfile.flush()
+                        time.sleep(5)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            if self.path == "/api/report/latest":
+                try:
+                    reports = sorted((root / ".djconnect" / "reports").glob("*.md"))
+                    content = (
+                        reports[-1].read_bytes() if reports else b"No local report is available."
+                    )
+                except OSError:
+                    content = b"Report is unavailable."
+                return self._send(content, "text/markdown; charset=utf-8")
             if self.path == "/":
                 return self._send(
-                    '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>DJConnect Engineering</title><style>body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:20px}pre{white-space:pre-wrap;background:#24242d;border-radius:14px;padding:16px;color:#d9c7ff}</style><h1>DJConnect Engineering</h1><pre id="s">Loading</pre><script>fetch("/api/status").then(r=>r.json()).then(x=>s.textContent=JSON.stringify(x,null,2)).catch(()=>s.textContent="Status unavailable")</script>'.encode(),
+                    '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>DJConnect Engineering</title><style>body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}.card{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}strong{color:#c7a6ff}</style><h1>DJConnect Engineering</h1><div class="card"><strong id="state">Loading</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><script>function r(x){state.textContent=x.watcher_state+" · "+(x.current_phase||"idle");action.textContent=x.current_action||"No active action";job.textContent="Run: "+(x.run_id||"none")+" · Queue: "+x.queue_depth;prs.textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");repo.textContent=x.repository_state+" · "+x.workspace_state;diag.textContent=x.diagnostic||"No diagnostic"}let e=new EventSource("/api/events");e.addEventListener("status",x=>r(JSON.parse(x.data)));fetch("/api/status").then(x=>x.json()).then(r)</script>'.encode(),
                     "text/html; charset=utf-8",
                 )
             self.send_error(404)
@@ -107,8 +131,18 @@ def main(argv: list[str] | None = None) -> int:
         agent.unlink(missing_ok=True)
         return 0
     health = (repo / ".djconnect" / "status" / "status.json").is_file()
-    print(f"REMOTE_ENGINEERING_{'READY' if health and agent.is_file() else 'DEGRADED'}")
-    return 0 if health and agent.is_file() else 1
+    tailscale = shutil.which("tailscale") is not None
+    connected = False
+    if tailscale:
+        observed = subprocess.run(
+            ("tailscale", "status", "--json"), text=True, capture_output=True, check=False
+        )
+        connected = observed.returncode == 0 and '"BackendState":"Running"' in observed.stdout
+    state = "READY" if health and agent.is_file() else "DEGRADED"
+    print(
+        f"REMOTE_ENGINEERING_{state}\ntailscale={'connected' if connected else ('installed_not_connected' if tailscale else 'not_installed')}\nAction: install/connect Tailscale for private remote Safari access; no network configuration was changed."
+    )
+    return 0 if state == "READY" else 1
 
 
 if __name__ == "__main__":
