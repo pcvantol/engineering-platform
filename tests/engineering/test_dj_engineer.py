@@ -23,12 +23,21 @@ class FakeRepository:
     def __init__(self, *, clean: bool = True, branch: str = "main", contains: bool = True) -> None:
         self.evidence = RepositoryEvidence("pcvantol/djconnect", branch, "a" * 40, clean, contains)
         self.contains = contains
+        self.cleanup_calls: list[tuple[str | None, ...]] = []
+        self.cleanup_error: RunnerError | None = None
 
     def inspect(self, root: Path) -> RepositoryEvidence:
         return self.evidence
 
     def main_contains(self, root: Path, sha: str) -> bool:
         return self.contains
+
+    def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
+        self.cleanup_calls.append(branches)
+        if self.cleanup_error:
+            raise self.cleanup_error
+        self.evidence = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
+        return "fetched/pruned; main synchronized; removed=already-absent"
 
 
 class FakeGitHub:
@@ -235,6 +244,23 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("IMPLEMENTATION_AND_FINALIZATION_RECONCILED", summary)
         self.assertIn("PR=21", summary)
         self.assertIn("PR=22", summary)
+        self.assertIn("Repository Cleanup", summary)
+
+    def test_cleanup_removes_only_transaction_branches_after_finalization(self) -> None:
+        repository = FakeRepository()
+        state = TransactionState("cleanup-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="FINALIZATION", owner_authorized=True, implementation_branch="codex/implementation", finalization_branch="codex/final", finalization_merge_commit="c" * 40, pull_request=25)
+        github = FakeGitHub([PullRequestEvidence(25, "MERGED", True, True, "c" * 40)])
+        result = EngineeringRunner(self.root, self.store, repository, github, FakeAgent(AgentResult("WAITING")), lambda _: None)._poll(state)
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(repository.cleanup_calls, [("codex/implementation", "codex/final")])
+
+    def test_cleanup_failure_is_blocked_and_resumable(self) -> None:
+        repository = FakeRepository()
+        repository.cleanup_error = RunnerError("Cleanup blocked: transaction branch codex/final has unmerged commits.")
+        state = TransactionState("cleanup-blocked", "pcvantol/djconnect", str(self.prompt), "REPOSITORY_CLEANUP", transaction_kind="FINALIZATION", finalization_merge_commit="c" * 40)
+        result = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)._cleanup(state)
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertIn("unmerged commits", result.diagnostic or "")
 
     def test_transient_polling_failure_preserves_non_terminal_state(self) -> None:
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)

@@ -103,6 +103,29 @@ class SubprocessRepositoryClient:
         self._run(root, "git", "switch", "main")
         self._run(root, "git", "pull", "--ff-only")
 
+    def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
+        self._run(root, "git", "fetch", "--prune")
+        self._run(root, "git", "switch", "main")
+        self._run(root, "git", "pull", "--ff-only")
+        if not self.inspect(root).clean:
+            raise RunnerError("Cleanup blocked: workspace is not clean.")
+        removed: list[str] = []
+        for branch in dict.fromkeys(branch for branch in branches if branch):
+            if branch == "main":
+                raise RunnerError("Cleanup blocked: transaction branch resolves to main.")
+            exists = subprocess.run(("git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"), cwd=root, check=False).returncode == 0
+            if not exists:
+                continue
+            merged = subprocess.run(("git", "merge-base", "--is-ancestor", branch, "main"), cwd=root, check=False).returncode == 0
+            if not merged:
+                raise RunnerError(f"Cleanup blocked: transaction branch {branch} has unmerged commits.")
+            self._run(root, "git", "branch", "-d", branch)
+            removed.append(branch)
+        evidence = self.inspect(root)
+        if evidence.branch != "main" or not evidence.clean or not evidence.main_contains_head:
+            raise RunnerError("Cleanup blocked: main synchronization or workspace verification failed.")
+        return f"fetched/pruned; main synchronized; removed={','.join(removed) or 'already-absent'}"
+
 
 class GhCliClient:
     def pull_request(self, number: int) -> PullRequestEvidence:
@@ -251,7 +274,7 @@ class EngineeringRunner:
         if state.pull_request:
             return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", last_verified_sha=evidence.head_sha, next_action="poll_required_checks")
         if state.transaction_kind == "FINALIZATION" and state.finalization_merge_commit and self.repository.main_contains(self.root, state.finalization_merge_commit):
-            return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+            return self._cleanup(state)
         if state.transaction_kind == "IMPLEMENTATION" and state.implementation_merge_commit and self.repository.main_contains(self.root, state.implementation_merge_commit):
             if state.owner_authorized:
                 return self._start_finalization(state, state.implementation_pull_request or 0)
@@ -264,7 +287,7 @@ class EngineeringRunner:
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
                 if evidence.clean and evidence.main_contains_head:
-                    return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+                    return self._cleanup(state)
             return replace(state, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="obtain_repository_evidence")
         attempts = 0
         while True:
@@ -290,7 +313,7 @@ class EngineeringRunner:
                     state = self._record_merged_evidence(state, pr, evidence)
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
-                    return self._save_terminal(state, "COMPLETE", "repository_reconciled")
+                    return self._cleanup(state)
             if not state.owner_authorized and state.terminal_condition == "open_pr_checks_terminal":
                 return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
             if state.owner_authorized:
@@ -342,11 +365,23 @@ class EngineeringRunner:
         self.store.save(terminal)
         return terminal
 
+    def _cleanup(self, state: TransactionState) -> TransactionState:
+        cleanup = replace(state, phase="REPOSITORY_CLEANUP", next_action="fetch_prune_and_remove_transaction_branches")
+        self.store.save(cleanup)
+        operation = getattr(self.repository, "cleanup_transaction", None)
+        if not callable(operation):
+            return self._save_terminal(cleanup, "BLOCKED", "cleanup_unavailable", "Cleanup client is unavailable; resume with repository cleanup evidence.")
+        try:
+            result = operation(self.root, (cleanup.implementation_branch, cleanup.finalization_branch))
+        except RunnerError as error:
+            return self._save_terminal(cleanup, "BLOCKED", "repository_cleanup_required", str(error))
+        return self._save_terminal(replace(cleanup, latest_repository_evidence=redact_diagnostic(result)), "COMPLETE", "repository_cleanup_reconciled")
+
     def _record_merged_evidence(self, state: TransactionState, pr: PullRequestEvidence, evidence: RepositoryEvidence) -> TransactionState:
         common = {"last_verified_sha": evidence.head_sha, "latest_repository_evidence": _repository_summary(evidence), "latest_github_evidence": _pull_request_summary(pr)}
         if state.transaction_kind == "IMPLEMENTATION":
             return replace(state, implementation_branch=state.branch, implementation_pull_request=pr.number, implementation_head_sha=state.last_verified_sha, implementation_merge_commit=pr.merge_commit, **common)
-        return replace(state, finalization_branch=state.branch, finalization_pull_request=pr.number, finalization_head_sha=state.last_verified_sha, finalization_merge_commit=pr.merge_commit, **common)
+        return replace(state, finalization_branch=state.branch or state.finalization_branch, finalization_pull_request=pr.number, finalization_head_sha=state.last_verified_sha, finalization_merge_commit=pr.merge_commit, **common)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -413,7 +448,7 @@ def format_management_summary(state: TransactionState) -> str:
         f"Implementation: branch={state.implementation_branch or state.branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
         f"Repair iterations: {state.repair_iterations}.",
         f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
-        "Repository: implementation and Finalization reconciled; verify main == origin/main and workspace cleanliness before handoff.",
+        "Repository Cleanup: fetched and pruned; local main synchronized; transaction branches removed or already absent; workspace clean.",
         "Authority: owner-authorized bounded lifecycle; ready-for-review, merge and Finalization automated.",
         "No release, deployment or publication performed. Rolling Horizon unchanged.",
     ))
