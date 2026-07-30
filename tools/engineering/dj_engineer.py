@@ -249,12 +249,13 @@ class EngineeringRunner:
                 return state
         else:
             state = TransactionState(run_id or f"run-{uuid.uuid4().hex[:12]}", evidence.repository, str(prompt_path), "INITIALIZE", owner_authorized=owner_authorized)
+        memory = retrieve_engineering_memory(self.root, prompt_path)
         state = self._reconcile(state, evidence)
         self.store.save(state)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         try:
-            result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state))
+            result = self.agent.invoke(self.root, assemble_prompt(prompt_path, state) + memory)
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
@@ -366,6 +367,8 @@ class EngineeringRunner:
     def _save_terminal(self, state: TransactionState, phase: str, action: str, diagnostic: str | None = None) -> TransactionState:
         terminal = replace(state, phase=phase, terminal=True, next_action=action, diagnostic=redact_diagnostic(diagnostic) if diagnostic else None)
         self.store.save(terminal)
+        if phase == "COMPLETE":
+            capture_engineering_memory(self.root, terminal)
         write_live_status(self.root, terminal, action)
         print(f"[{terminal.phase}] {action}")
         return terminal
@@ -540,3 +543,41 @@ def print_live_status(root: Path) -> int:
         return 2
     print(f"Run:\n{current['run_id']}\n\nCurrent Phase:\n{current['phase']}\n\nImplementation PR:\n{current['implementation_pr']}\n\nRepair Iteration:\n{current['repair_iteration']}\n\nCurrent Action:\n{current['current_action']}\n\nElapsed:\n{current['elapsed_seconds']}s")
     return 0
+
+
+def _memory_path(root: Path) -> Path:
+    return root / ".djconnect" / "memory" / "engineering-memory.json"
+
+
+def retrieve_engineering_memory(root: Path, prompt_path: Path) -> str:
+    """Return safe advisory metadata; repository evidence remains authoritative."""
+    try:
+        entries = json.loads(_memory_path(root).read_text(encoding="utf-8")).get("transactions", [])
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return "\n\nEngineering Memory: no prior safe transaction metadata is available."
+    objective = prompt_path.stem.lower()
+    relevant = [entry for entry in entries[-10:] if any(word in objective for word in entry.get("classification", "").split())]
+    return "\n\nEngineering Memory (advisory only; repository evidence overrides it): " + json.dumps(relevant[-3:], sort_keys=True)
+
+
+def capture_engineering_memory(root: Path, state: TransactionState) -> None:
+    """Atomically store bounded metadata, never prompts, source content or credentials."""
+    path = _memory_path(root)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = {"schema_version": 1, "transactions": []}
+    classification = " ".join(part for part in Path(state.prompt_path).stem.lower().replace("_", "-").split("-") if part.isalpha())[:120]
+    entry = {"classification": classification, "repository": state.repository, "outcome": state.phase, "repair_iterations": state.repair_iterations, "implementation_pr": state.implementation_pull_request, "finalization_pr": state.finalization_pull_request, "confidence": 1.0, "usage_count": 0, "last_successful_use": datetime.now(timezone.utc).isoformat()}
+    raw = {"schema_version": 1, "transactions": [item for item in raw.get("transactions", []) if isinstance(item, dict)][-49:] + [entry]}
+    descriptor, temporary = tempfile.mkstemp(prefix=".memory.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(raw, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
