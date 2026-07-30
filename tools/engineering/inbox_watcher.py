@@ -293,6 +293,8 @@ def doctor(repo: Path, root: Path) -> int:
         "reports_writable": os.access(areas["Reports"], os.W_OK),
         "launch_agent": agent.is_file(),
         "gitignored": ".djconnect/" in (repo / ".gitignore").read_text(encoding="utf-8"),
+        "dashboard_code": (repo / "tools/engineering/dashboard.py").is_file(),
+        "handoff_index": (repo / "docs/engineering/runs/index.json").is_file(),
     }
     state = "REMOTE_ENGINEERING_READY" if all(checks.values()) else "REMOTE_ENGINEERING_DEGRADED"
     print(
