@@ -33,6 +33,7 @@ from .platform_version import (
     detected_codex_cli_version,
     validate_compatibility,
 )
+from .qualification import dashboard, execute_qualification, latest_qualification
 
 
 class RunnerError(RuntimeError):
@@ -479,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
     raw_args = argv if argv is not None else __import__("sys").argv[1:]
     if raw_args == ["status"]:
         return print_live_status(Path.cwd().resolve())
+    if raw_args == ["qualify"]:
+        report = execute_qualification(Path.cwd().resolve())
+        print(dashboard(report))
+        return 0 if report["qualification"] == "PASS" else 1
     args = build_parser().parse_args(raw_args)
     root = Path.cwd().resolve()
     prompt_path = args.prompt.resolve()
@@ -570,9 +575,12 @@ def generate_terminal_report(root: Path, state: TransactionState, manifest: Engi
     except OSError:
         pass
     manifest = manifest or EngineeringPlatformManifest.load(root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+    qualification = latest_qualification(root)
+    qualification_summary = "No local Engineering Platform Qualification evidence is available." if qualification is None else f"Version: `{qualification.get('engineering_platform_version')}`\n- Latest Qualification: `{qualification.get('qualification')}`\n- Executed: `{qualification.get('executed_at')}`\n- Qualification Coverage: `{qualification.get('coverage_percent')}%`"
     body = "\n".join((
         "# Engineering Report", "", f"- Timestamp: {timestamp}", f"- Run ID: `{state.run_id}`", f"- Repository: `{state.repository}`", f"- Prompt: `{state.prompt_path}`", f"- Terminal state: `{state.phase}`", f"- Objective: {objective}", "",
         "## Engineering Platform", f"- Platform Version: `{manifest.platform_version}`", f"- Runner Version: `{manifest.runner_version}`", f"- Bootstrap Contract: `{manifest.bootstrap_contract}`", f"- Checkpoint Format: `{manifest.checkpoint_format}`", f"- Memory Format: `{manifest.memory_format}`", f"- Report Format: `{manifest.report_format}`", f"- Detected Codex CLI Version: `{detected_cli or 'unavailable'}`", "",
+        "## Engineering Platform Qualification", qualification_summary, "",
         "## Authorization", f"- Owner authorization: `{state.owner_authorized}`", "- Ready for Review, merge and Finalization authority remain runner-controlled.", "",
         "## Lifecycle Timeline", f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`", "",
         "## Pull Requests", f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`", f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`", "",

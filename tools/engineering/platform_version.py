@@ -72,9 +72,9 @@ class EngineeringPlatformManifest:
 
 @dataclass(frozen=True)
 class RunnerCompatibility:
-    platform_version: str = "1.2.0"
-    runner_version: str = "1.2.0"
-    bootstrap_contract: str = "2026.09"
+    platform_version: str = "1.3.0"
+    runner_version: str = "1.3.0"
+    bootstrap_contract: str = "2026.10"
     checkpoint_formats: frozenset[int] = frozenset({1})
     memory_formats: frozenset[int] = frozenset({1, 2})
     report_formats: frozenset[int] = frozenset({1, 2})

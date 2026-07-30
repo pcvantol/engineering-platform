@@ -32,6 +32,7 @@ from tools.engineering.capability_review import (
     run_reviews,
     select_reviewers,
 )
+from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 
 
 class FakeRepository:
@@ -413,3 +414,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(reviewers["api"].capability, "api")
         self.assertIn("validation", reviewers)
         self.assertIn("documentation", reviewers)
+
+    def test_engineering_qualification_registers_and_executes_all_scenarios(self) -> None:
+        report = execute_qualification(self.root, {scenario.capability: True for scenario in SCENARIOS})
+        self.assertEqual(report["qualification"], "PASS")
+        self.assertEqual(len(report["scenarios"]), len(SCENARIOS))
+        self.assertEqual(report["coverage_percent"], 100.0)
+        self.assertEqual(latest_qualification(self.root)["qualification"], "PASS")
+        self.assertIn(f"Scenarios: {len(SCENARIOS)} / {len(SCENARIOS)}", dashboard(report))
+
+    def test_engineering_qualification_reports_scenario_failure_and_coverage(self) -> None:
+        checks = {scenario.capability: True for scenario in SCENARIOS}
+        checks["Repair Loop"] = False
+        report = execute_qualification(self.root, checks)
+        self.assertEqual(report["qualification"], "FAIL")
+        self.assertEqual(report["failures"], 1)
+        self.assertLess(report["coverage_percent"], 100.0)
