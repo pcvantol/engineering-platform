@@ -104,6 +104,17 @@ class AgentResult:
     pull_request: int | None = None
     terminal_condition: str = "repository_reconciled"
     diagnostic: str | None = None
+    repository_path: str | None = None
+    commit_sha: str | None = None
+
+
+def execution_mode_for(objective: str) -> str:
+    """Select the explicit local-only lifecycle without changing managed work."""
+    return (
+        "GENESIS"
+        if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
+        else "MANAGED"
+    )
 
 
 class RepositoryClient(Protocol):
@@ -344,6 +355,8 @@ class CodexCliClient:
                 "pull_request",
                 "terminal_condition",
                 "diagnostic",
+                "repository_path",
+                "commit_sha",
             ],
             "properties": {
                 "terminal_state": {
@@ -358,9 +371,12 @@ class CodexCliClient:
                         "repository_reconciled",
                         "open_pr_checks_terminal",
                         "external_blocked",
+                        "local_commit_reconciled",
                     ],
                 },
                 "diagnostic": {"type": "string", "maxLength": 500},
+                "repository_path": {"type": ["string", "null"]},
+                "commit_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
             },
         }
         with tempfile.NamedTemporaryFile(
@@ -457,10 +473,12 @@ def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
         if state and state.owner_authorized
         else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
     )
+    genesis = "" if not state or state.execution_mode != "GENESIS" else """
+This is an explicit Genesis Mode transaction. Its target is a local-only direct child of the configured Engineering Workspace Root. Do not require, create, or contact an upstream remote; do not require origin/main; do not create a pull request. Reconcile only a clean local Git commit in that target repository. Return terminal_condition `local_commit_reconciled`, repository_path and commit_sha for a successful local commit."""
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
-Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, or external_blocked), and optional diagnostic. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+{authority}{genesis} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, and commit_sha. Use null for fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -514,6 +532,7 @@ class EngineeringRunner:
                 str(prompt_path),
                 "INITIALIZE",
                 owner_authorized=owner_authorized,
+                execution_mode=execution_mode_for(prompt_path.read_text(encoding="utf-8")),
             )
         objective = prompt_path.read_text(encoding="utf-8")
         memory = retrieve_engineering_memory(self.root, prompt_path)
@@ -558,6 +577,8 @@ class EngineeringRunner:
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
+        if state.execution_mode == "GENESIS":
+            return self._reconcile_genesis_result(state, result)
         state = replace(
             state,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",
@@ -571,6 +592,27 @@ class EngineeringRunner:
         if state.owner_authorized and state.pull_request:
             self.github.ready(state.pull_request)
         return self._poll(state, result)
+
+    def _reconcile_genesis_result(self, state: TransactionState, result: AgentResult) -> TransactionState:
+        if result.terminal_state in {"BLOCKED", "FAILED"}:
+            return self._save_terminal(state, result.terminal_state, "external_action_required", result.diagnostic)
+        if result.terminal_state != "COMPLETE" or result.terminal_condition != "local_commit_reconciled":
+            return self._save_terminal(state, "BLOCKED", "genesis_local_commit_required", "Genesis Mode requires a reconciled local commit.")
+        if not result.repository_path or not result.commit_sha:
+            return self._save_terminal(state, "BLOCKED", "genesis_checkpoint_required", "Genesis Mode requires repository path and commit checkpoint evidence.")
+        target = Path(result.repository_path).expanduser()
+        allowed = additional_workspace_write_roots(self.root)
+        if not target.is_absolute() or target.parent.resolve() not in allowed:
+            return self._save_terminal(state, "BLOCKED", "genesis_repository_scope", "Genesis repository is outside the configured direct-child workspace root.")
+        try:
+            head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=target, text=True, capture_output=True, check=False)
+            clean = subprocess.run(("git", "status", "--porcelain", "--untracked-files=all"), cwd=target, text=True, capture_output=True, check=False)
+        except OSError as error:
+            return self._save_terminal(state, "BLOCKED", "genesis_local_repository_required", str(error))
+        if head.returncode or clean.returncode or head.stdout.strip() != result.commit_sha or clean.stdout.strip():
+            return self._save_terminal(state, "BLOCKED", "genesis_reconciliation_required", "Genesis repository does not match the reported clean local commit.")
+        reconciled = replace(state, genesis_repository_path=str(target), genesis_commit_sha=result.commit_sha, latest_repository_evidence=f"local genesis commit {result.commit_sha}")
+        return self._save_terminal(reconciled, "COMPLETE", "genesis_local_commit_reconciled")
 
     def _verify_engineering_platform(self) -> None:
         try:

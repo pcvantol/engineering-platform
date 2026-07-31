@@ -46,6 +46,9 @@ class TransactionState:
     diagnostic: str | None = None
     owner_authorized: bool = False
     transaction_kind: str = "IMPLEMENTATION"
+    execution_mode: str = "MANAGED"
+    genesis_repository_path: str | None = None
+    genesis_commit_sha: str | None = None
     implementation_branch: str | None = None
     implementation_pull_request: int | None = None
     implementation_head_sha: str | None = None
@@ -67,6 +70,7 @@ class TransactionState:
         expected = {field.name for field in cls.__dataclass_fields__.values()}
         defaults = {
             "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION",
+            "execution_mode": "MANAGED", "genesis_repository_path": None, "genesis_commit_sha": None,
             "implementation_branch": None, "implementation_pull_request": None,
             "implementation_head_sha": None, "implementation_merge_commit": None,
             "finalization_branch": None, "finalization_pull_request": None,
@@ -96,8 +100,12 @@ class TransactionState:
             raise StateError("checkpoint last_verified_sha is invalid")
         if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
             raise StateError("checkpoint diagnostic is invalid or unsafe")
-        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION"}:
+        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION"} or state.execution_mode not in {"MANAGED", "GENESIS"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
+        if state.genesis_repository_path is not None and (not isinstance(state.genesis_repository_path, str) or not Path(state.genesis_repository_path).is_absolute()):
+            raise StateError("genesis repository path is invalid")
+        if state.genesis_commit_sha is not None and (not isinstance(state.genesis_commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", state.genesis_commit_sha)):
+            raise StateError("genesis commit SHA is invalid")
         optional_sha_fields = (state.implementation_head_sha, state.implementation_merge_commit, state.finalization_head_sha, state.finalization_merge_commit)
         if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)) for value in optional_sha_fields):
             raise StateError("checkpoint lifecycle SHA is invalid")

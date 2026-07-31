@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from tools.engineering.dj_engineer import (
     _format_terminal_report,
     _format_cli_failure,
     _open_report,
+    execution_mode_for,
     format_management_summary,
     generate_terminal_report,
     write_redacted_codex_cli_log,
@@ -164,6 +166,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
         self.assertEqual(agent.live_action, "invoke_agent")
 
+    def test_genesis_mode_requires_an_explicit_execution_mode_declaration(self) -> None:
+        self.assertEqual(execution_mode_for("Introduce Genesis Mode documentation."), "MANAGED")
+        self.assertEqual(execution_mode_for("Execution Mode: Genesis"), "GENESIS")
+
+    def test_genesis_mode_reconciles_a_clean_local_commit_without_remote_or_pr(self) -> None:
+        target = self.root.parent / f"genesis-{self.root.name}"
+        target.mkdir()
+        subprocess.run(("git", "init", "--initial-branch=main", str(target)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.email", "genesis@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.name", "Genesis Test"), check=True)
+        (target / "README.md").write_text("# Genesis\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(target), "add", "README.md"), check=True)
+        subprocess.run(("git", "-C", str(target), "commit", "-m", "Initialize"), check=True, capture_output=True)
+        commit = subprocess.run(("git", "-C", str(target), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+        self.prompt.write_text("# New workspace\n\nExecution Mode: Genesis\n", encoding="utf-8")
+        agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+            state = runner.run(self.prompt, run_id="genesis-run")
+        self.assertEqual(state.phase, "COMPLETE")
+        self.assertEqual(state.execution_mode, "GENESIS")
+        self.assertEqual(state.genesis_repository_path, str(target))
+        self.assertEqual(state.genesis_commit_sha, commit)
+        self.assertIsNone(state.pull_request)
+
     def test_rejects_malformed_state(self) -> None:
         path = self.store.path_for("bad-run")
         path.parent.mkdir(parents=True)
@@ -253,7 +280,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             return __import__("subprocess").CompletedProcess(
                 command,
                 0,
-                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":""}\n',
+                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":"","repository_path":null,"commit_sha":null}\n',
                 "",
             )
 
@@ -281,7 +308,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             return __import__("subprocess").CompletedProcess(
                 command,
                 0,
-                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":""}\n',
+                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":"","repository_path":null,"commit_sha":null}\n',
                 "",
             )
 

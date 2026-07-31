@@ -60,6 +60,7 @@ SCENARIOS = tuple(
         "Repository Bootstrap",
         "Project Template",
         "Workspace Provisioning",
+        "Genesis Lifecycle",
     )
 )
 
@@ -160,6 +161,7 @@ def _default_check(root: Path, capability: str) -> bool:
         "Repository Bootstrap": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
         "Project Template": (root / "tools" / "engineering" / "templates" / "workspace-config.json").is_file(),
         "Workspace Provisioning": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
+        "Genesis Lifecycle": (root / "tools" / "engineering" / "dj_engineer.py").is_file(),
     }
     return contracts.get(capability, (root / "tools" / "engineering" / "dj_engineer.py").is_file())
 
