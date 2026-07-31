@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
+import json
 from pathlib import Path
 import sys
 import time
@@ -15,13 +16,30 @@ LABEL = "com.djconnect.engineering-dashboard"
 DASHBOARD_VERSION = "1.0.0"
 
 
+def _unavailable_status() -> bytes:
+    """Return the complete, safe status shape when no projection exists yet."""
+    return json.dumps(
+        {
+            "watcher_state": "REMOTE_ENGINEERING_DEGRADED",
+            "current_phase": "status unavailable",
+            "current_action": "Run Engineering Platform to publish a status update.",
+            "run_id": None,
+            "queue_depth": 0,
+            "implementation_pr": None,
+            "finalization_pr": None,
+            "repository_state": "UNKNOWN",
+            "workspace_state": "UNKNOWN",
+            "diagnostic": "No local engineering status has been published yet.",
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
 def _status(root: Path) -> bytes:
     try:
         return (root / ".djconnect" / "status" / "status.json").read_bytes()
     except OSError:
-        return (
-            b'{"watcher_state":"REMOTE_ENGINEERING_DEGRADED","diagnostic":"Status is unavailable."}'
-        )
+        return _unavailable_status()
 
 
 def handler(root: Path):
@@ -68,7 +86,7 @@ def handler(root: Path):
                 return self._send(content, "text/markdown; charset=utf-8")
             if self.path == "/":
                 return self._send(
-                    f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><script>function r(x){{state.textContent=x.watcher_state+" · "+(x.current_phase||"idle");action.textContent=x.current_action||"No active action";job.textContent="Run: "+(x.run_id||"none")+" · Queue: "+x.queue_depth;prs.textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");repo.textContent=x.repository_state+" · "+x.workspace_state;diag.textContent=x.diagnostic||"No diagnostic"}}let e=new EventSource("/api/events");e.addEventListener("status",x=>r(JSON.parse(x.data)));fetch("/api/status").then(x=>x.json()).then(r)</script>'.encode(),
+                    f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading status…</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><script>const $=id=>document.getElementById(id),fallback={{watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."}};function r(x){{x=x&&typeof x==="object"?x:fallback;$("state").textContent=(x.watcher_state||fallback.watcher_state)+" · "+(x.current_phase||"idle");$("action").textContent=x.current_action||"No active action";$("job").textContent="Run: "+(x.run_id||"none")+" · Queue: "+(x.queue_depth??0);$("prs").textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");$("repo").textContent=(x.repository_state||"UNKNOWN")+" · "+(x.workspace_state||"UNKNOWN");$("diag").textContent=x.diagnostic||"No diagnostic"}}let e=new EventSource("/api/events");e.addEventListener("status",x=>{{try{{r(JSON.parse(x.data))}}catch{{r(fallback)}}}});fetch("/api/status").then(x=>{{if(!x.ok)throw Error("status unavailable");return x.json()}}).then(r).catch(()=>r(fallback))</script>'.encode(),
                     "text/html; charset=utf-8",
                 )
             self.send_error(404)
