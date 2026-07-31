@@ -548,6 +548,7 @@ class EngineeringRunner:
         )
         state = self._reconcile(state, evidence)
         self.store.save(state)
+        write_live_status(self.root, state, state.next_action)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         try:
@@ -566,6 +567,7 @@ class EngineeringRunner:
             terminal_condition=result.terminal_condition,
         )
         self.store.save(state)
+        write_live_status(self.root, state, state.next_action)
         if state.owner_authorized and state.pull_request:
             self.github.ready(state.pull_request)
         return self._poll(state, result)
@@ -688,6 +690,7 @@ class EngineeringRunner:
             repair_iterations=state.repair_iterations + 1,
         )
         self.store.save(repair)
+        write_live_status(self.root, repair, repair.next_action)
         try:
             result = self.agent.invoke(
                 self.root,
@@ -747,6 +750,7 @@ class EngineeringRunner:
             latest_repository_evidence=_repository_summary(evidence),
         )
         self.store.save(finalization)
+        write_live_status(self.root, finalization, finalization.next_action)
         instruction = f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory governance-only Finalization: reconcile the four rolling records and immutable Prompt History, create a draft Finalization PR, and return that PR number."
         try:
             result = self.agent.invoke(
@@ -776,6 +780,7 @@ class EngineeringRunner:
             next_action="poll_required_checks",
         )
         self.store.save(finalization)
+        write_live_status(self.root, finalization, finalization.next_action)
         self.github.ready(result.pull_request)
         return self._poll(finalization, result)
 

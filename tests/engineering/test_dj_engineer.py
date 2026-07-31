@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -104,6 +105,19 @@ class SequencedFakeAgent(FakeAgent):
         return self.results.pop(0)
 
 
+class LiveStatusFakeAgent(FakeAgent):
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__(result)
+        self.live_phase: str | None = None
+        self.live_action: str | None = None
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        payload = json.loads((root / ".djconnect" / "status" / "current.json").read_text())
+        self.live_phase = payload["phase"]
+        self.live_action = payload["current_action"]
+        return super().invoke(root, prompt)
+
+
 class FakeReviewer:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
@@ -142,6 +156,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertTrue(self.store.path_for("new-run").is_file())
         self.assertIn("Read BOOTSTRAP.md", agent.prompts[0])
         self.assertIn("# bounded objective", agent.prompts[0])
+
+    def test_execute_agent_phase_is_published_before_agent_invocation(self) -> None:
+        agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner.run(self.prompt, run_id="live-phase-run")
+        self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
+        self.assertEqual(agent.live_action, "invoke_agent")
 
     def test_rejects_malformed_state(self) -> None:
         path = self.store.path_for("bad-run")
