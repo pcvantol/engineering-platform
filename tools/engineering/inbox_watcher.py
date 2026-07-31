@@ -23,6 +23,7 @@ LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.0.0"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 
 def cloud_root(value: str | None = None, repo: Path | None = None) -> Path:
@@ -38,6 +39,14 @@ def folders(root: Path) -> dict[str, Path]:
     for path in result.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return result
+
+
+def launch_path() -> str:
+    """Preserve the Codex CLI location when launchd starts the watcher."""
+    codex = shutil.which("codex")
+    entries = [str(Path(codex).parent)] if codex else []
+    entries.extend(LAUNCH_PATH_FALLBACK)
+    return ":".join(dict.fromkeys(entries))
 
 
 def stable_prompt(path: Path, interval: float = 1.0) -> str | None:
@@ -281,8 +290,9 @@ def launch_agent(repo: Path) -> Path:
     logs.mkdir(mode=0o700, parents=True, exist_ok=True)
     launcher = [sys.executable, "-m", "tools.engineering.inbox_watcher", "run", "--repo", str(repo)]
     arguments = "".join(f"<string>{value}</string>" for value in launcher)
+    environment = launch_path()
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "inbox.out.log"}</string><key>StandardErrorPath</key><string>{logs / "inbox.err.log"}</string></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "inbox.out.log"}</string><key>StandardErrorPath</key><string>{logs / "inbox.err.log"}</string></dict></plist>',
         encoding="utf-8",
     )
     return destination

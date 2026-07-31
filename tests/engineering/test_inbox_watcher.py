@@ -33,6 +33,10 @@ class InboxWatcherTest(unittest.TestCase):
         (self.inbox / "other.pdf").write_text("text", encoding="utf-8")
         self.assertEqual(inbox_watcher.discover(self.root, 0), [])
 
+    def test_launch_path_preserves_codex_location(self) -> None:
+        with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
+            self.assertEqual(inbox_watcher.launch_path().split(":")[0], "/opt/homebrew/bin")
+
     def test_complete_job_is_serialized_and_archived(self) -> None:
         (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-0cff9d624c2412db"
