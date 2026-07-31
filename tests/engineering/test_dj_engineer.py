@@ -18,6 +18,7 @@ from tools.engineering.dj_engineer import (
     _open_report,
     format_management_summary,
     generate_terminal_report,
+    write_redacted_codex_cli_log,
 )
 from tools.engineering.platform_version import (
     EngineeringPlatformCompatibilityError,
@@ -220,6 +221,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertNotIn("stdout-secret", raised.exception.console_detail)
         self.assertNotIn("stderr-secret", raised.exception.console_detail)
         self.assertIn("[REDACTED]", raised.exception.console_detail)
+
+    def test_codex_cli_log_is_private_and_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = write_redacted_codex_cli_log(Path(temporary), "cli-run", "Bearer private-token")
+            content = path.read_text(encoding="utf-8")
+            self.assertNotIn("private-token", content)
+            self.assertIn("[REDACTED]", content)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_editor_env_has_deterministic_precedence(self) -> None:
         with patch.dict("os.environ", {"EDITOR": "/opt/editor"}, clear=True), patch("tools.engineering.dj_engineer.subprocess.Popen") as launch:

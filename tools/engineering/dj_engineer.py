@@ -386,6 +386,25 @@ def _format_cli_failure(exit_code: int, stderr: str, stdout: str) -> str:
     )
 
 
+def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
+    """Persist bounded, redacted CLI diagnostics for local troubleshooting."""
+    directory = root / ".djconnect" / "logs" / "codex"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / f"{run_id}.log"
+    content = "# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=2_000) + "\n"
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return path
+
+
 def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
     resume = (
@@ -887,6 +906,8 @@ def main(argv: list[str] | None = None) -> int:
     if state.phase in {"BLOCKED", "FAILED"}:
         print(_format_terminal_report(state))
         if runner.console_detail:
+            log_path = write_redacted_codex_cli_log(root, state.run_id, runner.console_detail)
+            print(f"\nCodex CLI log: {log_path}")
             print(f"\nCodex CLI details:\n{runner.console_detail}")
     elif state.phase == "COMPLETE" and state.owner_authorized and state.finalization_merge_commit:
         print(format_management_summary(state))
