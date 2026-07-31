@@ -84,7 +84,9 @@ def _status(root: Path) -> bytes:
     if live and live.get("phase") not in {"COMPLETE", "BLOCKED", "FAILED"}:
         return projection
     try:
-        return json.dumps(watcher, separators=(",", ":")).encode() if watcher else (root / ".djconnect" / "status" / "status.json").read_bytes()
+        if watcher and (watcher.get("run_id") or watcher.get("last_executed_run")):
+            return json.dumps(watcher, separators=(",", ":")).encode()
+        return (root / ".djconnect" / "status" / "status.json").read_bytes()
     except OSError:
         return projection or _unavailable_status()
 
