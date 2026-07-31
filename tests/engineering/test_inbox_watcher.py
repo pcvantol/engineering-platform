@@ -79,7 +79,11 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][-2:], ["--run-id", run_id])
         self.assertEqual(len(list(inbox_watcher.folders(self.root)["Completed"].glob("*__job.txt"))), 1)
         self.assertEqual(len(list(inbox_watcher.folders(self.root)["Reports"].glob("*.md"))), 1)
-        self.assertEqual(json_status(self.root)["watcher_state"], "JOB_COMPLETED")
+        snapshot = json_status(self.root)
+        self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
+        self.assertEqual(snapshot["last_executed_filename"], "job.txt")
+        self.assertEqual(snapshot["last_executed_title"], "prompt")
+        self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertFalse(old_log.exists())
 
 

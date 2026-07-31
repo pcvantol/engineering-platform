@@ -39,12 +39,21 @@ def _unavailable_status() -> bytes:
             "repository_state": "UNKNOWN",
             "workspace_state": "UNKNOWN",
             "diagnostic": "No local engineering status has been published yet.",
+            "submitted_filename": None,
+            "prompt_title": None,
+            "last_executed_filename": None,
+            "last_executed_title": None,
+            "last_executed_run": None,
         },
         separators=(",", ":"),
     ).encode()
 
 
 def _status(root: Path) -> bytes:
+    try:
+        watcher = json.loads((root / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        watcher = {}
     try:
         live = json.loads((root / ".djconnect" / "status" / "current.json").read_text(encoding="utf-8"))
         projection = json.dumps(
@@ -59,6 +68,11 @@ def _status(root: Path) -> bytes:
                 "repository_state": live.get("repository_state") or "ACTIVE",
                 "workspace_state": live.get("workspace_state") or "ACTIVE",
                 "diagnostic": live.get("diagnostic"),
+                "submitted_filename": watcher.get("submitted_filename"),
+                "prompt_title": watcher.get("prompt_title"),
+                "last_executed_filename": watcher.get("last_executed_filename"),
+                "last_executed_title": watcher.get("last_executed_title"),
+                "last_executed_run": watcher.get("last_executed_run"),
             },
             separators=(",", ":"),
         ).encode()
@@ -67,7 +81,7 @@ def _status(root: Path) -> bytes:
     if live and live.get("phase") not in {"COMPLETE", "BLOCKED", "FAILED"}:
         return projection
     try:
-        return (root / ".djconnect" / "status" / "status.json").read_bytes()
+        return json.dumps(watcher, separators=(",", ":")).encode() if watcher else (root / ".djconnect" / "status" / "status.json").read_bytes()
     except OSError:
         return projection or _unavailable_status()
 
@@ -102,6 +116,20 @@ def _current_codex_log(root: Path) -> bytes:
         return (root / ".djconnect" / "logs" / "codex" / f"{run_id}.log").read_bytes()
     except OSError:
         return b"No Codex CLI diagnostic is available for the current run."
+
+
+def _last_executed_codex_log(root: Path) -> bytes:
+    """Return only the log bound to the latest completed or failed Inbox run."""
+    try:
+        run_id = json.loads((root / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8")).get("last_executed_run")
+    except (OSError, json.JSONDecodeError):
+        run_id = None
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b"No Codex CLI diagnostic is available for the last executed run."
+    try:
+        return (root / ".djconnect" / "logs" / "codex" / f"{run_id}.log").read_bytes()
+    except OSError:
+        return b"No Codex CLI diagnostic is available for the last executed run."
 
 
 def handler(root: Path):
@@ -151,9 +179,11 @@ def handler(root: Path):
                 return self._send(_latest_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/api/log/current":
                 return self._send(_current_codex_log(root), "text/plain; charset=utf-8")
+            if self.path == "/api/log/last":
+                return self._send(_last_executed_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/":
                 return self._send(
-                    f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}pre{{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading status…</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><div class="card"><strong>Codex CLI diagnostic for this run</strong><pre id="log">Loading diagnostic…</pre></div><script>const $=id=>document.getElementById(id),fallback={{watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."}};let logRun;function l(run){{if(run===logRun)return;logRun=run;$("log").textContent="Loading diagnostic…";fetch("/api/log/current").then(x=>x.text()).then(x=>$("log").textContent=x).catch(()=>$("log").textContent="Codex CLI diagnostic is unavailable.")}}function r(x){{x=x&&typeof x==="object"?x:fallback;$("state").textContent=(x.watcher_state||fallback.watcher_state)+" · "+(x.current_phase||"idle");$("action").textContent=x.current_action||"No active action";$("job").textContent="Run: "+(x.run_id||"none")+" · Queue: "+(x.queue_depth??0);$("prs").textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");$("repo").textContent=(x.repository_state||"UNKNOWN")+" · "+(x.workspace_state||"UNKNOWN");$("diag").textContent=x.diagnostic||"No diagnostic";l(x.run_id||null)}}let e=new EventSource("/api/events");e.addEventListener("status",x=>{{try{{r(JSON.parse(x.data))}}catch{{r(fallback)}}}});fetch("/api/status").then(x=>{{if(!x.ok)throw Error("status unavailable");return x.json()}}).then(r).catch(()=>r(fallback))</script>'.encode(),
+                    f"""<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}pre{{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}}[hidden]{{display:none}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading status…</strong><p id="action"></p></div><div class="card" id="current" hidden><strong>Current running</strong><p id="currentPrompt"></p><pre id="currentFile"></pre><pre id="currentLog">Loading diagnostic…</pre></div><div class="card"><strong>Last executed</strong><p id="lastPrompt"></p><pre id="lastFile"></pre><pre id="lastLog">Loading diagnostic…</pre></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><script>const $=id=>document.getElementById(id),fallback={{watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."}};let currentLogRun,lastLogRun;function l(id,url,run,last){{if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>$(id).textContent=x).catch(()=>$(id).textContent="Codex CLI diagnostic is unavailable.")}}function r(x){{x=x&&typeof x==="object"?x:fallback;let active=!['COMPLETE','BLOCKED','FAILED'].includes(x.current_phase);$("state").textContent=(x.watcher_state||fallback.watcher_state)+" · "+(x.current_phase||"idle");$("action").textContent=x.current_action||"No active action";$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Prompt title unavailable";$("currentFile").textContent=x.submitted_filename||"Filename unavailable";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"No executed prompt yet";$("lastFile").textContent=x.last_executed_filename||"Filename unavailable";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("job").textContent="Run: "+(x.run_id||"none")+" · Queue: "+(x.queue_depth??0);$("prs").textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");$("repo").textContent=(x.repository_state||"UNKNOWN")+" · "+(x.workspace_state||"UNKNOWN");$("diag").textContent=x.diagnostic||"No diagnostic"}}let e=new EventSource("/api/events");e.addEventListener("status",x=>{{try{{r(JSON.parse(x.data))}}catch{{r(fallback)}}}});fetch("/api/status").then(x=>{{if(!x.ok)throw Error("status unavailable");return x.json()}}).then(r).catch(()=>r(fallback))</script>""".encode(),
                     "text/html; charset=utf-8",
                 )
             self.send_error(404)

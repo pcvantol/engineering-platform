@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _current_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _current_codex_log, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -85,6 +85,19 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(b"current run", _current_codex_log(root))
             (logs / "inbox-new.log").write_text("new diagnostic", encoding="utf-8")
             self.assertEqual(_current_codex_log(root), b"new diagnostic")
+
+    def test_last_executed_log_is_bound_to_last_executed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".djconnect" / "status"
+            logs = root / ".djconnect" / "logs" / "codex"
+            status.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            (status / "status.json").write_text('{"last_executed_run":"inbox-last"}', encoding="utf-8")
+            (logs / "inbox-other.log").write_text("old diagnostic", encoding="utf-8")
+            self.assertIn(b"last executed run", _last_executed_codex_log(root))
+            (logs / "inbox-last.log").write_text("last diagnostic", encoding="utf-8")
+            self.assertEqual(_last_executed_codex_log(root), b"last diagnostic")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:

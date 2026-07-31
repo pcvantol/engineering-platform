@@ -15,6 +15,7 @@ import sys
 import time
 
 from .platform_version import EngineeringPlatformManifest
+from .agent_state import redact_diagnostic
 from .platform_api import PlatformConfiguration
 from .providers import LaunchdProvider
 from .status_model import build, publish
@@ -110,10 +111,42 @@ def _safe_detail(value: object) -> object:
     return value
 
 
+def _prompt_title(content: str, filename: str) -> str:
+    """Expose only a bounded Markdown title, never the submitted prompt body."""
+    for line in content.splitlines():
+        if line.startswith("# ") and line[2:].strip():
+            return redact_diagnostic(line[2:].strip(), limit=240)
+    return redact_diagnostic(filename, limit=240)
+
+
+def _previous_prompt_context(root: Path) -> dict[str, object]:
+    keys = (
+        "submitted_filename",
+        "prompt_title",
+        "last_executed_filename",
+        "last_executed_title",
+        "last_executed_run",
+    )
+    try:
+        prior = json.loads((root / "status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {key: prior[key] for key in keys if prior.get(key) is not None}
+
+
 def status(root: Path, state: str, **details: object) -> None:
     """Publish bounded atomic iCloud status without prompt or command output."""
     manifest = EngineeringPlatformManifest.load(
         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
+    )
+    context = _previous_prompt_context(root)
+    context.update(
+        {
+            key: value
+            for key, value in details.items()
+            if key in {"submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title", "last_executed_run"}
+            and value is not None
+        }
     )
     payload = build(
         manifest,
@@ -129,6 +162,7 @@ def status(root: Path, state: str, **details: object) -> None:
         diagnostic=_safe_detail(details.get("diagnostic")),
         owner_authorized=state in {"RUNNER_STARTING", "JOB_CLAIMED"},
         resume_available=state in {"JOB_BLOCKED", "JOB_FAILED"},
+        **context,
     )
     publish(root, payload)
 
@@ -239,7 +273,8 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             )
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
-        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id)
+        title = _prompt_title(content, source.name)
+        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title)
         os.replace(source, claimed)
         local = repo / ".djconnect" / "inbox-processing" / job_id
         local.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -271,7 +306,8 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         if phase and phase not in TERMINAL_PHASES:
             arguments.append("--resume")
         status(
-            root, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1
+            root, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
+            submitted_filename=source.name, prompt_title=title,
         )
         completed = subprocess.run(arguments, cwd=repo, text=True, capture_output=True, check=False)
         phase, diagnostic = _runner_result(repo, run_id)
@@ -313,6 +349,11 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             report=str(delivered) if delivered else None,
             diagnostic=reason,
             resume_instruction=f"Run dj-engineer with --run-id {run_id} --resume.",
+            submitted_filename=source.name,
+            prompt_title=title,
+            last_executed_filename=source.name,
+            last_executed_title=title,
+            last_executed_run=run_id,
         )
         return 0 if successful else (completed.returncode or 1)
 
