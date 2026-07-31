@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import tempfile
@@ -174,8 +173,59 @@ class AgentResult:
     commit_sha: str | None = None
 
 
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Resolved lifecycle selection before any mode-specific readiness check."""
+
+    execution_mode: str
+    host_repository: Path
+    target_repository: Path | None
+    lifecycle_policy: str
+    selected_preflight: str
+    run_id: str | None = None
+
+
+def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
+    values: list[str] = []
+    lines = objective.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().casefold() != f"{label}:".casefold():
+            continue
+        for candidate in lines[index + 1 :]:
+            value = candidate.strip()
+            if value:
+                values.append(value)
+                break
+    return tuple(values)
+
+
+def resolve_execution_context(objective: str, host_repository: Path) -> ExecutionContext:
+    """Resolve mode and target deterministically before lifecycle readiness."""
+    modes = {
+        line.split(":", 1)[1].strip().casefold()
+        for line in objective.splitlines()
+        if line.strip().casefold().startswith("execution mode:")
+    }
+    if "genesis" not in modes:
+        return ExecutionContext("MANAGED", host_repository.resolve(), None, "managed", "managed_readiness")
+    if modes != {"genesis"}:
+        raise RunnerError("Execution Mode: Genesis conflicts with another execution mode declaration.")
+    targets = _prompt_field_values(objective, "Target repository")
+    if not targets:
+        raise RunnerError("Genesis preflight blocked: prompt must declare one absolute Target repository path.")
+    if len(set(targets)) != 1:
+        raise RunnerError("Genesis preflight blocked: prompt declares conflicting Target repository paths.")
+    target = Path(targets[0]).expanduser()
+    if not target.is_absolute():
+        raise RunnerError("Genesis preflight blocked: Target repository path must be absolute.")
+    target = target.resolve()
+    if target == host_repository.resolve():
+        raise RunnerError("Genesis preflight blocked: Target repository cannot be the Engineering Platform host repository.")
+    return ExecutionContext("GENESIS", host_repository.resolve(), target, "local_only", "genesis_git_workspace")
+
+
 def execution_mode_for(objective: str) -> str:
-    """Select the explicit local-only lifecycle without changing managed work."""
+    """Expose legacy mode detection; runner selection uses the full context resolver."""
     return (
         "GENESIS"
         if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
@@ -185,13 +235,12 @@ def execution_mode_for(objective: str) -> str:
 
 def genesis_target_for(objective: str) -> Path | None:
     """Return the explicit local Genesis target, without interpreting other prompt text."""
-    match = re.search(r"(?im)^target repository:\s*\n+\s*(\S+)\s*$", objective)
-    return Path(match.group(1)).expanduser() if match else None
+    targets = _prompt_field_values(objective, "Target repository")
+    return Path(targets[0]).expanduser() if len(set(targets)) == 1 else None
 
 
-def genesis_workspace_preflight(objective: str) -> str | None:
+def genesis_workspace_preflight(target: Path | None) -> str | None:
     """Diagnose a non-destructive Genesis Git workspace blocker before Codex starts."""
-    target = genesis_target_for(objective)
     if target is None:
         return "Genesis preflight blocked: prompt must declare an absolute Target repository path."
     if not target.is_absolute() or not target.is_dir():
@@ -629,16 +678,35 @@ class EngineeringRunner:
         resume: bool = False,
         owner_authorized: bool = False,
     ) -> TransactionState:
-        evidence = self.repository.inspect(self.root)
-        if not evidence.clean:
-            raise RunnerError("working tree is not clean; unrelated work will not be touched")
-        if not self.agent.available():
-            raise RunnerError("Codex CLI is not installed or invokable")
-        self._verify_engineering_platform()
+        objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
+        try:
+            context = resolve_execution_context(objective, self.root)
+        except RunnerError as error:
+            evidence = self.repository.inspect(self.root)
+            state = state or TransactionState(
+                run_id or f"run-{uuid.uuid4().hex[:12]}",
+                evidence.repository,
+                str(prompt_path),
+                "INITIALIZE",
+                owner_authorized=owner_authorized,
+                execution_mode="GENESIS"
+                if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
+                else "MANAGED",
+            )
+            return self._save_terminal(state, "BLOCKED", "execution_context_resolution", str(error))
+        evidence = self.repository.inspect(self.root)
         if state is not None:
             if state.repository != evidence.repository or Path(state.prompt_path) != prompt_path:
                 raise RunnerError("checkpoint conflicts with current repository or prompt")
+            if state.execution_mode != context.execution_mode:
+                raise RunnerError("checkpoint execution mode conflicts with the prompt")
+            if (
+                context.target_repository
+                and state.genesis_repository_path
+                and Path(state.genesis_repository_path) != context.target_repository
+            ):
+                raise RunnerError("checkpoint Genesis target conflicts with the prompt")
             if state.terminal:
                 return state
         else:
@@ -648,15 +716,37 @@ class EngineeringRunner:
                 str(prompt_path),
                 "INITIALIZE",
                 owner_authorized=owner_authorized,
-                execution_mode=execution_mode_for(prompt_path.read_text(encoding="utf-8")),
+                execution_mode=context.execution_mode,
             )
-        objective = prompt_path.read_text(encoding="utf-8")
-        if state.execution_mode == "GENESIS":
-            preflight = genesis_workspace_preflight(objective)
+        context = replace(context, run_id=state.run_id)
+        if context.execution_mode == "GENESIS":
+            state = replace(state, genesis_repository_path=str(context.target_repository))
+            preflight = genesis_workspace_preflight(context.target_repository)
             if preflight:
                 return self._save_terminal(
                     state, "BLOCKED", "genesis_workspace_preflight", preflight
                 )
+            allowed = additional_workspace_write_roots(self.root)
+            if context.target_repository.parent.resolve() not in allowed:
+                return self._save_terminal(
+                    state,
+                    "BLOCKED",
+                    "genesis_repository_scope",
+                    "Genesis preflight blocked: Target repository is outside the configured direct-child workspace root.",
+                )
+            owner = self._active_genesis_transaction(context.target_repository, state.run_id)
+            if owner:
+                return self._save_terminal(
+                    state,
+                    "BLOCKED",
+                    "genesis_workspace_conflict",
+                    f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
+                )
+        elif not evidence.clean:
+            raise RunnerError("working tree is not clean; unrelated work will not be touched")
+        if not self.agent.available():
+            raise RunnerError("Codex CLI is not installed or invokable")
+        self._verify_engineering_platform()
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,
@@ -687,7 +777,11 @@ class EngineeringRunner:
             else "\n\nSpecialist reviewer recommendations (advisory; primary agent must reconcile with repository evidence):\n- "
             + "\n- ".join(recommendations)
         )
-        state = self._reconcile(state, evidence)
+        state = (
+            replace(state, phase="EXECUTE_AGENT", next_action="invoke_agent")
+            if context.execution_mode == "GENESIS"
+            else self._reconcile(state, evidence)
+        )
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
@@ -715,6 +809,23 @@ class EngineeringRunner:
         if state.owner_authorized and state.pull_request:
             self.github.ready(state.pull_request)
         return self._poll(state, result)
+
+    def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
+        """Return another active Genesis run that owns the same local workspace."""
+        for checkpoint in self.store.directory.glob("*.json"):
+            try:
+                candidate = self.store.load(checkpoint.stem)
+            except StateError:
+                continue
+            if (
+                candidate.run_id != run_id
+                and not candidate.terminal
+                and candidate.execution_mode == "GENESIS"
+                and candidate.genesis_repository_path
+                and Path(candidate.genesis_repository_path) == target
+            ):
+                return candidate.run_id
+        return None
 
     def _reconcile_genesis_result(self, state: TransactionState, result: AgentResult) -> TransactionState:
         if result.terminal_state in {"BLOCKED", "FAILED"}:
@@ -1177,6 +1288,65 @@ def format_management_summary(state: TransactionState) -> str:
     )
 
 
+def format_terminal_management_summary(state: TransactionState) -> str:
+    """Return evidence bounded by the persisted terminal checkpoint phase."""
+    if state.phase == "COMPLETE":
+        return format_management_summary(state)
+    outcome = (
+        "BLOCKED — no engineering changes were executed or delivered."
+        if state.phase == "BLOCKED"
+        else "FAILED — the engineering transaction did not complete successfully."
+    )
+    target = state.genesis_repository_path or state.repository
+    codex = (
+        "not started"
+        if state.terminal_condition in {"genesis_workspace_preflight", "execution_context_resolution"}
+        else "not confirmed by the terminal checkpoint"
+    )
+    return "\n".join(
+        (
+            outcome,
+            f"Execution mode: {state.execution_mode}.",
+            f"Target repository: {target}.",
+            f"Terminal checkpoint: {state.phase}.",
+            f"Codex execution: {codex}.",
+            f"Implementation: branch={state.implementation_branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
+            f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
+            "No release, deployment or publication was performed.",
+        )
+    )
+
+
+def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
+    """Reject report prose that conflicts with its immutable terminal checkpoint."""
+    if f"- Terminal state: `{state.phase}`" not in body:
+        return False
+    if state.phase == "BLOCKED":
+        return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
+    if state.phase == "FAILED":
+        return "FAILED — the engineering transaction did not complete successfully." in body and "COMPLETE —" not in body
+    return state.phase == "COMPLETE" and "COMPLETE —" in body
+
+
+def corrected_terminal_report(state: TransactionState) -> str:
+    """Generate a minimal replacement when richer report assembly is inconsistent."""
+    return "\n".join(
+        (
+            "# Engineering Report",
+            "",
+            f"- Run ID: `{state.run_id}`",
+            f"- Terminal state: `{state.phase}`",
+            "",
+            "## Management Summary",
+            format_terminal_management_summary(state),
+            "",
+            "## Diagnostics",
+            state.diagnostic or "No terminal diagnostic.",
+            "",
+        )
+    )
+
+
 def _format_reviewer_records(records: tuple[dict[str, object], ...]) -> str:
     if not records:
         return "No specialist reviewers required."
@@ -1259,7 +1429,9 @@ def generate_terminal_report(
             _format_reviewer_records(reviewer_records),
             "",
             "## Validation",
-            "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations.",
+            "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations."
+            if state.phase == "COMPLETE"
+            else "No successful engineering validation or delivery is claimed for this terminal transaction.",
             "",
             "## Repair History",
             "No repair iterations were required."
@@ -1273,7 +1445,7 @@ def generate_terminal_report(
             "No sub-agents were required. Sub-agents are read-only advisory helpers; the primary runner retains lifecycle authority.",
             "",
             "## Management Summary",
-            format_management_summary(state),
+            format_terminal_management_summary(state),
             "",
             "## Diagnostics",
             state.diagnostic or "No terminal diagnostic.",
@@ -1286,6 +1458,8 @@ def generate_terminal_report(
             "",
         )
     )
+    if not terminal_report_matches_state(body, state):
+        body = corrected_terminal_report(state)
     path.write_text(body, encoding="utf-8")
     return path, _open_report(path)
 

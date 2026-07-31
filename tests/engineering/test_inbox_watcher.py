@@ -69,6 +69,22 @@ class InboxWatcherTest(unittest.TestCase):
         (checkpoint / "inbox-stale.json").write_text('{"phase":"BLOCKED"}', encoding="utf-8")
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
+    def test_contradictory_terminal_report_is_not_accepted_for_delivery(self) -> None:
+        report = self.repo / "contradictory.md"
+        report.write_text("- Terminal state: `BLOCKED`\nCOMPLETE — delivered\n", encoding="utf-8")
+        self.assertFalse(inbox_watcher._report_matches_terminal_phase(report, "BLOCKED"))
+        corrected = inbox_watcher._corrected_terminal_report("inbox-blocked", "BLOCKED", "Target is dirty.")
+        self.assertIn("BLOCKED — no engineering changes were executed or delivered.", corrected)
+        self.assertNotIn("COMPLETE —", corrected)
+
+    def test_corrected_complete_report_matches_a_complete_checkpoint(self) -> None:
+        report = self.repo / "corrected-complete.md"
+        report.write_text(
+            inbox_watcher._corrected_terminal_report("inbox-complete", "COMPLETE", None),
+            encoding="utf-8",
+        )
+        self.assertTrue(inbox_watcher._report_matches_terminal_phase(report, "COMPLETE"))
+
     def test_complete_job_is_serialized_and_archived(self) -> None:
         (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-0cff9d624c2412db"

@@ -16,4 +16,4 @@ registry and writes local, git-ignored reports under `.djconnect/qualification/`
 | Diagnostics, BLOCKED Recovery, Failure Recovery | diagnostic and transient failure | bounded explanation and resumable evidence | local qualification report | Registered |
 | Long-running Transactions | queued checks | waiting never becomes completion | local qualification report | Registered |
 | Remote Status Model, Private Dashboard, Repository Handoff, Remote Engineering Readiness | local projection and discovery contracts | canonical status, private dashboard and sanitized handoff remain available without authority expansion | local qualification report | Registered |
-| Genesis Lifecycle | local-only greenfield repository | clean local commit checkpoint reconciles without remote, upstream or PR | local qualification report | Registered |
+| Genesis Lifecycle, Terminal Evidence Consistency | local-only greenfield repository and every terminal checkpoint | mode and explicit target resolve before Managed readiness; clean local commit checkpoint reconciles without remote, upstream or PR; reports match the persisted terminal state | local qualification report | Registered |

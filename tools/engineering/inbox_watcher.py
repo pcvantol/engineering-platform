@@ -119,6 +119,49 @@ def _runner_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
     return redact_diagnostic(detail, limit=500)
 
 
+def _report_matches_terminal_phase(report: Path, phase: str | None) -> bool:
+    """Allow delivery only when report prose agrees with the runner checkpoint."""
+    if phase not in TERMINAL_PHASES:
+        return False
+    try:
+        body = report.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if f"- Terminal state: `{phase}`" not in body:
+        return False
+    if phase == "BLOCKED":
+        return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
+    if phase == "FAILED":
+        return "FAILED — the engineering transaction did not complete successfully." in body and "COMPLETE —" not in body
+    return "COMPLETE —" in body
+
+
+def _corrected_terminal_report(run_id: str, phase: str | None, diagnostic: str | None) -> str:
+    """Publish bounded, checkpoint-authoritative terminal evidence on contradiction."""
+    outcome = (
+        "COMPLETE — terminal checkpoint confirms completed engineering delivery."
+        if phase == "COMPLETE"
+        else "BLOCKED — no engineering changes were executed or delivered."
+        if phase == "BLOCKED"
+        else "FAILED — the engineering transaction did not complete successfully."
+    )
+    return "\n".join(
+        (
+            "# Engineering Report",
+            "",
+            f"- Run ID: `{run_id}`",
+            f"- Terminal state: `{phase or 'FAILED'}`",
+            "",
+            "## Management Summary",
+            outcome,
+            "",
+            "## Diagnostics",
+            diagnostic or "The original report contradicted the terminal checkpoint.",
+            "",
+        )
+    )
+
+
 def _prompt_title(content: str, filename: str) -> str:
     """Expose only a bounded Markdown title, never the submitted prompt body."""
     for line in content.splitlines():
@@ -321,6 +364,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         phase, diagnostic = _runner_result(repo, run_id)
         report = _report(repo, run_id)
         delivered = None
+        corrected_report = False
         if report:
             status(
                 root,
@@ -333,7 +377,13 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 areas["Reports"]
                 / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{job_id}_{run_id}.md"
             )
-            shutil.copy2(report, delivered)
+            if _report_matches_terminal_phase(report, phase):
+                shutil.copy2(report, delivered)
+            else:
+                corrected_report = True
+                delivered.write_text(
+                    _corrected_terminal_report(run_id, phase, diagnostic), encoding="utf-8"
+                )
         successful = completed.returncode == 0 and phase == "COMPLETE" and delivered is not None
         target = areas["Completed"] if successful else areas["Failed"]
         os.replace(claimed, _archive_path(target, job_id, source))
@@ -351,6 +401,10 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             if completed.returncode == 0
             else "Runner ended without a safe terminal report."
         )
+        if corrected_report:
+            reason = redact_diagnostic(
+                "The original terminal report contradicted its checkpoint; a corrected report was delivered."
+            )
         status(
             root,
             final_state,

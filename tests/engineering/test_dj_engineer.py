@@ -21,8 +21,10 @@ from tools.engineering.dj_engineer import (
     _open_report,
     extract_codex_usage,
     execution_mode_for,
+    resolve_execution_context,
     genesis_workspace_preflight,
     format_management_summary,
+    terminal_report_matches_state,
     generate_terminal_report,
     write_redacted_codex_cli_log,
     write_codex_usage,
@@ -197,6 +199,63 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.genesis_commit_sha, commit)
         self.assertIsNone(state.pull_request)
 
+    def test_genesis_selects_its_target_before_managed_cleanliness_checks(self) -> None:
+        target = self.root.parent / f"genesis-clean-{self.root.name}"
+        target.mkdir()
+        subprocess.run(("git", "init", "--initial-branch=main", str(target)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.email", "genesis@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.name", "Genesis Test"), check=True)
+        (target / "README.md").write_text("# Genesis\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(target), "add", "README.md"), check=True)
+        subprocess.run(("git", "-C", str(target), "commit", "-m", "Initialize"), check=True, capture_output=True)
+        commit = subprocess.run(("git", "-C", str(target), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
+        self.prompt.write_text(f"Execution Mode: Genesis\n\nTarget repository:\n\n{target}\n", encoding="utf-8")
+        agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None)
+        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+            state = runner.run(self.prompt, run_id="genesis-before-managed")
+        self.assertEqual(state.phase, "COMPLETE")
+        self.assertEqual(state.genesis_repository_path, str(target))
+        self.assertEqual(len(agent.prompts), 1)
+
+    def test_genesis_without_target_blocks_without_falling_back_to_managed(self) -> None:
+        self.prompt.write_text("Execution Mode: Genesis\n", encoding="utf-8")
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        state = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None).run(self.prompt, run_id="genesis-missing-target")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.execution_mode, "GENESIS")
+        self.assertIn("Target repository", state.diagnostic or "")
+        self.assertEqual(agent.prompts, [])
+
+    def test_conflicting_genesis_targets_fail_closed(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "conflicting Target"):
+            resolve_execution_context(
+                "Execution Mode: Genesis\n\nTarget repository:\n\n/tmp/one\n\nTarget repository:\n\n/tmp/two\n",
+                self.root,
+            )
+
+    def test_conflicting_genesis_mode_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "conflicts"):
+            resolve_execution_context(
+                "Execution Mode: Genesis\nExecution Mode: Managed\n\nTarget repository:\n\n/tmp/forge\n",
+                self.root,
+            )
+
+    def test_dirty_genesis_target_uses_genesis_diagnostic(self) -> None:
+        target = self.root.parent / f"genesis-dirty-{self.root.name}"
+        target.mkdir()
+        subprocess.run(("git", "init", "--initial-branch=main", str(target)), check=True, capture_output=True)
+        (target / "untracked.md").write_text("dirty\n", encoding="utf-8")
+        self.prompt.write_text(f"Execution Mode: Genesis\n\nTarget repository:\n\n{target}\n", encoding="utf-8")
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None)
+        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+            state = runner.run(self.prompt, run_id="genesis-dirty-target")
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertIn("Genesis preflight blocked", state.diagnostic or "")
+        self.assertNotIn("working tree is not clean", state.diagnostic or "")
+        self.assertEqual(agent.prompts, [])
+
     def test_rejects_malformed_state(self) -> None:
         path = self.store.path_for("bad-run")
         path.parent.mkdir(parents=True)
@@ -285,9 +344,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(usage, {"input_tokens": 120, "output_tokens": 30, "cost": 0.04})
 
     def test_genesis_workspace_preflight_requires_accessible_target(self) -> None:
-        issue = genesis_workspace_preflight(
-            "Execution Mode: Genesis\n\nTarget repository:\n\n/definitely/absent/forge\n"
-        )
+        issue = genesis_workspace_preflight(Path("/definitely/absent/forge"))
 
         self.assertIn("Target repository path is absent", issue or "")
 
@@ -500,6 +557,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         body = report.read_text(encoding="utf-8")
         self.assertIn("Platform Version: `1.0.0`", body)
         self.assertIn("Detected Codex CLI Version: `0.146.0`", body)
+
+    def test_blocked_and_failed_reports_match_the_terminal_checkpoint(self) -> None:
+        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        for phase, expected in (
+            ("BLOCKED", "BLOCKED — no engineering changes were executed or delivered."),
+            ("FAILED", "FAILED — the engineering transaction did not complete successfully."),
+        ):
+            with self.subTest(phase=phase), patch("tools.engineering.dj_engineer._open_report", return_value=None):
+                state = TransactionState(f"{phase.lower()}-report", "pcvantol/djconnect", str(self.prompt), phase, diagnostic="Bounded diagnostic.", terminal=True)
+                report, _ = generate_terminal_report(self.root, state, manifest, "0.146.0")
+                body = report.read_text(encoding="utf-8")
+            self.assertIn(expected, body)
+            self.assertNotIn("COMPLETE —", body)
+            self.assertTrue(terminal_report_matches_state(body, state))
 
     def test_capability_selection_covers_documentation_validation_governance_and_finalization(self) -> None:
         selections = select_reviewers("Update governance documentation and validation diagnostics.", self.prompt, "FINALIZATION", {})
