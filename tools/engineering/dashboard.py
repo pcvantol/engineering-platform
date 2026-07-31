@@ -8,6 +8,7 @@ from html import escape
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 from threading import Thread
 import time
@@ -191,33 +192,49 @@ def _prompt_started(root: Path) -> bytes:
     return b"{}"
 
 
-def _dashboard_html(title: str) -> bytes:
+def _build_commit(root: Path) -> str:
+    """Return the local checked-out revision for read-only dashboard identification."""
+    observed = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--short=12", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return observed.stdout.strip() if observed.returncode == 0 else "onbekend"
+
+
+def _dashboard_html(title: str, build_commit: str = "onbekend") -> bytes:
     """Render the private dashboard with client-local, visible refresh timing."""
     page = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>$TITLE</title>
 <style>
-body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}
-.card{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}.field{margin:10px 0 0}.label{display:block;color:#c7a6ff;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}.footer{color:#b9b6c0;font-size:13px;margin:28px 0 8px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:7px 10px;font:14px system-ui}
+body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}.dashboard-grid{display:grid;gap:12px}
+.card{background:#24242d;border-radius:16px;padding:16px;box-shadow:0 4px 18px #0005}.prompt-runs{display:grid;gap:8px}.prompt-runs__heading{color:#b9b6c0;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.prompt-runs__cards{display:grid;gap:12px}.card--previous{background:#202a36;border:1px solid #37506a;box-shadow:0 4px 18px #0005}.card--previous strong,.card--previous .label{color:#8dc7ff}.field{margin:10px 0 0}.label{display:block;color:#c7a6ff;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}.footer{color:#b9b6c0;font-size:13px;margin:28px 0 8px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:7px 10px;font:14px system-ui}
 strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:10px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff9f43;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}[hidden]{display:none}
+@media (min-width:900px){body{max-width:1440px;margin:auto}.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.prompt-runs,#report{grid-column:1 / -1}.prompt-runs__cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 <h1>$TITLE</h1>
+<main class="dashboard-grid">
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" aria-label="Status onbekend"></span><strong>Promptstatus</strong></div><p class="field"><span class="label">Watcher</span><span id="watcher">Laden…</span></p><p class="field"><span class="label">Fase</span><span id="phase">Laden…</span></p><p class="field"><span class="label">Huidige actie</span><span id="action">Laden…</span></p></div>
 <div class="card"><strong>Tijd</strong><p id="currentTime">Laden…</p><p id="lastRefresh">Laatst ververst: laden…</p><p id="nextRefresh">Volgende verversing: laden…</p></div>
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p id="executionEstimate">Nog niet beschikbaar…</p></div>
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
+<section class="prompt-runs" aria-label="Promptuitvoeringen"><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
 <div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
-<div class="card"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div>
+<div class="card card--previous"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div>
+</div></section>
 <div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
 <div class="card"><strong>Diagnose</strong><p id="diag"></p></div>
 <details class="card" id="report"><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details>
-<footer class="footer"><span class="label">Engineering Platform-versie</span><span id="platformVersion">Laden…</span></footer>
+</main>
+<footer class="footer"><span class="label">Engineering Platform-versie</span><span id="platformVersion">Laden…</span> · <span class="label">Git-commit</span><code>$BUILD_COMMIT</code></footer>
 <script>
-const $=id=>document.getElementById(id),REFRESH_SECONDS=5,
+const $=id=>document.getElementById(id),REFRESH_SECONDS=5,DASHBOARD_BUILD="$BUILD_COMMIT",DASHBOARD_BUILD_KEY="djconnect-engineering-dashboard-build",
 formatTime=new Intl.DateTimeFormat("nl-NL",{timeZone:"Europe/Amsterdam",dateStyle:"full",timeStyle:"medium"}),
 fallback={watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."};
 let currentLogRun,lastLogRun,lastRefresh,nextRefresh;
@@ -225,6 +242,8 @@ const humanLabels={ENGINEERING_RUN_ACTIVE:"Engineering actief",EXECUTE_AGENT:"Ui
 function humanize(){for(const id of ["watcher","phase","action","repositoryState","workspaceState"]){const element=$(id);element.textContent=humanLabels[element.textContent]||element.textContent}}
 function tone(x){const phase=x.current_phase||"",watcher=x.watcher_state||"";if(["BLOCKED","FAILED"].includes(phase)||["JOB_BLOCKED","JOB_FAILED"].includes(watcher))return "red";if(phase==="COMPLETE"||watcher==="JOB_COMPLETED")return "green";if(phase==="WAIT_FOR_TERMINAL_EVIDENCE"||watcher==="WAITING_FOR_REPOSITORY")return "yellow";if(["INITIALIZE","EXECUTE_AGENT","REPAIR_AGENT","FINALIZE_AGENT","REPOSITORY_CLEANUP"].includes(phase)||["RUNNER_STARTING","JOB_CLAIMED"].includes(watcher))return "orange";return "grey"}
 function estimate(x){const phase=x.current_phase||"";if(phase==="INITIALIZE")return "Geschat resterend: minder dan 1 minuut";if(phase==="EXECUTE_AGENT")return "Geschat resterend: ongeveer 15–30 minuten";if(phase==="REPAIR_AGENT")return "Geschat resterend: ongeveer 10–20 minuten";if(phase==="FINALIZE_AGENT")return "Geschat resterend: ongeveer 5–10 minuten";if(phase==="REPOSITORY_CLEANUP")return "Geschat resterend: ongeveer 2 minuten";if(phase==="WAIT_FOR_TERMINAL_EVIDENCE")return "Wacht op externe verificatie; geen betrouwbare ETA";if(phase==="COMPLETE")return "Voltooid";if(["BLOCKED","FAILED"].includes(phase))return "Gestopt; actie nodig";return "Nog niet beschikbaar"}
+function isActiveRun(x){return x.watcher_state==="ENGINEERING_RUN_ACTIVE"&&Boolean(x.run_id)}
+function checkBuild(){fetch("/api/build",{cache:"no-store"}).then(x=>x.json()).then(x=>{if(x.build_commit===DASHBOARD_BUILD){sessionStorage.removeItem(DASHBOARD_BUILD_KEY);return}if(x.build_commit&&DASHBOARD_BUILD!=="onbekend"&&sessionStorage.getItem(DASHBOARD_BUILD_KEY)!==x.build_commit){sessionStorage.setItem(DASHBOARD_BUILD_KEY,x.build_commit);location.reload()}}).catch(()=>{})}
 function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst ververst: "+(lastRefresh?formatTime.format(lastRefresh):"laden…");$("nextRefresh").textContent="Volgende verversing: "+(nextRefresh?Math.max(0,Math.ceil((nextRefresh-now)/1000))+" seconden":"laden…")}
 function l(id,url,run,last){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>$(id).textContent=x).catch(()=>$(id).textContent="Codex CLI diagnostic is unavailable.")}
 function usage(){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};fetch("/api/usage").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}).catch(()=>$("usage").hidden=true)}
@@ -232,11 +251,11 @@ function commits(){fetch("/api/commits").then(x=>x.json()).then(x=>{let entries=
 function promptStarted(){fetch("/api/prompt-started").then(x=>x.json()).then(x=>$("promptStarted").textContent=x.started_at?formatTime.format(new Date(x.started_at)):"Niet beschikbaar").catch(()=>$("promptStarted").textContent="Niet beschikbaar")}
 let reportLoaded=false,reportRequest;function report(){if(reportLoaded)return reportRequest;reportLoaded=true;return reportRequest=fetch("/api/report/latest").then(x=>x.text()).then(x=>$("reportContent").textContent=x).catch(()=>{$("reportContent").textContent="Engineeringrapport is niet beschikbaar."})}
 function copyReport(){report().then(()=>navigator.clipboard.writeText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
-function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=!["COMPLETE","BLOCKED","FAILED"].includes(x.current_phase),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
+function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
 function refresh(){fetch("/api/status").then(x=>{if(!x.ok)throw Error("status unavailable");return x.json()}).then(r).catch(()=>r(fallback))}
-let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data));humanize()}catch{r(fallback);humanize()}});$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(()=>{clock();humanize();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh();setInterval(promptStarted,5000);promptStarted()
+let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data));humanize()}catch{r(fallback);humanize()}});$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(()=>{clock();humanize();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh();checkBuild();setInterval(checkBuild,5000);setInterval(promptStarted,5000);promptStarted()
 </script>"""
-    return page.replace("$TITLE", escape(title)).encode()
+    return page.replace("$TITLE", escape(title)).replace("$BUILD_COMMIT", escape(build_commit)).encode()
 
 
 def handler(root: Path):
@@ -258,6 +277,11 @@ def handler(root: Path):
         def do_GET(self) -> None:
             if self.path == "/api/status":
                 return self._send(_status(root), "application/json; charset=utf-8")
+            if self.path == "/api/build":
+                return self._send(
+                    json.dumps({"build_commit": _build_commit(root)}).encode(),
+                    "application/json; charset=utf-8",
+                )
             if self.path == "/api/health":
                 return self._send(b'{"health":"ok"}', "application/json; charset=utf-8")
             if self.path == "/api/events":
@@ -295,7 +319,7 @@ def handler(root: Path):
             if self.path == "/api/prompt-started":
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if self.path == "/":
-                return self._send(_dashboard_html(title), "text/html; charset=utf-8")
+                return self._send(_dashboard_html(title, _build_commit(root)), "text/html; charset=utf-8")
             self.send_error(404)
 
         def log_message(self, *_: object) -> None:

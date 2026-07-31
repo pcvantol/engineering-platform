@@ -11,8 +11,18 @@ from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _complet
 
 class DashboardStatusTest(unittest.TestCase):
     def test_dashboard_shows_amsterdam_time_and_refresh_countdown(self) -> None:
-        page = _dashboard_html("DJConnect Engineering").decode()
+        page = _dashboard_html("Engineering Status").decode()
 
+        self.assertIn("<title>Engineering Status</title>", page)
+        self.assertIn("<h1>Engineering Status</h1>", page)
+        self.assertIn('class="dashboard-grid"', page)
+        self.assertIn("@media (min-width:900px)", page)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", page)
+        self.assertIn('class="prompt-runs"', page)
+        self.assertIn('class="prompt-runs__cards"', page)
+        self.assertIn(".prompt-runs,#report{grid-column:1 / -1}", page)
+        self.assertIn('class="card card--previous"', page)
+        self.assertIn(".card--previous", page)
         self.assertIn('id="currentTime"', page)
         self.assertIn('id="lastRefresh"', page)
         self.assertIn('id="nextRefresh"', page)
@@ -25,6 +35,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("indicator--orange", page)
         self.assertIn("indicator--red", page)
         self.assertIn("indicator--running", page)
+        self.assertIn('function isActiveRun(x){return x.watcher_state==="ENGINEERING_RUN_ACTIVE"&&Boolean(x.run_id)}', page)
         self.assertIn("@keyframes spin", page)
         self.assertIn('ENGINEERING_RUN_ACTIVE:"Engineering actief"', page)
         self.assertIn('EXECUTE_AGENT:"Uitvoering"', page)
@@ -45,6 +56,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('fetch("/api/usage")', page)
         self.assertIn("Engineering Platform-versie", page)
         self.assertIn('id="platformVersion"', page)
+        self.assertIn("Git-commit", page)
+        self.assertIn("onbekend", page)
+        self.assertIn('DASHBOARD_BUILD="onbekend"', page)
+        self.assertIn('fetch("/api/build",{cache:"no-store"})', page)
+        self.assertIn("setInterval(checkBuild,5000)", page)
         for label in (
             "Watcher",
             "Fase",

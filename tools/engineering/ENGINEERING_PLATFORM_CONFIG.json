@@ -12,7 +12,7 @@
     "id": "djconnect",
     "name": "DJConnect Engineering",
     "repository": {"provider": "github", "owner": "pcvantol", "name": "djconnect", "default_branch": "main"},
-    "branding": {"dashboard_title": "DJConnect Engineering"}
+    "branding": {"dashboard_title": "Engineering Status"}
   },
   "providers": {
     "runtime": "codex_cli",
