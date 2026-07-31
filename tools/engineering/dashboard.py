@@ -69,6 +69,15 @@ def _status(root: Path) -> bytes:
         return _unavailable_status()
 
 
+def _sse_status(root: Path) -> bytes:
+    """Encode the status as a single SSE data line."""
+    try:
+        payload = json.loads(_status(root))
+    except json.JSONDecodeError:
+        payload = json.loads(_unavailable_status())
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
 def handler(root: Path):
     title = PlatformConfiguration.load(root).workspace.dashboard_title
     class DashboardHandler(BaseHTTPRequestHandler):
@@ -97,7 +106,7 @@ def handler(root: Path):
                 self.end_headers()
                 try:
                     for _ in range(60):
-                        self.wfile.write(b"event: status\ndata: " + _status(root) + b"\n\n")
+                        self.wfile.write(b"event: status\ndata: " + _sse_status(root) + b"\n\n")
                         self.wfile.flush()
                         time.sleep(5)
                 except (BrokenPipeError, ConnectionResetError):

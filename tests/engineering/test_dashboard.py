@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -41,6 +41,16 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["watcher_state"], "ENGINEERING_RUN_ACTIVE")
         self.assertEqual(status["current_phase"], "INITIALIZE")
         self.assertEqual(status["run_id"], "inbox-123")
+
+    def test_sse_status_is_single_line_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".djconnect" / "status"
+            directory.mkdir(parents=True)
+            (directory / "status.json").write_text('{\n  "watcher_state": "WATCHER_IDLE"\n}', encoding="utf-8")
+            payload = _sse_status(Path(temporary))
+
+        self.assertNotIn(b"\n", payload)
+        self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:
