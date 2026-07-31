@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -64,6 +64,17 @@ class DashboardStatusTest(unittest.TestCase):
                 '{"run_id":"inbox-other","usage":{"input_tokens":123}}', encoding="utf-8"
             )
             self.assertEqual(json.loads(_codex_usage(root)), {})
+
+    def test_completion_commits_are_shown_only_after_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".djconnect" / "status"
+            runs = root / ".djconnect" / "engineering-runs"
+            status.mkdir(parents=True)
+            runs.mkdir(parents=True)
+            (status / "status.json").write_text('{"run_id":"inbox-done","current_phase":"COMPLETE"}', encoding="utf-8")
+            (runs / "inbox-done.json").write_text('{"genesis_commit_sha":"' + "a" * 40 + '"}', encoding="utf-8")
+            self.assertEqual(json.loads(_completion_commits(root)), {"Genesis-commit": "a" * 40})
 
     def test_missing_status_uses_a_complete_degraded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -150,6 +150,27 @@ def _codex_usage(root: Path) -> bytes:
     return json.dumps(allowed, separators=(",", ":")).encode()
 
 
+def _completion_commits(root: Path) -> bytes:
+    """Return only recorded commit evidence for a completed displayed run."""
+    try:
+        status = json.loads(_status(root))
+        if status.get("current_phase") != "COMPLETE":
+            return b"{}"
+        run_id = status.get("run_id")
+        if not isinstance(run_id, str):
+            return b"{}"
+        checkpoint = json.loads((root / ".djconnect" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return b"{}"
+    labels = {
+        "genesis_commit_sha": "Genesis-commit",
+        "implementation_merge_commit": "Implementatie-mergecommit",
+        "finalization_merge_commit": "Finalisatie-mergecommit",
+    }
+    commits = {labels[key]: checkpoint[key] for key in labels if isinstance(checkpoint.get(key), str)}
+    return json.dumps(commits, separators=(",", ":")).encode()
+
+
 def _dashboard_html(title: str) -> bytes:
     """Render the private dashboard with client-local, visible refresh timing."""
     page = """<!doctype html>
@@ -166,6 +187,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monos
 <div class="card"><strong>Tijd</strong><p id="currentTime">Laden…</p><p id="lastRefresh">Laatst ververst: laden…</p><p id="nextRefresh">Volgende verversing: laden…</p></div>
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p id="executionEstimate">Nog niet beschikbaar…</p></div>
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
+<div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
 <div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
 <div class="card"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div>
 <div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
@@ -183,7 +205,8 @@ function estimate(x){const phase=x.current_phase||"";if(phase==="INITIALIZE")ret
 function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst ververst: "+(lastRefresh?formatTime.format(lastRefresh):"laden…");$("nextRefresh").textContent="Volgende verversing: "+(nextRefresh?Math.max(0,Math.ceil((nextRefresh-now)/1000))+" seconden":"laden…")}
 function l(id,url,run,last){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>$(id).textContent=x).catch(()=>$(id).textContent="Codex CLI diagnostic is unavailable.")}
 function usage(){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};fetch("/api/usage").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}).catch(()=>$("usage").hidden=true)}
-function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=!["COMPLETE","BLOCKED","FAILED"].includes(x.current_phase),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone;indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage()}
+function commits(){fetch("/api/commits").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}).catch(()=>$("commits").hidden=true)}
+function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=!["COMPLETE","BLOCKED","FAILED"].includes(x.current_phase),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone;indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
 function refresh(){fetch("/api/status").then(x=>{if(!x.ok)throw Error("status unavailable");return x.json()}).then(r).catch(()=>r(fallback))}
 let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data))}catch{r(fallback)}});setInterval(()=>{clock();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh()
 </script>"""
@@ -241,6 +264,8 @@ def handler(root: Path):
                 return self._send(_last_executed_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/api/usage":
                 return self._send(_codex_usage(root), "application/json; charset=utf-8")
+            if self.path == "/api/commits":
+                return self._send(_completion_commits(root), "application/json; charset=utf-8")
             if self.path == "/":
                 return self._send(_dashboard_html(title), "text/html; charset=utf-8")
             self.send_error(404)
