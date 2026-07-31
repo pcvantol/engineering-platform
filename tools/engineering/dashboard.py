@@ -173,6 +173,24 @@ def _completion_commits(root: Path) -> bytes:
     return json.dumps(commits, separators=(",", ":")).encode()
 
 
+def _prompt_started(root: Path) -> bytes:
+    """Return the recorded Inbox start time for the run currently displayed."""
+    try:
+        run_id = json.loads(_status(root)).get("run_id")
+    except json.JSONDecodeError:
+        run_id = None
+    if not isinstance(run_id, str):
+        return b"{}"
+    for record in (root / ".djconnect" / "inbox-processing").glob("*/job.json"):
+        try:
+            job = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("run_id") == run_id and isinstance(job.get("received_at"), str):
+            return json.dumps({"started_at": job["received_at"]}, separators=(",", ":")).encode()
+    return b"{}"
+
+
 def _dashboard_html(title: str) -> bytes:
     """Render the private dashboard with client-local, visible refresh timing."""
     page = """<!doctype html>
@@ -192,7 +210,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monos
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
 <div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
 <div class="card"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div>
-<div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
+<div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
 <div class="card"><strong>Diagnose</strong><p id="diag"></p></div>
@@ -208,9 +226,10 @@ function clock(){let now=Date.now();$("currentTime").textContent=formatTime.form
 function l(id,url,run,last){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>$(id).textContent=x).catch(()=>$(id).textContent="Codex CLI diagnostic is unavailable.")}
 function usage(){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};fetch("/api/usage").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}).catch(()=>$("usage").hidden=true)}
 function commits(){fetch("/api/commits").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}).catch(()=>$("commits").hidden=true)}
+function promptStarted(){fetch("/api/prompt-started").then(x=>x.json()).then(x=>$("promptStarted").textContent=x.started_at?formatTime.format(new Date(x.started_at)):"Niet beschikbaar").catch(()=>$("promptStarted").textContent="Niet beschikbaar")}
 function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=!["COMPLETE","BLOCKED","FAILED"].includes(x.current_phase),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone;indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
 function refresh(){fetch("/api/status").then(x=>{if(!x.ok)throw Error("status unavailable");return x.json()}).then(r).catch(()=>r(fallback))}
-let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data))}catch{r(fallback)}});setInterval(()=>{clock();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh()
+let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data))}catch{r(fallback)}});setInterval(()=>{clock();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh();setInterval(promptStarted,5000);promptStarted()
 </script>"""
     return page.replace("$TITLE", escape(title)).encode()
 
@@ -268,6 +287,8 @@ def handler(root: Path):
                 return self._send(_codex_usage(root), "application/json; charset=utf-8")
             if self.path == "/api/commits":
                 return self._send(_completion_commits(root), "application/json; charset=utf-8")
+            if self.path == "/api/prompt-started":
+                return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if self.path == "/":
                 return self._send(_dashboard_html(title), "text/html; charset=utf-8")
             self.send_error(404)
