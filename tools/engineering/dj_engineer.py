@@ -358,7 +358,7 @@ class CodexCliClient:
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
-            detail = _format_cli_failure(completed.returncode, completed.stderr, completed.stdout)
+            detail = _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt)
             raise CodexInvocationError(
                 f"Codex CLI exited with code {completed.returncode}; inspect this invocation's console output.",
                 detail,
@@ -372,16 +372,23 @@ class CodexCliClient:
         except (IndexError, json.JSONDecodeError, TypeError) as error:
             raise CodexInvocationError(
                 "Codex CLI did not return the required structured terminal result.",
-                _format_cli_failure(completed.returncode, completed.stderr, completed.stdout),
+                _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt),
             ) from error
 
 
-def _format_cli_failure(exit_code: int, stderr: str, stdout: str) -> str:
+def _redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
+    """Keep the actionable end of CLI output without retaining the prompt echo."""
+    without_prompt = value.replace(prompt, "[PROMPT_OMITTED]") if prompt else value
+    tail = "\n".join(without_prompt.splitlines()[-60:])
+    return redact_diagnostic(tail, limit=limit) or "(empty)"
+
+
+def _format_cli_failure(exit_code: int, stderr: str, stdout: str, prompt: str = "") -> str:
     return "\n".join(
         (
             f"Codex CLI exit code: {exit_code}",
-            f"stderr: {redact_diagnostic(stderr, limit=300) or '(empty)'}",
-            f"stdout: {redact_diagnostic(stdout, limit=300) or '(empty)'}",
+            f"stderr tail: {_redacted_cli_tail(stderr, prompt)}",
+            f"stdout tail: {_redacted_cli_tail(stdout, prompt)}",
         )
     )
 
@@ -391,7 +398,7 @@ def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
     directory = root / ".djconnect" / "logs" / "codex"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{run_id}.log"
-    content = "# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=2_000) + "\n"
+    content = "# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=3_000) + "\n"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
     try:
         os.fchmod(descriptor, 0o600)

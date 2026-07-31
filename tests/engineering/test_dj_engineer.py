@@ -15,6 +15,7 @@ from tools.engineering.dj_engineer import (
     RepositoryEvidence,
     RunnerError,
     _format_terminal_report,
+    _format_cli_failure,
     _open_report,
     format_management_summary,
     generate_terminal_report,
@@ -221,6 +222,17 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertNotIn("stdout-secret", raised.exception.console_detail)
         self.assertNotIn("stderr-secret", raised.exception.console_detail)
         self.assertIn("[REDACTED]", raised.exception.console_detail)
+
+    def test_cli_failure_log_omits_prompt_and_keeps_error_tail(self) -> None:
+        detail = _format_cli_failure(
+            1,
+            "header\nuser\nconfidential prompt body\nERROR: actionable failure",
+            "",
+            "confidential prompt body",
+        )
+        self.assertNotIn("confidential prompt body", detail)
+        self.assertIn("[PROMPT_OMITTED]", detail)
+        self.assertIn("ERROR: actionable failure", detail)
 
     def test_codex_cli_log_is_private_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
