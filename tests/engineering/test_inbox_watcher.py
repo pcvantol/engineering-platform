@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import json
@@ -21,17 +23,29 @@ class InboxWatcherTest(unittest.TestCase):
 
     def tearDown(self) -> None: self.temp.cleanup()
 
-    def test_txt_and_md_stable_prompts_are_discovered_in_order(self) -> None:
-        (self.inbox / "a.txt").write_text("# first", encoding="utf-8")
-        (self.inbox / "b.md").write_text("# second", encoding="utf-8")
-        self.assertEqual([path.suffix for path in inbox_watcher.discover(self.root, 0)], [".txt", ".md"])
+    def test_filename_neutral_markdown_prompts_are_discovered_oldest_first(self) -> None:
+        oldest = self.inbox / "first-submission"
+        newest = self.inbox / "project-brief.upload"
+        oldest.write_text("# First prompt", encoding="utf-8")
+        newest.write_text("# Second prompt", encoding="utf-8")
+        base = time.time_ns()
+        os.utime(oldest, ns=(base, base))
+        os.utime(newest, ns=(base + 1_000_000, base + 1_000_000))
+        self.assertEqual(
+            [path.name for path in inbox_watcher.discover(self.root, 0)],
+            ["first-submission", "project-brief.upload"],
+        )
 
-    def test_rejects_empty_hidden_binary_and_unsupported_input(self) -> None:
+    def test_rejects_empty_hidden_binary_and_non_markdown_unknown_input(self) -> None:
         (self.inbox / "empty.md").write_text("", encoding="utf-8")
         (self.inbox / ".partial.txt").write_text("text", encoding="utf-8")
         (self.inbox / "binary.md").write_bytes(b"\xff")
-        (self.inbox / "other.pdf").write_text("text", encoding="utf-8")
+        (self.inbox / "other.upload").write_text("plain opaque data", encoding="utf-8")
         self.assertEqual(inbox_watcher.discover(self.root, 0), [])
+
+    def test_existing_txt_prompts_remain_compatible(self) -> None:
+        (self.inbox / "legacy.txt").write_text("plain prompt text", encoding="utf-8")
+        self.assertEqual([path.name for path in inbox_watcher.discover(self.root, 0)], ["legacy.txt"])
 
     def test_launch_path_preserves_codex_location(self) -> None:
         with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):

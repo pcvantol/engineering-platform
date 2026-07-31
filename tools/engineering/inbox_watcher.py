@@ -50,10 +50,9 @@ def launch_path() -> str:
 
 
 def stable_prompt(path: Path, interval: float = 1.0) -> str | None:
-    """Accept only stable, bounded, UTF-8 text files from the direct Inbox."""
+    """Accept stable, bounded prompt text without relying on the filename."""
     if (
         path.name.startswith(".")
-        or path.suffix.lower() not in {".txt", ".md"}
         or path.is_symlink()
         or not path.is_file()
     ):
@@ -72,16 +71,37 @@ def stable_prompt(path: Path, interval: float = 1.0) -> str | None:
         return None
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         return None
-    return value if value.strip() and "\0" not in value else None
+    if not value.strip() or "\0" in value:
+        return None
+    if path.suffix.lower() in {".txt", ".md", ".markdown"} or _looks_like_markdown(value):
+        return value
+    return None
+
+
+def _looks_like_markdown(value: str) -> bool:
+    """Recognize a bounded Markdown prompt when a submitted file has no useful suffix."""
+    for line in value.splitlines():
+        stripped = line.lstrip()
+        if (
+            stripped.startswith(("#", ">", "```", "- ", "* ", "+ ", "["))
+            or stripped == "---"
+            or (len(stripped) > 2 and stripped[0].isdigit() and stripped[1:3] in {". ", ") "})
+        ):
+            return True
+    return False
 
 
 def discover(root: Path, interval: float = 0.0) -> list[Path]:
     inbox = folders(root)["Inbox"]
-    return [
-        path
-        for path in sorted(inbox.iterdir(), key=lambda item: (item.stat().st_mtime_ns, item.name))
-        if stable_prompt(path, interval) is not None
-    ]
+    candidates: list[tuple[int, str, Path]] = []
+    for path in inbox.iterdir():
+        if stable_prompt(path, interval) is None:
+            continue
+        try:
+            candidates.append((path.stat().st_mtime_ns, path.name, path))
+        except OSError:
+            continue
+    return [path for _, _, path in sorted(candidates)]
 
 
 def _safe_detail(value: object) -> object:
