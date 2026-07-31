@@ -47,6 +47,25 @@ def _status(root: Path) -> bytes:
     try:
         return (root / ".djconnect" / "status" / "status.json").read_bytes()
     except OSError:
+        pass
+    try:
+        live = json.loads((root / ".djconnect" / "status" / "current.json").read_text(encoding="utf-8"))
+        return json.dumps(
+            {
+                "watcher_state": "ENGINEERING_RUN_ACTIVE",
+                "current_phase": live.get("phase") or "INITIALIZE",
+                "current_action": live.get("current_action") or "Engineering run is active.",
+                "run_id": live.get("run_id"),
+                "queue_depth": 0,
+                "implementation_pr": live.get("implementation_pr"),
+                "finalization_pr": live.get("finalization_pr"),
+                "repository_state": live.get("repository_state") or "ACTIVE",
+                "workspace_state": live.get("workspace_state") or "ACTIVE",
+                "diagnostic": live.get("diagnostic"),
+            },
+            separators=(",", ":"),
+        ).encode()
+    except (OSError, json.JSONDecodeError):
         return _unavailable_status()
 
 
@@ -60,7 +79,8 @@ def handler(root: Path):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header(
-                "Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'"
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
             )
             self.end_headers()
             self.wfile.write(content)
