@@ -46,6 +46,9 @@ class InboxWatcherTest(unittest.TestCase):
         checkpoint = self.repo / ".djconnect/engineering-runs"
         checkpoint.mkdir(parents=True)
         (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+        old_log = self.repo / ".djconnect/logs/codex" / f"{run_id}.log"
+        old_log.parent.mkdir(parents=True)
+        old_log.write_text("previous attempt", encoding="utf-8")
         with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             run.return_value = __import__("subprocess").CompletedProcess((), 0)
             code = inbox_watcher.once(self.repo, self.root, 0)
@@ -54,6 +57,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(len(list(inbox_watcher.folders(self.root)["Completed"].glob("*__job.txt"))), 1)
         self.assertEqual(len(list(inbox_watcher.folders(self.root)["Reports"].glob("*.md"))), 1)
         self.assertEqual(json_status(self.root)["watcher_state"], "JOB_COMPLETED")
+        self.assertFalse(old_log.exists())
 
 
 def json_status(root: Path) -> dict[str, object]:

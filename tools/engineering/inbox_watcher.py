@@ -177,6 +177,11 @@ def _report(repo: Path, run_id: str) -> Path | None:
     return reports[-1] if reports else None
 
 
+def _clear_prior_codex_log(repo: Path, run_id: str) -> None:
+    """A retried deterministic Inbox run must not display an older attempt's log."""
+    (repo / ".djconnect" / "logs" / "codex" / f"{run_id}.log").unlink(missing_ok=True)
+
+
 def once(repo: Path, root: Path, interval: float = 1.0) -> int:
     """Process at most one stable job; all repository mutations remain runner-owned."""
     areas = folders(root)
@@ -227,6 +232,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             encoding="utf-8",
         )
         phase, _ = _runner_result(repo, run_id)
+        _clear_prior_codex_log(repo, run_id)
         arguments = [
             str(repo / "tools/engineering/dj-engineer"),
             str(prompt.relative_to(repo)),
