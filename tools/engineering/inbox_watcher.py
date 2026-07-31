@@ -136,7 +136,15 @@ def _active_transaction(repo: Path) -> bool:
         payload = json.loads(current.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return payload.get("phase") not in TERMINAL_PHASES
+    phase = payload.get("phase")
+    if phase in TERMINAL_PHASES:
+        return False
+    run_id = payload.get("run_id")
+    if isinstance(run_id, str):
+        checkpoint_phase, _ = _runner_result(repo, run_id)
+        if checkpoint_phase in TERMINAL_PHASES:
+            return False
+    return True
 
 
 @contextmanager

@@ -37,6 +37,15 @@ class InboxWatcherTest(unittest.TestCase):
         with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
             self.assertEqual(inbox_watcher.launch_path().split(":")[0], "/opt/homebrew/bin")
 
+    def test_terminal_checkpoint_overrides_stale_live_status(self) -> None:
+        status = self.repo / ".djconnect/status"
+        checkpoint = self.repo / ".djconnect/engineering-runs"
+        status.mkdir(parents=True)
+        checkpoint.mkdir(parents=True)
+        (status / "current.json").write_text('{"run_id":"inbox-stale","phase":"INITIALIZE"}', encoding="utf-8")
+        (checkpoint / "inbox-stale.json").write_text('{"phase":"BLOCKED"}', encoding="utf-8")
+        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
     def test_complete_job_is_serialized_and_archived(self) -> None:
         (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-0cff9d624c2412db"
