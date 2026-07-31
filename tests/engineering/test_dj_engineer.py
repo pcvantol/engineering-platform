@@ -21,6 +21,7 @@ from tools.engineering.dj_engineer import (
     _open_report,
     extract_codex_usage,
     execution_mode_for,
+    genesis_workspace_preflight,
     format_management_summary,
     generate_terminal_report,
     write_redacted_codex_cli_log,
@@ -182,7 +183,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         subprocess.run(("git", "-C", str(target), "add", "README.md"), check=True)
         subprocess.run(("git", "-C", str(target), "commit", "-m", "Initialize"), check=True, capture_output=True)
         commit = subprocess.run(("git", "-C", str(target), "rev-parse", "HEAD"), check=True, text=True, capture_output=True).stdout.strip()
-        self.prompt.write_text("# New workspace\n\nExecution Mode: Genesis\n", encoding="utf-8")
+        self.prompt.write_text(
+            f"# New workspace\n\nExecution Mode: Genesis\n\nTarget repository:\n\n{target}\n",
+            encoding="utf-8",
+        )
         agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
@@ -279,6 +283,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
 
         self.assertEqual(usage, {"input_tokens": 120, "output_tokens": 30, "cost": 0.04})
+
+    def test_genesis_workspace_preflight_requires_accessible_target(self) -> None:
+        issue = genesis_workspace_preflight(
+            "Execution Mode: Genesis\n\nTarget repository:\n\n/definitely/absent/forge\n"
+        )
+
+        self.assertIn("Target repository path is absent", issue or "")
 
     def test_cli_usage_is_written_only_when_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

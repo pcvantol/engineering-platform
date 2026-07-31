@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -180,6 +181,48 @@ def execution_mode_for(objective: str) -> str:
         if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
         else "MANAGED"
     )
+
+
+def genesis_target_for(objective: str) -> Path | None:
+    """Return the explicit local Genesis target, without interpreting other prompt text."""
+    match = re.search(r"(?im)^target repository:\s*\n+\s*(\S+)\s*$", objective)
+    return Path(match.group(1)).expanduser() if match else None
+
+
+def genesis_workspace_preflight(objective: str) -> str | None:
+    """Diagnose a non-destructive Genesis Git workspace blocker before Codex starts."""
+    target = genesis_target_for(objective)
+    if target is None:
+        return "Genesis preflight blocked: prompt must declare an absolute Target repository path."
+    if not target.is_absolute() or not target.is_dir():
+        return "Genesis preflight blocked: Target repository path is absent or not a directory."
+    observed = subprocess.run(
+        ("git", "-C", str(target), "rev-parse", "--git-dir"),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if observed.returncode:
+        return "Genesis preflight blocked: Target repository is not an accessible Git repository."
+    git_dir = Path(observed.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = (target / git_dir).resolve()
+    lock = git_dir / "index.lock"
+    if lock.exists():
+        return f"Genesis preflight blocked: Git index lock exists at {lock}; it is not removed automatically."
+    if not os.access(git_dir, os.W_OK):
+        return f"Genesis preflight blocked: Git metadata directory is not writable: {git_dir}."
+    status = subprocess.run(
+        ("git", "-C", str(target), "status", "--porcelain", "--untracked-files=all"),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if status.returncode:
+        return "Genesis preflight blocked: Target repository status could not be inspected."
+    if status.stdout.strip():
+        return "Genesis preflight blocked: Target repository has tracked or untracked changes."
+    return None
 
 
 class RepositoryClient(Protocol):
@@ -608,6 +651,12 @@ class EngineeringRunner:
                 execution_mode=execution_mode_for(prompt_path.read_text(encoding="utf-8")),
             )
         objective = prompt_path.read_text(encoding="utf-8")
+        if state.execution_mode == "GENESIS":
+            preflight = genesis_workspace_preflight(objective)
+            if preflight:
+                return self._save_terminal(
+                    state, "BLOCKED", "genesis_workspace_preflight", preflight
+                )
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,
