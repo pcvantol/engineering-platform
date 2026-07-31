@@ -80,6 +80,15 @@ def _sse_status(root: Path) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
+def _latest_codex_log(root: Path) -> bytes:
+    """Return only the latest locally redacted Codex diagnostic."""
+    logs = sorted((root / ".djconnect" / "logs" / "codex").glob("*.log"))
+    try:
+        return logs[-1].read_bytes() if logs else b"No Codex CLI diagnostic is available."
+    except OSError:
+        return b"Codex CLI diagnostic is unavailable."
+
+
 def handler(root: Path):
     title = PlatformConfiguration.load(root).workspace.dashboard_title
     class DashboardHandler(BaseHTTPRequestHandler):
@@ -123,9 +132,11 @@ def handler(root: Path):
                 except OSError:
                     content = b"Report is unavailable."
                 return self._send(content, "text/markdown; charset=utf-8")
+            if self.path == "/api/log/latest":
+                return self._send(_latest_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/":
                 return self._send(
-                    f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading status…</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><script>const $=id=>document.getElementById(id),fallback={{watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."}};function r(x){{x=x&&typeof x==="object"?x:fallback;$("state").textContent=(x.watcher_state||fallback.watcher_state)+" · "+(x.current_phase||"idle");$("action").textContent=x.current_action||"No active action";$("job").textContent="Run: "+(x.run_id||"none")+" · Queue: "+(x.queue_depth??0);$("prs").textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");$("repo").textContent=(x.repository_state||"UNKNOWN")+" · "+(x.workspace_state||"UNKNOWN");$("diag").textContent=x.diagnostic||"No diagnostic"}}let e=new EventSource("/api/events");e.addEventListener("status",x=>{{try{{r(JSON.parse(x.data))}}catch{{r(fallback)}}}});fetch("/api/status").then(x=>{{if(!x.ok)throw Error("status unavailable");return x.json()}}).then(r).catch(()=>r(fallback))</script>'.encode(),
+                    f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{title}</title><style>body{{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}}.card{{background:#24242d;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 18px #0005}}strong{{color:#c7a6ff}}pre{{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}}</style><h1>{title}</h1><div class="card"><strong id="state">Loading status…</strong><p id="action"></p></div><div class="card" id="job"></div><div class="card" id="prs"></div><div class="card" id="repo"></div><div class="card" id="diag"></div><div class="card"><strong>Latest Codex CLI diagnostic</strong><pre id="log">Loading diagnostic…</pre></div><script>const $=id=>document.getElementById(id),fallback={{watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."}};function r(x){{x=x&&typeof x==="object"?x:fallback;$("state").textContent=(x.watcher_state||fallback.watcher_state)+" · "+(x.current_phase||"idle");$("action").textContent=x.current_action||"No active action";$("job").textContent="Run: "+(x.run_id||"none")+" · Queue: "+(x.queue_depth??0);$("prs").textContent="Implementation: "+(x.implementation_pr||"none")+" · Finalization: "+(x.finalization_pr||"none");$("repo").textContent=(x.repository_state||"UNKNOWN")+" · "+(x.workspace_state||"UNKNOWN");$("diag").textContent=x.diagnostic||"No diagnostic"}}let e=new EventSource("/api/events");e.addEventListener("status",x=>{{try{{r(JSON.parse(x.data))}}catch{{r(fallback)}}}});fetch("/api/status").then(x=>{{if(!x.ok)throw Error("status unavailable");return x.json()}}).then(r).catch(()=>r(fallback));fetch("/api/log/latest").then(x=>x.text()).then(x=>$("log").textContent=x).catch(()=>$("log").textContent="Codex CLI diagnostic is unavailable.")</script>'.encode(),
                     "text/html; charset=utf-8",
                 )
             self.send_error(404)

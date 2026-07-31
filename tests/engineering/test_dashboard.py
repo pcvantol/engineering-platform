@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _latest_codex_log, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -65,6 +65,13 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
+
+    def test_latest_codex_log_is_local_and_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary) / ".djconnect" / "logs" / "codex"
+            logs.mkdir(parents=True)
+            (logs / "run.log").write_text("redacted diagnostic", encoding="utf-8")
+            self.assertEqual(_latest_codex_log(Path(temporary)), b"redacted diagnostic")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:
