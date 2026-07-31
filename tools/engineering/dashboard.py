@@ -12,6 +12,7 @@ import subprocess
 import sys
 from threading import Thread
 import time
+from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_api import PlatformConfigurationError
 from .providers import TailscaleProvider
@@ -108,6 +109,17 @@ def _latest_codex_log(root: Path) -> bytes:
         return logs[-1].read_bytes() if logs else b"No Codex CLI diagnostic is available."
     except OSError:
         return b"Codex CLI diagnostic is unavailable."
+
+
+def _report_for_run(root: Path, run_id: str | None) -> bytes:
+    """Return report evidence only for the exact displayed terminal run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b""
+    try:
+        reports = sorted((root / ".djconnect" / "reports").glob(f"*_{run_id}.md"))
+        return reports[-1].read_bytes() if reports else b""
+    except OSError:
+        return b""
 
 
 def _current_codex_log(root: Path) -> bytes:
@@ -210,7 +222,7 @@ def _dashboard_html(title: str, build_commit: str = "onbekend") -> bytes:
 <title>$TITLE</title>
 <style>
 body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}.dashboard-grid{display:grid;gap:12px}
-.card{background:#24242d;border-radius:16px;padding:16px;box-shadow:0 4px 18px #0005}.prompt-runs{display:grid;gap:8px}.prompt-runs__heading{color:#b9b6c0;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.prompt-runs__cards{display:grid;gap:12px}.card--previous{background:#202a36;border:1px solid #37506a;box-shadow:0 4px 18px #0005}.card--previous strong,.card--previous .label{color:#8dc7ff}.field{margin:10px 0 0}.label{display:block;color:#c7a6ff;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}.footer{color:#b9b6c0;font-size:13px;margin:28px 0 8px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:7px 10px;font:14px system-ui}
+.card{background:#24242d;border-radius:16px;padding:16px;box-shadow:0 4px 18px #0005}.prompt-runs{display:grid;gap:8px}.prompt-runs__heading{color:#b9b6c0;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.prompt-runs__cards,.last-execution{display:grid;gap:12px}.card--previous{background:#202a36;border:1px solid #37506a;box-shadow:0 4px 18px #0005}.card--previous strong,.card--previous .label{color:#8dc7ff}.field{margin:10px 0 0}.label{display:block;color:#c7a6ff;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}.footer{color:#b9b6c0;font-size:13px;margin:28px 0 8px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:7px 10px;font:14px system-ui}
 strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:10px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff9f43;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}[hidden]{display:none}
 @media (min-width:900px){body{max-width:1440px;margin:auto}.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.prompt-runs,#report{grid-column:1 / -1}.prompt-runs__cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -222,15 +234,14 @@ pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monos
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p id="executionEstimate">Nog niet beschikbaar…</p></div>
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
-<section class="prompt-runs" aria-label="Promptuitvoeringen"><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
+<section class="prompt-runs" id="promptRuns" aria-label="Promptuitvoeringen" hidden><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
 <div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
-<div class="card card--previous"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div>
+<div class="last-execution" id="lastExecution" hidden><div class="card card--previous"><strong>Laatst uitgevoerd</strong><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div><details class="card card--previous" id="report" hidden><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details></div>
 </div></section>
 <div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
 <div class="card"><strong>Diagnose</strong><p id="diag"></p></div>
-<details class="card" id="report"><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details>
 </main>
 <footer class="footer"><span class="label">Engineering Platform-versie</span><span id="platformVersion">Laden…</span> · <span class="label">Git-commit</span><code>$BUILD_COMMIT</code></footer>
 <script>
@@ -249,11 +260,11 @@ function l(id,url,run,last){if(run===(last?lastLogRun:currentLogRun))return;if(l
 function usage(){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};fetch("/api/usage").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}).catch(()=>$("usage").hidden=true)}
 function commits(){fetch("/api/commits").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}).catch(()=>$("commits").hidden=true)}
 function promptStarted(){fetch("/api/prompt-started").then(x=>x.json()).then(x=>$("promptStarted").textContent=x.started_at?formatTime.format(new Date(x.started_at)):"Niet beschikbaar").catch(()=>$("promptStarted").textContent="Niet beschikbaar")}
-let reportLoaded=false,reportRequest;function report(){if(reportLoaded)return reportRequest;reportLoaded=true;return reportRequest=fetch("/api/report/latest").then(x=>x.text()).then(x=>$("reportContent").textContent=x).catch(()=>{$("reportContent").textContent="Engineeringrapport is niet beschikbaar."})}
+let lastExecutedRun,reportLoaded=false,reportRequest;function report(){if(!lastExecutedRun)return Promise.resolve();if(reportLoaded)return reportRequest;reportLoaded=true;return reportRequest=fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun)).then(x=>x.text()).then(x=>{if(!x){$("report").hidden=true;return}$("reportContent").textContent=x}).catch(()=>{$("reportContent").textContent="Engineeringrapport is niet beschikbaar."})}
 function fallbackCopy(value){const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.cssText="position:fixed;top:0;left:0;opacity:0";document.body.append(area);area.focus();area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw Error("copy unavailable")}
 function copyText(value){return navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(value).catch(()=>fallbackCopy(value)):Promise.resolve().then(()=>fallbackCopy(value))}
 function copyReport(){report().then(()=>copyText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
-function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator");indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",x.last_executed_run||null,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
+function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null;if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";$("executionEstimate").textContent=estimate(x);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",previous,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits()}
 function refresh(){fetch("/api/status").then(x=>{if(!x.ok)throw Error("status unavailable");return x.json()}).then(r).catch(()=>r(fallback))}
 let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data));humanize()}catch{r(fallback);humanize()}});$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(()=>{clock();humanize();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh();checkBuild();setInterval(checkBuild,5000);setInterval(promptStarted,5000);promptStarted()
 </script>"""
@@ -277,6 +288,12 @@ def handler(root: Path):
             self.wfile.write(content)
 
         def do_GET(self) -> None:
+            request = urlsplit(self.path)
+            if request.path == "/api/report/last-executed":
+                run_id = parse_qs(request.query).get("run_id", [None])[0]
+                return self._send(
+                    _report_for_run(root, run_id), "text/markdown; charset=utf-8"
+                )
             if self.path == "/api/status":
                 return self._send(_status(root), "application/json; charset=utf-8")
             if self.path == "/api/build":

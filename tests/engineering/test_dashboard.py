@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -44,7 +44,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('WORKSPACE_READY:"Werkruimte gereed"', page)
         self.assertIn('id="report"', page)
         self.assertIn("Engineeringrapport", page)
-        self.assertIn('fetch("/api/report/latest")', page)
+        self.assertIn('fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun))', page)
+        self.assertIn('id="promptRuns"', page)
+        self.assertIn('id="lastExecution" hidden', page)
         self.assertIn('id="copyReport"', page)
         self.assertIn("navigator.clipboard.writeText", page)
         self.assertIn("function fallbackCopy(value)", page)
@@ -195,6 +197,16 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(b"last executed run", _last_executed_codex_log(root))
             (logs / "inbox-last.log").write_text("last diagnostic", encoding="utf-8")
             self.assertEqual(_last_executed_codex_log(root), b"last diagnostic")
+
+    def test_report_is_bound_to_the_requested_last_executed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reports = root / ".djconnect" / "reports"
+            reports.mkdir(parents=True)
+            (reports / "one_inbox-other.md").write_text("other", encoding="utf-8")
+            (reports / "two_inbox-last.md").write_text("last", encoding="utf-8")
+            self.assertEqual(_report_for_run(root, "inbox-last"), b"last")
+            self.assertEqual(_report_for_run(root, "inbox-missing"), b"")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:
