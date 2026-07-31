@@ -6,10 +6,65 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _current_codex_log, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_dashboard_shows_amsterdam_time_and_refresh_countdown(self) -> None:
+        page = _dashboard_html("DJConnect Engineering").decode()
+
+        self.assertIn('id="currentTime"', page)
+        self.assertIn('id="lastRefresh"', page)
+        self.assertIn('id="nextRefresh"', page)
+        self.assertIn('timeZone:"Europe/Amsterdam"', page)
+        self.assertIn('"nl-NL"', page)
+        self.assertIn("REFRESH_SECONDS=5", page)
+        self.assertIn('id="indicator"', page)
+        self.assertIn("indicator--green", page)
+        self.assertIn("indicator--yellow", page)
+        self.assertIn("indicator--orange", page)
+        self.assertIn("indicator--red", page)
+        self.assertIn('return "grey"', page)
+        self.assertIn('id="executionEstimate"', page)
+        self.assertIn("function estimate(x)", page)
+        self.assertIn("ongeveer 15–30 minuten", page)
+        self.assertIn("geen betrouwbare ETA", page)
+        self.assertIn('id="usage"', page)
+        self.assertIn('fetch("/api/usage")', page)
+        self.assertIn("Engineering Platform-versie", page)
+        self.assertIn('id="platformVersion"', page)
+        for label in (
+            "Watcher",
+            "Fase",
+            "Huidige actie",
+            "Prompttitel",
+            "Bestandsnaam",
+            "Codex CLI-diagnose",
+            "Run-ID",
+            "Wachtrij",
+            "Repositorystatus",
+            "Werkruimtestatus",
+        ):
+            self.assertIn(label, page)
+
+    def test_codex_usage_is_shown_only_for_the_displayed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".djconnect" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text('{"run_id":"inbox-visible"}', encoding="utf-8")
+            (status / "codex_usage.json").write_text(
+                '{"run_id":"inbox-visible","usage":{"input_tokens":123,"cost":1.25}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                json.loads(_codex_usage(root)), {"input_tokens": 123, "cost": 1.25}
+            )
+            (status / "codex_usage.json").write_text(
+                '{"run_id":"inbox-other","usage":{"input_tokens":123}}', encoding="utf-8"
+            )
+            self.assertEqual(json.loads(_codex_usage(root)), {})
+
     def test_missing_status_uses_a_complete_degraded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             status = json.loads(_status(Path(temporary)))

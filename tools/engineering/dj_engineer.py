@@ -52,6 +52,71 @@ class CodexInvocationError(RunnerError):
         self.console_detail = console_detail
 
 
+USAGE_KEYS = frozenset(
+    {
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost",
+        "remaining",
+        "plan_remaining",
+        "usage",
+    }
+)
+
+
+def extract_codex_usage(*outputs: str) -> dict[str, int | float | str]:
+    """Extract only explicitly reported, display-safe CLI usage fields."""
+    usage: dict[str, int | float | str] = {}
+
+    def collect(value: object) -> None:
+        if isinstance(value, dict):
+            for key, candidate in value.items():
+                normalized = str(key).lower().replace("-", "_")
+                if normalized in USAGE_KEYS and isinstance(candidate, (int, float)) and candidate >= 0:
+                    usage[normalized] = candidate
+                elif normalized in {"usage", "token_usage"}:
+                    collect(candidate)
+                elif isinstance(candidate, dict):
+                    collect(candidate)
+        elif isinstance(value, list):
+            for candidate in value:
+                collect(candidate)
+
+    for output in outputs:
+        for line in output.splitlines():
+            try:
+                collect(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return usage
+
+
+def write_codex_usage(root: Path, run_id: str, usage: dict[str, int | float | str]) -> None:
+    """Persist only current-run CLI usage that the CLI explicitly supplied."""
+    safe_usage = {
+        key: value
+        for key, value in usage.items()
+        if key in USAGE_KEYS and isinstance(value, (int, float)) and value >= 0
+    }
+    if not safe_usage:
+        return
+    directory = root / ".djconnect" / "status"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".codex-usage.", suffix=".tmp", dir=directory)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({"run_id": run_id, "usage": safe_usage}, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, directory / "codex_usage.json")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def additional_workspace_write_roots(root: Path) -> tuple[Path, ...]:
     """Return the single configured sibling-project root, or no extra write root.
 
@@ -272,6 +337,7 @@ class GhCliClient:
 class CodexCliClient:
     def __init__(self, provider: CodexCliProvider | None = None) -> None:
         self.provider = provider or CodexCliProvider()
+        self.last_usage: dict[str, int | float | str] = {}
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -321,6 +387,7 @@ class CodexCliClient:
                 capture_output=True,
                 check=False,
             )
+            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
@@ -404,6 +471,7 @@ class CodexCliClient:
                 capture_output=True,
                 check=False,
             )
+            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
@@ -506,6 +574,11 @@ class EngineeringRunner:
         self.reviewer_records: tuple[dict[str, object], ...] = ()
         self.console_detail: str | None = None
 
+    def _persist_agent_usage(self, run_id: str) -> None:
+        usage = getattr(self.agent, "last_usage", None)
+        if isinstance(usage, dict):
+            write_codex_usage(self.root, run_id, usage)
+
     def run(
         self,
         prompt_path: Path,
@@ -574,6 +647,7 @@ class EngineeringRunner:
             result = self.agent.invoke(
                 self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context
             )
+            self._persist_agent_usage(state.run_id)
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
@@ -739,6 +813,7 @@ class EngineeringRunner:
                 assemble_prompt(Path(repair.prompt_path), repair)
                 + f"\n\nRepair objective: {objective}",
             )
+            self._persist_agent_usage(repair.run_id)
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(repair, "BLOCKED", "inspect_codex_cli", str(error))
@@ -799,6 +874,7 @@ class EngineeringRunner:
                 self.root,
                 assemble_prompt(Path(finalization.prompt_path), finalization) + instruction,
             )
+            self._persist_agent_usage(finalization.run_id)
         except CodexInvocationError as error:
             self.console_detail = error.console_detail
             return self._save_terminal(finalization, "BLOCKED", "inspect_codex_cli", str(error))

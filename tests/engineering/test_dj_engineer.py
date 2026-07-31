@@ -19,10 +19,12 @@ from tools.engineering.dj_engineer import (
     _format_terminal_report,
     _format_cli_failure,
     _open_report,
+    extract_codex_usage,
     execution_mode_for,
     format_management_summary,
     generate_terminal_report,
     write_redacted_codex_cli_log,
+    write_codex_usage,
 )
 from tools.engineering.platform_version import (
     EngineeringPlatformCompatibilityError,
@@ -270,6 +272,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertNotIn("stdout-secret", raised.exception.console_detail)
         self.assertNotIn("stderr-secret", raised.exception.console_detail)
         self.assertIn("[REDACTED]", raised.exception.console_detail)
+
+    def test_cli_usage_extracts_only_reported_numeric_fields(self) -> None:
+        usage = extract_codex_usage(
+            '{"usage":{"input_tokens":120,"output_tokens":30,"cost":0.04,"ignored":"text"}}\n'
+        )
+
+        self.assertEqual(usage, {"input_tokens": 120, "output_tokens": 30, "cost": 0.04})
+
+    def test_cli_usage_is_written_only_when_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_codex_usage(root, "inbox-usage", {"total_tokens": 150})
+            payload = json.loads((root / ".djconnect" / "status" / "codex_usage.json").read_text())
+            self.assertEqual(payload, {"run_id": "inbox-usage", "usage": {"total_tokens": 150}})
 
     def test_cli_output_schema_requires_every_declared_property(self) -> None:
         captured: dict[str, object] = {}
