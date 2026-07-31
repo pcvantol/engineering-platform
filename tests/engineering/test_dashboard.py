@@ -42,6 +42,20 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["current_phase"], "INITIALIZE")
         self.assertEqual(status["run_id"], "inbox-123")
 
+    def test_active_runner_status_wins_over_previous_terminal_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".djconnect" / "status"
+            directory.mkdir(parents=True)
+            (directory / "status.json").write_text('{"current_phase":"BLOCKED"}', encoding="utf-8")
+            (directory / "current.json").write_text(
+                '{"run_id":"inbox-new","phase":"INITIALIZE","current_action":"Starting"}',
+                encoding="utf-8",
+            )
+            status = json.loads(_status(Path(temporary)))
+
+        self.assertEqual(status["current_phase"], "INITIALIZE")
+        self.assertEqual(status["run_id"], "inbox-new")
+
     def test_sse_status_is_single_line_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / ".djconnect" / "status"

@@ -45,12 +45,8 @@ def _unavailable_status() -> bytes:
 
 def _status(root: Path) -> bytes:
     try:
-        return (root / ".djconnect" / "status" / "status.json").read_bytes()
-    except OSError:
-        pass
-    try:
         live = json.loads((root / ".djconnect" / "status" / "current.json").read_text(encoding="utf-8"))
-        return json.dumps(
+        projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
                 "current_phase": live.get("phase") or "INITIALIZE",
@@ -66,7 +62,13 @@ def _status(root: Path) -> bytes:
             separators=(",", ":"),
         ).encode()
     except (OSError, json.JSONDecodeError):
-        return _unavailable_status()
+        live, projection = None, None
+    if live and live.get("phase") not in {"COMPLETE", "BLOCKED", "FAILED"}:
+        return projection
+    try:
+        return (root / ".djconnect" / "status" / "status.json").read_bytes()
+    except OSError:
+        return projection or _unavailable_status()
 
 
 def _sse_status(root: Path) -> bytes:
