@@ -12,8 +12,10 @@ import sys
 from threading import Thread
 import time
 from .platform_api import PlatformConfiguration
+from .platform_api import PlatformConfigurationError
 from .providers import TailscaleProvider
 from .providers import LaunchdProvider
+from .inbox_watcher import cloud_root
 
 LABEL = "com.djconnect.engineering-dashboard"
 DASHBOARD_VERSION = "1.1.0"
@@ -52,8 +54,8 @@ def _unavailable_status() -> bytes:
 
 def _status(root: Path) -> bytes:
     try:
-        watcher = json.loads((root / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        watcher = json.loads(cloud_root(repo=root).joinpath("status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, PlatformConfigurationError):
         watcher = {}
     try:
         live = json.loads((root / ".djconnect" / "status" / "current.json").read_text(encoding="utf-8"))

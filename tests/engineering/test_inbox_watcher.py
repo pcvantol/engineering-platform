@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -22,6 +23,14 @@ class InboxWatcherTest(unittest.TestCase):
         self.inbox = inbox
 
     def tearDown(self) -> None: self.temp.cleanup()
+
+    def test_preflight_failure_keeps_the_specific_bounded_runner_reason(self) -> None:
+        completed = subprocess.CompletedProcess(("dj-engineer",), 2, "BLOCKED: working tree is not clean\n", "")
+
+        self.assertEqual(
+            inbox_watcher._runner_failure_detail(completed),
+            "BLOCKED: working tree is not clean",
+        )
 
     def test_filename_neutral_markdown_prompts_are_discovered_oldest_first(self) -> None:
         oldest = self.inbox / "first-submission"

@@ -683,8 +683,15 @@ class EngineeringRunner:
             clean = subprocess.run(("git", "status", "--porcelain", "--untracked-files=all"), cwd=target, text=True, capture_output=True, check=False)
         except OSError as error:
             return self._save_terminal(state, "BLOCKED", "genesis_local_repository_required", str(error))
-        if head.returncode or clean.returncode or head.stdout.strip() != result.commit_sha or clean.stdout.strip():
-            return self._save_terminal(state, "BLOCKED", "genesis_reconciliation_required", "Genesis repository does not match the reported clean local commit.")
+        actual_head = head.stdout.strip()
+        workspace = "clean" if not clean.stdout.strip() else "dirty"
+        if head.returncode or clean.returncode or actual_head != result.commit_sha or workspace != "clean":
+            diagnostic = (
+                "Genesis reconciliation failed: "
+                f"reported commit={result.commit_sha or 'missing'}; "
+                f"actual HEAD={actual_head or 'unavailable'}; workspace={workspace}."
+            )
+            return self._save_terminal(state, "BLOCKED", "genesis_reconciliation_required", diagnostic)
         reconciled = replace(state, genesis_repository_path=str(target), genesis_commit_sha=result.commit_sha, latest_repository_evidence=f"local genesis commit {result.commit_sha}")
         return self._save_terminal(reconciled, "COMPLETE", "genesis_local_commit_reconciled")
 

@@ -111,6 +111,14 @@ def _safe_detail(value: object) -> object:
     return value
 
 
+def _runner_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Expose the bounded runner preflight reason without retaining prompt content."""
+    output = completed.stderr or completed.stdout
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    detail = lines[-1] if lines else "Runner stopped before publishing a checkpoint."
+    return redact_diagnostic(detail, limit=500)
+
+
 def _prompt_title(content: str, filename: str) -> str:
     """Expose only a bounded Markdown title, never the submitted prompt body."""
     for line in content.splitlines():
@@ -335,6 +343,10 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             else ("JOB_BLOCKED" if phase == "BLOCKED" else "JOB_FAILED")
         )
         reason = diagnostic or (
+            _runner_failure_detail(completed)
+            if completed.returncode and phase is None
+            else None
+        ) or (
             "Engineering report was not available for delivery."
             if completed.returncode == 0
             else "Runner ended without a safe terminal report."
