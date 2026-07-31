@@ -223,6 +223,24 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertNotIn("stderr-secret", raised.exception.console_detail)
         self.assertIn("[REDACTED]", raised.exception.console_detail)
 
+    def test_cli_output_schema_requires_every_declared_property(self) -> None:
+        captured: dict[str, object] = {}
+
+        def invoke_with_schema(command: tuple[str, ...], **_: object) -> object:
+            schema_path = Path(command[command.index("--output-schema") + 1])
+            captured.update(__import__("json").loads(schema_path.read_text(encoding="utf-8")))
+            return __import__("subprocess").CompletedProcess(
+                command,
+                0,
+                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":""}\n',
+                "",
+            )
+
+        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_schema):
+            CodexCliClient().invoke(self.root, "test")
+
+        self.assertEqual(set(captured["properties"]), set(captured["required"]))
+
     def test_cli_failure_log_omits_prompt_and_keeps_error_tail(self) -> None:
         detail = _format_cli_failure(
             1,

@@ -313,7 +313,13 @@ class CodexCliClient:
         schema = {
             "type": "object",
             "additionalProperties": False,
-            "required": ["terminal_state", "branch", "pull_request", "terminal_condition"],
+            "required": [
+                "terminal_state",
+                "branch",
+                "pull_request",
+                "terminal_condition",
+                "diagnostic",
+            ],
             "properties": {
                 "terminal_state": {
                     "type": "string",
