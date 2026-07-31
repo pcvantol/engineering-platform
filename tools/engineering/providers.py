@@ -6,6 +6,7 @@ diagnostics only; they do not grant execution, repository or network authority.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 import shutil
 import subprocess
@@ -90,6 +91,29 @@ class ICloudInboxProvider:
 
 
 class TailscaleProvider:
+    _TAILSCALE_NETWORK = IPv4Network("100.64.0.0/10")
+
+    def ipv4_address(self) -> str | None:
+        """Return only the local, routable Tailscale IPv4 address.
+
+        This is a read-only diagnostic query.  It never changes Tailnet
+        configuration, ACLs, Funnel, or port-forwarding state.
+        """
+        executable = shutil.which("tailscale")
+        if not executable:
+            return None
+        observed = subprocess.run((executable, "ip", "-4"), text=True, capture_output=True, check=False)
+        if observed.returncode:
+            return None
+        for candidate in observed.stdout.splitlines():
+            try:
+                address = IPv4Address(candidate.strip())
+            except ValueError:
+                continue
+            if address in self._TAILSCALE_NETWORK:
+                return str(address)
+        return None
+
     def status(self) -> ProviderStatus:
         executable = shutil.which("tailscale")
         if not executable:

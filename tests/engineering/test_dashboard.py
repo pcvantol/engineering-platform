@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from tools.engineering.dashboard import _status
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -18,3 +19,14 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["repository_state"], "UNKNOWN")
         self.assertEqual(status["workspace_state"], "UNKNOWN")
         self.assertIn("No local engineering status", status["diagnostic"])
+
+    @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
+    def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:
+        self.assertEqual(
+            binding_addresses(),
+            (LOOPBACK_ADDRESS, "100.108.178.11"),
+        )
+
+    @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value=None)
+    def test_dashboard_fails_closed_to_loopback_without_tailscale(self, _address: object) -> None:
+        self.assertEqual(binding_addresses(), (LOOPBACK_ADDRESS,))

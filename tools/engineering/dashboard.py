@@ -7,13 +7,21 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from threading import Thread
 import time
 from .platform_api import PlatformConfiguration
 from .providers import TailscaleProvider
 from .providers import LaunchdProvider
 
 LABEL = "com.djconnect.engineering-dashboard"
-DASHBOARD_VERSION = "1.0.0"
+DASHBOARD_VERSION = "1.1.0"
+LOOPBACK_ADDRESS = "127.0.0.1"
+
+
+class DashboardHTTPServer(ThreadingHTTPServer):
+    """Private dashboard listener with safe restart behavior."""
+
+    allow_reuse_address = True
 
 
 def _unavailable_status() -> bytes:
@@ -97,8 +105,34 @@ def handler(root: Path):
     return DashboardHandler
 
 
-def run(root: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
-    ThreadingHTTPServer((host, port), handler(root)).serve_forever()
+def binding_addresses(provider: TailscaleProvider | None = None) -> tuple[str, ...]:
+    """Bind only loopback and the explicit local Tailscale address.
+
+    The dashboard deliberately never binds a wildcard, LAN, public or Funnel
+    address.  Tailnet policy remains the access boundary; this code changes no
+    Tailscale configuration.
+    """
+    tailscale_address = (provider or TailscaleProvider()).ipv4_address()
+    return (LOOPBACK_ADDRESS, *(() if tailscale_address is None else (tailscale_address,)))
+
+
+def create_servers(
+    root: Path, port: int = 8765, provider: TailscaleProvider | None = None
+) -> tuple[DashboardHTTPServer, ...]:
+    """Create the exact private listeners for the dashboard."""
+    request_handler = handler(root)
+    return tuple(
+        DashboardHTTPServer((address, port), request_handler)
+        for address in binding_addresses(provider)
+    )
+
+
+def run(root: Path, port: int = 8765, provider: TailscaleProvider | None = None) -> None:
+    """Serve locally and, when present, over the authenticated Tailnet only."""
+    servers = create_servers(root, port, provider)
+    for server in servers[1:]:
+        Thread(target=server.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 def launch_agent(repo: Path) -> Path:
@@ -145,10 +179,21 @@ def main(argv: list[str] | None = None) -> int:
         agent.unlink(missing_ok=True)
         return 0
     health = (repo / ".djconnect" / "status" / "status.json").is_file()
-    remote = TailscaleProvider().status()
-    state = "READY" if health and agent.is_file() else "DEGRADED"
+    remote_provider = TailscaleProvider()
+    remote = remote_provider.status()
+    tailscale_address = remote_provider.ipv4_address()
+    state = "READY" if health and agent.is_file() and tailscale_address else "DEGRADED"
+    action = (
+        "Run Engineering Platform to publish a status update."
+        if not health
+        else "Connect Tailscale before using private iPhone dashboard access."
+        if not tailscale_address
+        else "Open the private dashboard through the local Tailscale address."
+    )
     print(
-        f"REMOTE_ENGINEERING_{state}\nprivate_remote_access={remote.detail}\nAction: configure the qualified private-access provider; no network configuration was changed."
+        f"REMOTE_ENGINEERING_{state}\nprivate_remote_access={remote.detail}\n"
+        f"tailscale_dashboard_address={tailscale_address or 'unavailable'}\n"
+        f"Action: {action} No network configuration was changed."
     )
     return 0 if state == "READY" else 1
 

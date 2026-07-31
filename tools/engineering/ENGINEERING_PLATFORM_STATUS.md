@@ -23,6 +23,10 @@ boundary. Existing commands remain compatibility interfaces.
 - Provider-neutral runtime, repository, service, submission and private-access
   configuration, with Codex CLI, GitHub, launchd, iCloud Inbox and Tailscale as
   current configured providers.
+- The private dashboard is read-only and binds only to loopback plus the
+  locally reported Tailscale IPv4 address. It never binds a wildcard, LAN or
+  public address, and it does not configure Tailnet ACLs, Funnel, port
+  forwarding or network policy.
 
 ## Future governance
 
