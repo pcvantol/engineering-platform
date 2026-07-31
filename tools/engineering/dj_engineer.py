@@ -52,6 +52,31 @@ class CodexInvocationError(RunnerError):
         self.console_detail = console_detail
 
 
+def additional_workspace_write_roots(root: Path) -> tuple[Path, ...]:
+    """Return the single configured sibling-project root, or no extra write root.
+
+    The local setting is deliberately limited to the current repository's direct
+    parent. It enables a new sibling project without giving a transaction broad
+    filesystem write authority.
+    """
+    local = root / ".djconnect" / "engineering-platform.local.json"
+    if not local.is_file():
+        return ()
+    try:
+        configured = PlatformConfiguration.load(root).workspace.provisioning_root
+    except PlatformConfigurationError as error:
+        raise RunnerError(str(error)) from error
+    if configured is None:
+        return ()
+    candidate = Path(configured).expanduser()
+    if candidate.is_symlink() or not candidate.is_dir():
+        raise RunnerError("Configured Engineering Workspace Root must be an existing directory, not a symlink.")
+    resolved = candidate.resolve()
+    if root.resolve().parent != resolved:
+        raise RunnerError("Configured Engineering Workspace Root must be the current repository's direct parent directory.")
+    return (resolved,)
+
+
 @dataclass(frozen=True)
 class RepositoryEvidence:
     repository: str
@@ -344,18 +369,20 @@ class CodexCliClient:
             json.dump(schema, handle)
             schema_path = Path(handle.name)
         try:
+            extra_roots = additional_workspace_write_roots(root)
+            command = [
+                "codex",
+                "exec",
+                "--sandbox",
+                "workspace-write",
+                "-C",
+                str(root),
+            ]
+            for extra_root in extra_roots:
+                command.extend(("--add-dir", str(extra_root)))
+            command.extend(("--output-schema", str(schema_path), prompt))
             completed = subprocess.run(
-                (
-                    "codex",
-                    "exec",
-                    "--sandbox",
-                    "workspace-write",
-                    "-C",
-                    str(root),
-                    "--output-schema",
-                    str(schema_path),
-                    prompt,
-                ),
+                tuple(command),
                 cwd=root,
                 text=True,
                 capture_output=True,

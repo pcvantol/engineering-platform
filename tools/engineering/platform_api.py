@@ -36,6 +36,7 @@ class WorkspaceIdentity:
     repository_name: str
     default_branch: str
     dashboard_title: str
+    provisioning_root: str | None
 
 
 @dataclass(frozen=True)
@@ -64,10 +65,17 @@ class PlatformConfiguration:
         expected = {"runtime", "repository", "service_manager", "remote_submission", "private_remote_access", "dashboard"}
         if set(raw) != {"schema_version", "platform", "workspace", "providers"} or raw.get("schema_version") != 1 or set(providers) != expected or not all(isinstance(v, str) and v for v in providers.values()):
             raise PlatformConfigurationError("Engineering Platform configuration is incompatible.")
+        provisioning_root = workspace.get("provisioning_root")
+        if provisioning_root is not None and (
+            not isinstance(provisioning_root, str)
+            or not provisioning_root
+            or not Path(provisioning_root).is_absolute()
+        ):
+            raise PlatformConfigurationError("Engineering Workspace Root is invalid.")
         identity = PlatformIdentity(platform["id"], platform["name"], platform["version"], platform["generation"], platform["documentation_namespace"], platform["capability_registry_version"])
         if identity.id != "engineering-platform" or identity.version != "1.5.0" or identity.generation != 2:
             raise PlatformConfigurationError("Engineering Platform identity is incompatible.")
-        return cls(1, identity, WorkspaceIdentity(workspace["id"], workspace["name"], repository["provider"], repository["owner"], repository["name"], repository["default_branch"], branding["dashboard_title"]), dict(providers))
+        return cls(1, identity, WorkspaceIdentity(workspace["id"], workspace["name"], repository["provider"], repository["owner"], repository["name"], repository["default_branch"], branding["dashboard_title"], provisioning_root), dict(providers))
 
 
 def _merge(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:

@@ -241,6 +241,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(set(captured["properties"]), set(captured["required"]))
 
+    def test_cli_adds_configured_sibling_project_root(self) -> None:
+        source = Path(__file__).resolve().parents[2] / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json"
+        configuration = self.root / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json"
+        configuration.parent.mkdir(parents=True, exist_ok=True)
+        configuration.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        local = self.root / ".djconnect"
+        local.mkdir(exist_ok=True)
+        workspace_root = self.root.parent.resolve()
+        (local / "engineering-platform.local.json").write_text(
+            __import__("json").dumps({"workspace": {"provisioning_root": str(workspace_root)}}),
+            encoding="utf-8",
+        )
+        captured: list[str] = []
+
+        def invoke_with_workspace_root(command: tuple[str, ...], **_: object) -> object:
+            captured.extend(command)
+            return __import__("subprocess").CompletedProcess(
+                command,
+                0,
+                '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,"terminal_condition":"repository_reconciled","diagnostic":""}\n',
+                "",
+            )
+
+        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_workspace_root):
+            CodexCliClient().invoke(self.root, "test")
+
+        self.assertEqual(captured[captured.index("--add-dir") + 1], str(workspace_root))
+
     def test_cli_failure_log_omits_prompt_and_keeps_error_tail(self) -> None:
         detail = _format_cli_failure(
             1,
