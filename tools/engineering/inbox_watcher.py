@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -21,9 +22,11 @@ from .providers import LaunchdProvider
 from .status_model import build, publish
 
 LABEL = "com.djconnect.engineering-inbox"
-WATCHER_VERSION = "1.0.0"
+WATCHER_VERSION = "1.0.1"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
+RETRY_OF_PATTERN = re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 
@@ -178,6 +181,11 @@ def _previous_prompt_context(root: Path) -> dict[str, object]:
         "last_executed_title",
         "last_executed_run",
         "last_executed_phase",
+        "blocking_predecessor_run",
+        "blocking_predecessor_phase",
+        "blocking_predecessor_filename",
+        "blocking_predecessor_title",
+        "predecessor_recovery_action",
     )
     try:
         prior = json.loads((root / "status.json").read_text(encoding="utf-8"))
@@ -192,14 +200,14 @@ def status(root: Path, state: str, **details: object) -> None:
         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
     )
     context = _previous_prompt_context(root)
-    context.update(
-        {
-            key: value
-            for key, value in details.items()
-            if key in {"submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title", "last_executed_run", "last_executed_phase"}
-            and value is not None
-        }
-    )
+    retained = {
+        "submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title",
+        "last_executed_run", "last_executed_phase", "blocking_predecessor_run",
+        "blocking_predecessor_phase", "blocking_predecessor_filename",
+        "blocking_predecessor_title", "predecessor_recovery_action",
+    }
+    context.update({key: value for key, value in details.items() if key in retained and value is not None})
+    context.update({key: None for key in retained if key in details and details[key] is None})
     payload = build(
         manifest,
         watcher_state=state,
@@ -233,6 +241,36 @@ def _already_seen(areas: dict[str, Path], job_id: str) -> bool:
     return any(
         next(areas[name].glob(f"{job_id}__*"), None) is not None
         for name in ("Running", "Completed", "Failed")
+    )
+
+
+def _retry_of(content: str) -> str | None:
+    """Return the explicit predecessor run named by a corrected Inbox retry."""
+    match = RETRY_OF_PATTERN.search(content)
+    return match.group(1) if match else None
+
+
+def _blocking_predecessor(root: Path) -> dict[str, str] | None:
+    """Return terminal predecessor evidence that must fail closed for the queue."""
+    prior = _previous_prompt_context(root)
+    phase = prior.get("last_executed_phase")
+    run_id = prior.get("last_executed_run")
+    if phase not in BLOCKING_PREDECESSOR_PHASES or not isinstance(run_id, str):
+        return None
+    title = prior.get("last_executed_title")
+    filename = prior.get("last_executed_filename")
+    return {
+        "run_id": run_id,
+        "phase": str(phase),
+        "title": str(title) if title else "Onbekende prompt",
+        "filename": str(filename) if filename else "Onbekend bestand",
+    }
+
+
+def _predecessor_recovery_action(run_id: str) -> str:
+    return (
+        "Herstel de geblokkeerde prompt en dien die opnieuw in met een eigen regel "
+        f"`Retry-Of: {run_id}`. De wachtrij blijft gepauzeerd totdat deze herindiening voltooid is."
     )
 
 
@@ -313,7 +351,34 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 diagnostic="Een bestaande engineeringuitvoering is nog actief.",
             )
             return 0
-        source, content = candidates[0]
+        predecessor = _blocking_predecessor(root)
+        if predecessor:
+            retries = [
+                (candidate, prompt)
+                for candidate, prompt in candidates
+                if _retry_of(prompt) == predecessor["run_id"]
+            ]
+            if not retries:
+                status(
+                    root,
+                    "WAITING_FOR_PREDECESSOR",
+                    queued_jobs=len(candidates),
+                    runner_phase="WAITING_FOR_PREDECESSOR",
+                    current_action="Wachtrij gepauzeerd tot de voorafgaande prompt is hersteld.",
+                    diagnostic=(
+                        f"Voorafgaande prompt {predecessor['run_id']} eindigde als "
+                        f"{predecessor['phase']}; geen volgende prompt is geclaimd."
+                    ),
+                    blocking_predecessor_run=predecessor["run_id"],
+                    blocking_predecessor_phase=predecessor["phase"],
+                    blocking_predecessor_filename=predecessor["filename"],
+                    blocking_predecessor_title=predecessor["title"],
+                    predecessor_recovery_action=_predecessor_recovery_action(predecessor["run_id"]),
+                )
+                return 0
+            source, content = retries[0]
+        else:
+            source, content = candidates[0]
         job_id, run_id, digest = _job_id(source, content)
         if _already_seen(areas, job_id):
             status(
@@ -326,7 +391,9 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
-        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title)
+        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
+               blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
+               blocking_predecessor_title=None, predecessor_recovery_action=None)
         os.replace(source, claimed)
         local = repo / ".djconnect" / "inbox-processing" / job_id
         local.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -61,6 +61,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn("setInterval(promptStarted,5000)", page)
         self.assertNotIn('fetch("/api/status")', page)
         self.assertIn('id="indicator"', page)
+        self.assertIn('id="predecessorGate" hidden', page)
+        self.assertIn("Wachtrij geblokkeerd", page)
+        self.assertIn('id="predecessorRun"', page)
+        self.assertIn('id="predecessorAction"', page)
+        self.assertIn('WAITING_FOR_PREDECESSOR:"Wacht op voorafgaande prompt"', page)
         self.assertIn("indicator--green", page)
         self.assertIn("indicator--yellow", page)
         self.assertIn("indicator--orange", page)
@@ -389,8 +394,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["prompt_started"], {})
         self.assertEqual(snapshot["usage"], {})
         self.assertEqual(snapshot["rate_limits"], {})
-        self.assertEqual(snapshot["component_versions"]["dashboard"], "1.1.0")
-        self.assertEqual(snapshot["component_versions"]["worker"], "1.0.0")
+        self.assertEqual(snapshot["component_versions"]["dashboard"], DASHBOARD_VERSION)
+        self.assertEqual(snapshot["component_versions"]["worker"], WATCHER_VERSION)
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

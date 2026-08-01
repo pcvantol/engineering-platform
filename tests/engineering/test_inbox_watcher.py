@@ -174,6 +174,75 @@ class InboxWatcherTest(unittest.TestCase):
                 1,
             )
 
+    def test_blocked_predecessor_holds_later_inbox_prompts_without_claiming_them(self) -> None:
+        (self.inbox / "next.txt").write_text("# Later prompt", encoding="utf-8")
+        (self.root / "status.json").write_text(
+            json.dumps(
+                {
+                    "last_executed_run": "inbox-blocked123",
+                    "last_executed_phase": "BLOCKED",
+                    "last_executed_filename": "blocked.txt",
+                    "last_executed_title": "Blocked predecessor",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        snapshot = json_status(self.root)
+        run.assert_not_called()
+        self.assertTrue((self.inbox / "next.txt").exists())
+        self.assertEqual(snapshot["watcher_state"], "WAITING_FOR_PREDECESSOR")
+        self.assertEqual(snapshot["current_phase"], "WAITING_FOR_PREDECESSOR")
+        self.assertEqual(snapshot["blocking_predecessor_run"], "inbox-blocked123")
+        self.assertEqual(snapshot["blocking_predecessor_title"], "Blocked predecessor")
+        self.assertIn("Retry-Of: inbox-blocked123", snapshot["predecessor_recovery_action"])
+
+    def test_explicit_retry_of_blocked_predecessor_precedes_later_prompts(self) -> None:
+        later = self.inbox / "later.txt"
+        later.write_text("# Later prompt", encoding="utf-8")
+        retry = self.inbox / "retry.txt"
+        retry_content = "Retry-Of: inbox-blocked123\n# Corrected predecessor"
+        retry.write_text(retry_content, encoding="utf-8")
+        now = time.time_ns()
+        os.utime(later, ns=(now, now))
+        os.utime(retry, ns=(now + 1_000_000, now + 1_000_000))
+        (self.root / "status.json").write_text(
+            json.dumps(
+                {
+                    "last_executed_run": "inbox-blocked123",
+                    "last_executed_phase": "FAILED",
+                    "last_executed_filename": "blocked.txt",
+                    "last_executed_title": "Blocked predecessor",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _, retry_run_id, _ = inbox_watcher._job_id(retry, retry_content)
+        checkpoint = self.repo / ".djconnect/engineering-runs"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / f"{retry_run_id}.json").write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+        report_dir = self.repo / ".djconnect/reports"
+        report_dir.mkdir(parents=True)
+        (report_dir / f"report_{retry_run_id}.md").write_text(
+            inbox_watcher._corrected_terminal_report(retry_run_id, "COMPLETE", None),
+            encoding="utf-8",
+        )
+
+        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess((), 0)
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        self.assertEqual(run.call_args.args[0][-1], retry_run_id)
+        self.assertTrue(later.exists())
+        snapshot = json_status(self.root)
+        self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
+        self.assertEqual(snapshot["last_executed_run"], retry_run_id)
+        self.assertIsNone(snapshot["blocking_predecessor_run"])
+        self.assertIsNone(snapshot["predecessor_recovery_action"])
+
 
 def json_status(root: Path) -> dict[str, object]:
     import json
