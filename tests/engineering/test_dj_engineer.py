@@ -359,6 +359,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(usage, {"input_tokens": 120, "output_tokens": 30, "cost": 0.04})
 
+    def test_cli_json_usage_and_final_message_are_recorded_together(self) -> None:
+        captured: list[str] = []
+        output = "\n".join(
+            (
+                '{"type":"thread.started","thread_id":"run-1"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"{\\\"terminal_state\\\":\\\"COMPLETE\\\",\\\"branch\\\":null,\\\"pull_request\\\":null,\\\"terminal_condition\\\":\\\"repository_reconciled\\\",\\\"diagnostic\\\":null,\\\"repository_path\\\":null,\\\"commit_sha\\\":null}"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":30,"total_tokens":150}}',
+            )
+        )
+
+        def invoke_with_json(command: tuple[str, ...], **_: object) -> object:
+            captured.extend(command)
+            return __import__("subprocess").CompletedProcess(command, 0, output, "")
+
+        client = CodexCliClient()
+        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_json):
+            result = client.invoke(self.root, "test")
+
+        self.assertIn("--json", captured)
+        self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertEqual(
+            client.last_usage,
+            {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
+        )
+
     def test_genesis_workspace_preflight_requires_accessible_target(self) -> None:
         issue = genesis_workspace_preflight(Path("/definitely/absent/forge"))
 

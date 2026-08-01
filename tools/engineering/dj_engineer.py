@@ -93,6 +93,24 @@ def extract_codex_usage(*outputs: str) -> dict[str, int | float | str]:
     return usage
 
 
+def _codex_final_message(output: str) -> str:
+    """Extract the final agent message from Codex JSONL, with legacy fallback."""
+    for line in reversed(output.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") if isinstance(event, dict) else None
+        if (
+            event.get("type") == "item.completed"
+            and isinstance(item, dict)
+            and item.get("type") == "agent_message"
+            and isinstance(item.get("text"), str)
+        ):
+            return item["text"]
+    return output.strip().splitlines()[-1] if output.strip() else ""
+
+
 def write_codex_usage(root: Path, run_id: str, usage: dict[str, int | float | str]) -> None:
     """Persist only current-run CLI usage that the CLI explicitly supplied."""
     safe_usage = {
@@ -441,6 +459,7 @@ class CodexCliClient:
         return detected_codex_cli_version(completed.stdout)
 
     def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult:
+        self.last_usage = {}
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -470,6 +489,7 @@ class CodexCliClient:
                     "read-only",
                     "-C",
                     str(root),
+                    "--json",
                     "--output-schema",
                     str(schema_path),
                     reviewer_prompt(selection, objective),
@@ -489,7 +509,7 @@ class CodexCliClient:
                 failed=True,
             )
         try:
-            raw = json.loads(completed.stdout.strip().splitlines()[-1])
+            raw = json.loads(_codex_final_message(completed.stdout))
             return ReviewerResult(
                 selection.reviewer,
                 str(raw["contribution"]),
@@ -503,6 +523,7 @@ class CodexCliClient:
             )
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
+        self.last_usage = {}
         state_directory = root / ".djconnect" / "engineering-runs"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         schema = {
@@ -552,6 +573,7 @@ class CodexCliClient:
                 "workspace-write",
                 "-C",
                 str(root),
+                "--json",
             ]
             for extra_root in extra_roots:
                 command.extend(("--add-dir", str(extra_root)))
@@ -573,7 +595,7 @@ class CodexCliClient:
                 detail,
             )
         try:
-            raw = json.loads(completed.stdout.strip().splitlines()[-1])
+            raw = json.loads(_codex_final_message(completed.stdout))
             result = AgentResult(**raw)
             if result.diagnostic is not None:
                 result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))

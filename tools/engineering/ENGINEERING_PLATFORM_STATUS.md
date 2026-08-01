@@ -19,6 +19,9 @@ boundary. Existing commands remain compatibility interfaces.
 - Progress reporting and post-run Engineering Reports, with initial reviewer
   observations explicitly separated from the checkpoint-authoritative final
   repository outcome; see `docs/engineering/ENGINEERING_REPORTING.md`.
+- Codex CLI invocations request JSONL events so a run's explicitly reported
+  token usage is captured only for that exact run. Costs and plan allowance are
+  shown only when the CLI supplies them.
 - Advisory Engineering Memory.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.
