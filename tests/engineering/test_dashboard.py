@@ -53,6 +53,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("Technische details", page)
         self.assertIn('id="currentDiagnostic" hidden', page)
         self.assertIn('id="lastDiagnostic" hidden', page)
+        self.assertEqual(page.count("const humanLabels="), 1)
+        self.assertEqual(page.count("let chatHistory=[]"), 1)
         self.assertIn('class="card card--previous"', page)
         self.assertIn(".card--previous", page)
         self.assertIn('id="currentTime"', page)
