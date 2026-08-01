@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from html import escape
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,9 +30,10 @@ from .component_logging import (
     component_logger,
     log_event,
 )
+from .component_lock import DuplicateComponentInstanceError, single_instance
 
 LABEL = "com.djconnect.engineering-inbox"
-WATCHER_VERSION = "1.1.0"
+WATCHER_VERSION = "1.1.2"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
@@ -557,16 +560,15 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
 def launch_agent(repo: Path) -> Path:
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    logs = repo / ".djconnect" / "logs"
-    logs.mkdir(mode=0o700, parents=True, exist_ok=True)
     launcher = [sys.executable, "-m", "tools.engineering.inbox_watcher", "run", "--repo", str(repo)]
-    arguments = "".join(f"<string>{value}</string>" for value in launcher)
+    command = f"cd {shlex.quote(str(repo))} && exec " + " ".join(shlex.quote(value) for value in launcher)
+    arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
     environment = launch_path()
     log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
     if log_level not in VALID_LEVELS:
         log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "inbox.out.log"}</string><key>StandardErrorPath</key><string>{logs / "inbox.err.log"}</string></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
         encoding="utf-8",
     )
     return destination
@@ -661,18 +663,23 @@ def main(argv: list[str] | None = None) -> int:
         return once(repo, root, 0.0)
     if args.command == "run":
         logger = component_logger(repo, "inbox")
-        log_event(logger, logging.INFO, "watcher_started")
-        while True:
-            try:
-                once(repo, root, 1.0)
-            except RuntimeError as error:
-                status(
-                    repo,
-                    "WAITING_FOR_REPOSITORY",
-                    diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
-                )
-                log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
-            time.sleep(max(5, args.interval))
+        try:
+            with single_instance(repo, "inbox-watcher"):
+                log_event(logger, logging.INFO, "watcher_started")
+                while True:
+                    try:
+                        once(repo, root, 1.0)
+                    except RuntimeError as error:
+                        status(
+                            repo,
+                            "WAITING_FOR_REPOSITORY",
+                            diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
+                        )
+                        log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
+                    time.sleep(max(5, args.interval))
+        except DuplicateComponentInstanceError as error:
+            log_event(logger, logging.ERROR, "duplicate_watcher_refused", diagnostic=str(error))
+            return 1
     if args.command == "status":
         print(
             (repo / ".djconnect" / "status" / "status.md").read_text(encoding="utf-8")

@@ -663,6 +663,11 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(dashboard.LABEL, rendered)
             self.assertIn("KeepAlive", rendered)
             self.assertIn(str(root), rendered)
+            self.assertIn("/bin/zsh", rendered)
+            self.assertIn("-lc", rendered)
+            self.assertIn("exec", rendered)
+            self.assertNotIn("StandardOutPath", rendered)
+            self.assertNotIn("StandardErrorPath", rendered)
 
     @patch("tools.engineering.dashboard._last_executed_commits", return_value=b"not-json")
     @patch("tools.engineering.dashboard._completion_commits", return_value=b"not-json")

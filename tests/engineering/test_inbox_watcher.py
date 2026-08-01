@@ -32,6 +32,18 @@ class InboxWatcherTest(unittest.TestCase):
             "BLOCKED: working tree is not clean",
         )
 
+    def test_launch_agent_uses_a_shell_exec_launcher_for_the_selected_runtime(self) -> None:
+        with patch("tools.engineering.inbox_watcher.Path.home", return_value=Path(self.temp.name)):
+            agent = inbox_watcher.launch_agent(self.repo)
+
+        rendered = agent.read_text(encoding="utf-8")
+        self.assertIn("/bin/zsh", rendered)
+        self.assertIn("-lc", rendered)
+        self.assertIn("exec", rendered)
+        self.assertIn(str(self.repo), rendered)
+        self.assertNotIn("StandardOutPath", rendered)
+        self.assertNotIn("StandardErrorPath", rendered)
+
     def test_filename_neutral_markdown_prompts_are_discovered_oldest_first(self) -> None:
         oldest = self.inbox / "first-submission"
         newest = self.inbox / "project-brief.upload"
