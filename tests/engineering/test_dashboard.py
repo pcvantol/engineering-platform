@@ -10,6 +10,13 @@ from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_local_dashboard_supervisor_preserves_private_and_resilient_boundaries(self) -> None:
+        source = (Path(__file__).parents[2] / "tools/engineering/dashboard_supervisor.swift").read_text(encoding="utf-8")
+        self.assertIn("tailscale", source)
+        self.assertIn("SO_NOSIGPIPE", source)
+        self.assertIn("Thread.sleep(forTimeInterval: 5)", source)
+        self.assertNotIn("0.0.0.0", source)
+
     def test_dashboard_shows_amsterdam_time_and_refresh_countdown(self) -> None:
         page = _dashboard_html("Engineering Status").decode()
 
