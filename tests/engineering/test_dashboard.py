@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_analysis_for_run, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 
@@ -76,6 +76,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="report"', page)
         self.assertIn("Engineeringrapport", page)
         self.assertIn('fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun))', page)
+        self.assertIn('id="reportAnalysis"', page)
+        self.assertIn("Codex-analyse van rapport", page)
+        self.assertIn('fetch("/api/report-analysis/last-executed?run_id="+encodeURIComponent(lastExecutedRun))', page)
         self.assertIn('id="promptRuns"', page)
         self.assertIn('id="lastExecution" hidden', page)
         self.assertIn('id="lastIndicator"', page)
@@ -444,6 +447,16 @@ class DashboardStatusTest(unittest.TestCase):
             (reports / "two_inbox-last.md").write_text("last", encoding="utf-8")
             self.assertEqual(_report_for_run(root, "inbox-last"), b"last")
             self.assertEqual(_report_for_run(root, "inbox-missing"), b"")
+
+    def test_report_analysis_is_bound_to_the_requested_last_executed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            analyses = root / ".djconnect" / "report-analysis"
+            analyses.mkdir(parents=True)
+            (analyses / "inbox-other.md").write_text("other analysis", encoding="utf-8")
+            (analyses / "inbox-last.md").write_text("last analysis", encoding="utf-8")
+            self.assertEqual(_report_analysis_for_run(root, "inbox-last"), b"last analysis")
+            self.assertEqual(_report_analysis_for_run(root, "inbox-missing"), b"")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:

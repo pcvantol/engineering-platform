@@ -35,6 +35,7 @@ from .platform_version import (
 )
 from .qualification import dashboard, execute_qualification, latest_qualification
 from .repository_handoff import publish as publish_repository_handoff
+from .report_analysis import analyze as analyze_terminal_report
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .providers import GitHubProvider, CodexCliProvider
@@ -1219,6 +1220,8 @@ def main(argv: list[str] | None = None) -> int:
         if state.terminal
         else (None, None)
     )
+    if report_path:
+        analyze_terminal_report(root, state.run_id, report_path)
     if runner.platform_manifest:
         publish_canonical_status(
             root / ".djconnect" / "status",

@@ -31,3 +31,16 @@ The report resolves evidence in this order:
 
 Reviewer findings cannot override repository evidence. `BLOCKED` and `FAILED`
 reports never claim successful implementation or delivery.
+
+## Advisory Codex analysis
+
+After a terminal report is written, the runner may request one separate Codex
+CLI analysis of that exact local report. The analysis is read-only, bounded and
+stored locally per run under `.djconnect/report-analysis/<run-id>.md`. It
+distils findings, issues, risks, next steps and advice for the Product
+Architect. Its output is advisory and redacted before persistence.
+
+The dashboard displays that analysis only within **Laatst uitgevoerd** and only
+when its run identifier matches the displayed terminal run. A failed or absent
+analysis never changes the terminal checkpoint, report, repository state,
+validation result or lifecycle outcome.
