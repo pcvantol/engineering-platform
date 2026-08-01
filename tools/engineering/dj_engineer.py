@@ -1500,6 +1500,20 @@ def write_live_status(root: Path, state: TransactionState, action: str) -> Path:
     directory = root / ".djconnect" / "status"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / "current.json"
+    checkout = (
+        Path(state.genesis_repository_path).expanduser()
+        if state.execution_mode == "GENESIS" and state.genesis_repository_path
+        else root
+    )
+    try:
+        observed_branch = subprocess.run(
+            ("git", "-C", str(checkout), "branch", "--show-current"),
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+    except OSError:
+        observed_branch = ""
     try:
         prompt_characters = len(Path(state.prompt_path).read_text(encoding="utf-8"))
     except OSError:
@@ -1519,6 +1533,10 @@ def write_live_status(root: Path, state: TransactionState, action: str) -> Path:
         "prompt_characters": prompt_characters,
         "diagnostic": state.diagnostic,
         "resume_command": f"dj-engineer {state.prompt_path} --run-id {state.run_id} --resume",
+        "execution_mode": state.execution_mode,
+        "target_repository": checkout.name if state.execution_mode == "GENESIS" else state.repository,
+        "checkout_path": str(checkout),
+        "active_branch": observed_branch or state.branch or "unavailable",
     }
     descriptor, temporary = tempfile.mkstemp(prefix=".current.", suffix=".tmp", dir=directory)
     try:

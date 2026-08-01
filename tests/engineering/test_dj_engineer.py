@@ -28,6 +28,7 @@ from tools.engineering.dj_engineer import (
     generate_terminal_report,
     write_redacted_codex_cli_log,
     write_codex_usage,
+    write_live_status,
 )
 from tools.engineering.platform_version import (
     EngineeringPlatformCompatibilityError,
@@ -170,6 +171,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner.run(self.prompt, run_id="live-phase-run")
         self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
         self.assertEqual(agent.live_action, "invoke_agent")
+
+    def test_live_status_records_execution_context(self) -> None:
+        state = TransactionState(
+            "genesis-context",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "EXECUTE_AGENT",
+            execution_mode="GENESIS",
+            genesis_repository_path=str(self.root),
+        )
+        write_live_status(self.root, state, "invoke_agent")
+        payload = json.loads((self.root / ".djconnect" / "status" / "current.json").read_text())
+        self.assertEqual(payload["execution_mode"], "GENESIS")
+        self.assertEqual(payload["target_repository"], self.root.name)
+        self.assertEqual(payload["checkout_path"], str(self.root))
 
     def test_genesis_mode_requires_an_explicit_execution_mode_declaration(self) -> None:
         self.assertEqual(execution_mode_for("Introduce Genesis Mode documentation."), "MANAGED")

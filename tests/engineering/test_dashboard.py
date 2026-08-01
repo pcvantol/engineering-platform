@@ -47,6 +47,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun))', page)
         self.assertIn('id="promptRuns"', page)
         self.assertIn('id="lastExecution" hidden', page)
+        self.assertIn('id="executionContext" hidden', page)
+        for label in ("Modus", "Repository", "Lokale checkout", "Actieve branch"):
+            self.assertIn(label, page)
         self.assertIn('id="copyReport"', page)
         self.assertIn("navigator.clipboard.writeText", page)
         self.assertIn("function fallbackCopy(value)", page)
