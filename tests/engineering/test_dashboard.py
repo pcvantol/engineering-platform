@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -63,6 +63,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('return "grey"', page)
         self.assertIn('id="executionEstimate"', page)
         self.assertIn('id="executionEstimateMeta" hidden', page)
+        self.assertIn('id="processMetrics" hidden', page)
+        self.assertIn('id="codexCpu"', page)
+        self.assertIn('id="codexGpu"', page)
+        self.assertIn('fetch("/api/process-metrics")', page)
         self.assertIn("estimate-primary", page)
         self.assertIn("estimate-meta", page)
         self.assertIn("function estimate(x)", page)
@@ -187,6 +191,19 @@ class DashboardStatusTest(unittest.TestCase):
             logs.mkdir(parents=True)
             (logs / "run.log").write_text("redacted diagnostic", encoding="utf-8")
             self.assertEqual(_latest_codex_log(Path(temporary)), b"redacted diagnostic")
+
+    @patch("tools.engineering.dashboard.subprocess.run")
+    def test_codex_process_metrics_sum_only_codex_cli_processes(self, run: object) -> None:
+        run.return_value = __import__("subprocess").CompletedProcess(
+            ("ps",),
+            0,
+            "101  12.4 /opt/homebrew/bin/codex exec task\n102  3.1 /usr/bin/python worker.py\n103  7.5 codex exec review\n",
+            "",
+        )
+        metrics = json.loads(_codex_process_metrics())
+        self.assertEqual(metrics["process_count"], 2)
+        self.assertEqual(metrics["cpu_percent"], 19.9)
+        self.assertIn("Codex-inference draait extern", metrics["gpu_status"])
 
     def test_current_codex_log_never_falls_back_to_a_different_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
