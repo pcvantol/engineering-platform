@@ -4,16 +4,12 @@ import Foundation
 
 let port: UInt16 = 8765
 let loopbackAddress = "127.0.0.1"
-let repository = ProcessInfo.processInfo.environment["DJCONNECT_ENGINEERING_REPOSITORY"]
-    ?? "\(NSHomeDirectory())/Documents/GitHub/djconnect"
-let python = ProcessInfo.processInfo.environment["DJCONNECT_ENGINEERING_PYTHON"]
-    ?? "\(NSHomeDirectory())/.platformio/penv/bin/python3"
 
 func tailscaleAddress() -> String? {
     let process = Process()
     let output = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["tailscale", "ip", "-4"]
+    process.executableURL = URL(fileURLWithPath: "/usr/local/bin/tailscale")
+    process.arguments = ["ip", "-4"]
     process.standardOutput = output
     do {
         try process.run()
@@ -22,8 +18,8 @@ func tailscaleAddress() -> String? {
         return nil
     }
     guard process.terminationStatus == 0,
-          let value = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-              .split(whereSeparator: \.isNewline).first
+          let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
+          let value = text.split(whereSeparator: \.isNewline).first
     else { return nil }
     return String(value)
 }
@@ -85,23 +81,6 @@ func relay(from source: Int32, to destination: Int32) {
         }
     }
 }
-
-func superviseWatcher() {
-    DispatchQueue.global(qos: .utility).async {
-        while true {
-            let watcher = Process()
-            watcher.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            watcher.arguments = ["-lc", "cd \(repository) && exec \(python) -m tools.engineering.inbox_watcher run --repo \(repository)"]
-            do {
-                try watcher.run()
-                watcher.waitUntilExit()
-            } catch { }
-            Thread.sleep(forTimeInterval: 5)
-        }
-    }
-}
-
-superviseWatcher()
 
 while true {
     guard let address = tailscaleAddress(), let server = listener(address: address) else {

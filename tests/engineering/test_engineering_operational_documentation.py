@@ -32,7 +32,11 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertNotIn("DJConnect Engineering/status.json", runner)
         self.assertNotIn("DJConnect Engineering/Reports/", runner)
         self.assertIn("server-sent events", dashboard)
-        self.assertIn("Private read-only Codex advice", dashboard)
+        self.assertIn("Private read-only AI advice", dashboard)
+        self.assertIn("AI-provider: Codex CLI", dashboard)
+        storage = (ROOT / "docs" / "engineering" / "ENGINEERING_STORAGE.md").read_text(encoding="utf-8")
+        self.assertIn("schema `1`", storage)
+        self.assertIn("engineering_schema_migrations", storage)
 
     def test_roadmap_and_active_backlog_distinguish_completed_1_5_from_maintenance(self) -> None:
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(

@@ -410,7 +410,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
-            '{"platform_version":"1.0.0","runner_version":"1.0.0","bootstrap_contract":"2026.07","checkpoint_format":1,"memory_format":1,"report_format":1,"minimum_codex_cli":"0.146.0","watcher_version":"1.0.0","inbox_protocol":1,"dashboard_version":"1.0.0","handoff_protocol":1,"status_model":1}\n',
+            '{"platform_version":"1.0.0","runner_version":"1.0.0","bootstrap_contract":"2026.07","checkpoint_format":1,"memory_format":1,"report_format":1,"minimum_codex_cli":"0.146.0","watcher_version":"1.0.0","inbox_protocol":1,"dashboard_version":"1.0.0","handoff_protocol":1,"status_model":1,"storage_schema":1}\n',
             encoding="utf-8",
         )
         self.store = StateStore(self.root / ".djconnect" / "engineering-runs")
@@ -843,6 +843,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             (RunnerCompatibility(checkpoint_formats=frozenset({2})), "Checkpoint format mismatch"),
             (RunnerCompatibility(memory_formats=frozenset({2})), "Engineering Memory format mismatch"),
             (RunnerCompatibility(report_formats=frozenset({2})), "Report format mismatch"),
+            (RunnerCompatibility(storage_schemas=frozenset({2})), "Engineering storage schema mismatch"),
         )
         for compatibility, diagnostic in cases:
             with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(EngineeringPlatformCompatibilityError, diagnostic):

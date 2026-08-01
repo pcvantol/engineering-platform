@@ -46,6 +46,14 @@ boundary. Existing commands remain compatibility interfaces.
   read-only, ephemeral CLI process with context from the repository, matching
   terminal prompt and Engineering Report. It cannot start engineering or
   mutate repository, lifecycle, release or deployment state.
+- Dashboard presentation is provider-neutral while preserving explicit
+  per-run provenance (for example, `AI-provider: Codex CLI`). It offers
+  server-pushed status, category-coded evidence cards, client-side structured
+  log filtering/sorting and browser-session-local read-only advice history.
+- Engineering Storage schema `1` is versioned and fail-closed in the platform
+  manifest. It is the verified SQLite storage foundation for the planned
+  `.engineering/engineering.db` migration; current runtime evidence remains
+  under `.djconnect/` until the complete consumer migration is qualified.
 
 ## Future governance
 

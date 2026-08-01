@@ -24,6 +24,7 @@ MANIFEST_FIELDS = frozenset(
         "dashboard_version",
         "handoff_protocol",
         "status_model",
+        "storage_schema",
     }
 )
 
@@ -64,6 +65,7 @@ class EngineeringPlatformManifest:
     dashboard_version: str
     handoff_protocol: int
     status_model: int
+    storage_schema: int
 
     @classmethod
     def load(cls, path: Path) -> "EngineeringPlatformManifest":
@@ -91,6 +93,7 @@ class EngineeringPlatformManifest:
             "inbox_protocol",
             "handoff_protocol",
             "status_model",
+            "storage_schema",
         ):
             if not isinstance(getattr(manifest, field), int) or getattr(manifest, field) < 1:
                 raise EngineeringPlatformCompatibilityError(
@@ -107,6 +110,7 @@ class RunnerCompatibility:
     checkpoint_formats: frozenset[int] = frozenset({1})
     memory_formats: frozenset[int] = frozenset({1, 2})
     report_formats: frozenset[int] = frozenset({1, 2})
+    storage_schemas: frozenset[int] = frozenset({1})
 
 
 def validate_compatibility(
@@ -135,6 +139,7 @@ def validate_compatibility(
         ("Checkpoint format", manifest.checkpoint_format, runner.checkpoint_formats),
         ("Engineering Memory format", manifest.memory_format, runner.memory_formats),
         ("Report format", manifest.report_format, runner.report_formats),
+        ("Engineering storage schema", manifest.storage_schema, runner.storage_schemas),
     ):
         if required not in supported:
             detected = ", ".join(str(value) for value in sorted(supported)) or "none"
