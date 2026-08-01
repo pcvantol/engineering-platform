@@ -8,9 +8,10 @@ from html import escape
 import json
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
-from threading import Thread
+from threading import Lock, Thread
 import time
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
@@ -23,6 +24,9 @@ LABEL = "com.djconnect.engineering-dashboard"
 DASHBOARD_VERSION = "1.1.0"
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
+RATE_LIMIT_CACHE_SECONDS = 60
+_rate_limit_cache_lock = Lock()
+_rate_limit_cache: tuple[float, bytes] | None = None
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
@@ -130,6 +134,10 @@ def _sse_snapshot(root: Path) -> bytes:
     except json.JSONDecodeError:
         usage = {}
     try:
+        rate_limits = json.loads(_codex_rate_limits())
+    except json.JSONDecodeError:
+        rate_limits = {}
+    try:
         last_executed_usage = json.loads(
             _codex_usage_for_run(root, status.get("last_executed_run"))
         )
@@ -154,6 +162,7 @@ def _sse_snapshot(root: Path) -> bytes:
             "build_commit": _build_commit(root),
             "prompt_started": prompt_started,
             "usage": usage,
+            "rate_limits": rate_limits,
             "last_executed_usage": last_executed_usage,
             "completion_commits": completion_commits,
             "last_executed_commits": last_executed_commits,
@@ -161,6 +170,131 @@ def _sse_snapshot(root: Path) -> bytes:
         },
         separators=(",", ":"),
     ).encode()
+
+
+def _rate_limit_window_label(duration_minutes: int) -> str:
+    """Use a neutral label that reflects the window actually reported by Codex."""
+    if duration_minutes == 300:
+        return "5-uursvenster"
+    if duration_minutes == 10_080:
+        return "Weekvenster"
+    if duration_minutes % 1_440 == 0:
+        return f"{duration_minutes // 1_440}-daags venster"
+    if duration_minutes % 60 == 0:
+        return f"{duration_minutes // 60}-uursvenster"
+    return f"{duration_minutes}-minutenvenster"
+
+
+def _normalize_rate_limits(payload: object) -> dict[str, object]:
+    """Keep only safe, displayable quota values from Codex's read-only response."""
+    if not isinstance(payload, dict):
+        return {}
+    limits = payload.get("rateLimits")
+    if not isinstance(limits, dict):
+        return {}
+    windows: list[dict[str, int | str]] = []
+    for key in ("primary", "secondary"):
+        item = limits.get(key)
+        if not isinstance(item, dict):
+            continue
+        used = item.get("usedPercent")
+        duration = item.get("windowDurationMins")
+        resets_at = item.get("resetsAt")
+        if (
+            not isinstance(used, (int, float))
+            or isinstance(used, bool)
+            or not isinstance(duration, int)
+            or isinstance(duration, bool)
+            or not isinstance(resets_at, int)
+            or isinstance(resets_at, bool)
+        ):
+            continue
+        windows.append(
+            {
+                "label": _rate_limit_window_label(duration),
+                "used_percent": max(0, min(100, round(used))),
+                "window_minutes": duration,
+                "resets_at": resets_at,
+            }
+        )
+    credits = payload.get("rateLimitResetCredits")
+    available = credits.get("availableCount") if isinstance(credits, dict) else None
+    normalized: dict[str, object] = {"windows": windows}
+    if isinstance(available, int) and not isinstance(available, bool) and available >= 0:
+        normalized["reset_credits"] = available
+    return normalized if windows or "reset_credits" in normalized else {}
+
+
+def _codex_rate_limits() -> bytes:
+    """Read current Codex quota windows without persisting account or credit data."""
+    global _rate_limit_cache
+    now = time.monotonic()
+    with _rate_limit_cache_lock:
+        if _rate_limit_cache and now - _rate_limit_cache[0] < RATE_LIMIT_CACHE_SECONDS:
+            return _rate_limit_cache[1]
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            ("codex", "app-server"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        if process.stdin is None or process.stdout is None:
+            return b"{}"
+        process.stdin.write(
+            json.dumps(
+                {
+                    "method": "initialize",
+                    "id": 1,
+                    "params": {
+                        "clientInfo": {
+                            "name": "djconnect_engineering_dashboard",
+                            "title": "Engineering Status",
+                            "version": DASHBOARD_VERSION,
+                        }
+                    },
+                }
+            )
+            + "\n"
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 5
+        requested = False
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            line = process.stdout.readline()
+            if not line:
+                break
+            response = json.loads(line)
+            if response.get("id") == 1 and not requested:
+                process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                process.stdin.write(
+                    json.dumps({"method": "account/rateLimits/read", "id": 2, "params": {}})
+                    + "\n"
+                )
+                process.stdin.flush()
+                requested = True
+            elif response.get("id") == 2:
+                result = _normalize_rate_limits(response.get("result"))
+                encoded = json.dumps(result, separators=(",", ":")).encode()
+                with _rate_limit_cache_lock:
+                    _rate_limit_cache = (time.monotonic(), encoded)
+                return encoded
+    except (OSError, ValueError, json.JSONDecodeError):
+        return b"{}"
+    finally:
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    return b"{}"
 
 
 def _latest_codex_log(root: Path) -> bytes:
@@ -368,6 +502,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p class="estimate-primary" id="executionEstimate">Nog niet beschikbaar…</p><p class="estimate-meta" id="executionEstimateMeta" hidden></p></div>
 <div class="card" id="processMetrics" hidden><strong>Lokale Codex-processen</strong><p class="field"><span class="label">CPU-gebruik</span><span id="codexCpu">Laden…</span></p><p class="field"><span class="label">Actieve processen</span><span id="codexProcesses">Laden…</span></p><p class="field"><span class="label">GPU-gebruik</span><span id="codexGpu">Laden…</span></p></div>
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
+<div class="card" id="rateLimits" hidden><strong>Resterend gebruik</strong><div class="field"><span class="label">Codex-gebruikslimieten</span><pre id="rateLimitDetails"></pre></div></div>
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
 <section class="prompt-runs" id="promptRuns" aria-label="Promptuitvoeringen" hidden><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
 <div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field" id="currentDiagnostic" hidden><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
@@ -400,6 +535,7 @@ function checkBuild(build){if(build===DASHBOARD_BUILD){sessionStorage.removeItem
 function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst bijgewerkt: "+(lastRefresh?formatTime.format(lastRefresh):"laden…")}
 function l(id,url,run,last,container){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>{const available=Boolean(x)&&!x.startsWith("No Codex CLI diagnostic is available");$(container).hidden=!available;if(available)$(id).textContent=x}).catch(()=>{$(container).hidden=false;$(id).textContent="Codex CLI diagnostic is unavailable."})}
 function usage(x){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};let entries=Object.entries(x||{});$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}
+function rateLimits(x){const windows=Array.isArray(x?.windows)?x.windows:[],credits=Number.isInteger(x?.reset_credits)?x.reset_credits:null;$("rateLimits").hidden=!windows.length&&credits===null;let lines=windows.map(window=>{const remaining=Math.max(0,100-Number(window.used_percent||0)),reset=Number(window.resets_at);return window.label+": "+remaining+"% beschikbaar · reset "+(Number.isFinite(reset)?formatTime.format(new Date(reset*1000)):"onbekend")});if(credits!==null)lines.push("Beschikbare resets: "+credits);$("rateLimitDetails").textContent=lines.join("\\n")}
 function lastUsage(x){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};let entries=Object.entries(x||{});$("lastUsage").hidden=!entries.length;$("lastUsageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}
 function processMetrics(active,x){$("processMetrics").hidden=!active;if(!active)return;$("codexCpu").textContent=Number(x?.cpu_percent||0).toLocaleString("nl-NL",{maximumFractionDigits:1})+"%";$("codexProcesses").textContent=x?.process_count??0;$("codexGpu").textContent=x?.gpu_status||"Niet beschikbaar"}
 function commits(x){let entries=Object.entries(x||{});$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}
@@ -409,7 +545,7 @@ let lastExecutedRun,reportLoaded=false,reportRequest;function report(){if(!lastE
 function fallbackCopy(value){const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.cssText="position:fixed;top:0;left:0;opacity:0";document.body.append(area);area.focus();area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw Error("copy unavailable")}
 function copyText(value){return navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(value).catch(()=>fallbackCopy(value)):Promise.resolve().then(()=>fallbackCopy(value))}
 function copyReport(){report().then(()=>copyText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
-function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage(snapshot.usage);lastUsage(snapshot.last_executed_usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
+function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage(snapshot.usage);rateLimits(snapshot.rate_limits);lastUsage(snapshot.last_executed_usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
 let e=new EventSource("/api/events");e.addEventListener("dashboard",x=>{try{let snapshot=JSON.parse(x.data);r(snapshot.status,snapshot);humanize();checkBuild(snapshot.build_commit);$("updateMode").textContent="Serverpush: verbonden"}catch{r(fallback);humanize();$("updateMode").textContent="Serverpush: update ongeldig"}});e.onerror=()=>{$("updateMode").textContent="Serverpush: opnieuw verbinden…"};$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(clock,250);clock()
 </script>"""
     return page.replace("$TITLE", escape(title)).replace("$BUILD_COMMIT", escape(build_commit)).encode()

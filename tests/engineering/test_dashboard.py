@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -98,6 +98,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("Geen live Codex-voortgang of tokenverbruik", page)
         self.assertIn("Geen betrouwbare ETA", page)
         self.assertIn('id="usage"', page)
+        self.assertIn('id="rateLimits" hidden', page)
+        self.assertIn("function rateLimits(x)", page)
+        self.assertIn("rateLimits(snapshot.rate_limits)", page)
+        self.assertIn("Beschikbare resets", page)
         self.assertIn("Engineering Platform-versie", page)
         self.assertIn('id="platformVersion"', page)
         self.assertIn("Git-commit", page)
@@ -149,6 +153,47 @@ class DashboardStatusTest(unittest.TestCase):
                 {"input_tokens": 123, "cost": 1.25},
             )
             self.assertEqual(json.loads(_codex_usage_for_run(root, "inbox-other")), {})
+
+    def test_rate_limits_keep_only_safe_window_and_reset_count_fields(self) -> None:
+        limits = _normalize_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 12.2,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_786_162_124,
+                    },
+                    "secondary": {
+                        "usedPercent": 3,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": 1_786_200_000,
+                    },
+                },
+                "rateLimitResetCredits": {"availableCount": 2, "credits": [{"id": "secret"}]},
+                "account": {"email": "do-not-display@example.invalid"},
+            }
+        )
+
+        self.assertEqual(
+            limits,
+            {
+                "windows": [
+                    {
+                        "label": "5-uursvenster",
+                        "used_percent": 12,
+                        "window_minutes": 300,
+                        "resets_at": 1_786_162_124,
+                    },
+                    {
+                        "label": "Weekvenster",
+                        "used_percent": 3,
+                        "window_minutes": 10_080,
+                        "resets_at": 1_786_200_000,
+                    },
+                ],
+                "reset_credits": 2,
+            },
+        )
 
     def test_completion_commits_are_shown_only_after_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -234,7 +279,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
 
-    def test_sse_snapshot_contains_the_read_only_dashboard_projection(self) -> None:
+    @patch("tools.engineering.dashboard._codex_rate_limits", return_value=b"{}")
+    def test_sse_snapshot_contains_the_read_only_dashboard_projection(self, _: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / ".djconnect" / "status"
             directory.mkdir(parents=True)
@@ -245,6 +291,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("build_commit", snapshot)
         self.assertEqual(snapshot["prompt_started"], {})
         self.assertEqual(snapshot["usage"], {})
+        self.assertEqual(snapshot["rate_limits"], {})
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
