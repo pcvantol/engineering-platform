@@ -177,6 +177,7 @@ def _previous_prompt_context(root: Path) -> dict[str, object]:
         "last_executed_filename",
         "last_executed_title",
         "last_executed_run",
+        "last_executed_phase",
     )
     try:
         prior = json.loads((root / "status.json").read_text(encoding="utf-8"))
@@ -195,7 +196,7 @@ def status(root: Path, state: str, **details: object) -> None:
         {
             key: value
             for key, value in details.items()
-            if key in {"submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title", "last_executed_run"}
+            if key in {"submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title", "last_executed_run", "last_executed_phase"}
             and value is not None
         }
     )
@@ -420,6 +421,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             last_executed_filename=source.name,
             last_executed_title=title,
             last_executed_run=run_id,
+            last_executed_phase=phase,
         )
         return 0 if successful else (completed.returncode or 1)
 

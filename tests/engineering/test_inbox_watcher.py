@@ -109,6 +109,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_filename"], "job.txt")
         self.assertEqual(snapshot["last_executed_title"], "prompt")
         self.assertEqual(snapshot["last_executed_run"], run_id)
+        self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
         self.assertFalse(old_log.exists())
 
 
