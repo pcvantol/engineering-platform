@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -17,7 +17,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("Thread.sleep(forTimeInterval: 5)", source)
         self.assertNotIn("0.0.0.0", source)
 
-    def test_dashboard_shows_amsterdam_time_and_refresh_countdown(self) -> None:
+    def test_dashboard_uses_server_push_without_browser_status_polling(self) -> None:
         page = _dashboard_html("Engineering Status").decode()
 
         self.assertIn("<title>Engineering Status</title>", page)
@@ -27,15 +27,24 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", page)
         self.assertIn('class="prompt-runs"', page)
         self.assertIn('class="prompt-runs__cards"', page)
-        self.assertIn(".prompt-runs,#report{grid-column:1 / -1}", page)
+        self.assertIn(".prompt-runs,.technical-details{grid-column:1 / -1}", page)
+        self.assertIn('class="technical-details"', page)
+        self.assertIn("Technische details", page)
+        self.assertIn('id="currentDiagnostic" hidden', page)
+        self.assertIn('id="lastDiagnostic" hidden', page)
         self.assertIn('class="card card--previous"', page)
         self.assertIn(".card--previous", page)
         self.assertIn('id="currentTime"', page)
         self.assertIn('id="lastRefresh"', page)
-        self.assertIn('id="nextRefresh"', page)
+        self.assertIn('id="updateMode"', page)
         self.assertIn('timeZone:"Europe/Amsterdam"', page)
         self.assertIn('"nl-NL"', page)
-        self.assertIn("REFRESH_SECONDS=5", page)
+        self.assertIn('new EventSource("/api/events")', page)
+        self.assertIn('addEventListener("dashboard"', page)
+        self.assertIn("Serverpush: verbonden", page)
+        self.assertNotIn("setInterval(checkBuild,5000)", page)
+        self.assertNotIn("setInterval(promptStarted,5000)", page)
+        self.assertNotIn('fetch("/api/status")', page)
         self.assertIn('id="indicator"', page)
         self.assertIn("indicator--green", page)
         self.assertIn("indicator--yellow", page)
@@ -57,7 +66,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="lastIndicator"', page)
         self.assertIn('id="lastFinalStatus"', page)
         self.assertIn('id="lastCommits" hidden', page)
-        self.assertIn('fetch("/api/commits/last-executed")', page)
+        self.assertIn("lastCommits(snapshot.last_executed_commits)", page)
         self.assertIn("function finalStatus(phase)", page)
         self.assertIn("Geblokkeerd", page)
         self.assertIn("Mislukt", page)
@@ -75,7 +84,6 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="processMetrics" hidden', page)
         self.assertIn('id="codexCpu"', page)
         self.assertIn('id="codexGpu"', page)
-        self.assertIn('fetch("/api/process-metrics")', page)
         self.assertIn("estimate-primary", page)
         self.assertIn("estimate-meta", page)
         self.assertIn("function estimate(x)", page)
@@ -85,14 +93,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("Geen live Codex-voortgang of tokenverbruik", page)
         self.assertIn("Geen betrouwbare ETA", page)
         self.assertIn('id="usage"', page)
-        self.assertIn('fetch("/api/usage")', page)
         self.assertIn("Engineering Platform-versie", page)
         self.assertIn('id="platformVersion"', page)
         self.assertIn("Git-commit", page)
         self.assertIn("onbekend", page)
         self.assertIn('DASHBOARD_BUILD="onbekend"', page)
-        self.assertIn('fetch("/api/build",{cache:"no-store"})', page)
-        self.assertIn("setInterval(checkBuild,5000)", page)
         for label in (
             "Watcher",
             "Fase",
@@ -208,6 +213,18 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
+
+    def test_sse_snapshot_contains_the_read_only_dashboard_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".djconnect" / "status"
+            directory.mkdir(parents=True)
+            (directory / "status.json").write_text('{"watcher_state":"WATCHER_IDLE"}', encoding="utf-8")
+            snapshot = json.loads(_sse_snapshot(Path(temporary)))
+
+        self.assertEqual(snapshot["status"]["watcher_state"], "WATCHER_IDLE")
+        self.assertIn("build_commit", snapshot)
+        self.assertEqual(snapshot["prompt_started"], {})
+        self.assertEqual(snapshot["usage"], {})
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

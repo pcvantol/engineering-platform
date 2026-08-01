@@ -110,6 +110,52 @@ def _sse_status(root: Path) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
+def _sse_snapshot(root: Path) -> bytes:
+    """Return the complete read-only dashboard projection for one SSE update.
+
+    The browser receives this snapshot when it connects and only when one of
+    its observable values changes.  This keeps the dashboard event-driven
+    without giving the dashboard any transaction authority.
+    """
+    try:
+        status = json.loads(_sse_status(root))
+    except json.JSONDecodeError:
+        status = json.loads(_unavailable_status())
+    try:
+        prompt_started = json.loads(_prompt_started(root))
+    except json.JSONDecodeError:
+        prompt_started = {}
+    try:
+        usage = json.loads(_codex_usage(root))
+    except json.JSONDecodeError:
+        usage = {}
+    try:
+        completion_commits = json.loads(_completion_commits(root))
+        last_executed_commits = json.loads(_last_executed_commits(root))
+    except json.JSONDecodeError:
+        completion_commits = last_executed_commits = {}
+    active = (
+        status.get("watcher_state") == "ENGINEERING_RUN_ACTIVE"
+        and isinstance(status.get("run_id"), str)
+    )
+    try:
+        process_metrics = json.loads(_codex_process_metrics()) if active else {}
+    except json.JSONDecodeError:
+        process_metrics = {}
+    return json.dumps(
+        {
+            "status": status,
+            "build_commit": _build_commit(root),
+            "prompt_started": prompt_started,
+            "usage": usage,
+            "completion_commits": completion_commits,
+            "last_executed_commits": last_executed_commits,
+            "process_metrics": process_metrics,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
 def _latest_codex_log(root: Path) -> bytes:
     """Return only the latest locally redacted Codex diagnostic."""
     logs = sorted((root / ".djconnect" / "logs" / "codex").glob("*.log"))
@@ -277,41 +323,42 @@ def _build_commit(root: Path) -> str:
 
 
 def _dashboard_html(title: str, build_commit: str = "onbekend") -> bytes:
-    """Render the private dashboard with client-local, visible refresh timing."""
+    """Render the private dashboard with a server-pushed status stream."""
     page = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>$TITLE</title>
 <style>
-body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(20px,env(safe-area-inset-top)) 20px}.dashboard-grid{display:grid;gap:12px}
-.card{background:#24242d;border-radius:16px;padding:16px;box-shadow:0 4px 18px #0005}.prompt-runs{display:grid;gap:8px}.prompt-runs__heading{color:#b9b6c0;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.prompt-runs__cards,.last-execution{display:grid;gap:12px}.card--previous{background:#202a36;border:1px solid #37506a;box-shadow:0 4px 18px #0005}.card--previous strong,.card--previous .label{color:#8dc7ff}.field{margin:10px 0 0}.label{display:block;color:#c7a6ff;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}.estimate-primary{font-size:20px;font-weight:650;margin:12px 0 0}.estimate-meta{color:#b9b6c0;font-size:13px;line-height:1.4;margin:8px 0 0}.final-status{align-items:center;display:flex;gap:7px;margin:0 0 10px}.indicator--small{height:9px;width:9px}.footer{color:#b9b6c0;font-size:13px;margin:28px 0 8px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:7px 10px;font:14px system-ui}
-strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:10px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff9f43;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font:12px ui-monospace,monospace}[hidden]{display:none}
-@media (min-width:900px){body{max-width:1440px;margin:auto}.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.prompt-runs,#report{grid-column:1 / -1}.prompt-runs__cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+body{margin:0;background:#121217;color:#f7f3ee;font:16px system-ui;padding:max(18px,env(safe-area-inset-top)) 20px}.dashboard-grid{display:grid;gap:10px}h1{font-size:34px;line-height:1.1;margin:0 0 18px}.card,.technical-details{background:#24242d;border-radius:14px;padding:14px;box-shadow:0 4px 18px #0005}.card p{margin:7px 0}.prompt-runs{display:grid;gap:7px}.prompt-runs__heading{color:#b9b6c0;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.prompt-runs__cards,.last-execution{display:grid;gap:10px}.card--previous{background:#202a36;border:1px solid #37506a;box-shadow:0 4px 18px #0005}.card--previous strong,.card--previous .label{color:#8dc7ff}.field{margin:8px 0 0}.label{display:block;color:#c7a6ff;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:2px}.estimate-primary{font-size:20px;font-weight:650;margin:8px 0 0}.estimate-meta{color:#b9b6c0;font-size:12px;line-height:1.35;margin:6px 0 0}.final-status{align-items:center;display:flex;gap:7px;margin:0 0 8px}.indicator--small{height:9px;width:9px}.footer{color:#b9b6c0;font-size:12px;margin:14px 0 4px;text-align:center}.copy{float:right;background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:6px 9px;font:13px system-ui}.technical-details{cursor:pointer}.technical-details summary{list-style:none}.technical-details summary::-webkit-details-marker{display:none}.technical-details summary::before{content:"▸ ";color:#c7a6ff}.technical-details[open] summary::before{content:"▾ "}.technical-grid{display:grid;gap:10px;margin-top:12px}
+strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:8px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff9f43;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monospace,monospace}[hidden]{display:none}
+@media (min-width:900px){body{max-width:1640px;margin:auto}.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.prompt-runs,.technical-details{grid-column:1 / -1}.prompt-runs__cards{grid-template-columns:repeat(2,minmax(0,1fr))}.technical-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.technical-grid .card{box-shadow:none}.execution-card,.execution-context{grid-column:span 2}}
 </style>
 <h1>$TITLE</h1>
 <main class="dashboard-grid">
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" aria-label="Status onbekend"></span><strong>Promptstatus</strong></div><p class="field"><span class="label">Watcher</span><span id="watcher">Laden…</span></p><p class="field"><span class="label">Fase</span><span id="phase">Laden…</span></p><p class="field"><span class="label">Huidige actie</span><span id="action">Laden…</span></p></div>
-<div class="card"><strong>Tijd</strong><p id="currentTime">Laden…</p><p id="lastRefresh">Laatst ververst: laden…</p><p id="nextRefresh">Volgende verversing: laden…</p></div>
+<div class="card"><strong>Tijd</strong><p id="currentTime">Laden…</p><p id="lastRefresh">Laatst bijgewerkt: laden…</p><p id="updateMode">Serverpush: verbinden…</p></div>
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p class="estimate-primary" id="executionEstimate">Nog niet beschikbaar…</p><p class="estimate-meta" id="executionEstimateMeta" hidden></p></div>
 <div class="card" id="processMetrics" hidden><strong>Lokale Codex-processen</strong><p class="field"><span class="label">CPU-gebruik</span><span id="codexCpu">Laden…</span></p><p class="field"><span class="label">Actieve processen</span><span id="codexProcesses">Laden…</span></p><p class="field"><span class="label">GPU-gebruik</span><span id="codexGpu">Laden…</span></p></div>
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
 <section class="prompt-runs" id="promptRuns" aria-label="Promptuitvoeringen" hidden><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
-<div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
-<div class="last-execution" id="lastExecution" hidden><div class="card card--previous"><div class="final-status"><span id="lastIndicator" class="indicator indicator--small" aria-hidden="true"></span><strong>Laatst uitgevoerd</strong><span id="lastFinalStatus"></span></div><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field" id="lastCommits" hidden><span class="label">Git-commit</span><pre id="lastCommitDetails"></pre></div><div class="field"><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div><details class="card card--previous" id="report" hidden><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details></div>
+<div class="card" id="current" hidden><strong>Huidige uitvoering</strong><p class="field"><span class="label">Prompttitel</span><span id="currentPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile"></pre></div><div class="field" id="currentDiagnostic" hidden><span class="label">Codex CLI-diagnose</span><pre id="currentLog">Laden…</pre></div></div>
+<div class="last-execution" id="lastExecution" hidden><div class="card card--previous"><div class="final-status"><span id="lastIndicator" class="indicator indicator--small" aria-hidden="true"></span><strong>Laatst uitgevoerd</strong><span id="lastFinalStatus"></span></div><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field" id="lastCommits" hidden><span class="label">Git-commit</span><pre id="lastCommitDetails"></pre></div><div class="field" id="lastDiagnostic" hidden><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div><details class="card card--previous" id="report" hidden><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details></div>
 </div></section>
-<div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
-<div class="card" id="executionContext" hidden><strong>Uitvoeringscontext</strong><p class="field"><span class="label">Modus</span><span id="executionMode"></span></p><p class="field"><span class="label">Repository</span><span id="targetRepository"></span></p><div class="field"><span class="label">Lokale checkout</span><pre id="checkoutPath"></pre></div><p class="field"><span class="label">Actieve branch</span><span id="activeBranch"></span></p></div>
+<details class="technical-details"><summary><strong>Technische details</strong></summary><div class="technical-grid">
+<div class="card execution-card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
+<div class="card execution-context" id="executionContext" hidden><strong>Uitvoeringscontext</strong><p class="field"><span class="label">Modus</span><span id="executionMode"></span></p><p class="field"><span class="label">Repository</span><span id="targetRepository"></span></p><div class="field"><span class="label">Lokale checkout</span><pre id="checkoutPath"></pre></div><p class="field"><span class="label">Actieve branch</span><span id="activeBranch"></span></p></div>
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
 <div class="card"><strong>Diagnose</strong><p id="diag"></p></div>
+</div></details>
 </main>
 <footer class="footer"><span class="label">Engineering Platform-versie</span><span id="platformVersion">Laden…</span> · <span class="label">Git-commit</span><code>$BUILD_COMMIT</code></footer>
 <script>
-const $=id=>document.getElementById(id),REFRESH_SECONDS=5,DASHBOARD_BUILD="$BUILD_COMMIT",DASHBOARD_BUILD_KEY="djconnect-engineering-dashboard-build",
+const $=id=>document.getElementById(id),DASHBOARD_BUILD="$BUILD_COMMIT",DASHBOARD_BUILD_KEY="djconnect-engineering-dashboard-build",
 formatTime=new Intl.DateTimeFormat("nl-NL",{timeZone:"Europe/Amsterdam",dateStyle:"full",timeStyle:"medium"}),
 fallback={watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."};
-let currentLogRun,lastLogRun,lastRefresh,nextRefresh,promptStartedAt,latestStatus;
+let currentLogRun,lastLogRun,lastRefresh,promptStartedAt,latestStatus;
 const humanLabels={ENGINEERING_RUN_ACTIVE:"Engineering actief",EXECUTE_AGENT:"Uitvoering",invoke_agent:"Engineering uitvoeren",MERGED_RECONCILED:"Samengevoegd en afgestemd",WORKSPACE_READY:"Werkruimte gereed"};
 function humanize(){for(const id of ["watcher","phase","action","repositoryState","workspaceState"]){const element=$(id);element.textContent=humanLabels[element.textContent]||element.textContent}}
 function tone(x){const phase=x.current_phase||"",watcher=x.watcher_state||"";if(["BLOCKED","FAILED"].includes(phase)||["JOB_BLOCKED","JOB_FAILED"].includes(watcher))return "red";if(phase==="COMPLETE"||watcher==="JOB_COMPLETED")return "green";if(phase==="WAIT_FOR_TERMINAL_EVIDENCE"||watcher==="WAITING_FOR_REPOSITORY")return "yellow";if(["INITIALIZE","EXECUTE_AGENT","REPAIR_AGENT","FINALIZE_AGENT","REPOSITORY_CLEANUP"].includes(phase)||["RUNNER_STARTING","JOB_CLAIMED"].includes(watcher))return "orange";return "grey"}
@@ -321,21 +368,20 @@ function pluralMinutes(value){return value===1?"minuut":"minuten"}
 function estimate(x){const phase=x.current_phase||"";if(phase==="INITIALIZE")return {summary:"Voorbereiding: minder dan 1 minuut",context:""};if(["EXECUTE_AGENT","REPAIR_AGENT"].includes(phase)){const [minimum,maximum]=executionRange(x);if(!promptStartedAt)return {summary:"Indicatieve totale duur: "+minimum+"–"+maximum+" minuten",context:"Gebaseerd op promptomvang en fase. Live Codex-voortgang is niet beschikbaar."};const elapsed=Math.max(0,Math.floor((Date.now()-promptStartedAt)/60000)),remainingMinimum=Math.max(1,minimum-elapsed),remainingMaximum=Math.max(remainingMinimum,maximum-elapsed);return {summary:"Indicatief resterend: "+remainingMinimum+"–"+remainingMaximum+" minuten",context:elapsed+" "+pluralMinutes(elapsed)+" verstreken · gebaseerd op promptomvang, fase en verstreken tijd. Geen live Codex-voortgang of tokenverbruik."}}if(phase==="FINALIZE_AGENT")return {summary:"Finalisatie in uitvoering",context:"De resterende tijd is pas betrouwbaar met live Codex-voortgang."};if(phase==="REPOSITORY_CLEANUP")return {summary:"Opschoning in uitvoering",context:"De resterende tijd hangt af van de lokale repository."};if(phase==="WAIT_FOR_TERMINAL_EVIDENCE")return {summary:"Wacht op externe verificatie",context:"Geen betrouwbare ETA."};if(phase==="COMPLETE")return {summary:"Voltooid",context:""};if(["BLOCKED","FAILED"].includes(phase))return {summary:"Gestopt; actie nodig",context:""};return {summary:"Nog niet beschikbaar",context:""}}
 function renderEstimate(x){const value=estimate(x);$("executionEstimate").textContent=value.summary;$("executionEstimateMeta").textContent=value.context;$("executionEstimateMeta").hidden=!value.context}
 function isActiveRun(x){return x.watcher_state==="ENGINEERING_RUN_ACTIVE"&&Boolean(x.run_id)}
-function checkBuild(){fetch("/api/build",{cache:"no-store"}).then(x=>x.json()).then(x=>{if(x.build_commit===DASHBOARD_BUILD){sessionStorage.removeItem(DASHBOARD_BUILD_KEY);return}if(x.build_commit&&DASHBOARD_BUILD!=="onbekend"&&sessionStorage.getItem(DASHBOARD_BUILD_KEY)!==x.build_commit){sessionStorage.setItem(DASHBOARD_BUILD_KEY,x.build_commit);location.reload()}}).catch(()=>{})}
-function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst ververst: "+(lastRefresh?formatTime.format(lastRefresh):"laden…");$("nextRefresh").textContent="Volgende verversing: "+(nextRefresh?Math.max(0,Math.ceil((nextRefresh-now)/1000))+" seconden":"laden…")}
-function l(id,url,run,last){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>$(id).textContent=x).catch(()=>$(id).textContent="Codex CLI diagnostic is unavailable.")}
-function usage(){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};fetch("/api/usage").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}).catch(()=>$("usage").hidden=true)}
-function processMetrics(active){$("processMetrics").hidden=!active;if(!active)return;fetch("/api/process-metrics").then(x=>x.json()).then(x=>{$("codexCpu").textContent=Number(x.cpu_percent||0).toLocaleString("nl-NL",{maximumFractionDigits:1})+"%";$("codexProcesses").textContent=x.process_count??0;$("codexGpu").textContent=x.gpu_status||"Niet beschikbaar"}).catch(()=>{$("codexCpu").textContent="Niet beschikbaar";$("codexProcesses").textContent="Niet beschikbaar";$("codexGpu").textContent="Niet beschikbaar"})}
-function commits(){fetch("/api/commits").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}).catch(()=>$("commits").hidden=true)}
-function lastCommits(){fetch("/api/commits/last-executed").then(x=>x.json()).then(x=>{let entries=Object.entries(x);$("lastCommits").hidden=!entries.length;$("lastCommitDetails").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}).catch(()=>$("lastCommits").hidden=true)}
-function promptStarted(){fetch("/api/prompt-started").then(x=>x.json()).then(x=>{promptStartedAt=x.started_at?Date.parse(x.started_at):undefined;$("promptStarted").textContent=promptStartedAt?formatTime.format(new Date(promptStartedAt)):"Niet beschikbaar";if(latestStatus)renderEstimate(latestStatus)}).catch(()=>{$("promptStarted").textContent="Niet beschikbaar";promptStartedAt=undefined;if(latestStatus)renderEstimate(latestStatus)})}
+function checkBuild(build){if(build===DASHBOARD_BUILD){sessionStorage.removeItem(DASHBOARD_BUILD_KEY);return}if(build&&DASHBOARD_BUILD!=="onbekend"&&sessionStorage.getItem(DASHBOARD_BUILD_KEY)!==build){sessionStorage.setItem(DASHBOARD_BUILD_KEY,build);location.reload()}}
+function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst bijgewerkt: "+(lastRefresh?formatTime.format(lastRefresh):"laden…")}
+function l(id,url,run,last,container){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>{const available=Boolean(x)&&!x.startsWith("No Codex CLI diagnostic is available");$(container).hidden=!available;if(available)$(id).textContent=x}).catch(()=>{$(container).hidden=false;$(id).textContent="Codex CLI diagnostic is unavailable."})}
+function usage(x){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};let entries=Object.entries(x||{});$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}
+function processMetrics(active,x){$("processMetrics").hidden=!active;if(!active)return;$("codexCpu").textContent=Number(x?.cpu_percent||0).toLocaleString("nl-NL",{maximumFractionDigits:1})+"%";$("codexProcesses").textContent=x?.process_count??0;$("codexGpu").textContent=x?.gpu_status||"Niet beschikbaar"}
+function commits(x){let entries=Object.entries(x||{});$("commits").hidden=!entries.length;$("completionCommits").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}
+function lastCommits(x){let entries=Object.entries(x||{});$("lastCommits").hidden=!entries.length;$("lastCommitDetails").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}
+function promptStarted(x){promptStartedAt=x?.started_at?Date.parse(x.started_at):undefined;$("promptStarted").textContent=promptStartedAt?formatTime.format(new Date(promptStartedAt)):"Niet beschikbaar";if(latestStatus)renderEstimate(latestStatus)}
 let lastExecutedRun,reportLoaded=false,reportRequest;function report(){if(!lastExecutedRun)return Promise.resolve();if(reportLoaded)return reportRequest;reportLoaded=true;return reportRequest=fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun)).then(x=>x.text()).then(x=>{if(!x){$("report").hidden=true;return}$("reportContent").textContent=x}).catch(()=>{$("reportContent").textContent="Engineeringrapport is niet beschikbaar."})}
 function fallbackCopy(value){const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.cssText="position:fixed;top:0;left:0;opacity:0";document.body.append(area);area.focus();area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw Error("copy unavailable")}
 function copyText(value){return navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(value).catch(()=>fallbackCopy(value)):Promise.resolve().then(()=>fallbackCopy(value))}
 function copyReport(){report().then(()=>copyText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
-function r(x){lastRefresh=new Date();nextRefresh=Date.now()+REFRESH_SECONDS*1000;clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";renderEstimate(x);processMetrics(active);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(active)l("currentLog","/api/log/current",x.run_id||null,false);$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";l("lastLog","/api/log/last",previous,true);$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage();commits();lastCommits()}
-function refresh(){fetch("/api/status").then(x=>{if(!x.ok)throw Error("status unavailable");return x.json()}).then(r).catch(()=>r(fallback))}
-let e=new EventSource("/api/events");e.addEventListener("status",x=>{try{r(JSON.parse(x.data));humanize()}catch{r(fallback);humanize()}});$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(()=>{clock();humanize();if(nextRefresh&&Date.now()>=nextRefresh)refresh()},250);clock();refresh();checkBuild();setInterval(checkBuild,5000);setInterval(promptStarted,5000);promptStarted()
+function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage(snapshot.usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
+let e=new EventSource("/api/events");e.addEventListener("dashboard",x=>{try{let snapshot=JSON.parse(x.data);r(snapshot.status,snapshot);humanize();checkBuild(snapshot.build_commit);$("updateMode").textContent="Serverpush: verbonden"}catch{r(fallback);humanize();$("updateMode").textContent="Serverpush: update ongeldig"}});e.onerror=()=>{$("updateMode").textContent="Serverpush: opnieuw verbinden…"};$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(clock,250);clock()
 </script>"""
     return page.replace("$TITLE", escape(title)).replace("$BUILD_COMMIT", escape(build_commit)).encode()
 
@@ -380,10 +426,18 @@ def handler(root: Path):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 try:
-                    for _ in range(60):
-                        self.wfile.write(b"event: status\ndata: " + _sse_status(root) + b"\n\n")
-                        self.wfile.flush()
-                        time.sleep(5)
+                    self.wfile.write(b"retry: 1000\n\n")
+                    previous: bytes | None = None
+                    for second in range(300):
+                        snapshot = _sse_snapshot(root)
+                        if snapshot != previous:
+                            self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
+                            self.wfile.flush()
+                            previous = snapshot
+                        elif second and second % 15 == 0:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                        time.sleep(1)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
