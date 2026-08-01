@@ -1,16 +1,22 @@
 # Local Dashboard Supervisor
 
-The macOS Engineering Dashboard supervisor is a local-only companion for the
-private dashboard. It binds only to the current Tailscale IPv4 address on port
-`8765`, relays requests to the loopback dashboard backend, and supervises the
-local Inbox watcher.
+The repository-owned Engineering Dashboard is the supported macOS service for
+the private status page. Its per-user LaunchAgent starts the dashboard for the
+configured local repository. The dashboard itself binds port `8765` only on
+loopback and, when available, the workstation's explicit Tailscale IPv4
+address. It does not use a wildcard, LAN or public listener.
 
-The supervisor never creates public listeners, Funnel configuration, ACLs,
-port-forwarding, pull requests, releases or deployments. It retries when
-Tailscale is temporarily unavailable during macOS startup; temporary listener
-failures are not process crashes. Broken client connections are handled without
-terminating the supervisor.
+The historical `dashboard_supervisor.swift` companion may still relay a
+Tailscale connection to a loopback backend for an existing local installation,
+but it is not the canonical installation path. Use the repository-owned
+dashboard commands instead:
 
-The watcher remains repository-owned and runs only for the configured local
-repository. It has no additional authority beyond the normal Engineering
-Platform lifecycle.
+```sh
+./tools/engineering/dj-engineering-dashboard doctor
+./tools/engineering/dj-engineering-dashboard install
+```
+
+The dashboard never creates public listeners, Funnel configuration, ACLs,
+port-forwarding, pull requests, releases or deployments. The Inbox watcher is
+a separate repository-owned LaunchAgent and has no authority beyond the normal
+Engineering Platform lifecycle.
