@@ -10,10 +10,21 @@ import unittest
 from unittest.mock import patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
+from tools.engineering.inbox_watcher import WATCHER_VERSION
+from tools.engineering.platform_version import EngineeringPlatformManifest
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_component_versions_match_the_canonical_platform_manifest(self) -> None:
+        root = Path(__file__).parents[2]
+        manifest = EngineeringPlatformManifest.load(
+            root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
+        )
+
+        self.assertEqual(DASHBOARD_VERSION, manifest.dashboard_version)
+        self.assertEqual(WATCHER_VERSION, manifest.watcher_version)
+
     def test_local_dashboard_supervisor_preserves_private_and_resilient_boundaries(self) -> None:
         source = (Path(__file__).parents[2] / "tools/engineering/dashboard_supervisor.swift").read_text(encoding="utf-8")
         self.assertIn("tailscale", source)
@@ -108,6 +119,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("Beschikbare resets", page)
         self.assertIn("Engineering Platform-versie", page)
         self.assertIn('id="platformVersion"', page)
+        self.assertIn('id="dashboardVersion"', page)
+        self.assertIn('id="workerVersion"', page)
+        self.assertIn("component_versions", page)
         self.assertIn("Git-commit", page)
         self.assertIn("onbekend", page)
         self.assertIn('DASHBOARD_BUILD="onbekend"', page)
@@ -372,6 +386,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["prompt_started"], {})
         self.assertEqual(snapshot["usage"], {})
         self.assertEqual(snapshot["rate_limits"], {})
+        self.assertEqual(snapshot["component_versions"]["dashboard"], "1.1.0")
+        self.assertEqual(snapshot["component_versions"]["worker"], "1.0.0")
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
