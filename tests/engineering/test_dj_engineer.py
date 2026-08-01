@@ -574,6 +574,64 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Platform Version: `1.0.0`", body)
         self.assertIn("Detected Codex CLI Version: `0.146.0`", body)
 
+    def test_successful_report_prioritizes_final_repository_outcome(self) -> None:
+        state = TransactionState(
+            "outcome-report",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "COMPLETE",
+            implementation_merge_commit="a" * 40,
+            latest_repository_evidence="branch=main; clean=True",
+            terminal=True,
+        )
+        records = (
+            {
+                "reviewer": "documentation",
+                "selected_because": "documentation-oriented objective",
+                "contribution": "The capability does not yet exist.",
+                "accepted_recommendations": 1,
+                "rejected_recommendations": 0,
+                "failed": False,
+            },
+        )
+        with patch("tools.engineering.dj_engineer._open_report", return_value=None):
+            report, _ = generate_terminal_report(
+                self.root,
+                state,
+                EngineeringPlatformManifest.load(
+                    self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+                ),
+                "0.146.0",
+                records,
+            )
+        body = report.read_text(encoding="utf-8")
+        self.assertIn("## Initial Repository Assessment", body)
+        self.assertIn("## Engineering Outcome", body)
+        self.assertIn("## Reviewer Findings", body)
+        self.assertIn("## Repository Truth", body)
+        self.assertIn("Initial observation: The capability does not yet exist.", body)
+        self.assertIn("Resolved during implementation", body)
+        self.assertIn("Resulting commits: implementation `" + "a" * 40, body)
+        self.assertIn("Repository state: branch=main; clean=True", body)
+        self.assertTrue(terminal_report_matches_state(body, state))
+
+    def test_assessment_only_report_does_not_claim_delivery(self) -> None:
+        state = TransactionState(
+            "assessment-report",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "BLOCKED",
+            diagnostic="Repository preflight requires attention.",
+            terminal=True,
+        )
+        with patch("tools.engineering.dj_engineer._open_report", return_value=None):
+            report, _ = generate_terminal_report(self.root, state)
+        body = report.read_text(encoding="utf-8")
+        self.assertIn("## Initial Repository Assessment", body)
+        self.assertIn("Completed work: no successful engineering delivery is claimed.", body)
+        self.assertIn("BLOCKED — no engineering changes were executed or delivered.", body)
+        self.assertTrue(terminal_report_matches_state(body, state))
+
     def test_blocked_and_failed_reports_match_the_terminal_checkpoint(self) -> None:
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
         for phase, expected in (
@@ -586,6 +644,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 body = report.read_text(encoding="utf-8")
             self.assertIn(expected, body)
             self.assertNotIn("COMPLETE —", body)
+            self.assertIn("## Engineering Outcome", body)
+            self.assertIn("## Reviewer Findings", body)
             self.assertTrue(terminal_report_matches_state(body, state))
 
     def test_capability_selection_covers_documentation_validation_governance_and_finalization(self) -> None:

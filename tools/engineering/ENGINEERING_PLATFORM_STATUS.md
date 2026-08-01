@@ -16,7 +16,9 @@ boundary. Existing commands remain compatibility interfaces.
 - Autonomous lifecycle and validation ownership.
 - Bounded repair loop, repository reconciliation and repository cleanup.
 - Owner authorization and automatic PR/Finalization lifecycle.
-- Progress reporting and post-run Engineering Reports.
+- Progress reporting and post-run Engineering Reports, with initial reviewer
+  observations explicitly separated from the checkpoint-authoritative final
+  repository outcome; see `docs/engineering/ENGINEERING_REPORTING.md`.
 - Advisory Engineering Memory.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.

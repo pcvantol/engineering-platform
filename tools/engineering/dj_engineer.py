@@ -1321,6 +1321,15 @@ def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
     """Reject report prose that conflicts with its immutable terminal checkpoint."""
     if f"- Terminal state: `{state.phase}`" not in body:
         return False
+    required_sections = (
+        "## Initial Repository Assessment",
+        "## Engineering Outcome",
+        "## Reviewer Findings",
+        "## Repository Truth",
+        "## Management Summary",
+    )
+    if any(section not in body for section in required_sections):
+        return False
     if state.phase == "BLOCKED":
         return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
     if state.phase == "FAILED":
@@ -1337,6 +1346,18 @@ def corrected_terminal_report(state: TransactionState) -> str:
             f"- Run ID: `{state.run_id}`",
             f"- Terminal state: `{state.phase}`",
             "",
+            "## Initial Repository Assessment",
+            "Assessment evidence is unavailable. This section describes only the repository before any attempted implementation.",
+            "",
+            "## Engineering Outcome",
+            format_terminal_management_summary(state),
+            "",
+            "## Reviewer Findings",
+            "No reviewer findings were retained. Reviewer observations are advisory initial observations only.",
+            "",
+            "## Repository Truth",
+            "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
+            "",
             "## Management Summary",
             format_terminal_management_summary(state),
             "",
@@ -1347,9 +1368,9 @@ def corrected_terminal_report(state: TransactionState) -> str:
     )
 
 
-def _format_reviewer_records(records: tuple[dict[str, object], ...]) -> str:
+def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str) -> str:
     if not records:
-        return "No specialist reviewers required."
+        return "No specialist reviewers required. Any future reviewer observations remain advisory initial observations."
     lines: list[str] = []
     for record in records:
         lines.extend(
@@ -1357,12 +1378,36 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...]) -> str:
                 f"- Reviewer: {record['reviewer']}",
                 f"  - Capability: {record.get('capability', 'engineering')}",
                 f"  - Selected because: {record['selected_because']}",
-                f"  - Contribution: {record['contribution']}",
+                f"  - Initial observation: {record['contribution']}",
                 f"  - Accepted recommendations: {record['accepted_recommendations']}",
                 f"  - Rejected recommendations: {record['rejected_recommendations']}",
+                "  - Outcome: Resolved during implementation; the final repository evidence below is authoritative."
+                if phase == "COMPLETE"
+                else "  - Outcome: Not a final repository statement; consult the terminal checkpoint and diagnostics.",
             )
         )
     return "\n".join(lines)
+
+
+def _format_engineering_outcome(state: TransactionState) -> str:
+    """Describe final delivery from checkpoint and repository evidence, never advice."""
+    if state.phase != "COMPLETE":
+        return "\n".join(
+            (
+                f"- Final checkpoint: `{state.phase}`",
+                "- Completed work: no successful engineering delivery is claimed.",
+                f"- Remaining limitation: {state.diagnostic or 'Terminal outcome requires follow-up.'}",
+            )
+        )
+    return "\n".join(
+        (
+            "- Final checkpoint: `COMPLETE`",
+            "- Completed work: implementation and any required reconciliation completed according to the persisted checkpoint.",
+            f"- Resulting commits: implementation `{state.implementation_merge_commit or 'not applicable'}`; finalization `{state.finalization_merge_commit or 'not applicable'}`.",
+            f"- Repository state: {state.latest_repository_evidence or 'Recorded by the terminal COMPLETE checkpoint.'}",
+            "- Remaining limitations: none recorded by the terminal checkpoint.",
+        )
+    )
 
 
 def generate_terminal_report(
@@ -1425,8 +1470,19 @@ def generate_terminal_report(
             f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",
             f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`",
             "",
-            "## Product Capability Review",
-            _format_reviewer_records(reviewer_records),
+            "## Initial Repository Assessment",
+            "This assessment describes the repository before implementation. Reviewer observations are advisory and cannot describe the final repository state.",
+            "",
+            "## Engineering Outcome",
+            _format_engineering_outcome(state),
+            "",
+            "## Reviewer Findings",
+            "Initial observations only. They are not final repository claims.",
+            _format_reviewer_records(reviewer_records, state.phase),
+            "",
+            "## Repository Truth",
+            "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
+            "The Engineering Outcome and Management Summary above are derived from that priority order.",
             "",
             "## Validation",
             "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations."
@@ -1445,6 +1501,7 @@ def generate_terminal_report(
             "No sub-agents were required. Sub-agents are read-only advisory helpers; the primary runner retains lifecycle authority.",
             "",
             "## Management Summary",
+            "Final repository outcome; it does not restate initial reviewer observations as current state.",
             format_terminal_management_summary(state),
             "",
             "## Diagnostics",
