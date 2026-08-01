@@ -68,6 +68,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn('fetch("/api/status")', page)
         self.assertIn('id="indicator"', page)
         self.assertIn('id="predecessorGate" hidden', page)
+        self.assertIn('id="queueItems" hidden', page)
+        self.assertIn('id="queueList"', page)
+        self.assertIn("Nog niet geclaimde Inbox-prompts, oudste eerst.", page)
+        self.assertIn("function queueItems(x)", page)
         self.assertIn("Wachtrij geblokkeerd", page)
         self.assertIn('id="predecessorRun"', page)
         self.assertIn('id="predecessorAction"', page)
@@ -236,10 +240,41 @@ class DashboardStatusTest(unittest.TestCase):
             },
         )
 
+    def test_rate_limit_labels_and_malformed_limit_payloads_fail_closed(self) -> None:
+        self.assertEqual(dashboard._rate_limit_window_label(1_440), "1-daags venster")
+        self.assertEqual(dashboard._rate_limit_window_label(120), "2-uursvenster")
+        self.assertEqual(dashboard._rate_limit_window_label(17), "17-minutenvenster")
+        self.assertEqual(dashboard._normalize_rate_limits(None), {})
+        self.assertEqual(dashboard._normalize_rate_limits({"rateLimits": []}), {})
+        self.assertEqual(
+            dashboard._normalize_rate_limits(
+                {"rateLimits": {"primary": {"usedPercent": True, "windowDurationMins": 300, "resetsAt": 1}}}
+            ),
+            {},
+        )
+
     def test_codex_rate_limits_reads_a_deterministic_app_server_response(self) -> None:
+        class RecordingInput:
+            def __init__(self) -> None:
+                self.chunks: list[str] = []
+                self.closed = False
+
+            def write(self, value: str) -> int:
+                self.chunks.append(value)
+                return len(value)
+
+            def flush(self) -> None:
+                return None
+
+            def close(self) -> None:
+                self.closed = True
+
+            def getvalue(self) -> str:
+                return "".join(self.chunks)
+
         class FakeProcess:
             def __init__(self) -> None:
-                self.stdin = io.StringIO()
+                self.stdin = RecordingInput()
                 self.stdout = io.StringIO(
                     "\n".join(
                         (
@@ -284,6 +319,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('"method": "initialize"', process.stdin.getvalue())
         self.assertIn('"method": "account/rateLimits/read"', process.stdin.getvalue())
         self.assertTrue(process.terminated)
+        self.assertTrue(process.stdin.closed)
 
     def test_codex_rate_limits_fails_closed_when_app_server_streams_are_unavailable(self) -> None:
         class FakeProcess:
@@ -385,6 +421,22 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(status["current_phase"], "INITIALIZE")
         self.assertEqual(status["run_id"], "inbox-new")
+
+    def test_live_runner_status_preserves_the_watcher_queue_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ".djconnect" / "status"
+            directory.mkdir(parents=True)
+            (directory / "status.json").write_text(
+                '{"queue_items":[{"filename":"later.md","title":"Later prompt","modified_at":"2026-08-01T10:00:00+00:00"}]}',
+                encoding="utf-8",
+            )
+            (directory / "current.json").write_text(
+                '{"run_id":"inbox-active","phase":"EXECUTE_AGENT"}', encoding="utf-8"
+            )
+            status = json.loads(_status(Path(temporary)))
+
+        self.assertEqual(status["queue_items"][0]["filename"], "later.md")
+        self.assertEqual(status["queue_items"][0]["title"], "Later prompt")
 
     def test_sse_status_is_single_line_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

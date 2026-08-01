@@ -22,6 +22,13 @@ boundary. Existing commands remain compatibility interfaces.
 - Codex CLI invocations request JSONL events so a run's explicitly reported
   token usage is captured only for that exact run. Costs and plan allowance are
   shown only when the CLI supplies them.
+- Strict sequential Inbox safety: a `BLOCKED` or `FAILED` predecessor holds
+  later submissions at `WAITING_FOR_PREDECESSOR` until an explicit
+  `Retry-Of` replacement completes. This is the safe default until a future
+  Engineering Intent dependency model can express finer-grained ordering.
+- iCloud Drive is submission transport only. Claimed prompts, immutable
+  execution copies, status, reports, diagnostics and component logs are
+  canonical local `.djconnect/` evidence.
 - Advisory Engineering Memory.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.
@@ -32,6 +39,13 @@ boundary. Existing commands remain compatibility interfaces.
   locally reported Tailscale IPv4 address. It never binds a wildcard, LAN or
   public address, and it does not configure Tailnet ACLs, Funnel, port
   forwarding or network policy.
+- Watcher and dashboard application logs are structured, bounded, rotated and
+  redacted before persistence. The dashboard shows a log tail only after an
+  explicit maintainer action.
+- The private dashboard's Codex advice surface is separately bounded to a
+  read-only, ephemeral CLI process with context from the repository, matching
+  terminal prompt and Engineering Report. It cannot start engineering or
+  mutate repository, lifecycle, release or deployment state.
 
 ## Future governance
 

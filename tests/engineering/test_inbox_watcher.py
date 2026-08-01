@@ -56,6 +56,16 @@ class InboxWatcherTest(unittest.TestCase):
         (self.inbox / "legacy.txt").write_text("plain prompt text", encoding="utf-8")
         self.assertEqual([path.name for path in inbox_watcher.discover(self.root, 0)], ["legacy.txt"])
 
+    def test_queue_projection_contains_only_filename_title_and_modified_time(self) -> None:
+        prompt = self.inbox / "queued.md"
+        prompt.write_text("# Queue title\nSensitive prompt body", encoding="utf-8")
+        items = inbox_watcher._queue_items([(prompt, prompt.read_text(encoding="utf-8"))])
+
+        self.assertEqual(items[0]["filename"], "queued.md")
+        self.assertEqual(items[0]["title"], "Queue title")
+        self.assertIn("T", items[0]["modified_at"])
+        self.assertNotIn("Sensitive prompt body", str(items))
+
     def test_launch_path_preserves_codex_location(self) -> None:
         with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
             self.assertEqual(inbox_watcher.launch_path().split(":")[0], "/opt/homebrew/bin")
@@ -203,6 +213,8 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["blocking_predecessor_run"], "inbox-blocked123")
         self.assertEqual(snapshot["blocking_predecessor_title"], "Blocked predecessor")
         self.assertIn("Retry-Of: inbox-blocked123", snapshot["predecessor_recovery_action"])
+        self.assertEqual(snapshot["queue_items"][0]["filename"], "next.txt")
+        self.assertEqual(snapshot["queue_items"][0]["title"], "Later prompt")
 
     def test_explicit_retry_of_blocked_predecessor_precedes_later_prompts(self) -> None:
         later = self.inbox / "later.txt"

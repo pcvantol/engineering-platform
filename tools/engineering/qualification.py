@@ -61,6 +61,9 @@ SCENARIOS = tuple(
         "Project Template",
         "Workspace Provisioning",
         "Genesis Lifecycle",
+        "Strict Inbox Sequencing",
+        "Local Engineering Evidence Storage",
+        "Component Logging and Read-only Advice",
     )
 )
 
@@ -162,6 +165,14 @@ def _default_check(root: Path, capability: str) -> bool:
         "Project Template": (root / "tools" / "engineering" / "templates" / "workspace-config.json").is_file(),
         "Workspace Provisioning": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
         "Genesis Lifecycle": (root / "tools" / "engineering" / "dj_engineer.py").is_file(),
+        "Strict Inbox Sequencing": (root / "tools" / "engineering" / "inbox_watcher.py").is_file(),
+        "Local Engineering Evidence Storage": (
+            root / "tools" / "engineering" / "ENGINEERING_INBOX_PROTOCOL.md"
+        ).is_file(),
+        "Component Logging and Read-only Advice": (
+            (root / "tools" / "engineering" / "component_logging.py").is_file()
+            and (root / "tools" / "engineering" / "codex_chat.py").is_file()
+        ),
     }
     return contracts.get(capability, (root / "tools" / "engineering" / "dj_engineer.py").is_file())
 

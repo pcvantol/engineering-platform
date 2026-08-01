@@ -190,6 +190,28 @@ def _prompt_title(content: str, filename: str) -> str:
     return redact_diagnostic(filename, limit=240)
 
 
+def _queue_items(candidates: list[tuple[Path, str]], claimed: Path | None = None) -> list[dict[str, str]]:
+    """Project bounded, title-only Inbox evidence for the private status page."""
+    items: list[dict[str, str]] = []
+    for path, content in candidates:
+        if path == claimed:
+            continue
+        try:
+            modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            continue
+        items.append(
+            {
+                "filename": redact_diagnostic(path.name, limit=240),
+                "title": _prompt_title(content, path.name),
+                "modified_at": modified_at,
+            }
+        )
+        if len(items) == 25:
+            break
+    return items
+
+
 def _previous_prompt_context(repo: Path) -> dict[str, object]:
     keys = (
         "submitted_filename",
@@ -231,6 +253,7 @@ def status(repo: Path, state: str, **details: object) -> None:
         job_id=details.get("job_id"),
         run_id=details.get("run_id"),
         queue_depth=details.get("queued_jobs", 0),
+        queue_items=details.get("queue_items", []),
         current_phase=details.get("runner_phase"),
         current_action=details.get("current_action"),
         implementation_pr=details.get("implementation_pr"),
@@ -369,13 +392,14 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         if not candidates:
             log_event(logger, logging.DEBUG, "watcher_idle")
-            status(repo, "WATCHER_IDLE", queued_jobs=0)
+            status(repo, "WATCHER_IDLE", queued_jobs=0, queue_items=[])
             return 0
         if _active_transaction(repo):
             status(
                 repo,
                 "WAITING_FOR_REPOSITORY",
                 queued_jobs=len(candidates),
+                queue_items=_queue_items(candidates),
                 diagnostic="Een bestaande engineeringuitvoering is nog actief.",
             )
             log_event(logger, logging.WARNING, "waiting_for_active_transaction")
@@ -392,6 +416,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                     repo,
                     "WAITING_FOR_PREDECESSOR",
                     queued_jobs=len(candidates),
+                    queue_items=_queue_items(candidates),
                     runner_phase="WAITING_FOR_PREDECESSOR",
                     current_action="Wachtrij gepauzeerd tot de voorafgaande prompt is hersteld.",
                     diagnostic=(
@@ -414,6 +439,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 repo,
                 "WATCHER_IDLE",
                 queued_jobs=len(candidates) - 1,
+                queue_items=_queue_items(candidates, source),
                 job_id=job_id,
                 diagnostic="Een dubbele opdracht is al geregistreerd.",
             )
@@ -421,7 +447,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
-        status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
+        status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source), job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
@@ -456,7 +482,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         if phase and phase not in TERMINAL_PHASES:
             arguments.append("--resume")
         status(
-            repo, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
+            repo, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
             submitted_filename=source.name, prompt_title=title,
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
@@ -467,7 +493,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         corrected_report = False
         if report:
             status(
-                repo, "REPORT_PUBLISHING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
+                repo, "REPORT_PUBLISHING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
             )
             delivered = report
             if _report_matches_terminal_phase(report, phase):
@@ -506,6 +532,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             job_id=job_id,
             run_id=run_id,
             queued_jobs=len(candidates) - 1,
+            queue_items=_queue_items(candidates, source),
             runner_phase=phase,
             report=str(delivered) if delivered else None,
             diagnostic=reason,

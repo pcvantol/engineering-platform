@@ -6,7 +6,8 @@ on:
       - 'tools/engineering/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
-      - 'docs/development/ENGINEERING_PLATFORM_*.md'
+      - 'docs/development/**'
+      - 'onboarding/**'
       - 'BOOTSTRAP.md'
       - '.github/workflows/engineering-platform-validation.yml'
   push:
@@ -15,7 +16,8 @@ on:
       - 'tools/engineering/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
-      - 'docs/development/ENGINEERING_PLATFORM_*.md'
+      - 'docs/development/**'
+      - 'onboarding/**'
       - 'BOOTSTRAP.md'
 
 jobs:

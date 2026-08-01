@@ -15,6 +15,11 @@ authorization and a stable run ID. Reports remain under `.djconnect/reports/`
 and status under `.djconnect/status/`. iCloud is transport only; it retains no
 reports, status or prompt archive after a job is claimed.
 
+The private status page shows the current unclaimed queue from this watcher
+projection, oldest first. Each bounded entry contains only its filename,
+Markdown title and File Date Modified timestamp; it never exposes prompt body
+content or absolute iCloud paths.
+
 The Inbox is fail-closed across a sequence. When a run ends `BLOCKED` or
 `FAILED`, the watcher moves no later file from Inbox to Running. It publishes
 `WAITING_FOR_PREDECESSOR` with the blocking run, prompt and recovery action.
