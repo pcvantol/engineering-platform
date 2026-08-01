@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _report_for_run, _sse_status, _status, binding_addresses
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -56,6 +56,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="lastExecution" hidden', page)
         self.assertIn('id="lastIndicator"', page)
         self.assertIn('id="lastFinalStatus"', page)
+        self.assertIn('id="lastCommits" hidden', page)
+        self.assertIn('fetch("/api/commits/last-executed")', page)
         self.assertIn("function finalStatus(phase)", page)
         self.assertIn("Geblokkeerd", page)
         self.assertIn("Mislukt", page)
@@ -133,6 +135,21 @@ class DashboardStatusTest(unittest.TestCase):
             (status / "status.json").write_text('{"run_id":"inbox-done","current_phase":"COMPLETE"}', encoding="utf-8")
             (runs / "inbox-done.json").write_text('{"genesis_commit_sha":"' + "a" * 40 + '"}', encoding="utf-8")
             self.assertEqual(json.loads(_completion_commits(root)), {"Genesis-commit": "a" * 40})
+
+    def test_last_executed_commits_are_bound_to_the_completed_last_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".djconnect" / "status"
+            runs = root / ".djconnect" / "engineering-runs"
+            status.mkdir(parents=True)
+            runs.mkdir(parents=True)
+            (status / "status.json").write_text(
+                '{"last_executed_run":"inbox-done","last_executed_phase":"COMPLETE"}', encoding="utf-8"
+            )
+            (runs / "inbox-done.json").write_text(
+                '{"implementation_merge_commit":"' + "b" * 40 + '"}', encoding="utf-8"
+            )
+            self.assertEqual(json.loads(_last_executed_commits(root)), {"Implementatie-mergecommit": "b" * 40})
 
     def test_missing_status_uses_a_complete_degraded_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
