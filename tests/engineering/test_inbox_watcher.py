@@ -112,6 +112,68 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
         self.assertFalse(old_log.exists())
 
+    def test_status_helpers_keep_previous_context_and_bound_details(self) -> None:
+        (self.root / "status.json").write_text(
+            json.dumps({"submitted_filename": "old.md", "last_executed_run": "inbox-old"}),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            inbox_watcher._previous_prompt_context(self.root),
+            {"submitted_filename": "old.md", "last_executed_run": "inbox-old"},
+        )
+        self.assertEqual(inbox_watcher._safe_detail("line one\nline two"), "line one line two")
+        self.assertEqual(inbox_watcher._prompt_title("no title", "fallback.md"), "fallback.md")
+        self.assertEqual(inbox_watcher._prompt_title("# Visible title\nbody", "fallback.md"), "Visible title")
+
+    def test_lock_recovers_only_stale_owner_and_prevents_parallel_owner(self) -> None:
+        with inbox_watcher._lock(self.repo):
+            with self.assertRaisesRegex(RuntimeError, "another watcher"):
+                with inbox_watcher._lock(self.repo):
+                    pass
+        lock = self.repo / ".djconnect/engineering-inbox.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("99999999", encoding="utf-8")
+        with inbox_watcher._lock(self.repo):
+            self.assertTrue(lock.exists())
+        self.assertFalse(lock.exists())
+
+    def test_runner_evidence_helpers_and_empty_inbox_are_safe(self) -> None:
+        self.assertEqual(inbox_watcher._runner_result(self.repo, "inbox-none"), (None, None))
+        self.assertIsNone(inbox_watcher._report(self.repo, "inbox-none"))
+        self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+        self.assertEqual(json_status(self.root)["watcher_state"], "WATCHER_IDLE")
+        runs = self.repo / ".djconnect/engineering-runs"
+        runs.mkdir(parents=True)
+        (runs / "inbox-evidence.json").write_text(
+            '{"phase":"FAILED","diagnostic":"bounded"}', encoding="utf-8"
+        )
+        self.assertEqual(inbox_watcher._runner_result(self.repo, "inbox-evidence"), ("FAILED", "bounded"))
+
+    @patch("tools.engineering.inbox_watcher.LaunchdProvider")
+    def test_main_install_uninstall_status_and_doctor_are_local_only(self, launchd: object) -> None:
+        with tempfile.TemporaryDirectory() as home, patch(
+            "tools.engineering.inbox_watcher.Path.home", return_value=Path(home)
+        ), patch("tools.engineering.inbox_watcher.PlatformConfiguration.load"):
+            (self.repo / ".gitignore").write_text(".djconnect/\n", encoding="utf-8")
+            self.assertEqual(
+                inbox_watcher.main(["install", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                0,
+            )
+            launchd.return_value.install.assert_called_once()
+            self.assertEqual(
+                inbox_watcher.main(["status", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                0,
+            )
+            self.assertEqual(
+                inbox_watcher.main(["uninstall", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                0,
+            )
+            launchd.return_value.uninstall.assert_called_once()
+            self.assertEqual(
+                inbox_watcher.main(["doctor", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                1,
+            )
+
 
 def json_status(root: Path) -> dict[str, object]:
     import json

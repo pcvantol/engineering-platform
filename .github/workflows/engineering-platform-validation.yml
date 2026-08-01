@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'tools/engineering/**'
+      - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/ENGINEERING_PLATFORM_*.md'
       - 'BOOTSTRAP.md'
@@ -12,6 +13,7 @@ on:
     branches: [main]
     paths:
       - 'tools/engineering/**'
+      - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/ENGINEERING_PLATFORM_*.md'
       - 'BOOTSTRAP.md'
@@ -23,6 +25,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
+      - name: Install Engineering Platform validation tools
+        run: python3 -m pip install -r requirements-dev.txt
       - name: Version and configuration contracts
         run: python3 -c "from pathlib import Path; from tools.engineering.platform_api import PlatformConfiguration; from tools.engineering.platform_version import EngineeringPlatformManifest; r=Path('.'); assert PlatformConfiguration.load(r).platform.version == EngineeringPlatformManifest.load(r/'tools/engineering/ENGINEERING_PLATFORM_VERSION.json').platform_version"
       - name: Provider, qualification and golden scenario
@@ -30,3 +34,31 @@ jobs:
           python3 -m unittest tests.engineering.test_platform_productization tests.engineering.test_engineering_platform_golden
           ./tools/engineering/dj-engineer qualify
           python3 -c "from pathlib import Path; from tools.engineering.golden_scenario import run; assert run(Path('.'))['result'] == 'ENGINEERING_PLATFORM_GOLDEN_PASS'"
+      - name: Enforce Engineering Platform coverage contract
+        run: |
+          coverage run --branch -m unittest discover -s tests/engineering
+          coverage json -o engineering-platform-coverage.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          minimum = 80.0
+          targets = (
+              "tools/engineering/dashboard.py",
+              "tools/engineering/platform_bootstrap.py",
+              "tools/engineering/providers.py",
+              "tools/engineering/dj_engineer.py",
+              "tools/engineering/inbox_watcher.py",
+          )
+          report = json.loads(Path("engineering-platform-coverage.json").read_text())
+          files = report["files"]
+          failures = []
+          for target in targets:
+              covered = files.get(target, {}).get("summary", {}).get("percent_covered")
+              if covered is None or covered < minimum:
+                  failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum {minimum:.0f}%)")
+              else:
+                  print(f"{target}: {covered:.2f}%")
+          if failures:
+              raise SystemExit("Engineering Platform coverage contract failed:\n" + "\n".join(failures))
+          PY

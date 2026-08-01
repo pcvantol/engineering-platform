@@ -13,9 +13,11 @@ from tools.engineering.dj_engineer import (
     CodexCliClient,
     CodexInvocationError,
     EngineeringRunner,
+    GhCliClient,
     PullRequestEvidence,
     RepositoryEvidence,
     RunnerError,
+    SubprocessRepositoryClient,
     _format_terminal_report,
     _format_cli_failure,
     _open_report,
@@ -44,6 +46,7 @@ from tools.engineering.capability_review import (
     select_reviewers,
 )
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
+from tools.engineering.providers import CodexCliProvider
 
 
 class FakeRepository:
@@ -137,6 +140,265 @@ class FakeReviewer:
         if self.fail:
             raise RuntimeError("reviewer unavailable")
         return ReviewerResult(reviewer, "Bounded review complete.", ("Use canonical wording.",))
+
+
+class ClientContractTest(unittest.TestCase):
+    @patch("tools.engineering.dj_engineer.subprocess.run")
+    def test_repository_main_containment_uses_git_ancestry_evidence(self, run: object) -> None:
+        client = SubprocessRepositoryClient()
+        run.return_value = subprocess.CompletedProcess(("git",), 0)
+        self.assertTrue(client.main_contains(Path("/repository"), "a" * 40))
+        run.return_value = subprocess.CompletedProcess(("git",), 1)
+        self.assertFalse(client.main_contains(Path("/repository"), "a" * 40))
+
+    def test_repository_synchronization_uses_only_main_fast_forward_commands(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                return ""
+
+        provider = Provider()
+        SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+        self.assertEqual(
+            provider.calls,
+            [("git", "switch", "main"), ("git", "pull", "--ff-only")],
+        )
+
+    def test_repository_client_inspects_and_translates_provider_failures(self) -> None:
+        class Provider:
+            def command(self, root: Path, *args: str) -> str:
+                values = {
+                    ("git", "remote", "get-url", "origin"): "git@github.com:pcvantol/djconnect.git",
+                    ("git", "branch", "--show-current"): "main",
+                    ("git", "rev-parse", "HEAD"): "a" * 40,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return values[args]
+
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.subprocess.run") as run:
+            root = Path(temporary)
+            (root / "BOOTSTRAP.md").write_text("contract", encoding="utf-8")
+            (root / ".git").mkdir()
+            run.return_value = subprocess.CompletedProcess(("git",), 0)
+            evidence = SubprocessRepositoryClient(Provider()).inspect(root)
+            self.assertEqual(evidence.repository, "pcvantol/djconnect")
+            self.assertTrue(evidence.clean)
+            self.assertTrue(evidence.main_contains_head)
+
+        class FailingProvider:
+            def command(self, _: Path, *args: str) -> str:
+                raise RuntimeError("provider failed")
+
+        with self.assertRaisesRegex(RunnerError, "provider failed"):
+            SubprocessRepositoryClient(FailingProvider())._run(Path("/tmp"), "git", "status")
+
+    def test_github_client_interprets_checks_and_control_commands(self) -> None:
+        class Provider:
+            def __init__(self, response: str) -> None:
+                self.response = response
+                self.calls: list[tuple[str, ...]] = []
+
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                return self.response
+
+        response = json.dumps(
+            {
+                "number": 7,
+                "state": "OPEN",
+                "isDraft": False,
+                "mergeCommit": {"oid": "b" * 40},
+                "statusCheckRollup": [
+                    {"name": "green", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                    {"name": "bad", "status": "COMPLETED", "conclusion": "FAILURE"},
+                ],
+            }
+        )
+        provider = Provider(response)
+        client = GhCliClient(provider)
+        evidence = client.pull_request(7)
+        self.assertTrue(evidence.checks_terminal)
+        self.assertFalse(evidence.checks_passed)
+        self.assertEqual(evidence.failed_checks, ("bad",))
+        client.ready(7)
+        client.merge(7)
+        self.assertIn(("pr", "ready", "7"), provider.calls)
+        self.assertIn(("pr", "merge", "7", "--squash", "--delete-branch"), provider.calls)
+
+    @patch("tools.engineering.dj_engineer.subprocess.run")
+    def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
+        review_message = json.dumps(
+            {"contribution": "reviewed", "recommendations": ["keep scope"]}
+        )
+        agent_message = json.dumps(
+            {
+                "terminal_state": "COMPLETE",
+                "branch": "codex/test",
+                "pull_request": 12,
+                "terminal_condition": "repository_reconciled",
+                "diagnostic": "safe",
+                "repository_path": "/tmp/repository",
+                "commit_sha": "c" * 40,
+            }
+        )
+        run.side_effect = [
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": review_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client = CodexCliClient(CodexCliProvider())
+            review = client.review(root, __import__("tools.engineering.capability_review", fromlist=["ReviewerSelection"]).ReviewerSelection("validation", "scope", 1), "objective")
+            result = client.invoke(root, "objective")
+        self.assertFalse(review.failed)
+        self.assertEqual(review.recommendations, ("keep scope",))
+        self.assertEqual(result.pull_request, 12)
+
+    @patch("tools.engineering.dj_engineer.subprocess.run")
+    def test_codex_client_keeps_bounded_diagnostics_on_failures(self, run: object) -> None:
+        run.return_value = subprocess.CompletedProcess(("codex",), 1, "prompt body", "token=secret\nfailed")
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(CodexInvocationError) as raised:
+                CodexCliClient().invoke(Path(temporary), "prompt body")
+        self.assertIn("code 1", str(raised.exception))
+        self.assertNotIn("secret", raised.exception.console_detail)
+
+    @patch("tools.engineering.dj_engineer.generate_terminal_report", return_value=(None, None))
+    @patch("tools.engineering.dj_engineer.EngineeringRunner")
+    def test_main_publishes_complete_runner_result(self, runner_type: object, _: object) -> None:
+        state = TransactionState(
+            run_id="run-main",
+            repository="pcvantol/djconnect",
+            prompt_path="prompt.md",
+            phase="COMPLETE",
+            next_action="repository_reconciled",
+            terminal=True,
+        )
+        runner_type.return_value.run.return_value = state
+        runner_type.return_value.platform_manifest = None
+        runner_type.return_value.console_detail = None
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.Path.cwd", return_value=Path(temporary)):
+            prompt = Path(temporary) / "prompt.md"
+            prompt.write_text("# objective", encoding="utf-8")
+            self.assertEqual(__import__("tools.engineering.dj_engineer", fromlist=["main"]).main([str(prompt)]), 0)
+
+    @patch("tools.engineering.dj_engineer.EngineeringRunner")
+    def test_main_reports_blocked_runner_and_writes_redacted_console_log(self, runner_type: object) -> None:
+        runner_type.return_value.run.side_effect = RunnerError("blocked preflight")
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.Path.cwd", return_value=Path(temporary)):
+            prompt = Path(temporary) / "prompt.md"
+            prompt.write_text("# objective", encoding="utf-8")
+            self.assertEqual(__import__("tools.engineering.dj_engineer", fromlist=["main"]).main([str(prompt)]), 2)
+
+    @patch.object(SubprocessRepositoryClient, "inspect")
+    @patch("tools.engineering.dj_engineer.subprocess.run")
+    def test_repository_cleanup_handles_absent_and_squash_merged_branches(
+        self, run: object, inspect: object
+    ) -> None:
+        class Provider:
+            def command(self, _: Path, *args: str) -> str:
+                return ""
+
+        clean = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
+        inspect.return_value = clean
+        run.side_effect = [
+            subprocess.CompletedProcess(("git",), 0),  # existing branch
+            subprocess.CompletedProcess(("git",), 1, "", "not ancestral"),
+            subprocess.CompletedProcess(("git",), 0),  # forced squash cleanup
+            subprocess.CompletedProcess(("git",), 1),  # absent branch
+        ]
+        detail = SubprocessRepositoryClient(Provider()).cleanup_transaction(
+            Path("/repository"), ("codex/transaction", "codex/absent", "codex/transaction")
+        )
+        self.assertIn("removed=codex/transaction", detail)
+        self.assertIn("squash-reconciled=codex/transaction", detail)
+
+    def test_repository_cleanup_rejects_main_and_dirty_workspaces(self) -> None:
+        class Provider:
+            def command(self, _: Path, *args: str) -> str:
+                return ""
+
+        client = SubprocessRepositoryClient(Provider())
+        with patch.object(client, "inspect", return_value=RepositoryEvidence("repo", "main", "a" * 40, False, True)):
+            with self.assertRaisesRegex(RunnerError, "not clean"):
+                client.cleanup_transaction(Path("/repository"), ())
+        with patch.object(client, "inspect", return_value=RepositoryEvidence("repo", "main", "a" * 40, True, True)):
+            with self.assertRaisesRegex(RunnerError, "resolves to main"):
+                client.cleanup_transaction(Path("/repository"), ("main",))
+
+    @patch("tools.engineering.dj_engineer.subprocess.run")
+    def test_live_status_and_status_command_cover_missing_invalid_and_valid_files(self, run: object) -> None:
+        run.return_value = subprocess.CompletedProcess(("git",), 0, "main\n", "")
+        state = TransactionState(
+            run_id="run-status",
+            repository="pcvantol/djconnect",
+            prompt_path="/missing-prompt.md",
+            phase="INITIALIZE",
+        )
+        module = __import__("tools.engineering.dj_engineer", fromlist=["print_live_status"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual(module.print_live_status(root), 1)
+            path = module.write_live_status(root, state, "starting")
+            self.assertTrue(path.is_file())
+            self.assertEqual(module.print_live_status(root), 0)
+            path.write_text("not json", encoding="utf-8")
+            self.assertEqual(module.print_live_status(root), 2)
+
+    def test_engineering_memory_is_bounded_advisory_metadata(self) -> None:
+        module = __import__("tools.engineering.dj_engineer", fromlist=["capture_engineering_memory"])
+        state = TransactionState(
+            run_id="run-memory",
+            repository="pcvantol/djconnect",
+            prompt_path="/tmp/documentation-validation.md",
+            phase="COMPLETE",
+            terminal=True,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual(module.load_engineering_memory(root), {})
+            self.assertIn("[]", module.retrieve_engineering_memory(root, Path("documentation.md")))
+            module.capture_engineering_memory(
+                root,
+                state,
+                ({"reviewer": "validation", "accepted_recommendations": 1, "failed": False},),
+            )
+            memory = module.load_engineering_memory(root)
+            self.assertEqual(memory["transactions"][-1]["outcome"], "COMPLETE")
+            self.assertIn("validation", memory["reviewers"][0]["reviewer"])
+            self.assertIn("documentation", module.retrieve_engineering_memory(root, Path("documentation-next.md")))
+
+    @patch("tools.engineering.dj_engineer.subprocess.Popen", side_effect=OSError)
+    @patch("tools.engineering.dj_engineer.shutil.which", return_value="/usr/local/bin/code")
+    @patch("tools.engineering.dj_engineer.platform.system", return_value="Linux")
+    def test_cli_helpers_and_editor_fallbacks_are_bounded(
+        self, _: object, __: object, ___: object
+    ) -> None:
+        module = __import__("tools.engineering.dj_engineer", fromlist=["_codex_final_message"])
+        usage = extract_codex_usage(
+            '{"usage":[{"input-tokens":12},{"nested":{"output_tokens":3}}]}\nnot-json'
+        )
+        self.assertEqual(usage, {"input_tokens": 12, "output_tokens": 3})
+        self.assertEqual(module._codex_final_message("plain final message"), "plain final message")
+        self.assertIsNone(module._open_report(Path("/tmp/report.md")))
+
+    def test_usage_and_execution_context_helpers_fail_closed(self) -> None:
+        module = __import__("tools.engineering.dj_engineer", fromlist=["write_codex_usage"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            module.write_codex_usage(root, "run-usage", {"unknown": 1, "input_tokens": -1})
+            self.assertFalse((root / ".djconnect/status/codex_usage.json").exists())
+            module.write_codex_usage(root, "run-usage", {"input_tokens": 2})
+            self.assertEqual(
+                json.loads((root / ".djconnect/status/codex_usage.json").read_text(encoding="utf-8"))["usage"],
+                {"input_tokens": 2},
+            )
+        self.assertEqual(execution_mode_for("Execution Mode: Genesis"), "GENESIS")
+        self.assertEqual(execution_mode_for("no declaration"), "MANAGED")
+        self.assertIsNotNone(genesis_workspace_preflight(None))
 
 
 class LocalAgentRunnerTest(unittest.TestCase):

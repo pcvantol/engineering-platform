@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
+from http.client import HTTPConnection
 from pathlib import Path
 import tempfile
+from threading import Thread
 import unittest
 from unittest.mock import patch
 
+from tools.engineering import dashboard
 from tools.engineering.dashboard import LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
 
 
@@ -195,6 +199,82 @@ class DashboardStatusTest(unittest.TestCase):
             },
         )
 
+    def test_codex_rate_limits_reads_a_deterministic_app_server_response(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(
+                    "\n".join(
+                        (
+                            json.dumps({"id": 1, "result": {}}),
+                            json.dumps(
+                                {
+                                    "id": 2,
+                                    "result": {
+                                        "rateLimits": {
+                                            "primary": {
+                                                "usedPercent": 12,
+                                                "windowDurationMins": 300,
+                                                "resetsAt": 1_786_162_124,
+                                            }
+                                        },
+                                        "rateLimitResetCredits": {"availableCount": 2},
+                                    },
+                                }
+                            ),
+                        )
+                    )
+                    + "\n"
+                )
+                self.terminated = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float) -> None:
+                return None
+
+        process = FakeProcess()
+        with (
+            patch("tools.engineering.dashboard.subprocess.Popen", return_value=process),
+            patch("tools.engineering.dashboard.select.select", return_value=([process.stdout], [], [])),
+        ):
+            dashboard._rate_limit_cache = None
+            result = json.loads(dashboard._codex_rate_limits())
+            dashboard._rate_limit_cache = None
+        self.assertEqual(result["reset_credits"], 2)
+        self.assertEqual(result["windows"][0]["label"], "5-uursvenster")
+        self.assertIn('"method": "initialize"', process.stdin.getvalue())
+        self.assertIn('"method": "account/rateLimits/read"', process.stdin.getvalue())
+        self.assertTrue(process.terminated)
+
+    def test_codex_rate_limits_fails_closed_when_app_server_streams_are_unavailable(self) -> None:
+        class FakeProcess:
+            stdin = None
+            stdout = None
+
+            def __init__(self) -> None:
+                self.terminated = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float) -> None:
+                return None
+
+        process = FakeProcess()
+        with patch("tools.engineering.dashboard.subprocess.Popen", return_value=process):
+            dashboard._rate_limit_cache = None
+            self.assertEqual(dashboard._codex_rate_limits(), b"{}")
+            dashboard._rate_limit_cache = None
+        self.assertTrue(process.terminated)
+
+    def test_codex_rate_limits_fails_closed_when_app_server_cannot_start(self) -> None:
+        with patch("tools.engineering.dashboard.subprocess.Popen", side_effect=OSError):
+            dashboard._rate_limit_cache = None
+            self.assertEqual(dashboard._codex_rate_limits(), b"{}")
+            dashboard._rate_limit_cache = None
+
     def test_completion_commits_are_shown_only_after_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -359,3 +439,128 @@ class DashboardStatusTest(unittest.TestCase):
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value=None)
     def test_dashboard_fails_closed_to_loopback_without_tailscale(self, _address: object) -> None:
         self.assertEqual(binding_addresses(), (LOOPBACK_ADDRESS,))
+
+    def test_http_dashboard_exposes_only_read_only_routes(self) -> None:
+        root = Path(__file__).parents[2]
+        server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=2)
+        try:
+            for route, content_type in (
+                ("/", "text/html"),
+                ("/api/status", "application/json"),
+                ("/api/build", "application/json"),
+                ("/api/health", "application/json"),
+                ("/api/process-metrics", "application/json"),
+                ("/api/usage", "application/json"),
+                ("/api/usage/last-executed?run_id=invalid", "application/json"),
+                ("/api/commits", "application/json"),
+                ("/api/commits/last-executed", "application/json"),
+                ("/api/prompt-started", "application/json"),
+                ("/api/log/latest", "text/plain"),
+                ("/api/log/current", "text/plain"),
+                ("/api/log/last", "text/plain"),
+                ("/api/report/latest", "text/markdown"),
+                ("/api/report/last-executed?run_id=invalid", "text/markdown"),
+            ):
+                connection.request("GET", route)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertIn(content_type, response.getheader("Content-Type"))
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                response.read()
+            connection.request("GET", "/missing")
+            self.assertEqual(connection.getresponse().status, 404)
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    @patch("tools.engineering.dashboard.run")
+    def test_main_handles_service_lifecycle(self, run: object, launchd: object) -> None:
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "tools.engineering.dashboard.Path.home", return_value=Path(temporary)
+        ):
+            self.assertEqual(dashboard.main(["run", "--repo", str(root), "--port", "9888"]), 0)
+            run.assert_called_once()
+            self.assertEqual(dashboard.main(["install", "--repo", str(root)]), 0)
+            launchd.return_value.install.assert_called_once()
+            self.assertEqual(dashboard.main(["uninstall", "--repo", str(root)]), 0)
+            launchd.return_value.uninstall.assert_called_once()
+
+    @patch("tools.engineering.dashboard.TailscaleProvider")
+    def test_doctor_reports_both_ready_and_degraded_states(self, provider: object) -> None:
+        provider.return_value.status.return_value = __import__(
+            "tools.engineering.providers", fromlist=["ProviderStatus"]
+        ).ProviderStatus("tailscale", "configured", True, "connected")
+        provider.return_value.ipv4_address.return_value = "100.100.100.100"
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "tools.engineering.dashboard.Path.home", return_value=Path(temporary)
+        ):
+            root = Path(temporary) / "repository"
+            (root / ".djconnect" / "status").mkdir(parents=True)
+            self.assertEqual(dashboard.main(["doctor", "--repo", str(root)]), 1)
+            (root / ".djconnect" / "status" / "status.json").write_text("{}", encoding="utf-8")
+            agent = Path(temporary) / "Library/LaunchAgents" / f"{dashboard.LABEL}.plist"
+            agent.parent.mkdir(parents=True)
+            agent.write_text("owned", encoding="utf-8")
+            self.assertEqual(dashboard.main(["doctor", "--repo", str(root)]), 0)
+
+    @patch("tools.engineering.dashboard.binding_addresses", return_value=(LOOPBACK_ADDRESS,))
+    @patch("tools.engineering.dashboard.handler")
+    def test_server_creation_and_launch_agent_are_private_and_owned(
+        self, request_handler: object, _: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "tools.engineering.dashboard.Path.home", return_value=Path(temporary)
+        ):
+            root = Path(temporary) / "repository"
+            root.mkdir()
+            request_handler.return_value = dashboard.BaseHTTPRequestHandler
+            servers = dashboard.create_servers(root, port=0)
+            try:
+                self.assertEqual(len(servers), 1)
+            finally:
+                for server in servers:
+                    server.server_close()
+            agent = dashboard.launch_agent(root)
+            rendered = agent.read_text(encoding="utf-8")
+            self.assertIn(dashboard.LABEL, rendered)
+            self.assertIn("KeepAlive", rendered)
+            self.assertIn(str(root), rendered)
+
+    @patch("tools.engineering.dashboard._last_executed_commits", return_value=b"not-json")
+    @patch("tools.engineering.dashboard._completion_commits", return_value=b"not-json")
+    @patch("tools.engineering.dashboard._codex_usage_for_run", return_value=b"not-json")
+    @patch("tools.engineering.dashboard._codex_usage", return_value=b"not-json")
+    @patch("tools.engineering.dashboard._prompt_started", return_value=b"not-json")
+    @patch("tools.engineering.dashboard._sse_status", return_value=b"not-json")
+    def test_snapshot_fails_closed_when_optional_projections_are_invalid(self, *_: object) -> None:
+        snapshot = json.loads(_sse_snapshot(Path("/missing")))
+        self.assertEqual(snapshot["status"]["watcher_state"], "REMOTE_ENGINEERING_DEGRADED")
+        self.assertEqual(snapshot["usage"], {})
+        self.assertEqual(snapshot["completion_commits"], {})
+
+    @patch("tools.engineering.dashboard.subprocess.run", side_effect=OSError)
+    def test_dashboard_process_metrics_fail_closed(self, _: object) -> None:
+        self.assertEqual(json.loads(_codex_process_metrics())["process_count"], 0)
+
+    @patch("tools.engineering.dashboard.subprocess.run")
+    def test_dashboard_build_identifier_handles_failed_git_query(self, run: object) -> None:
+        run.return_value = __import__("subprocess").CompletedProcess(("git",), 1, "", "")
+        self.assertEqual(dashboard._build_commit(Path("/missing")), "onbekend")
+
+    def test_terminal_watcher_status_is_used_when_no_live_run_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".djconnect" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(
+                '{"watcher_state":"JOB_COMPLETED","current_phase":"COMPLETE"}',
+                encoding="utf-8",
+            )
+            self.assertEqual(json.loads(_status(root))["watcher_state"], "JOB_COMPLETED")
