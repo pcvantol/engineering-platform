@@ -55,7 +55,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('return "grey"', page)
         self.assertIn('id="executionEstimate"', page)
         self.assertIn("function estimate(x)", page)
-        self.assertIn("ongeveer 15–30 minuten", page)
+        self.assertIn("function executionRange(x)", page)
+        self.assertIn("Gebaseerd op promptomvang, fase en verstreken tijd", page)
+        self.assertIn("geen live Codex-voortgang of tokenverbruik", page)
         self.assertIn("geen betrouwbare ETA", page)
         self.assertIn('id="usage"', page)
         self.assertIn('fetch("/api/usage")', page)
@@ -131,6 +133,7 @@ class DashboardStatusTest(unittest.TestCase):
                         "current_action": "Capability selection",
                         "repository_state": "ACTIVE",
                         "workspace_state": "ACTIVE",
+                        "prompt_characters": 4321,
                     }
                 ),
                 encoding="utf-8",
@@ -140,6 +143,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["watcher_state"], "ENGINEERING_RUN_ACTIVE")
         self.assertEqual(status["current_phase"], "INITIALIZE")
         self.assertEqual(status["run_id"], "inbox-123")
+        self.assertEqual(status["prompt_characters"], 4321)
 
     def test_active_runner_status_wins_over_previous_terminal_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

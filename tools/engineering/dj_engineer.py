@@ -1500,6 +1500,10 @@ def write_live_status(root: Path, state: TransactionState, action: str) -> Path:
     directory = root / ".djconnect" / "status"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / "current.json"
+    try:
+        prompt_characters = len(Path(state.prompt_path).read_text(encoding="utf-8"))
+    except OSError:
+        prompt_characters = None
     payload = {
         "run_id": state.run_id,
         "phase": state.phase,
@@ -1512,6 +1516,7 @@ def write_live_status(root: Path, state: TransactionState, action: str) -> Path:
         "workspace_state": "WORKSPACE_READY" if state.phase == "COMPLETE" else "ACTIVE",
         "last_update": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": 0,
+        "prompt_characters": prompt_characters,
         "diagnostic": state.diagnostic,
         "resume_command": f"dj-engineer {state.prompt_path} --run-id {state.run_id} --resume",
     }
