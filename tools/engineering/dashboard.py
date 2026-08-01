@@ -17,10 +17,9 @@ from threading import Lock, Thread
 import time
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
-from .platform_api import PlatformConfigurationError
 from .providers import TailscaleProvider
 from .providers import LaunchdProvider
-from .inbox_watcher import WATCHER_VERSION, cloud_root
+from .inbox_watcher import WATCHER_VERSION
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -77,8 +76,8 @@ def _unavailable_status() -> bytes:
 
 def _status(root: Path) -> bytes:
     try:
-        watcher = json.loads(cloud_root(repo=root).joinpath("status.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, PlatformConfigurationError):
+        watcher = json.loads((root / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         watcher = {}
     try:
         live = json.loads((root / ".djconnect" / "status" / "current.json").read_text(encoding="utf-8"))

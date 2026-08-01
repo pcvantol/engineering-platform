@@ -30,7 +30,7 @@ from .component_logging import (
 )
 
 LABEL = "com.djconnect.engineering-inbox"
-WATCHER_VERSION = "1.0.1"
+WATCHER_VERSION = "1.1.0"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
@@ -47,7 +47,16 @@ def cloud_root(value: str | None = None, repo: Path | None = None) -> Path:
 
 
 def folders(root: Path) -> dict[str, Path]:
-    result = {name: root / name for name in ("Inbox", "Running", "Reports", "Completed", "Failed")}
+    """Return the sole iCloud transport folder; no state is stored in iCloud."""
+    result = {"Inbox": root / "Inbox"}
+    for path in result.values():
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return result
+
+
+def local_folders(repo: Path) -> dict[str, Path]:
+    """Return canonical local prompt archives owned by Engineering Platform."""
+    result = {name: repo / ".djconnect" / "inbox" / name for name in ("Running", "Completed", "Failed")}
     for path in result.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return result
@@ -181,7 +190,7 @@ def _prompt_title(content: str, filename: str) -> str:
     return redact_diagnostic(filename, limit=240)
 
 
-def _previous_prompt_context(root: Path) -> dict[str, object]:
+def _previous_prompt_context(repo: Path) -> dict[str, object]:
     keys = (
         "submitted_filename",
         "prompt_title",
@@ -196,18 +205,18 @@ def _previous_prompt_context(root: Path) -> dict[str, object]:
         "predecessor_recovery_action",
     )
     try:
-        prior = json.loads((root / "status.json").read_text(encoding="utf-8"))
+        prior = json.loads((repo / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return {key: prior[key] for key in keys if prior.get(key) is not None}
 
 
-def status(root: Path, state: str, **details: object) -> None:
-    """Publish bounded atomic iCloud status without prompt or command output."""
+def status(repo: Path, state: str, **details: object) -> None:
+    """Publish bounded atomic local status without prompt or command output."""
     manifest = EngineeringPlatformManifest.load(
         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
     )
-    context = _previous_prompt_context(root)
+    context = _previous_prompt_context(repo)
     retained = {
         "submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title",
         "last_executed_run", "last_executed_phase", "blocking_predecessor_run",
@@ -232,7 +241,7 @@ def status(root: Path, state: str, **details: object) -> None:
         resume_available=state in {"JOB_BLOCKED", "JOB_FAILED"},
         **context,
     )
-    publish(root, payload)
+    publish(repo / ".djconnect" / "status", payload)
 
 
 def _job_id(source: Path, content: str) -> tuple[str, str, str]:
@@ -280,6 +289,14 @@ def _predecessor_recovery_action(run_id: str) -> str:
         "Herstel de geblokkeerde prompt en dien die opnieuw in met een eigen regel "
         f"`Retry-Of: {run_id}`. De wachtrij blijft gepauzeerd totdat deze herindiening voltooid is."
     )
+
+def _move(source: Path, destination: Path) -> None:
+    """Move a prompt out of iCloud, allowing the expected cross-device boundary."""
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.replace(source, destination)
+    except OSError:
+        shutil.move(str(source), str(destination))
 
 
 def _active_transaction(repo: Path) -> bool:
@@ -344,26 +361,26 @@ def _clear_prior_codex_log(repo: Path, run_id: str) -> None:
 
 def once(repo: Path, root: Path, interval: float = 1.0) -> int:
     """Process at most one stable job; all repository mutations remain runner-owned."""
-    areas = folders(root)
     logger = component_logger(repo, "inbox")
+    areas = local_folders(repo)
     with _lock(repo):
         candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, interval)]
         candidates = [(path, content) for path, content in candidates if content is not None]
         log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         if not candidates:
-            status(root, "WATCHER_IDLE", queued_jobs=0)
             log_event(logger, logging.DEBUG, "watcher_idle")
+            status(repo, "WATCHER_IDLE", queued_jobs=0)
             return 0
         if _active_transaction(repo):
             status(
-                root,
+                repo,
                 "WAITING_FOR_REPOSITORY",
                 queued_jobs=len(candidates),
                 diagnostic="Een bestaande engineeringuitvoering is nog actief.",
             )
             log_event(logger, logging.WARNING, "waiting_for_active_transaction")
             return 0
-        predecessor = _blocking_predecessor(root)
+        predecessor = _blocking_predecessor(repo)
         if predecessor:
             retries = [
                 (candidate, prompt)
@@ -372,7 +389,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             ]
             if not retries:
                 status(
-                    root,
+                    repo,
                     "WAITING_FOR_PREDECESSOR",
                     queued_jobs=len(candidates),
                     runner_phase="WAITING_FOR_PREDECESSOR",
@@ -394,7 +411,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         job_id, run_id, digest = _job_id(source, content)
         if _already_seen(areas, job_id):
             status(
-                root,
+                repo,
                 "WATCHER_IDLE",
                 queued_jobs=len(candidates) - 1,
                 job_id=job_id,
@@ -404,14 +421,11 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
-        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
-               blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
-               blocking_predecessor_title=None, predecessor_recovery_action=None)
-        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
+        status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
-        os.replace(source, claimed)
+        _move(source, claimed)
         local = repo / ".djconnect" / "inbox-processing" / job_id
         local.mkdir(mode=0o700, parents=True, exist_ok=True)
         prompt = local / "prompt.md"
@@ -442,7 +456,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         if phase and phase not in TERMINAL_PHASES:
             arguments.append("--resume")
         status(
-            root, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
+            repo, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
             submitted_filename=source.name, prompt_title=title,
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
@@ -453,27 +467,21 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         corrected_report = False
         if report:
             status(
-                root,
-                "REPORT_PUBLISHING",
-                job_id=job_id,
-                run_id=run_id,
-                queued_jobs=len(candidates) - 1,
+                repo, "REPORT_PUBLISHING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
             )
-            delivered = (
-                areas["Reports"]
-                / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{job_id}_{run_id}.md"
-            )
+            delivered = report
             if _report_matches_terminal_phase(report, phase):
-                shutil.copy2(report, delivered)
+                pass
             else:
                 corrected_report = True
+                delivered = repo / ".djconnect" / "reports" / f"corrected_{run_id}.md"
                 delivered.write_text(
                     _corrected_terminal_report(run_id, phase, diagnostic), encoding="utf-8"
                 )
                 log_event(logger, logging.WARNING, "terminal_report_corrected", run_id=run_id)
         successful = completed.returncode == 0 and phase == "COMPLETE" and delivered is not None
         target = areas["Completed"] if successful else areas["Failed"]
-        os.replace(claimed, _archive_path(target, job_id, source))
+        _move(claimed, _archive_path(target, job_id, source))
         final_state = (
             "JOB_COMPLETED"
             if successful
@@ -493,7 +501,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 "The original terminal report contradicted its checkpoint; a corrected report was delivered."
             )
         status(
-            root,
+            repo,
             final_state,
             job_id=job_id,
             run_id=run_id,
@@ -538,12 +546,13 @@ def launch_agent(repo: Path) -> Path:
 
 
 def doctor(repo: Path, root: Path) -> int:
-    areas = folders(root)
+    transport = folders(root)
+    areas = local_folders(repo)
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     checks = {
         "repository_runner": (repo / "tools/engineering/dj-engineer").is_file(),
-        "inbox_writable": os.access(areas["Inbox"], os.W_OK),
-        "reports_writable": os.access(areas["Reports"], os.W_OK),
+        "inbox_writable": os.access(transport["Inbox"], os.W_OK),
+        "local_archives_writable": os.access(areas["Completed"], os.W_OK),
         "launch_agent": agent.is_file(),
         "gitignored": ".djconnect/" in (repo / ".gitignore").read_text(encoding="utf-8"),
         "dashboard_code": (repo / "tools/engineering/dashboard.py").is_file(),
@@ -559,8 +568,8 @@ def doctor(repo: Path, root: Path) -> int:
             {
                 "state": state,
                 "watcher_version": WATCHER_VERSION,
-                "inbox": str(areas["Inbox"]),
-                "reports": str(areas["Reports"]),
+                "inbox": str(transport["Inbox"]),
+                "local_archives": str(areas["Completed"]),
                 "checks": checks,
             },
             indent=2,
@@ -569,10 +578,51 @@ def doctor(repo: Path, root: Path) -> int:
     return 0 if state == "REMOTE_ENGINEERING_READY" else 1
 
 
+def migrate_icloud_archives(repo: Path, root: Path) -> dict[str, int]:
+    """Move legacy iCloud archives into EP storage, leaving only Inbox behind."""
+    local = local_folders(repo)
+    targets = {
+        "Running": local["Running"],
+        "Completed": local["Completed"],
+        "Failed": local["Failed"],
+        "Reports": repo / ".djconnect" / "reports",
+    }
+    moved = deleted = 0
+    for name, target in targets.items():
+        source_directory = root / name
+        if not source_directory.is_dir():
+            continue
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for source in source_directory.iterdir():
+            if source.is_symlink() or not source.is_file():
+                continue
+            destination = target / source.name
+            if destination.exists():
+                source.unlink()
+                deleted += 1
+            else:
+                _move(source, destination)
+                moved += 1
+        source_directory.rmdir()
+    for name in ("status.json", "status.md"):
+        source = root / name
+        destination = repo / ".djconnect" / "status" / name
+        if not source.is_file() or source.is_symlink():
+            continue
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if destination.exists():
+            source.unlink()
+            deleted += 1
+        else:
+            _move(source, destination)
+            moved += 1
+    return {"moved": moved, "deleted_duplicates": deleted}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=("once", "run", "status", "install", "uninstall", "doctor")
+        "command", choices=("once", "run", "status", "install", "uninstall", "doctor", "migrate-icloud-archives")
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--icloud-root")
@@ -590,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                 once(repo, root, 1.0)
             except RuntimeError as error:
                 status(
-                    root,
+                    repo,
                     "WAITING_FOR_REPOSITORY",
                     diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                 )
@@ -598,10 +648,13 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(max(5, args.interval))
     if args.command == "status":
         print(
-            (root / "status.md").read_text(encoding="utf-8")
-            if (root / "status.md").exists()
+            (repo / ".djconnect" / "status" / "status.md").read_text(encoding="utf-8")
+            if (repo / ".djconnect" / "status" / "status.md").exists()
             else "WATCHER_IDLE"
         )
+        return 0
+    if args.command == "migrate-icloud-archives":
+        print(json.dumps(migrate_icloud_archives(repo, root), sort_keys=True))
         return 0
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     if args.command == "install":

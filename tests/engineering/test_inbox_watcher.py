@@ -102,9 +102,9 @@ class InboxWatcherTest(unittest.TestCase):
             code = inbox_watcher.once(self.repo, self.root, 0)
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args[0][-2:], ["--run-id", run_id])
-        self.assertEqual(len(list(inbox_watcher.folders(self.root)["Completed"].glob("*__job.txt"))), 1)
-        self.assertEqual(len(list(inbox_watcher.folders(self.root)["Reports"].glob("*.md"))), 1)
-        snapshot = json_status(self.root)
+        self.assertEqual(len(list(inbox_watcher.local_folders(self.repo)["Completed"].glob("*__job.txt"))), 1)
+        self.assertFalse((self.root / "Reports").exists())
+        snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
         self.assertEqual(snapshot["last_executed_filename"], "job.txt")
         self.assertEqual(snapshot["last_executed_title"], "prompt")
@@ -113,12 +113,14 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertFalse(old_log.exists())
 
     def test_status_helpers_keep_previous_context_and_bound_details(self) -> None:
-        (self.root / "status.json").write_text(
+        status = self.repo / ".djconnect" / "status"
+        status.mkdir(parents=True)
+        (status / "status.json").write_text(
             json.dumps({"submitted_filename": "old.md", "last_executed_run": "inbox-old"}),
             encoding="utf-8",
         )
         self.assertEqual(
-            inbox_watcher._previous_prompt_context(self.root),
+            inbox_watcher._previous_prompt_context(self.repo),
             {"submitted_filename": "old.md", "last_executed_run": "inbox-old"},
         )
         self.assertEqual(inbox_watcher._safe_detail("line one\nline two"), "line one line two")
@@ -141,7 +143,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(inbox_watcher._runner_result(self.repo, "inbox-none"), (None, None))
         self.assertIsNone(inbox_watcher._report(self.repo, "inbox-none"))
         self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
-        self.assertEqual(json_status(self.root)["watcher_state"], "WATCHER_IDLE")
+        self.assertEqual(json_status(self.repo)["watcher_state"], "WATCHER_IDLE")
         runs = self.repo / ".djconnect/engineering-runs"
         runs.mkdir(parents=True)
         (runs / "inbox-evidence.json").write_text(
@@ -176,7 +178,9 @@ class InboxWatcherTest(unittest.TestCase):
 
     def test_blocked_predecessor_holds_later_inbox_prompts_without_claiming_them(self) -> None:
         (self.inbox / "next.txt").write_text("# Later prompt", encoding="utf-8")
-        (self.root / "status.json").write_text(
+        status_directory = self.repo / ".djconnect" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
             json.dumps(
                 {
                     "last_executed_run": "inbox-blocked123",
@@ -191,7 +195,7 @@ class InboxWatcherTest(unittest.TestCase):
         with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
-        snapshot = json_status(self.root)
+        snapshot = json_status(self.repo)
         run.assert_not_called()
         self.assertTrue((self.inbox / "next.txt").exists())
         self.assertEqual(snapshot["watcher_state"], "WAITING_FOR_PREDECESSOR")
@@ -209,7 +213,9 @@ class InboxWatcherTest(unittest.TestCase):
         now = time.time_ns()
         os.utime(later, ns=(now, now))
         os.utime(retry, ns=(now + 1_000_000, now + 1_000_000))
-        (self.root / "status.json").write_text(
+        status_directory = self.repo / ".djconnect" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
             json.dumps(
                 {
                     "last_executed_run": "inbox-blocked123",
@@ -237,13 +243,28 @@ class InboxWatcherTest(unittest.TestCase):
 
         self.assertEqual(run.call_args.args[0][-1], retry_run_id)
         self.assertTrue(later.exists())
-        snapshot = json_status(self.root)
+        snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
         self.assertEqual(snapshot["last_executed_run"], retry_run_id)
         self.assertIsNone(snapshot["blocking_predecessor_run"])
         self.assertIsNone(snapshot["predecessor_recovery_action"])
 
+    def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
+        (self.root / "Completed").mkdir()
+        (self.root / "Reports").mkdir()
+        (self.root / "Completed" / "old.txt").write_text("# old", encoding="utf-8")
+        (self.root / "Reports" / "old.md").write_text("# report", encoding="utf-8")
+        (self.root / "status.json").write_text('{"watcher_state":"WATCHER_IDLE"}', encoding="utf-8")
+        migrated = inbox_watcher.migrate_icloud_archives(self.repo, self.root)
+        self.assertEqual(migrated, {"moved": 3, "deleted_duplicates": 0})
+        self.assertTrue((self.repo / ".djconnect" / "inbox" / "Completed" / "old.txt").exists())
+        self.assertTrue((self.repo / ".djconnect" / "reports" / "old.md").exists())
+        self.assertTrue((self.repo / ".djconnect" / "status" / "status.json").exists())
+        self.assertFalse((self.root / "Completed").exists())
+        self.assertFalse((self.root / "Reports").exists())
+        self.assertFalse((self.root / "status.json").exists())
 
-def json_status(root: Path) -> dict[str, object]:
+
+def json_status(repo: Path) -> dict[str, object]:
     import json
-    return json.loads((root / "status.json").read_text(encoding="utf-8"))
+    return json.loads((repo / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
