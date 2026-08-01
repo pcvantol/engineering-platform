@@ -310,7 +310,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 root,
                 "WAITING_FOR_REPOSITORY",
                 queued_jobs=len(candidates),
-                diagnostic="An existing engineering transaction remains active.",
+                diagnostic="Een bestaande engineeringuitvoering is nog actief.",
             )
             return 0
         source, content = candidates[0]
@@ -321,7 +321,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 "WATCHER_IDLE",
                 queued_jobs=len(candidates) - 1,
                 job_id=job_id,
-                diagnostic="Duplicate job digest remains recorded.",
+                diagnostic="Een dubbele opdracht is al geregistreerd.",
             )
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
@@ -398,9 +398,9 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             if completed.returncode and phase is None
             else None
         ) or (
-            "Engineering report was not available for delivery."
+            "Engineeringrapport kon niet worden afgeleverd."
             if completed.returncode == 0
-            else "Runner ended without a safe terminal report."
+            else "De runner stopte zonder een veilig eindrapport."
         )
         if corrected_report:
             reason = redact_diagnostic(
@@ -494,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                 status(
                     root,
                     "WAITING_FOR_REPOSITORY",
-                    diagnostic="Another watcher owns the local inbox lock.",
+                    diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                 )
             time.sleep(max(5, args.interval))
     if args.command == "status":

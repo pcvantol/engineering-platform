@@ -40,15 +40,15 @@ def _unavailable_status() -> bytes:
     return json.dumps(
         {
             "watcher_state": "REMOTE_ENGINEERING_DEGRADED",
-            "current_phase": "status unavailable",
-            "current_action": "Run Engineering Platform to publish a status update.",
+            "current_phase": "status niet beschikbaar",
+            "current_action": "Voer het Engineering Platform uit om een statusupdate te publiceren.",
             "run_id": None,
             "queue_depth": 0,
             "implementation_pr": None,
             "finalization_pr": None,
             "repository_state": "UNKNOWN",
             "workspace_state": "UNKNOWN",
-            "diagnostic": "No local engineering status has been published yet.",
+            "diagnostic": "Er is nog geen lokale engineeringstatus gepubliceerd.",
             "submitted_filename": None,
             "prompt_title": None,
             "last_executed_filename": None,
@@ -71,7 +71,7 @@ def _status(root: Path) -> bytes:
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
                 "current_phase": live.get("phase") or "INITIALIZE",
-                "current_action": live.get("current_action") or "Engineering run is active.",
+                "current_action": live.get("current_action") or "Engineeringuitvoering is actief.",
                 "run_id": live.get("run_id"),
                 "queue_depth": 0,
                 "implementation_pr": live.get("implementation_pr"),
@@ -301,9 +301,9 @@ def _latest_codex_log(root: Path) -> bytes:
     """Return only the latest locally redacted Codex diagnostic."""
     logs = sorted((root / ".djconnect" / "logs" / "codex").glob("*.log"))
     try:
-        return logs[-1].read_bytes() if logs else b"No Codex CLI diagnostic is available."
+        return logs[-1].read_bytes() if logs else b"Geen Codex CLI-diagnose beschikbaar."
     except OSError:
-        return b"Codex CLI diagnostic is unavailable."
+        return b"Codex CLI-diagnose is niet beschikbaar."
 
 
 def _codex_process_metrics() -> bytes:
@@ -331,7 +331,7 @@ def _codex_process_metrics() -> bytes:
         {
             "process_count": len(processes),
             "cpu_percent": round(sum(item["cpu_percent"] for item in processes), 1),
-            "gpu_status": "Niet beschikbaar: Codex-inference draait extern.",
+            "gpu_status": "Niet beschikbaar: Codex-verwerking draait extern.",
         },
         separators=(",", ":"),
     ).encode()
@@ -355,11 +355,11 @@ def _current_codex_log(root: Path) -> bytes:
     except json.JSONDecodeError:
         run_id = None
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
-        return b"No Codex CLI diagnostic is available for the current run."
+        return b"Geen Codex CLI-diagnose beschikbaar voor de huidige uitvoering."
     try:
         return (root / ".djconnect" / "logs" / "codex" / f"{run_id}.log").read_bytes()
     except OSError:
-        return b"No Codex CLI diagnostic is available for the current run."
+        return b"Geen Codex CLI-diagnose beschikbaar voor de huidige uitvoering."
 
 
 def _last_executed_codex_log(root: Path) -> bytes:
@@ -369,11 +369,11 @@ def _last_executed_codex_log(root: Path) -> bytes:
     except (OSError, json.JSONDecodeError):
         run_id = None
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
-        return b"No Codex CLI diagnostic is available for the last executed run."
+        return b"Geen Codex CLI-diagnose beschikbaar voor de laatst uitgevoerde uitvoering."
     try:
         return (root / ".djconnect" / "logs" / "codex" / f"{run_id}.log").read_bytes()
     except OSError:
-        return b"No Codex CLI diagnostic is available for the last executed run."
+        return b"Geen Codex CLI-diagnose beschikbaar voor de laatst uitgevoerde uitvoering."
 
 
 def _codex_usage(root: Path) -> bytes:
@@ -520,10 +520,12 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 <script>
 const $=id=>document.getElementById(id),DASHBOARD_BUILD="$BUILD_COMMIT",DASHBOARD_BUILD_KEY="djconnect-engineering-dashboard-build",
 formatTime=new Intl.DateTimeFormat("nl-NL",{timeZone:"Europe/Amsterdam",dateStyle:"full",timeStyle:"medium"}),
-fallback={watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status unavailable",current_action:"Refresh the dashboard after the Engineering Platform publishes status.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"The status request could not be completed."};
+fallback={watcher_state:"REMOTE_ENGINEERING_DEGRADED",current_phase:"status niet beschikbaar",current_action:"Ververs het dashboard nadat het Engineering Platform een statusupdate heeft gepubliceerd.",queue_depth:0,repository_state:"UNKNOWN",workspace_state:"UNKNOWN",diagnostic:"Het statusverzoek kon niet worden voltooid."};
 let currentLogRun,lastLogRun,lastRefresh,promptStartedAt,latestStatus;
-const humanLabels={ENGINEERING_RUN_ACTIVE:"Engineering actief",EXECUTE_AGENT:"Uitvoering",invoke_agent:"Engineering uitvoeren",MERGED_RECONCILED:"Samengevoegd en afgestemd",WORKSPACE_READY:"Werkruimte gereed"};
-function humanize(){for(const id of ["watcher","phase","action","repositoryState","workspaceState"]){const element=$(id);element.textContent=humanLabels[element.textContent]||element.textContent}}
+const humanLabels={ENGINEERING_RUN_ACTIVE:"Engineering actief",WATCHER_IDLE:"Watcher wacht",REMOTE_ENGINEERING_DEGRADED:"Engineeringstatus beperkt beschikbaar",JOB_CLAIMED:"Opdracht opgepakt",RUNNER_STARTING:"Uitvoering wordt gestart",REPORT_PUBLISHING:"Rapport wordt gepubliceerd",JOB_COMPLETED:"Opdracht voltooid",JOB_BLOCKED:"Opdracht geblokkeerd",JOB_FAILED:"Opdracht mislukt",WAITING_FOR_REPOSITORY:"Wacht op repository",INITIALIZE:"Voorbereiding",EXECUTE_AGENT:"Uitvoering",REPAIR_AGENT:"Herstel",FINALIZE_AGENT:"Finalisatie",REPOSITORY_CLEANUP:"Opschoning repository",COMPLETE:"Voltooid",BLOCKED:"Geblokkeerd",FAILED:"Mislukt",invoke_agent:"Engineering uitvoeren",repository_reconciled:"Repository afgestemd",MERGED_RECONCILED:"Samengevoegd en afgestemd",WORKSPACE_READY:"Werkruimte gereed",ACTIVE:"Actief",UNKNOWN:"Onbekend","status unavailable":"status niet beschikbaar"};
+const dutchDiagnostics={"Engineering report was not available for delivery.":"Engineeringrapport kon niet worden afgeleverd.","Runner ended without a safe terminal report.":"De runner stopte zonder een veilig eindrapport.","An existing engineering transaction remains active.":"Een bestaande engineeringuitvoering is nog actief.","Duplicate job digest remains recorded.":"Een dubbele opdracht is al geregistreerd.","Another watcher owns the local inbox lock.":"Een andere watcher beheert de lokale Inbox-vergrendeling.","No local engineering status has been published yet.":"Er is nog geen lokale engineeringstatus gepubliceerd.","The status request could not be completed.":"Het statusverzoek kon niet worden voltooid."};
+function translate(value){return humanLabels[value]||dutchDiagnostics[value]||value}
+function humanize(){for(const id of ["watcher","phase","action","repositoryState","workspaceState","diag"]){const element=$(id);element.textContent=translate(element.textContent)}}
 function tone(x){const phase=x.current_phase||"",watcher=x.watcher_state||"";if(["BLOCKED","FAILED"].includes(phase)||["JOB_BLOCKED","JOB_FAILED"].includes(watcher))return "red";if(phase==="COMPLETE"||watcher==="JOB_COMPLETED")return "green";if(phase==="WAIT_FOR_TERMINAL_EVIDENCE"||watcher==="WAITING_FOR_REPOSITORY")return "yellow";if(["INITIALIZE","EXECUTE_AGENT","REPAIR_AGENT","FINALIZE_AGENT","REPOSITORY_CLEANUP"].includes(phase)||["RUNNER_STARTING","JOB_CLAIMED"].includes(watcher))return "orange";return "grey"}
 function finalStatus(phase){if(phase==="COMPLETE")return ["green","Voltooid"];if(phase==="BLOCKED")return ["yellow","Geblokkeerd"];if(phase==="FAILED")return ["red","Mislukt"];return ["grey","Status onbekend"]}
 function executionRange(x){const characters=Number(x.prompt_characters)||0;if(characters<=2000)return [6,10];if(characters<=6000)return [10,18];if(characters<=12000)return [16,26];return [24,38]}
@@ -533,7 +535,7 @@ function renderEstimate(x){const value=estimate(x);$("executionEstimate").textCo
 function isActiveRun(x){return x.watcher_state==="ENGINEERING_RUN_ACTIVE"&&Boolean(x.run_id)}
 function checkBuild(build){if(build===DASHBOARD_BUILD){sessionStorage.removeItem(DASHBOARD_BUILD_KEY);return}if(build&&DASHBOARD_BUILD!=="onbekend"&&sessionStorage.getItem(DASHBOARD_BUILD_KEY)!==build){sessionStorage.setItem(DASHBOARD_BUILD_KEY,build);location.reload()}}
 function clock(){let now=Date.now();$("currentTime").textContent=formatTime.format(new Date(now));$("lastRefresh").textContent="Laatst bijgewerkt: "+(lastRefresh?formatTime.format(lastRefresh):"laden…")}
-function l(id,url,run,last,container){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Loading diagnostic…";fetch(url).then(x=>x.text()).then(x=>{const available=Boolean(x)&&!x.startsWith("No Codex CLI diagnostic is available");$(container).hidden=!available;if(available)$(id).textContent=x}).catch(()=>{$(container).hidden=false;$(id).textContent="Codex CLI diagnostic is unavailable."})}
+function l(id,url,run,last,container){if(run===(last?lastLogRun:currentLogRun))return;if(last)lastLogRun=run;else currentLogRun=run;$(id).textContent="Diagnose laden…";fetch(url).then(x=>x.text()).then(x=>{const available=Boolean(x)&&!x.startsWith("No Codex CLI diagnostic is available")&&!x.startsWith("Geen Codex CLI-diagnose beschikbaar");$(container).hidden=!available;if(available)$(id).textContent=x}).catch(()=>{$(container).hidden=false;$(id).textContent="Codex CLI-diagnose is niet beschikbaar."})}
 function usage(x){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};let entries=Object.entries(x||{});$("usage").hidden=!entries.length;$("usageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}
 function rateLimits(x){const windows=Array.isArray(x?.windows)?x.windows:[],credits=Number.isInteger(x?.reset_credits)?x.reset_credits:null;$("rateLimits").hidden=!windows.length&&credits===null;let lines=windows.map(window=>{const remaining=Math.max(0,100-Number(window.used_percent||0)),reset=Number(window.resets_at);return window.label+": "+remaining+"% beschikbaar · reset "+(Number.isFinite(reset)?formatTime.format(new Date(reset*1000)):"onbekend")});if(credits!==null)lines.push("Beschikbare resets: "+credits);$("rateLimitDetails").textContent=lines.join("\\n")}
 function lastUsage(x){const labels={input_tokens:"Invoertokens",cached_input_tokens:"Gecachete invoertokens",output_tokens:"Uitvoertokens",total_tokens:"Totaal tokens",cost:"Kosten",remaining:"Resterend beschikbaar",plan_remaining:"Resterend in plan",usage:"Gebruik"};let entries=Object.entries(x||{});$("lastUsage").hidden=!entries.length;$("lastUsageDetails").textContent=entries.map(([key,value])=>(labels[key]||key.replaceAll("_"," "))+": "+value).join("\\n")}
@@ -545,7 +547,7 @@ let lastExecutedRun,reportLoaded=false,reportRequest;function report(){if(!lastE
 function fallbackCopy(value){const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.cssText="position:fixed;top:0;left:0;opacity:0";document.body.append(area);area.focus();area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw Error("copy unavailable")}
 function copyText(value){return navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(value).catch(()=>fallbackCopy(value)):Promise.resolve().then(()=>fallbackCopy(value))}
 function copyReport(){report().then(()=>copyText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
-function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=x.watcher_state||fallback.watcher_state;$("phase").textContent=x.current_phase||"idle";$("action").textContent=x.current_action||"Geen actieve actie";promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=x.repository_state||"ONBEKEND";$("workspaceState").textContent=x.workspace_state||"ONBEKEND";$("diag").textContent=x.diagnostic||"Geen diagnose";$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage(snapshot.usage);rateLimits(snapshot.rate_limits);lastUsage(snapshot.last_executed_usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
+function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;$("report").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden."}$("promptRuns").hidden=!active&&!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=translate(x.watcher_state||fallback.watcher_state);$("phase").textContent=translate(x.current_phase||"idle");$("action").textContent=translate(x.current_action||"Geen actieve actie");promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("current").hidden=!active;$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=translate(x.repository_state||"UNKNOWN");$("workspaceState").textContent=translate(x.workspace_state||"UNKNOWN");$("diag").textContent=translate(x.diagnostic||"Geen diagnose");$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";usage(snapshot.usage);rateLimits(snapshot.rate_limits);lastUsage(snapshot.last_executed_usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
 let e=new EventSource("/api/events");e.addEventListener("dashboard",x=>{try{let snapshot=JSON.parse(x.data);r(snapshot.status,snapshot);humanize();checkBuild(snapshot.build_commit);$("updateMode").textContent="Serverpush: verbonden"}catch{r(fallback);humanize();$("updateMode").textContent="Serverpush: update ongeldig"}});e.onerror=()=>{$("updateMode").textContent="Serverpush: opnieuw verbinden…"};$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("copyReport").addEventListener("click",copyReport);setInterval(clock,250);clock()
 </script>"""
     return page.replace("$TITLE", escape(title)).replace("$BUILD_COMMIT", escape(build_commit)).encode()
@@ -615,7 +617,7 @@ def handler(root: Path):
                 try:
                     reports = sorted((root / ".djconnect" / "reports").glob("*.md"))
                     content = (
-                        reports[-1].read_bytes() if reports else b"No local report is available."
+                        reports[-1].read_bytes() if reports else b"Geen lokaal rapport beschikbaar."
                     )
                 except OSError:
                     content = b"Report is unavailable."
@@ -723,16 +725,16 @@ def main(argv: list[str] | None = None) -> int:
     tailscale_address = remote_provider.ipv4_address()
     state = "READY" if health and agent.is_file() and tailscale_address else "DEGRADED"
     action = (
-        "Run Engineering Platform to publish a status update."
+        "Voer het Engineering Platform uit om een statusupdate te publiceren."
         if not health
-        else "Connect Tailscale before using private iPhone dashboard access."
+        else "Verbind met Tailscale voordat je privétoegang tot het iPhone-dashboard gebruikt."
         if not tailscale_address
-        else "Open the private dashboard through the local Tailscale address."
+        else "Open het privédashboard via het lokale Tailscale-adres."
     )
     print(
         f"REMOTE_ENGINEERING_{state}\nprivate_remote_access={remote.detail}\n"
         f"tailscale_dashboard_address={tailscale_address or 'unavailable'}\n"
-        f"Action: {action} No network configuration was changed."
+        f"Actie: {action} Er is geen netwerkconfiguratie gewijzigd."
     )
     return 0 if state == "READY" else 1
 

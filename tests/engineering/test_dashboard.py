@@ -309,7 +309,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["queue_depth"], 0)
         self.assertEqual(status["repository_state"], "UNKNOWN")
         self.assertEqual(status["workspace_state"], "UNKNOWN")
-        self.assertIn("No local engineering status", status["diagnostic"])
+        self.assertIn("geen lokale engineeringstatus", status["diagnostic"])
 
     def test_live_runner_status_is_a_dashboard_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -391,7 +391,7 @@ class DashboardStatusTest(unittest.TestCase):
         metrics = json.loads(_codex_process_metrics())
         self.assertEqual(metrics["process_count"], 2)
         self.assertEqual(metrics["cpu_percent"], 19.9)
-        self.assertIn("Codex-inference draait extern", metrics["gpu_status"])
+        self.assertIn("Codex-verwerking draait extern", metrics["gpu_status"])
 
     def test_current_codex_log_never_falls_back_to_a_different_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -402,7 +402,7 @@ class DashboardStatusTest(unittest.TestCase):
             logs.mkdir(parents=True)
             (status / "current.json").write_text('{"run_id":"inbox-new","phase":"INITIALIZE"}', encoding="utf-8")
             (logs / "inbox-old.log").write_text("old diagnostic", encoding="utf-8")
-            self.assertIn(b"current run", _current_codex_log(root))
+            self.assertIn(b"huidige uitvoering", _current_codex_log(root))
             (logs / "inbox-new.log").write_text("new diagnostic", encoding="utf-8")
             self.assertEqual(_current_codex_log(root), b"new diagnostic")
 
@@ -415,7 +415,7 @@ class DashboardStatusTest(unittest.TestCase):
             logs.mkdir(parents=True)
             (status / "status.json").write_text('{"last_executed_run":"inbox-last"}', encoding="utf-8")
             (logs / "inbox-other.log").write_text("old diagnostic", encoding="utf-8")
-            self.assertIn(b"last executed run", _last_executed_codex_log(root))
+            self.assertIn(b"laatst uitgevoerde uitvoering", _last_executed_codex_log(root))
             (logs / "inbox-last.log").write_text("last diagnostic", encoding="utf-8")
             self.assertEqual(_last_executed_codex_log(root), b"last diagnostic")
 
