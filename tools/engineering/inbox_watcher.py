@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,13 @@ from .agent_state import redact_diagnostic
 from .platform_api import PlatformConfiguration
 from .providers import LaunchdProvider
 from .status_model import build, publish
+from .component_logging import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_ENVIRONMENT,
+    VALID_LEVELS,
+    component_logger,
+    log_event,
+)
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.0.1"
@@ -337,11 +345,14 @@ def _clear_prior_codex_log(repo: Path, run_id: str) -> None:
 def once(repo: Path, root: Path, interval: float = 1.0) -> int:
     """Process at most one stable job; all repository mutations remain runner-owned."""
     areas = folders(root)
+    logger = component_logger(repo, "inbox")
     with _lock(repo):
         candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, interval)]
         candidates = [(path, content) for path, content in candidates if content is not None]
+        log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         if not candidates:
             status(root, "WATCHER_IDLE", queued_jobs=0)
+            log_event(logger, logging.DEBUG, "watcher_idle")
             return 0
         if _active_transaction(repo):
             status(
@@ -350,6 +361,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 queued_jobs=len(candidates),
                 diagnostic="Een bestaande engineeringuitvoering is nog actief.",
             )
+            log_event(logger, logging.WARNING, "waiting_for_active_transaction")
             return 0
         predecessor = _blocking_predecessor(root)
         if predecessor:
@@ -388,12 +400,17 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 job_id=job_id,
                 diagnostic="Een dubbele opdracht is al geregistreerd.",
             )
+            log_event(logger, logging.WARNING, "duplicate_job_ignored", run_id=run_id)
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
         status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
+        status(root, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
+               blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
+               blocking_predecessor_title=None, predecessor_recovery_action=None)
+        log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
         os.replace(source, claimed)
         local = repo / ".djconnect" / "inbox-processing" / job_id
         local.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -428,6 +445,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             root, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1,
             submitted_filename=source.name, prompt_title=title,
         )
+        log_event(logger, logging.INFO, "runner_started", run_id=run_id)
         completed = subprocess.run(arguments, cwd=repo, text=True, capture_output=True, check=False)
         phase, diagnostic = _runner_result(repo, run_id)
         report = _report(repo, run_id)
@@ -452,6 +470,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 delivered.write_text(
                     _corrected_terminal_report(run_id, phase, diagnostic), encoding="utf-8"
                 )
+                log_event(logger, logging.WARNING, "terminal_report_corrected", run_id=run_id)
         successful = completed.returncode == 0 and phase == "COMPLETE" and delivered is not None
         target = areas["Completed"] if successful else areas["Failed"]
         os.replace(claimed, _archive_path(target, job_id, source))
@@ -490,6 +509,13 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             last_executed_run=run_id,
             last_executed_phase=phase,
         )
+        log_event(
+            logger,
+            logging.INFO if successful else logging.ERROR,
+            "job_completed" if successful else "job_failed",
+            run_id=run_id,
+            diagnostic=reason,
+        )
         return 0 if successful else (completed.returncode or 1)
 
 
@@ -501,8 +527,11 @@ def launch_agent(repo: Path) -> Path:
     launcher = [sys.executable, "-m", "tools.engineering.inbox_watcher", "run", "--repo", str(repo)]
     arguments = "".join(f"<string>{value}</string>" for value in launcher)
     environment = launch_path()
+    log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
+    if log_level not in VALID_LEVELS:
+        log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "inbox.out.log"}</string><key>StandardErrorPath</key><string>{logs / "inbox.err.log"}</string></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "inbox.out.log"}</string><key>StandardErrorPath</key><string>{logs / "inbox.err.log"}</string></dict></plist>',
         encoding="utf-8",
     )
     return destination
@@ -554,15 +583,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "once":
         return once(repo, root, 0.0)
     if args.command == "run":
+        logger = component_logger(repo, "inbox")
+        log_event(logger, logging.INFO, "watcher_started")
         while True:
             try:
                 once(repo, root, 1.0)
-            except RuntimeError:
+            except RuntimeError as error:
                 status(
                     root,
                     "WAITING_FOR_REPOSITORY",
                     diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                 )
+                log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
             time.sleep(max(5, args.interval))
     if args.command == "status":
         print(

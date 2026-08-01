@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_analysis_for_run, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _codex_process_metrics, _codex_usage, _codex_usage_for_run, _component_log, _completion_commits, _current_codex_log, _dashboard_html, _last_executed_codex_log, _last_executed_commits, _latest_codex_log, _normalize_rate_limits, _report_analysis_for_run, _report_for_run, _sse_snapshot, _sse_status, _status, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 
@@ -109,6 +109,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("function fallbackCopy(value)", page)
         self.assertIn('document.execCommand("copy")', page)
         self.assertIn("window.isSecureContext", page)
+        self.assertIn('id="componentLogs"', page)
+        self.assertIn('id="loadComponentLogs"', page)
+        self.assertIn('fetch("/api/logs/inbox")', page)
+        self.assertIn('fetch("/api/logs/dashboard")', page)
         self.assertIn('id="currentDiagnostic" hidden', page)
         self.assertIn('id="lastDiagnostic" hidden', page)
         self.assertIn('x.startsWith("No Codex CLI diagnostic is available")', page)
@@ -468,6 +472,14 @@ class DashboardStatusTest(unittest.TestCase):
             (analyses / "inbox-last.md").write_text("last analysis", encoding="utf-8")
             self.assertEqual(_report_analysis_for_run(root, "inbox-last"), b"last analysis")
             self.assertEqual(_report_analysis_for_run(root, "inbox-missing"), b"")
+    def test_component_log_is_bounded_to_known_redacted_log_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            logs = root / ".djconnect" / "logs"
+            logs.mkdir(parents=True)
+            (logs / "inbox.log").write_text("first\nsecond\n", encoding="utf-8")
+            self.assertEqual(_component_log(root, "inbox"), b"first\nsecond")
+            self.assertEqual(_component_log(root, "unknown"), b"")
 
     @patch("tools.engineering.dashboard.TailscaleProvider.ipv4_address", return_value="100.108.178.11")
     def test_dashboard_binds_only_loopback_and_local_tailscale_address(self, _address: object) -> None:
@@ -499,6 +511,8 @@ class DashboardStatusTest(unittest.TestCase):
                 ("/api/commits/last-executed", "application/json"),
                 ("/api/prompt-started", "application/json"),
                 ("/api/log/latest", "text/plain"),
+                ("/api/logs/inbox", "text/plain"),
+                ("/api/logs/dashboard", "text/plain"),
                 ("/api/log/current", "text/plain"),
                 ("/api/log/last", "text/plain"),
                 ("/api/report/latest", "text/markdown"),

@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 from html import escape
 import json
+import logging
+import os
 from pathlib import Path
 import re
 import select
@@ -19,6 +21,13 @@ from .platform_api import PlatformConfigurationError
 from .providers import TailscaleProvider
 from .providers import LaunchdProvider
 from .inbox_watcher import WATCHER_VERSION, cloud_root
+from .component_logging import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_ENVIRONMENT,
+    VALID_LEVELS,
+    component_logger,
+    log_event,
+)
 
 LABEL = "com.djconnect.engineering-dashboard"
 DASHBOARD_VERSION = "1.1.1"
@@ -320,6 +329,20 @@ def _latest_codex_log(root: Path) -> bytes:
         return b"Codex CLI-diagnose is niet beschikbaar."
 
 
+def _component_log(root: Path, component: str) -> bytes:
+    """Return a bounded tail of one known, already-redacted component log."""
+    if component not in {"inbox", "dashboard"}:
+        return b""
+    try:
+        lines = (root / ".djconnect" / "logs" / f"{component}.log").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except OSError:
+        return b"Nog geen applicatielog beschikbaar."
+    tail = "\n".join(lines[-100:])[-64_000:]
+    return (tail or "Nog geen applicatielog beschikbaar.").encode()
+
+
 def _codex_process_metrics() -> bytes:
     """Return read-only local CPU evidence for currently running Codex CLI processes."""
     try:
@@ -532,13 +555,12 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 <div class="card" id="usage" hidden><strong>Codex CLI-gebruik</strong><div class="field"><span class="label">Gerapporteerd verbruik</span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="currentDiagnostic" hidden><strong>Codex CLI-diagnose</strong><pre id="currentLog">Laden…</pre></div>
 </div></section>
-<div class="card"><strong>Tijd</strong><p id="currentTime">Laden…</p><p id="lastRefresh">Laatst bijgewerkt: laden…</p><p id="updateMode">Serverpush: verbinden…</p></div>
 <div class="card" id="rateLimits" hidden><strong>Resterend gebruik</strong><div class="field"><span class="label">Codex-gebruikslimieten</span><pre id="rateLimitDetails"></pre></div></div>
 <div class="card" id="commits" hidden><strong>Voltooiingscommits</strong><div class="field"><span class="label">Vastgelegd bewijs</span><pre id="completionCommits"></pre></div></div>
 <section class="prompt-runs" id="promptRuns" aria-label="Promptuitvoeringen" hidden><div class="prompt-runs__heading">Promptuitvoeringen</div><div class="prompt-runs__cards">
-<div class="last-execution" id="lastExecution" hidden><div class="card card--previous"><div class="final-status"><span id="lastIndicator" class="indicator indicator--small" aria-hidden="true"></span><strong>Laatst uitgevoerd</strong><span id="lastFinalStatus"></span></div><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field" id="lastCommits" hidden><span class="label">Git-commit</span><pre id="lastCommitDetails"></pre></div><div class="field" id="lastUsage" hidden><span class="label">Codex CLI-gebruik</span><pre id="lastUsageDetails"></pre></div><div class="field" id="lastDiagnostic" hidden><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div><details class="card card--previous" id="report" hidden><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details></div>
 <div class="last-execution" id="lastExecution" hidden><div class="card card--previous"><div class="final-status"><span id="lastIndicator" class="indicator indicator--small" aria-hidden="true"></span><strong>Laatst uitgevoerd</strong><span id="lastFinalStatus"></span></div><p class="field"><span class="label">Prompttitel</span><span id="lastPrompt"></span></p><div class="field"><span class="label">Bestandsnaam</span><pre id="lastFile"></pre></div><div class="field" id="lastCommits" hidden><span class="label">Git-commit</span><pre id="lastCommitDetails"></pre></div><div class="field" id="lastUsage" hidden><span class="label">Codex CLI-gebruik</span><pre id="lastUsageDetails"></pre></div><div class="field" id="lastDiagnostic" hidden><span class="label">Codex CLI-diagnose</span><pre id="lastLog">Laden…</pre></div></div><details class="card card--previous" id="report" hidden><summary><strong>Engineeringrapport</strong></summary><button class="copy" id="copyReport" type="button" title="Kopieer rapport" aria-label="Kopieer rapport">⧉ Kopieer</button><div class="field"><span class="label">Markdownrapport</span><pre id="reportContent">Open dit blok om het rapport te laden.</pre></div></details><details class="card card--previous" id="reportAnalysis" hidden><summary><strong>Codex-analyse van rapport</strong></summary><div class="field"><span class="label">Adviserend; repositorybewijs blijft leidend</span><pre id="reportAnalysisContent">Open dit blok om de analyse te laden.</pre></div></details></div>
 </div></section>
+<details class="technical-details" id="componentLogs"><summary><strong>Applicatielogs</strong></summary><p class="estimate-meta">Geredigeerde, roterende logs van watcher en dashboard. Deze worden pas opgehaald nadat je op de knop drukt.</p><button class="copy" id="loadComponentLogs" type="button">Logs laden</button><div class="technical-grid"><div class="card"><strong>Inbox-watcher</strong><pre id="inboxComponentLog">Nog niet geladen.</pre></div><div class="card"><strong>Statusdashboard</strong><pre id="dashboardComponentLog">Nog niet geladen.</pre></div></div></details>
 <details class="technical-details"><summary><strong>Technische details</strong></summary><div class="technical-grid">
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
@@ -574,17 +596,19 @@ function commits(x){let entries=Object.entries(x||{});$("commits").hidden=!entri
 function lastCommits(x){let entries=Object.entries(x||{});$("lastCommits").hidden=!entries.length;$("lastCommitDetails").textContent=entries.map(([label,sha])=>label+": "+sha).join("\\n")}
 function promptStarted(x){promptStartedAt=x?.started_at?Date.parse(x.started_at):undefined;$("promptStarted").textContent=promptStartedAt?formatTime.format(new Date(promptStartedAt)):"Niet beschikbaar";if(latestStatus)renderEstimate(latestStatus)}
 let lastExecutedRun,reportLoaded=false,reportRequest,analysisLoaded=false,analysisRequest;function report(){if(!lastExecutedRun)return Promise.resolve();if(reportLoaded)return reportRequest;reportLoaded=true;return reportRequest=fetch("/api/report/last-executed?run_id="+encodeURIComponent(lastExecutedRun)).then(x=>x.text()).then(x=>{if(!x){$("report").hidden=true;return}$("reportContent").textContent=x}).catch(()=>{$("reportContent").textContent="Engineeringrapport is niet beschikbaar."})}function analysis(){if(!lastExecutedRun)return Promise.resolve();if(analysisLoaded)return analysisRequest;analysisLoaded=true;return analysisRequest=fetch("/api/report-analysis/last-executed?run_id="+encodeURIComponent(lastExecutedRun)).then(x=>x.text()).then(x=>{if(!x){$("reportAnalysis").hidden=true;return}$("reportAnalysisContent").textContent=x}).catch(()=>{$("reportAnalysisContent").textContent="Codex-analyse is niet beschikbaar."})}
+let componentLogsLoaded=false;function loadComponentLogs(){if(componentLogsLoaded)return;$("loadComponentLogs").disabled=true;$("loadComponentLogs").textContent="Logs laden…";Promise.all([fetch("/api/logs/inbox").then(x=>x.text()),fetch("/api/logs/dashboard").then(x=>x.text())]).then(([inbox,dashboard])=>{$("inboxComponentLog").textContent=inbox;$("dashboardComponentLog").textContent=dashboard;componentLogsLoaded=true;$("loadComponentLogs").textContent="Logs geladen"}).catch(()=>{$("inboxComponentLog").textContent="Inbox-log is niet beschikbaar.";$("dashboardComponentLog").textContent="Dashboard-log is niet beschikbaar.";$("loadComponentLogs").disabled=false;$("loadComponentLogs").textContent="Opnieuw proberen"})}
 function fallbackCopy(value){const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.cssText="position:fixed;top:0;left:0;opacity:0";document.body.append(area);area.focus();area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw Error("copy unavailable")}
 function copyText(value){return navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(value).catch(()=>fallbackCopy(value)):Promise.resolve().then(()=>fallbackCopy(value))}
 function copyReport(){report().then(()=>copyText($("reportContent").textContent)).then(()=>{$("copyReport").textContent="Gekopieerd";setTimeout(()=>{$("copyReport").textContent="⧉ Kopieer"},1500)}).catch(()=>{$("copyReport").textContent="Kopiëren mislukt"})}
 function r(x,snapshot={}){lastRefresh=new Date();clock();x=x&&typeof x==="object"?x:fallback;latestStatus=x;let active=isActiveRun(x),statusTone=tone(x),indicator=$("indicator"),previous=x.last_executed_run||null,lastStatus=finalStatus(x.last_executed_phase),components=snapshot.component_versions||{},blocked=Boolean(x.blocking_predecessor_run);if(previous!==lastExecutedRun){lastExecutedRun=previous;reportLoaded=false;reportRequest=undefined;analysisLoaded=false;analysisRequest=undefined;$("report").open=false;$("reportAnalysis").open=false;$("reportContent").textContent="Open dit blok om het rapport te laden.";$("reportAnalysisContent").textContent="Open dit blok om de analyse te laden."}$("currentRun").hidden=!active;$("promptRuns").hidden=!previous;$("lastExecution").hidden=!previous;$("report").hidden=!previous;$("reportAnalysis").hidden=!previous;$("predecessorGate").hidden=!blocked;$("predecessorRun").textContent=x.blocking_predecessor_run||"Niet beschikbaar";$("predecessorPrompt").textContent=x.blocking_predecessor_title||x.blocking_predecessor_filename||"Niet beschikbaar";$("predecessorPhase").textContent=translate(x.blocking_predecessor_phase||"Niet beschikbaar");$("predecessorAction").textContent=x.predecessor_recovery_action||"Niet beschikbaar";$("executionContext").hidden=!x.execution_mode;$("executionMode").textContent=x.execution_mode||"Niet beschikbaar";$("targetRepository").textContent=x.target_repository||"Niet beschikbaar";$("checkoutPath").textContent=x.checkout_path||"Niet beschikbaar";$("activeBranch").textContent=x.active_branch||"Niet beschikbaar";indicator.className="indicator indicator--"+statusTone+(active?" indicator--running":"");indicator.setAttribute("aria-label","Promptstatus: "+statusTone);$("lastIndicator").className="indicator indicator--small indicator--"+lastStatus[0];$("lastFinalStatus").textContent=lastStatus[1];$("watcher").textContent=translate(x.watcher_state||fallback.watcher_state);$("phase").textContent=translate(x.current_phase||"idle");$("action").textContent=translate(x.current_action||"Geen actieve actie");promptStarted(snapshot.prompt_started);renderEstimate(x);processMetrics(active,snapshot.process_metrics);$("currentPrompt").textContent=x.prompt_title||"Niet beschikbaar";$("currentFile").textContent=x.submitted_filename||"Niet beschikbaar";if(!active||x.run_id!==currentLogRun)$("currentDiagnostic").hidden=true;if(active)l("currentLog","/api/log/current",x.run_id||null,false,"currentDiagnostic");$("lastPrompt").textContent=x.last_executed_title||"Nog geen prompt uitgevoerd";$("lastFile").textContent=x.last_executed_filename||"Niet beschikbaar";$("lastDiagnostic").hidden=lastStatus[0]==="green";if(previous&&lastStatus[0]!=="green")l("lastLog","/api/log/last",previous,true,"lastDiagnostic");$("runId").textContent=x.run_id||"geen";$("queue").textContent=x.queue_depth??0;$("implementation").textContent=x.implementation_pr||"geen";$("finalization").textContent=x.finalization_pr||"geen";$("repositoryState").textContent=translate(x.repository_state||"UNKNOWN");$("workspaceState").textContent=translate(x.workspace_state||"UNKNOWN");$("diag").textContent=translate(x.diagnostic||"Geen diagnose");$("platformVersion").textContent=x.platform_version||"Niet beschikbaar";$("dashboardVersion").textContent=components.dashboard||"Niet beschikbaar";$("workerVersion").textContent=components.worker||"Niet beschikbaar";usage(snapshot.usage);rateLimits(snapshot.rate_limits);lastUsage(snapshot.last_executed_usage);commits(snapshot.completion_commits);lastCommits(snapshot.last_executed_commits)}
-let e=new EventSource("/api/events");e.addEventListener("dashboard",x=>{try{let snapshot=JSON.parse(x.data);r(snapshot.status,snapshot);humanize();checkBuild(snapshot.build_commit);$("updateMode").textContent="Serverpush: verbonden"}catch{r(fallback);humanize();$("updateMode").textContent="Serverpush: update ongeldig"}});e.onerror=()=>{$("updateMode").textContent="Serverpush: opnieuw verbinden…"};$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("reportAnalysis").addEventListener("toggle",()=>{$("reportAnalysis").open&&analysis()});$("copyReport").addEventListener("click",copyReport);setInterval(clock,250);clock()
+let e=new EventSource("/api/events");e.addEventListener("dashboard",x=>{try{let snapshot=JSON.parse(x.data);r(snapshot.status,snapshot);humanize();checkBuild(snapshot.build_commit);$("updateMode").textContent="Serverpush: verbonden"}catch{r(fallback);humanize();$("updateMode").textContent="Serverpush: update ongeldig"}});e.onerror=()=>{$("updateMode").textContent="Serverpush: opnieuw verbinden…"};$("report").addEventListener("toggle",()=>{$("report").open&&report()});$("reportAnalysis").addEventListener("toggle",()=>{$("reportAnalysis").open&&analysis()});$("copyReport").addEventListener("click",copyReport);$("loadComponentLogs").addEventListener("click",loadComponentLogs);setInterval(clock,250);clock()
 </script>"""
     return page.replace("$TITLE", escape(title)).replace("$BUILD_COMMIT", escape(build_commit)).encode()
 
 
-def handler(root: Path):
+def handler(root: Path, logger: logging.Logger | None = None):
     title = PlatformConfiguration.load(root).workspace.dashboard_title
+    logger = logger or component_logger(root, "dashboard")
     class DashboardHandler(BaseHTTPRequestHandler):
         def _send(self, content: bytes, content_type: str) -> None:
             self.send_response(200)
@@ -601,6 +625,7 @@ def handler(root: Path):
 
         def do_GET(self) -> None:
             request = urlsplit(self.path)
+            log_event(logger, logging.DEBUG, "http_request", diagnostic=request.path)
             if request.path == "/api/report/last-executed":
                 run_id = parse_qs(request.query).get("run_id", [None])[0]
                 return self._send(
@@ -646,7 +671,7 @@ def handler(root: Path):
                             self.wfile.flush()
                         time.sleep(1)
                 except (BrokenPipeError, ConnectionResetError):
-                    pass
+                    log_event(logger, logging.DEBUG, "sse_client_disconnected")
                 return
             if self.path == "/api/report/latest":
                 try:
@@ -659,6 +684,11 @@ def handler(root: Path):
                 return self._send(content, "text/markdown; charset=utf-8")
             if self.path == "/api/log/latest":
                 return self._send(_latest_codex_log(root), "text/plain; charset=utf-8")
+            if request.path in {"/api/logs/inbox", "/api/logs/dashboard"}:
+                return self._send(
+                    _component_log(root, request.path.rsplit("/", 1)[-1]),
+                    "text/plain; charset=utf-8",
+                )
             if self.path == "/api/log/current":
                 return self._send(_current_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/api/log/last":
@@ -673,10 +703,11 @@ def handler(root: Path):
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if self.path == "/":
                 return self._send(_dashboard_html(title, _build_commit(root)), "text/html; charset=utf-8")
+            log_event(logger, logging.WARNING, "http_not_found", diagnostic=request.path)
             self.send_error(404)
 
-        def log_message(self, *_: object) -> None:
-            pass
+        def log_message(self, message: str, *_: object) -> None:
+            log_event(logger, logging.DEBUG, "http_server_message", diagnostic=message)
 
     return DashboardHandler
 
@@ -693,10 +724,13 @@ def binding_addresses(provider: TailscaleProvider | None = None) -> tuple[str, .
 
 
 def create_servers(
-    root: Path, port: int = 8765, provider: TailscaleProvider | None = None
+    root: Path,
+    port: int = 8765,
+    provider: TailscaleProvider | None = None,
+    logger: logging.Logger | None = None,
 ) -> tuple[DashboardHTTPServer, ...]:
     """Create the exact private listeners for the dashboard."""
-    request_handler = handler(root)
+    request_handler = handler(root, logger)
     return tuple(
         DashboardHTTPServer((address, port), request_handler)
         for address in binding_addresses(provider)
@@ -705,10 +739,24 @@ def create_servers(
 
 def run(root: Path, port: int = 8765, provider: TailscaleProvider | None = None) -> None:
     """Serve locally and, when present, over the authenticated Tailnet only."""
-    servers = create_servers(root, port, provider)
+    logger = component_logger(root, "dashboard")
+    try:
+        servers = create_servers(root, port, provider, logger)
+    except OSError as error:
+        log_event(logger, logging.ERROR, "dashboard_start_failed", diagnostic=str(error))
+        raise
+    log_event(
+        logger,
+        logging.INFO,
+        "dashboard_started",
+        diagnostic="addresses=" + ",".join(address for address, _ in (server.server_address for server in servers)),
+    )
     for server in servers[1:]:
         Thread(target=server.serve_forever, daemon=True).start()
-    servers[0].serve_forever()
+    try:
+        servers[0].serve_forever()
+    finally:
+        log_event(logger, logging.INFO, "dashboard_stopped")
 
 
 def launch_agent(repo: Path) -> Path:
@@ -728,8 +776,11 @@ def launch_agent(repo: Path) -> Path:
             str(repo),
         )
     )
+    log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
+    if log_level not in VALID_LEVELS:
+        log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "dashboard.out.log"}</string><key>StandardErrorPath</key><string>{logs / "dashboard.err.log"}</string></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>{logs / "dashboard.out.log"}</string><key>StandardErrorPath</key><string>{logs / "dashboard.err.log"}</string></dict></plist>',
         encoding="utf-8",
     )
     return destination
