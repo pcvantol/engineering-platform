@@ -31,6 +31,11 @@ class EngineeringStorageTest(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table' AND name='engineering_artifacts'"
                     ).fetchone()
                 )
+                self.assertIsNotNone(
+                    connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='prompt_execution_history'"
+                    ).fetchone()
+                )
             path = root / WORKSPACE_DIRECTORY / DATABASE_FILENAME
             self.assertEqual(database_path(root), path.resolve())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -55,6 +60,30 @@ class EngineeringStorageTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     connection.execute("SELECT content FROM engineering_artifacts").fetchone()[0], b"test"
+                )
+
+    def test_schema_four_imports_legacy_redacted_component_logs_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            logs = root / WORKSPACE_DIRECTORY / "logs"
+            logs.mkdir(parents=True)
+            (logs / "inbox.log").write_text(
+                '{"timestamp":"2026-08-02T12:00:00+00:00","event":"watcher_started"}\n',
+                encoding="utf-8",
+            )
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT payload FROM engineering_component_logs WHERE component='inbox'"
+                    ).fetchone()[0],
+                    '{"event":"watcher_started","timestamp":"2026-08-02T12:00:00+00:00"}',
+                )
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM engineering_component_logs WHERE component='inbox'"
+                    ).fetchone()[0],
+                    1,
                 )
 
     def test_refuses_unknown_non_versioned_database(self) -> None:

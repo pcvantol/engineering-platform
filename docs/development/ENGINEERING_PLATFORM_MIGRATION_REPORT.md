@@ -4,7 +4,8 @@
 
 Engineering Platform 1.5 introduces an independent Platform Identity, a
 consumer-owned Workspace Identity, declarative provider selection and a stable
-public API without changing the `dj-engineer` command, transaction lifecycle,
+public API and the provider-neutral `engineering-execution-host` command without
+changing transaction lifecycle,
 watcher transport, dashboard authority or repository governance.
 
 ## Configuration hierarchy
@@ -24,8 +25,9 @@ engineering execution authority merely by being configured.
 
 ## Deferred to 1.6
 
-Actual package extraction, generic command renaming and additional provider
-implementations require extraction-readiness evidence. The 1.5 repository
-bootstrap API, idempotent workspace provisioning and generic configuration
-template are complete compatibility surfaces.
+Actual package extraction and additional provider implementations require
+extraction-readiness evidence. The generic command rename is complete; the
+deprecated `dj-engineer` alias remains available for existing automation. The
+1.5 repository bootstrap API, idempotent workspace provisioning and generic
+configuration template are complete compatibility surfaces.
 No functional product, release, deployment or publication behavior changed.

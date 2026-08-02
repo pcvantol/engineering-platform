@@ -1,2 +1,4 @@
 #!/usr/bin/env sh
-exec python3 -m tools.engineering "$@"
+# Deprecated compatibility entry point.  New integrations use
+# engineering-execution-host; this alias keeps existing automation working.
+exec "$(dirname "$0")/engineering-execution-host" "$@"

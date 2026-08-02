@@ -17,7 +17,7 @@ class DuplicateComponentInstanceError(RuntimeError):
 @contextmanager
 def single_instance(repo: Path, component: str) -> Iterator[None]:
     """Hold a non-blocking, process-lifetime lock for one named component."""
-    directory = repo / ".djconnect" / "locks"
+    directory = repo / ".engineering" / "locks"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{component}.lock"
     handle = path.open("a+", encoding="utf-8")

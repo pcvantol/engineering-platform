@@ -120,7 +120,7 @@ def dashboard(report: dict[str, object]) -> str:
 
 
 def latest_qualification(root: Path) -> dict[str, object] | None:
-    directory = root / ".djconnect" / "qualification"
+    directory = root / ".engineering" / "qualification"
     reports = sorted(directory.glob("qualification-*.json"))
     if not reports:
         return None
@@ -142,7 +142,7 @@ def _default_check(root: Path, capability: str) -> bool:
     contracts = {
         "Repository Initialization": (root / "BOOTSTRAP.md").is_file(),
         "Checkpoint Resume": (root / "tools" / "engineering" / "agent_state.py").is_file(),
-        "Engineering Memory": (root / "tools" / "engineering" / "dj_engineer.py").is_file(),
+        "Engineering Memory": (root / "tools" / "engineering" / "execution_host.py").is_file(),
         "Capability-aware Reviewers": (
             root / "tools" / "engineering" / "capability_review.py"
         ).is_file(),
@@ -164,7 +164,7 @@ def _default_check(root: Path, capability: str) -> bool:
         "Repository Bootstrap": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
         "Project Template": (root / "tools" / "engineering" / "templates" / "workspace-config.json").is_file(),
         "Workspace Provisioning": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
-        "Genesis Lifecycle": (root / "tools" / "engineering" / "dj_engineer.py").is_file(),
+        "Genesis Lifecycle": (root / "tools" / "engineering" / "execution_host.py").is_file(),
         "Strict Inbox Sequencing": (root / "tools" / "engineering" / "inbox_watcher.py").is_file(),
         "Local Engineering Evidence Storage": (
             root / "tools" / "engineering" / "ENGINEERING_INBOX_PROTOCOL.md"
@@ -174,11 +174,11 @@ def _default_check(root: Path, capability: str) -> bool:
             and (root / "tools" / "engineering" / "codex_chat.py").is_file()
         ),
     }
-    return contracts.get(capability, (root / "tools" / "engineering" / "dj_engineer.py").is_file())
+    return contracts.get(capability, (root / "tools" / "engineering" / "execution_host.py").is_file())
 
 
 def _write_report(root: Path, report: dict[str, object]) -> None:
-    directory = root / ".djconnect" / "qualification"
+    directory = root / ".engineering" / "qualification"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     (directory / f"qualification-{stamp}.json").write_text(

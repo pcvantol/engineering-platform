@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Engineering Status">
+  <rect width="512" height="512" rx="112" fill="#15151d"/>
+  <rect x="34" y="34" width="444" height="444" rx="92" fill="#202b3a" stroke="#8dc7ff" stroke-width="12"/>
+  <path d="M154 168h108v48h-60v80h60v48H154z" fill="#8dc7ff"/>
+  <path d="M290 172l92 84-92 84v-58h-54v-52h54z" fill="#d0a4ff"/>
+  <circle cx="365" cy="365" r="44" fill="#51d88a"/>
+  <path d="M345 365l14 14 27-30" fill="none" stroke="#15151d" stroke-linecap="round" stroke-linejoin="round" stroke-width="14"/>
+</svg>

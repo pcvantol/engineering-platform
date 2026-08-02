@@ -59,6 +59,7 @@ class TransactionState:
     finalization_merge_commit: str | None = None
     latest_repository_evidence: str | None = None
     latest_github_evidence: str | None = None
+    agent_execution_seconds: float | None = None
     repair_iterations: int = 0
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
@@ -76,6 +77,7 @@ class TransactionState:
             "finalization_branch": None, "finalization_pull_request": None,
             "finalization_head_sha": None, "finalization_merge_commit": None,
             "latest_repository_evidence": None, "latest_github_evidence": None,
+            "agent_execution_seconds": None,
             "repair_iterations": 0,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
@@ -117,6 +119,12 @@ class TransactionState:
         for value in (state.latest_repository_evidence, state.latest_github_evidence):
             if value is not None and (not isinstance(value, str) or len(value) > MAX_DIAGNOSTIC_LENGTH or value != redact_diagnostic(value)):
                 raise StateError("checkpoint evidence is invalid or unsafe")
+        if state.agent_execution_seconds is not None and (
+            isinstance(state.agent_execution_seconds, bool)
+            or not isinstance(state.agent_execution_seconds, (int, float))
+            or not 0 <= state.agent_execution_seconds <= 86_400
+        ):
+            raise StateError("checkpoint agent execution duration is invalid")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state

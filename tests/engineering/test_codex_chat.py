@@ -14,8 +14,8 @@ class CodexChatTest(unittest.TestCase):
     def test_response_uses_only_last_run_context_in_an_ephemeral_read_only_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            job = root / ".djconnect" / "inbox-processing" / "job"
-            reports = root / ".djconnect" / "reports"
+            job = root / ".engineering" / "inbox-processing" / "job"
+            reports = root / ".engineering" / "reports"
             job.mkdir(parents=True)
             reports.mkdir(parents=True)
             (job / "job.json").write_text('{"run_id":"inbox-last"}', encoding="utf-8")

@@ -37,7 +37,7 @@ def run(root: Path, *, fail_phase: str | None = None) -> dict[str, object]:
         payload = {"scenario_id": SCENARIO_ID, "result": "ENGINEERING_PLATFORM_GOLDEN_PASS", "executed_at": datetime.now(timezone.utc).isoformat(), "phases": phases, "evidence": ["platform_identity", "workspace_identity", "providers", "readiness", "qualification", "handoff_simulation"]}
     except Exception as error:
         payload = {"scenario_id": SCENARIO_ID, "result": "ENGINEERING_PLATFORM_GOLDEN_FAIL", "executed_at": datetime.now(timezone.utc).isoformat(), "phases": phases, "failed_phase": fail_phase or (phases[-1]["phase"] if phases else "repository_bootstrap"), "diagnostic": str(error), "expected_state": "ENGINEERING_PLATFORM_GOLDEN_PASS", "remediation": "Correct the reported configuration, provider, readiness or qualification failure and rerun EP-GOLDEN-001."}
-    directory = root / ".djconnect" / "qualification"
+    directory = root / ".engineering" / "qualification"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / "ep-golden-001.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload

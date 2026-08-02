@@ -13,7 +13,7 @@ class ComponentLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with single_instance(root, "dashboard"):
-                metadata = (root / ".djconnect" / "locks" / "dashboard.lock").read_text(encoding="utf-8")
+                metadata = (root / ".engineering" / "locks" / "dashboard.lock").read_text(encoding="utf-8")
                 self.assertIn('"component": "dashboard"', metadata)
 
     def test_second_instance_is_refused_without_waiting(self) -> None:

@@ -1,6 +1,6 @@
-"""Module entry point for the DJConnect local engineering runner."""
+"""Module entry point for the provider-neutral Engineering Execution Host."""
 
-from .dj_engineer import main
+from .execution_host import main
 
 
 if __name__ == "__main__":

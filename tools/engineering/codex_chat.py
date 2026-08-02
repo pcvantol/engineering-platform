@@ -41,7 +41,7 @@ def _bounded_text(path: Path, limit: int = MAX_CONTEXT_CHARACTERS) -> str:
 
 
 def _last_prompt(root: Path, run_id: str) -> str:
-    for job in (root / ".djconnect" / "inbox-processing").glob("*/job.json"):
+    for job in (root / ".engineering" / "inbox-processing").glob("*/job.json"):
         try:
             record = json.loads(job.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -52,7 +52,7 @@ def _last_prompt(root: Path, run_id: str) -> str:
 
 
 def _report(root: Path, run_id: str) -> str:
-    reports = sorted((root / ".djconnect" / "reports").glob(f"*_{run_id}.md"))
+    reports = sorted((root / ".engineering" / "reports").glob(f"*_{run_id}.md"))
     return _bounded_text(reports[-1]) if reports else "Niet beschikbaar."
 
 

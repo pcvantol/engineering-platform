@@ -17,28 +17,38 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 from .platform_version import EngineeringPlatformManifest
 from .agent_state import redact_diagnostic
 from .platform_api import PlatformConfiguration
+from .platform_bootstrap import provision_workspace
 from .providers import LaunchdProvider
 from .status_model import build, publish
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
     VALID_LEVELS,
+    component_lifecycle_context,
     component_logger,
     log_event,
+    shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
+from .telemetry import ExecutionTelemetry, persist_execution_async
+from .prompt_history import record_prompt_execution
 
 LABEL = "com.djconnect.engineering-inbox"
-WATCHER_VERSION = "1.1.2"
+WATCHER_VERSION = "1.1.5"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
 RETRY_OF_PATTERN = re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+class RetrySubmissionError(ValueError):
+    """Raised when a fail-closed predecessor cannot be safely resubmitted."""
 
 
 def cloud_root(value: str | None = None, repo: Path | None = None) -> Path:
@@ -59,7 +69,7 @@ def folders(root: Path) -> dict[str, Path]:
 
 def local_folders(repo: Path) -> dict[str, Path]:
     """Return canonical local prompt archives owned by Engineering Platform."""
-    result = {name: repo / ".djconnect" / "inbox" / name for name in ("Running", "Completed", "Failed")}
+    result = {name: repo / ".engineering" / "inbox" / name for name in ("Running", "Completed", "Failed")}
     for path in result.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return result
@@ -140,6 +150,50 @@ def _runner_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     detail = lines[-1] if lines else "Runner stopped before publishing a checkpoint."
     return redact_diagnostic(detail, limit=500)
+
+
+def _telemetry_values(repo: Path, run_id: str) -> tuple[float | None, dict[str, int | None], str]:
+    """Read only local, run-bound evidence for best-effort telemetry."""
+    execution_seconds: float | None = None
+    repository = repo.name
+    try:
+        state = json.loads((repo / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+        value = state.get("agent_execution_seconds")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            execution_seconds = float(value)
+        if isinstance(state.get("repository"), str):
+            repository = state["repository"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    usage: dict[str, int | None] = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+    try:
+        stored = json.loads((repo / ".engineering" / "status" / "codex_usage.json").read_text(encoding="utf-8"))
+        raw = stored.get("usage") if stored.get("run_id") == run_id else {}
+        if isinstance(raw, dict):
+            for key in usage:
+                value = raw.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    usage[key] = value
+    except (OSError, json.JSONDecodeError):
+        pass
+    return execution_seconds, usage, repository
+
+
+def _terminal_git_commit(repo: Path, run_id: str) -> str | None:
+    """Read the strongest local commit evidence without changing terminal state."""
+    try:
+        checkpoint = json.loads(
+            (repo / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    for key in ("genesis_commit_sha", "implementation_merge_commit", "finalization_merge_commit"):
+        value = checkpoint.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{7,64}", value):
+            return value
+    return None
 
 
 def _report_matches_terminal_phase(report: Path, phase: str | None) -> bool:
@@ -230,7 +284,7 @@ def _previous_prompt_context(repo: Path) -> dict[str, object]:
         "predecessor_recovery_action",
     )
     try:
-        prior = json.loads((repo / ".djconnect" / "status" / "status.json").read_text(encoding="utf-8"))
+        prior = json.loads((repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return {key: prior[key] for key in keys if prior.get(key) is not None}
@@ -267,7 +321,7 @@ def status(repo: Path, state: str, **details: object) -> None:
         resume_available=state in {"JOB_BLOCKED", "JOB_FAILED"},
         **context,
     )
-    publish(repo / ".djconnect" / "status", payload)
+    publish(repo / ".engineering" / "status", payload)
 
 
 def _job_id(source: Path, content: str) -> tuple[str, str, str]:
@@ -312,9 +366,60 @@ def _blocking_predecessor(root: Path) -> dict[str, str] | None:
 
 def _predecessor_recovery_action(run_id: str) -> str:
     return (
-        "Herstel de geblokkeerde prompt en dien die opnieuw in met een eigen regel "
+        "Herstel de geblokkeerde prompt of dien die bewust opnieuw in met een eigen regel "
         f"`Retry-Of: {run_id}`. De wachtrij blijft gepauzeerd totdat deze herindiening voltooid is."
     )
+
+
+def _archived_prompt_for_run(repo: Path, run_id: str) -> tuple[Path, str] | None:
+    """Find the immutable local failed prompt that produced ``run_id``."""
+    for path in sorted(local_folders(repo)["Failed"].iterdir()):
+        content = stable_prompt(path, 0.0)
+        if content is not None and _job_id(path, content)[1] == run_id:
+            return path, content
+    return None
+
+
+def submit_predecessor_retry(repo: Path, root: Path) -> dict[str, str]:
+    """Explicitly resubmit the current blocking prompt through the Inbox transport.
+
+    The watcher remains the only owner of claiming, sequencing and execution.
+    A unique, inert marker prevents an accidental duplicate retry from reusing
+    an already recorded deterministic run identity.
+    """
+    with _lock(repo):
+        predecessor = _blocking_predecessor(repo)
+        if predecessor is None:
+            raise RetrySubmissionError("Er is geen geblokkeerde voorafgaande prompt om opnieuw in te dienen.")
+        candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
+        if any(content is not None and _retry_of(content) == predecessor["run_id"] for _, content in candidates):
+            raise RetrySubmissionError("Een herindiening voor deze voorafgaande prompt staat al in de wachtrij.")
+        archived = _archived_prompt_for_run(repo, predecessor["run_id"])
+        if archived is None:
+            raise RetrySubmissionError("De oorspronkelijke geblokkeerde prompt is lokaal niet beschikbaar voor herindiening.")
+        source, content = archived
+        retry_content = (
+            f"Retry-Of: {predecessor['run_id']}\n"
+            f"<!-- Owner-triggered retry: {datetime.now(timezone.utc).isoformat()} {uuid.uuid4().hex} -->\n\n"
+            f"{content}"
+        )
+        inbox = folders(root)["Inbox"]
+        suffix = source.suffix.lower() if source.suffix.lower() in {".md", ".markdown", ".txt"} else ".md"
+        filename = f"retry-{predecessor['run_id']}-{uuid.uuid4().hex[:8]}{suffix}"
+        destination = inbox / filename
+        temporary = inbox / f".{filename}.tmp"
+        try:
+            temporary.write_text(retry_content, encoding="utf-8")
+            os.replace(temporary, destination)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            raise RetrySubmissionError("De herindiening kon niet veilig in de Inbox worden geplaatst.") from error
+        _, retry_run_id, _ = _job_id(destination, retry_content)
+        return {
+            "blocking_run_id": predecessor["run_id"],
+            "filename": filename,
+            "retry_run_id": retry_run_id,
+        }
 
 def _move(source: Path, destination: Path) -> None:
     """Move a prompt out of iCloud, allowing the expected cross-device boundary."""
@@ -326,7 +431,7 @@ def _move(source: Path, destination: Path) -> None:
 
 
 def _active_transaction(repo: Path) -> bool:
-    current = repo / ".djconnect" / "status" / "current.json"
+    current = repo / ".engineering" / "status" / "current.json"
     try:
         payload = json.loads(current.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -345,7 +450,7 @@ def _active_transaction(repo: Path) -> bool:
 @contextmanager
 def _lock(repo: Path):
     """Use an exclusive local lock and recover only a proven stale PID lock."""
-    path = repo / ".djconnect" / "engineering-inbox.lock"
+    path = repo / ".engineering" / "engineering-inbox.lock"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -367,7 +472,7 @@ def _lock(repo: Path):
 
 
 def _runner_result(repo: Path, run_id: str) -> tuple[str | None, str | None]:
-    checkpoint = repo / ".djconnect" / "engineering-runs" / f"{run_id}.json"
+    checkpoint = repo / ".engineering" / "engineering-runs" / f"{run_id}.json"
     try:
         state = json.loads(checkpoint.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -376,13 +481,13 @@ def _runner_result(repo: Path, run_id: str) -> tuple[str | None, str | None]:
 
 
 def _report(repo: Path, run_id: str) -> Path | None:
-    reports = sorted((repo / ".djconnect" / "reports").glob(f"*_{run_id}.md"))
+    reports = sorted((repo / ".engineering" / "reports").glob(f"*_{run_id}.md"))
     return reports[-1] if reports else None
 
 
 def _clear_prior_codex_log(repo: Path, run_id: str) -> None:
     """A retried deterministic Inbox run must not display an older attempt's log."""
-    (repo / ".djconnect" / "logs" / "codex" / f"{run_id}.log").unlink(missing_ok=True)
+    (repo / ".engineering" / "logs" / "codex" / f"{run_id}.log").unlink(missing_ok=True)
 
 
 def once(repo: Path, root: Path, interval: float = 1.0) -> int:
@@ -450,12 +555,16 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             return 0
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
+        try:
+            arrived_at = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc)
+        except OSError:
+            arrived_at = datetime.now(timezone.utc)
         status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source), job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
         _move(source, claimed)
-        local = repo / ".djconnect" / "inbox-processing" / job_id
+        local = repo / ".engineering" / "inbox-processing" / job_id
         local.mkdir(mode=0o700, parents=True, exist_ok=True)
         prompt = local / "prompt.md"
         prompt.write_text(content, encoding="utf-8")
@@ -476,7 +585,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         phase, _ = _runner_result(repo, run_id)
         _clear_prior_codex_log(repo, run_id)
         arguments = [
-            str(repo / "tools/engineering/dj-engineer"),
+            str(repo / "tools/engineering/engineering-execution-host"),
             str(prompt.relative_to(repo)),
             "--owner-authorized",
             "--run-id",
@@ -489,33 +598,10 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             submitted_filename=source.name, prompt_title=title,
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
+        execution_started_at = datetime.now(timezone.utc)
         completed = subprocess.run(arguments, cwd=repo, text=True, capture_output=True, check=False)
         phase, diagnostic = _runner_result(repo, run_id)
-        report = _report(repo, run_id)
-        delivered = None
-        corrected_report = False
-        if report:
-            status(
-                repo, "REPORT_PUBLISHING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
-            )
-            delivered = report
-            if _report_matches_terminal_phase(report, phase):
-                pass
-            else:
-                corrected_report = True
-                delivered = repo / ".djconnect" / "reports" / f"corrected_{run_id}.md"
-                delivered.write_text(
-                    _corrected_terminal_report(run_id, phase, diagnostic), encoding="utf-8"
-                )
-                log_event(logger, logging.WARNING, "terminal_report_corrected", run_id=run_id)
-        successful = completed.returncode == 0 and phase == "COMPLETE" and delivered is not None
-        target = areas["Completed"] if successful else areas["Failed"]
-        _move(claimed, _archive_path(target, job_id, source))
-        final_state = (
-            "JOB_COMPLETED"
-            if successful
-            else ("JOB_BLOCKED" if phase == "BLOCKED" else "JOB_FAILED")
-        )
+        terminal_phase = phase if phase in TERMINAL_PHASES else "FAILED"
         reason = diagnostic or (
             _runner_failure_detail(completed)
             if completed.returncode and phase is None
@@ -525,9 +611,33 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             if completed.returncode == 0
             else "De runner stopte zonder een veilig eindrapport."
         )
+        report = _report(repo, run_id)
+        delivered = None
+        corrected_report = False
+        if report and _report_matches_terminal_phase(report, terminal_phase):
+            status(
+                repo, "REPORT_PUBLISHING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
+            )
+            delivered = report
+        else:
+            corrected_report = True
+            delivered = repo / ".engineering" / "reports" / f"corrected_{run_id}.md"
+            delivered.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            delivered.write_text(
+                _corrected_terminal_report(run_id, terminal_phase, reason), encoding="utf-8"
+            )
+            log_event(logger, logging.WARNING, "terminal_report_corrected", run_id=run_id)
+        successful = completed.returncode == 0 and terminal_phase == "COMPLETE" and delivered is not None
+        target = areas["Completed"] if successful else areas["Failed"]
+        _move(claimed, _archive_path(target, job_id, source))
+        final_state = (
+            "JOB_COMPLETED"
+            if successful
+            else ("JOB_BLOCKED" if terminal_phase == "BLOCKED" else "JOB_FAILED")
+        )
         if corrected_report:
             reason = redact_diagnostic(
-                "The original terminal report contradicted its checkpoint; a corrected report was delivered."
+                "Een checkpoint-conform eindrapport is afgeleverd voor deze uitvoering."
             )
         status(
             repo,
@@ -536,16 +646,16 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             run_id=run_id,
             queued_jobs=len(candidates) - 1,
             queue_items=_queue_items(candidates, source),
-            runner_phase=phase,
+            runner_phase=terminal_phase,
             report=str(delivered) if delivered else None,
             diagnostic=reason,
-            resume_instruction=f"Run dj-engineer with --run-id {run_id} --resume.",
+            resume_instruction=f"Run engineering-execution-host with --run-id {run_id} --resume.",
             submitted_filename=source.name,
             prompt_title=title,
             last_executed_filename=source.name,
             last_executed_title=title,
             last_executed_run=run_id,
-            last_executed_phase=phase,
+            last_executed_phase=terminal_phase,
         )
         log_event(
             logger,
@@ -554,6 +664,61 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             run_id=run_id,
             diagnostic=reason,
         )
+        try:
+            record_prompt_execution(
+                repo,
+                run_id=run_id,
+                terminal_state=terminal_phase,
+                prompt_title=title,
+                executed_at=datetime.now(timezone.utc),
+                report=delivered,
+                git_commit=_terminal_git_commit(repo, run_id),
+            )
+        except Exception as error:
+            log_event(
+                logger,
+                logging.WARNING,
+                "prompt_history_persist_failed",
+                run_id=run_id,
+                diagnostic=str(error),
+            )
+        try:
+            execution_seconds, usage, repository = _telemetry_values(repo, run_id)
+            persist_execution_async(
+                repo,
+                ExecutionTelemetry(
+                    run_id=run_id,
+                    arrived_at=arrived_at,
+                    execution_started_at=execution_started_at,
+                    execution_finished_at=datetime.now(timezone.utc),
+                    terminal_state=terminal_phase,
+                    execution_seconds=execution_seconds,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    total_tokens=usage["total_tokens"],
+                    execution_mode="GENESIS" if "Execution Mode: Genesis" in content else "MANAGED",
+                    workspace=repo.name,
+                    repository=repository,
+                    execution_host_version=EngineeringPlatformManifest.load(
+                        Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
+                    ).platform_version,
+                ),
+                on_error=lambda error: log_event(
+                    logger,
+                    logging.WARNING,
+                    "telemetry_persist_failed",
+                    run_id=run_id,
+                    diagnostic=str(error),
+                ),
+            )
+        except Exception as error:
+            log_event(
+                logger,
+                logging.WARNING,
+                "telemetry_schedule_failed",
+                run_id=run_id,
+                diagnostic=str(error),
+            )
         return 0 if successful else (completed.returncode or 1)
 
 
@@ -579,11 +744,11 @@ def doctor(repo: Path, root: Path) -> int:
     areas = local_folders(repo)
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     checks = {
-        "repository_runner": (repo / "tools/engineering/dj-engineer").is_file(),
+        "repository_runner": (repo / "tools/engineering/engineering-execution-host").is_file(),
         "inbox_writable": os.access(transport["Inbox"], os.W_OK),
         "local_archives_writable": os.access(areas["Completed"], os.W_OK),
         "launch_agent": agent.is_file(),
-        "gitignored": ".djconnect/" in (repo / ".gitignore").read_text(encoding="utf-8"),
+        "gitignored": ".engineering/" in (repo / ".gitignore").read_text(encoding="utf-8"),
         "dashboard_code": (repo / "tools/engineering/dashboard.py").is_file(),
         "handoff_index": (repo / "docs/engineering/runs/index.json").is_file(),
         "handoff_latest": (repo / "docs/engineering/runs/latest.md").is_file(),
@@ -614,7 +779,7 @@ def migrate_icloud_archives(repo: Path, root: Path) -> dict[str, int]:
         "Running": local["Running"],
         "Completed": local["Completed"],
         "Failed": local["Failed"],
-        "Reports": repo / ".djconnect" / "reports",
+        "Reports": repo / ".engineering" / "reports",
     }
     moved = deleted = 0
     for name, target in targets.items():
@@ -635,7 +800,7 @@ def migrate_icloud_archives(repo: Path, root: Path) -> dict[str, int]:
         source_directory.rmdir()
     for name in ("status.json", "status.md"):
         source = root / name
-        destination = repo / ".djconnect" / "status" / name
+        destination = repo / ".engineering" / "status" / name
         if not source.is_file() or source.is_symlink():
             continue
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -658,32 +823,50 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=15)
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
+    provision_workspace(repo)
     root = cloud_root(args.icloud_root, repo)
     if args.command == "once":
         return once(repo, root, 0.0)
     if args.command == "run":
         logger = component_logger(repo, "inbox")
+        lifecycle_context = component_lifecycle_context(
+            repo,
+            version=WATCHER_VERSION,
+            launchd_label=LABEL,
+            launch_agent_path=Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist",
+        )
         try:
             with single_instance(repo, "inbox-watcher"):
-                log_event(logger, logging.INFO, "watcher_started")
-                while True:
+                with shutdown_signal_logging(logger, lifecycle_context):
+                    log_event(logger, logging.INFO, "watcher_started", context=lifecycle_context)
                     try:
-                        once(repo, root, 1.0)
-                    except RuntimeError as error:
-                        status(
-                            repo,
-                            "WAITING_FOR_REPOSITORY",
-                            diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
+                        while True:
+                            try:
+                                once(repo, root, 1.0)
+                            except RuntimeError as error:
+                                status(
+                                    repo,
+                                    "WAITING_FOR_REPOSITORY",
+                                    diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
+                                )
+                                log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
+                            time.sleep(max(5, args.interval))
+                    finally:
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "watcher_shutdown_completed",
+                            context=lifecycle_context,
                         )
-                        log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
-                    time.sleep(max(5, args.interval))
+        except KeyboardInterrupt:
+            return 0
         except DuplicateComponentInstanceError as error:
             log_event(logger, logging.ERROR, "duplicate_watcher_refused", diagnostic=str(error))
             return 1
     if args.command == "status":
         print(
-            (repo / ".djconnect" / "status" / "status.md").read_text(encoding="utf-8")
-            if (repo / ".djconnect" / "status" / "status.md").exists()
+            (repo / ".engineering" / "status" / "status.md").read_text(encoding="utf-8")
+            if (repo / ".engineering" / "status" / "status.md").exists()
             else "WATCHER_IDLE"
         )
         return 0

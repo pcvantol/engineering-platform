@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import shutil
+import tempfile
+from threading import Event
+import unittest
+from unittest.mock import patch
+
+from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from tools.engineering.telemetry import (
+    ExecutionTelemetry,
+    daily_statistics,
+    execution_timing,
+    persist_execution,
+    persist_execution_async,
+    wait_for_pending_telemetry,
+)
+
+
+class ExecutionHostTelemetryTest(unittest.TestCase):
+    def _record(self, run_id: str, state: str, started: datetime) -> ExecutionTelemetry:
+        return ExecutionTelemetry(
+            run_id=run_id,
+            arrived_at=started - timedelta(seconds=12),
+            execution_started_at=started,
+            execution_finished_at=started + timedelta(seconds=90),
+            terminal_state=state,
+            execution_seconds=75.0,
+            input_tokens=120,
+            output_tokens=30,
+            total_tokens=150,
+            execution_mode="MANAGED",
+            workspace="djconnect",
+            repository="pcvantol/djconnect",
+            execution_host_version="1.5.0",
+        )
+
+    def test_persists_generic_execution_runs_and_daily_aggregates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 1, 10, tzinfo=timezone.utc)
+            persist_execution(root, self._record("run-complete", "COMPLETE", started))
+            persist_execution(root, self._record("run-blocked", "BLOCKED", started + timedelta(hours=1)))
+
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
+                    ENGINEERING_STORAGE_SCHEMA_VERSION,
+                )
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_runs").fetchone()[0], 2)
+            self.assertEqual(
+                daily_statistics(root),
+                [
+                    {
+                        "date": "2026-08-01",
+                        "prompt_count": 2,
+                        "complete_count": 1,
+                        "blocked_count": 1,
+                        "failed_count": 0,
+                        "average_execution_seconds": 75.0,
+                        "average_total_execution_seconds": 102.0,
+                        "average_queue_wait_seconds": 12.0,
+                        "input_tokens": 240,
+                        "output_tokens": 60,
+                        "total_tokens": 300,
+                    }
+                ],
+            )
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT total_execution_seconds FROM execution_runs WHERE run_id = 'run-complete'"
+                    ).fetchone()[0],
+                    102.0,
+                )
+            self.assertEqual(
+                execution_timing(root, "run-complete"),
+                {
+                    "execution_seconds": 75.0,
+                    "total_execution_seconds": 102.0,
+                    "finished_at": "2026-08-01T10:01:30+00:00",
+                },
+            )
+
+    def test_async_telemetry_failure_is_isolated_from_engineering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            observed = Event()
+            errors: list[Exception] = []
+
+            def failure(_: Path, __: ExecutionTelemetry, **___: object) -> None:
+                raise RuntimeError("storage unavailable")
+
+            with patch("tools.engineering.telemetry.persist_execution", side_effect=failure):
+                worker = persist_execution_async(
+                    Path(temporary),
+                    self._record("run-failed-telemetry", "FAILED", datetime.now(timezone.utc)),
+                    on_error=lambda error: (errors.append(error), observed.set()),
+                )
+                worker.join(timeout=2)
+
+            self.assertTrue(observed.is_set())
+            self.assertEqual(str(errors[0]), "storage unavailable")
+
+    def test_async_telemetry_never_recreates_a_removed_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            persist_execution(root, self._record("run-existing", "COMPLETE", datetime.now(timezone.utc)))
+            shutil.rmtree(root)
+
+            worker = persist_execution_async(
+                root,
+                self._record("run-removed", "COMPLETE", datetime.now(timezone.utc)),
+            )
+            worker.join(timeout=2)
+
+            self.assertFalse(root.exists())
+
+    def test_pending_telemetry_can_be_drained_before_workspace_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("run-existing", "COMPLETE", datetime.now(timezone.utc)))
+            worker = persist_execution_async(
+                root,
+                self._record("run-drained", "COMPLETE", datetime.now(timezone.utc)),
+            )
+            wait_for_pending_telemetry()
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(execution_timing(root, "run-drained"))

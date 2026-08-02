@@ -13,7 +13,7 @@ local, git-ignored configuration:
 }
 ```
 
-Save it as `.djconnect/engineering-platform.local.json` in the engineering
+Save it as `.engineering/engineering-platform.local.json` in the engineering
 repository. The configured directory must already exist, must not be a
 symlink, and must be the current repository's direct parent. For DJConnect,
 that permits new direct sibling projects such as `forge` or `project-x` under

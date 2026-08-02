@@ -91,7 +91,7 @@ def _markdown(payload: dict[str, object]) -> str:
 
 
 def _write(root: Path, run_id: str, value: str) -> Path:
-    directory = root / ".djconnect" / "report-analysis"
+    directory = root / ".engineering" / "report-analysis"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination = directory / f"{run_id}.md"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
@@ -118,7 +118,7 @@ def analyze(root: Path, run_id: str, report: Path) -> Path:
     prompt = """Analyseer uitsluitend het onderstaande Engineeringrapport. Voer geen commando's uit, wijzig geen bestanden, doe geen netwerkverzoeken en doe geen aannames buiten het rapport. Het resultaat is adviserend: repositorybewijs, commits, validatie en het terminale checkpoint zijn altijd leidend. Geef compacte, feitelijke Nederlandse tekst voor samenvatting, bevindingen, issues, risico's, volgende stappen en advies aan de Product Architect. Herhaal geen geheimen, promptinhoud of ruwe loguitvoer.\n\nENGINEERINGRAPPORT:\n""" + report_text
     schema_path: Path | None = None
     try:
-        state_directory = root / ".djconnect"
+        state_directory = root / ".engineering"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False) as handle:
             json.dump(_schema(), handle)

@@ -1,4 +1,4 @@
-"""Deterministic, read-only capability reviewer selection for dj-engineer."""
+"""Deterministic, read-only capability reviewer selection for the Execution Host."""
 
 from __future__ import annotations
 

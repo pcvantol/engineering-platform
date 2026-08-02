@@ -110,7 +110,9 @@ class RunnerCompatibility:
     checkpoint_formats: frozenset[int] = frozenset({1})
     memory_formats: frozenset[int] = frozenset({1, 2})
     report_formats: frozenset[int] = frozenset({1, 2})
-    storage_schemas: frozenset[int] = frozenset({1})
+    # New runners retain compatibility with prior local stores while accepting
+    # the current telemetry-capable schema.
+    storage_schemas: frozenset[int] = frozenset({1, 2, 3, 4, 5})
 
 
 def validate_compatibility(

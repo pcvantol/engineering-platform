@@ -51,7 +51,7 @@ class PlatformConfiguration:
         path = root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            local = root / ".djconnect" / "engineering-platform.local.json"
+            local = root / ".engineering" / "engineering-platform.local.json"
             if local.is_file():
                 override = json.loads(local.read_text(encoding="utf-8"))
                 if set(override) - {"workspace"}:
