@@ -30,8 +30,26 @@ disk threshold in bytes (default: 1 GiB). A `FAIL` leaves the Inbox item in
 place, starts no run and moves no prompt into `Running`. Evidence is stored
 locally under `.engineering/status/host_preflight.json`; each failure records a
 check identifier, bounded reason and recovery recommendation. `WARNING` is
-reserved for future non-blocking host observations. Level 2 will add separate
-Workspace Preflight checks.
+reserved for future non-blocking host observations.
+
+## Execution Host Preflight Level 2 (Workspace Preflight)
+
+After Host Preflight passes and before the Inbox item is claimed, Workspace
+Preflight validates only the selected engineering workspace. It resolves the
+target under an approved workspace root, verifies Git metadata access and
+write access, requires a clean staged/unstaged/untracked worktree, and rejects
+index locks or unfinished merge, rebase, cherry-pick, revert and bisect work.
+Managed execution also requires the configured branch, a valid origin and an
+in-sync upstream; Genesis requires only a local target repository and does not
+require a remote. It never changes repository state.
+
+A Workspace Preflight `FAIL` leaves the Inbox item untouched, starts no
+transaction and records a bounded identifier, reason and recovery
+recommendation in `.engineering/status/workspace_preflight.json`. This evidence
+contains workspace, target repository, branch, execution mode, timestamp,
+duration, checks and outcome. It does not inspect Missions, Engineering
+Actions, Runtime Prompts or capabilities. Capability-specific checks are a
+future Level 3 concern.
 
 The private status page shows the current unclaimed queue from this watcher
 projection, oldest first. Each bounded entry contains only its filename,

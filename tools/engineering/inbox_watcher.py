@@ -38,6 +38,7 @@ from .component_lock import DuplicateComponentInstanceError, single_instance
 from .telemetry import ExecutionTelemetry, persist_execution_async
 from .prompt_history import record_prompt_execution
 from .host_preflight import execute as execute_host_preflight
+from .workspace_preflight import execute as execute_workspace_preflight
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -605,6 +606,19 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 diagnostic="Execution Host preflight failed; no Inbox item was claimed.",
             )
             log_event(logger, logging.ERROR, "host_preflight_failed", run_id=run_id)
+            return 1
+        workspace_preflight = execute_workspace_preflight(repo, content, run_id=run_id)
+        if workspace_preflight.outcome == "FAIL":
+            status(
+                repo,
+                "WORKSPACE_PREFLIGHT_FAILED",
+                queued_jobs=len(candidates),
+                queue_items=_queue_items(candidates),
+                run_id=None,
+                current_action="Workspace preflight blokkeert het claimen van Inbox-werk.",
+                diagnostic="Workspace preflight failed; no Inbox item was claimed.",
+            )
+            log_event(logger, logging.ERROR, "workspace_preflight_failed", run_id=run_id)
             return 1
         if _already_seen(areas, job_id):
             status(

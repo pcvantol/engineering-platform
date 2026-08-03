@@ -50,7 +50,7 @@ from . import dashboard_state
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
-DASHBOARD_VERSION = "1.2.89"
+DASHBOARD_VERSION = "1.2.90"
 DASHBOARD_STARTED_AT = time.monotonic()
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
 APP_ICON_SVG = "engineering-status-icon.svg"
@@ -993,7 +993,7 @@ def _dashboard_html(
 <details class="technical-details" id="technicalDetails"><summary><strong>Technische details</strong></summary><div class="technical-grid">
 <div class="card"><strong>Pull requests</strong><p class="field"><span class="label">Implementatie</span><span id="implementation"></span></p><p class="field"><span class="label">Finalisatie</span><span id="finalization"></span></p></div>
 <div class="card"><strong>Repository</strong><p class="field"><span class="label">Repositorystatus</span><span id="repositoryState"></span></p><p class="field"><span class="label">Werkruimtestatus</span><span id="workspaceState"></span></p></div>
-<div class="card"><strong>Host Preflight</strong><p class="field"><span class="label">Hoststatus</span><span id="hostPreflightStatus">Niet beschikbaar</span></p><p class="field"><span class="label">Laatste controle</span><span id="hostPreflightTimestamp">Niet beschikbaar</span></p></div>
+<div class="card"><strong>Host Preflight</strong><p class="field"><span class="label">Hoststatus</span><span id="hostPreflightStatus">Niet beschikbaar</span></p><p class="field"><span class="label">Laatste controle</span><span id="hostPreflightTimestamp">Niet beschikbaar</span></p><p class="field"><span class="label">Workspacestatus</span><span id="workspacePreflightStatus">Niet beschikbaar</span></p><p class="field"><span class="label">Laatste workspacecontrole</span><span id="workspacePreflightTimestamp">Niet beschikbaar</span></p></div>
 <div class="card"><strong>Diagnose</strong><p id="diag"></p></div>
 </div></details>
 </main></div>

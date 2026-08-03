@@ -32,10 +32,12 @@ boundary. Existing commands remain compatibility interfaces.
   available for every terminal `BLOCKED` run and records immutable lineage.
   This is the safe default until a future
   Engineering Intent dependency model can express finer-grained ordering.
-- Execution Host Preflight Level 1 runs before every Inbox claim. It validates
+- Execution Host Preflight Levels 1 and 2 run before every Inbox claim. Level 1 validates
   host-only configuration, runtime directories, configurable disk capacity,
   Codex CLI availability, telemetry storage, structured logging and host
-  identity. A failed check preserves the Inbox item and prevents an engineering
+  identity. Level 2 validates only the resolved workspace: approved root, Git
+  metadata, a clean worktree, no unfinished Git operation and mode-aware branch
+  readiness. A failed check preserves the Inbox item and prevents an engineering
   run; compact evidence is retained locally and included in the report.
 - iCloud Drive is submission transport only. Claimed prompts, immutable
   execution copies, status, reports, diagnostics and component logs are
@@ -90,10 +92,10 @@ It is not complete before qualification. Continuous improvement may address
 qualification, diagnostics, compatibility and maintenance; it must not
 continuously expand the feature set.
 
-The next bounded enhancement is **Execution Host Preflight Level 2 (Workspace
-Preflight)**: separately validate the engineering workspace only after Level 1
-host readiness passes. It must not broaden Level 1 into Git, mission, action or
-capability validation.
+The next bounded enhancement is **Execution Host Preflight Level 3 (Capability
+Preflight)**: let Forge capabilities contribute workspace-specific readiness
+checks without changing the generic Execution Host. It must not broaden Levels
+1 or 2 into mission or action validation.
 
 Engineering Memory remains advisory and may improve recommendations only.
 Repository evidence remains authoritative and Memory never autonomously changes

@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from tools.engineering import inbox_watcher
 from tools.engineering.host_preflight import HostPreflightResult
+from tools.engineering.workspace_preflight import WorkspacePreflightResult
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
 
@@ -32,11 +33,17 @@ class InboxWatcherTest(unittest.TestCase):
             return_value=HostPreflightResult("PASS", "Engineering Platform", "1.5.0", "2026.12", "now", 1, ()),
         )
         self.preflight.start()
+        self.workspace_preflight = patch(
+            "tools.engineering.inbox_watcher.execute_workspace_preflight",
+            return_value=WorkspacePreflightResult("PASS", "DJConnect", "repo", "main", "MANAGED", "now", 1, ()),
+        )
+        self.workspace_preflight.start()
         inbox = inbox_watcher.folders(self.root)["Inbox"]
         self.inbox = inbox
 
     def tearDown(self) -> None:
         self.preflight.stop()
+        self.workspace_preflight.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()
 
@@ -211,6 +218,19 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
         run.assert_not_called()
         self.assertEqual(json_status(self.repo)["watcher_state"], "HOST_PREFLIGHT_FAILED")
+
+    def test_failed_workspace_preflight_prevents_inbox_claim(self) -> None:
+        prompt = self.inbox / "workspace-failure.md"
+        prompt.write_text("# Workspace failure", encoding="utf-8")
+        failed = WorkspacePreflightResult("FAIL", "DJConnect", "repo", "main", "MANAGED", "now", 1, ())
+        with patch("tools.engineering.inbox_watcher.execute_workspace_preflight", return_value=failed), patch(
+            "tools.engineering.inbox_watcher.subprocess.run"
+        ) as run:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
+        self.assertTrue(prompt.exists())
+        self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
+        run.assert_not_called()
+        self.assertEqual(json_status(self.repo)["watcher_state"], "WORKSPACE_PREFLIGHT_FAILED")
 
     def test_status_helpers_keep_previous_context_and_bound_details(self) -> None:
         status = self.repo / ".engineering" / "status"

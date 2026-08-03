@@ -52,6 +52,7 @@ from .platform_api import PlatformConfiguration, PlatformConfigurationError, pro
 from .platform_bootstrap import migrate_legacy_workspace
 from .providers import GitHubProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
+from .workspace_preflight import latest as latest_workspace_preflight
 
 
 class RunnerError(RuntimeError):
@@ -1764,6 +1765,17 @@ def generate_terminal_report(
         for item in preflight_checks
         if isinstance(item, dict) and isinstance(item.get("identifier"), str)
     ) or "unavailable"
+    workspace_preflight = latest_workspace_preflight(root)
+    if workspace_preflight.get("run_id") not in {None, state.run_id}:
+        workspace_preflight = {}
+    workspace_checks = workspace_preflight.get("checks") or [] if isinstance(workspace_preflight, dict) else []
+    if not isinstance(workspace_checks, (list, tuple)):
+        workspace_checks = ()
+    workspace_summary = ", ".join(
+        f"{item.get('identifier')}={item.get('outcome')}"
+        for item in workspace_checks
+        if isinstance(item, dict) and isinstance(item.get("identifier"), str)
+    ) or "unavailable"
     body = "\n".join(
         (
             "# Engineering Report",
@@ -1808,6 +1820,16 @@ def generate_terminal_report(
             f"- Timestamp: `{preflight_timestamp}`",
             f"- Duration: `{preflight_duration}` ms",
             f"- Checks: {preflight_summary}",
+            "",
+            "## Workspace Preflight",
+            f"- Outcome: `{workspace_preflight.get('outcome', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Workspace: `{workspace_preflight.get('workspace', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Target repository: `{workspace_preflight.get('target_repository', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Branch: `{workspace_preflight.get('branch', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Execution mode: `{workspace_preflight.get('execution_mode', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Timestamp: `{workspace_preflight.get('timestamp', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Duration: `{workspace_preflight.get('duration_ms', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}` ms",
+            f"- Checks: {workspace_summary}",
             "",
             "## Authorization",
             f"- Owner authorization: `{state.owner_authorized}`",

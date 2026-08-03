@@ -1,7 +1,7 @@
 {
   "bootstrap_contract": "2026.12",
   "checkpoint_format": 1,
-  "dashboard_version": "1.2.89",
+  "dashboard_version": "1.2.90",
   "handoff_protocol": 1,
   "memory_format": 2,
   "minimum_codex_cli": "0.146.0",

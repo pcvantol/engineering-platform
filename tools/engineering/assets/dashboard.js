@@ -1030,8 +1030,11 @@ function renderHealthStatus(x, snapshot = {}) {
         : "Geen actieve actie"),
   );
   const preflight = snapshot.host_preflight || {};
+  const workspacePreflight = snapshot.workspace_preflight || {};
   $("hostPreflightStatus").textContent = preflight.outcome || "Niet beschikbaar";
   $("hostPreflightTimestamp").textContent = preflight.timestamp || "Nog niet uitgevoerd";
+  $("workspacePreflightStatus").textContent = workspacePreflight.outcome || "Niet beschikbaar";
+  $("workspacePreflightTimestamp").textContent = workspacePreflight.timestamp || "Nog niet uitgevoerd";
   promptStarted(snapshot.prompt_started);
   renderEstimate(x);
   processMetrics(active, snapshot.process_metrics);
