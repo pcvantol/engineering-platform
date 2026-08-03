@@ -13,6 +13,7 @@ import tempfile
 import time
 from typing import Callable, Mapping, Protocol
 import uuid
+import re
 
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .capability_review import (
@@ -62,6 +63,40 @@ class CodexInvocationError(RunnerError):
     def __init__(self, persistent_diagnostic: str, console_detail: str) -> None:
         super().__init__(persistent_diagnostic)
         self.console_detail = console_detail
+
+
+RETRY_REPORT_HEADERS = {
+    "retry_of": re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
+    "original_run_id": re.compile(r"(?mi)^original[ _-]run[ _-]id\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
+    "retry_generation": re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s*$"),
+    "retry_timestamp": re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$"),
+}
+
+
+def _retry_relationship(state: TransactionState) -> tuple[str, ...]:
+    """Render only explicit retry lineage, never the submitted prompt body."""
+    try:
+        prompt = Path(state.prompt_path).read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    values = {key: pattern.search(prompt) for key, pattern in RETRY_REPORT_HEADERS.items()}
+    parent = values["retry_of"]
+    if parent is None:
+        return ()
+    original = values["original_run_id"].group(1) if values["original_run_id"] else parent.group(1)
+    generation = values["retry_generation"].group(1) if values["retry_generation"] else "1"
+    timestamp = values["retry_timestamp"].group(1).strip() if values["retry_timestamp"] else "not recorded"
+    return (
+        "## Retry Relationship",
+        f"- Retry Of: `{parent.group(1)}`",
+        f"- Original Run: `{original}`",
+        f"- Retry Generation: `{generation}`",
+        f"- Retry Timestamp: {timestamp}",
+        f"- Current Run: `{state.run_id}`",
+        f"- Terminal State: `{state.phase}`",
+        f"- Repository Context: `{state.repository}`",
+        "",
+    )
 
 
 def additional_workspace_write_roots(root: Path) -> tuple[Path, ...]:
@@ -1584,6 +1619,7 @@ def corrected_terminal_report(state: TransactionState) -> str:
             "## Engineering Outcome",
             format_terminal_management_summary(state),
             "",
+            *_retry_relationship(state),
             "## Reviewer Findings",
             "No reviewer findings were retained. Reviewer observations are advisory initial observations only.",
             "",
@@ -1763,6 +1799,7 @@ def generate_terminal_report(
             f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",
             f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`",
             "",
+            *_retry_relationship(state),
             "## Initial Repository Assessment",
             "This assessment describes the repository before implementation. Reviewer observations are advisory and cannot describe the final repository state.",
             "",

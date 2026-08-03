@@ -19,6 +19,10 @@ REPORT_COMMIT = re.compile(
     r"^- (?:Target Commit|Genesis-commit|Implementation Merge Commit|Finalization Merge Commit): `?([0-9a-f]{7,64})`?$",
     re.MULTILINE | re.IGNORECASE,
 )
+RETRY_OF = re.compile(r"^- Retry Of: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
+ORIGINAL_RUN = re.compile(r"^- Original Run: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
+RETRY_GENERATION = re.compile(r"^- Retry Generation: `(\d+)`$", re.MULTILINE)
+RETRY_TIMESTAMP = re.compile(r"^- Retry Timestamp: ([^\n]{1,80})$", re.MULTILINE)
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
@@ -54,6 +58,10 @@ def record_prompt_execution(
     executed_at: object,
     report: Path | None = None,
     git_commit: object = None,
+    retry_of: object = None,
+    original_run_id: object = None,
+    retry_generation: object = None,
+    retry_timestamp: object = None,
 ) -> None:
     """Upsert a terminal prompt projection without changing execution authority."""
     safe_run_id = _safe_run_id(run_id)
@@ -61,20 +69,35 @@ def record_prompt_execution(
         raise ValueError("prompt history requires a terminal Engineering Platform run")
     title = str(prompt_title or safe_run_id).strip()[:500] or safe_run_id
     commit = git_commit if isinstance(git_commit, str) and re.fullmatch(r"[0-9a-f]{7,64}", git_commit) else None
+    parent = _safe_run_id(retry_of)
+    original = _safe_run_id(original_run_id)
+    generation = retry_generation if isinstance(retry_generation, int) and retry_generation >= 1 else None
+    timestamp = _safe_timestamp(retry_timestamp) if parent and retry_timestamp else None
+    if parent is None:
+        original = generation = timestamp = None
+    elif original is None:
+        original = parent
+    elif generation is None:
+        generation = 1
     now = datetime.now(timezone.utc).isoformat()
     connection = open_storage(root)
     try:
         connection.execute(
             """
             INSERT INTO prompt_execution_history(
-                run_id, terminal_state, prompt_title, executed_at, git_commit, report_path, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                run_id, terminal_state, prompt_title, executed_at, git_commit, report_path, retry_of,
+                original_run_id, retry_generation, retry_timestamp, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 terminal_state=excluded.terminal_state,
                 prompt_title=excluded.prompt_title,
                 executed_at=excluded.executed_at,
                 git_commit=COALESCE(excluded.git_commit, prompt_execution_history.git_commit),
                 report_path=COALESCE(excluded.report_path, prompt_execution_history.report_path),
+                retry_of=COALESCE(excluded.retry_of, prompt_execution_history.retry_of),
+                original_run_id=COALESCE(excluded.original_run_id, prompt_execution_history.original_run_id),
+                retry_generation=COALESCE(excluded.retry_generation, prompt_execution_history.retry_generation),
+                retry_timestamp=COALESCE(excluded.retry_timestamp, prompt_execution_history.retry_timestamp),
                 updated_at=excluded.updated_at
             """,
             (
@@ -84,6 +107,10 @@ def record_prompt_execution(
                 _safe_timestamp(executed_at),
                 commit,
                 _relative_report(root, report),
+                parent,
+                original,
+                generation,
+                timestamp,
                 now,
             ),
         )
@@ -104,6 +131,10 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
     objective = REPORT_OBJECTIVE.search(content)
     timestamp = REPORT_TIMESTAMP.search(content)
     commit = REPORT_COMMIT.search(content)
+    retry_of = RETRY_OF.search(content)
+    original_run = ORIGINAL_RUN.search(content)
+    retry_generation = RETRY_GENERATION.search(content)
+    retry_timestamp = RETRY_TIMESTAMP.search(content)
     return {
         "run_id": run.group(1),
         "terminal_state": state.group(1),
@@ -119,6 +150,10 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
         else datetime.fromtimestamp(report.stat().st_mtime, timezone.utc).isoformat(),
         "report": report,
         "git_commit": commit.group(1) if commit else None,
+        "retry_of": retry_of.group(1) if retry_of else None,
+        "original_run_id": original_run.group(1) if original_run else None,
+        "retry_generation": int(retry_generation.group(1)) if retry_generation else None,
+        "retry_timestamp": retry_timestamp.group(1) if retry_timestamp else None,
     }
 
 
@@ -159,9 +194,12 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
     try:
         rows = connection.execute(
             """
-            SELECT run_id, terminal_state, prompt_title, executed_at, git_commit, report_path
-            FROM prompt_execution_history
-            ORDER BY executed_at DESC, run_id DESC
+            SELECT history.run_id, history.terminal_state, history.prompt_title, history.executed_at,
+                history.git_commit, history.report_path, history.retry_of, history.original_run_id,
+                history.retry_generation, history.retry_timestamp, runs.execution_mode, runs.repository
+            FROM prompt_execution_history AS history
+            LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
+            ORDER BY history.executed_at DESC, history.run_id DESC
             LIMIT ?
             """,
             (bounded_limit,),
@@ -176,6 +214,12 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
             "executed_at": row[3],
             "git_commit": row[4],
             "report_available": bool(row[5]),
+            "retry_of": row[6],
+            "original_run_id": row[7],
+            "retry_generation": row[8],
+            "retry_timestamp": row[9],
+            "execution_mode": row[10],
+            "repository": row[11],
         }
         for row in rows
     ]

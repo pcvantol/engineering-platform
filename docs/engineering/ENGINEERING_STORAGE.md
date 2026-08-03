@@ -14,7 +14,7 @@ iCloud Drive remains transport only. It is not an Engineering evidence store.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `5`**. The required version is declared as `storage_schema` in
+schema `6`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -71,7 +71,7 @@ failure. Existing redacted JSONL entries are imported once during the schema
 `4` migration. LaunchAgent `*.out.log` and `*.err.log` streams remain separate
 process-level crash diagnostics.
 
-## Prompt history
+## Prompt history and retry lineage
 
 Schema `5` adds `prompt_execution_history`, a canonical local index of every
 terminal Engineering Platform run. It stores the immutable run identifier,
@@ -84,6 +84,11 @@ and target repository remain authoritative evidence.
 The private dashboard exposes this as **Promptgeschiedenis**. Its searchable,
 sortable and paginated table can download an indexed report only when that
 report was actually delivered locally.
+
+Schema `6` adds immutable `retry_of`, `original_run_id`, `retry_generation`
+and `retry_timestamp` fields to prompt history and execution telemetry. Each
+retry has its own Run ID, report and telemetry row; lineage links evidence
+without merging or overwriting original runs.
 
 ## Canonical workspace migration
 

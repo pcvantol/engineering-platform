@@ -119,3 +119,10 @@ they are not a claim about a currently configured provider or a later run.
 The matching **Laatst uitgevoerde prompt** dashboard card reads the provenance
 only from that terminal report. It therefore cannot display a model or profile
 from an unrelated current run.
+
+## Retry executions
+
+A retry report contains a **Retry Relationship** section with Retry Of,
+Original Run, Retry Generation, Retry Timestamp, Current Run, Terminal State
+and Repository Context. It documents that new execution only; original reports,
+checkpoints, telemetry and evidence remain immutable.

@@ -36,6 +36,10 @@ class ExecutionTelemetry:
     workspace: str
     repository: str
     execution_host_version: str
+    retry_of: str | None = None
+    original_run_id: str | None = None
+    retry_generation: int | None = None
+    retry_timestamp: str | None = None
 
 
 def _utc(value: datetime) -> datetime:
@@ -74,8 +78,9 @@ def persist_execution(
             INSERT OR REPLACE INTO execution_runs(
                 run_id, execution_date, arrived_at, execution_started_at, execution_finished_at,
                 queue_wait_seconds, execution_seconds, total_execution_seconds, terminal_state, input_tokens, output_tokens,
-                total_tokens, execution_mode, workspace, repository, execution_host_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_tokens, execution_mode, workspace, repository, execution_host_version, retry_of,
+                original_run_id, retry_generation, retry_timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 telemetry.run_id,
@@ -94,6 +99,10 @@ def persist_execution(
                 telemetry.workspace,
                 telemetry.repository,
                 telemetry.execution_host_version,
+                telemetry.retry_of,
+                telemetry.original_run_id,
+                telemetry.retry_generation,
+                telemetry.retry_timestamp,
             ),
         )
         connection.execute(

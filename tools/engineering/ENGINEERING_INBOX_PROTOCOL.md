@@ -23,22 +23,29 @@ content or absolute iCloud paths.
 The Inbox is fail-closed across a sequence. When a run ends `BLOCKED` or
 `FAILED`, the watcher moves no later file from Inbox to Running. It publishes
 `WAITING_FOR_PREDECESSOR` with the blocking run, prompt and recovery action.
-To release the queue, submit a corrected replacement prompt or explicitly
-resubmit the archived blocked prompt from the private dashboard. Both routes
-create a retry prompt containing this standalone line, with the exact blocking
-run ID shown on the status page:
+**Resume Queue** is the queue-recovery action and appears only while dependent
+Inbox work is held at `WAITING_FOR_PREDECESSOR`. **Retry Execution** is a
+separate engineering action available for every terminal `BLOCKED` run,
+whether or not later Inbox work is waiting. It always creates a new immutable
+engineering execution using current repository state; it never changes the
+original run.
+
+Both actions create a corrective prompt with explicit lineage metadata:
 
 ```text
 Retry-Of: inbox-<blocking-run-id>
+Original-Run-ID: inbox-<original-run-id>
+Retry-Generation: <positive-integer>
+Retry-Timestamp: <UTC ISO-8601 timestamp>
 ```
 
-The corrected retry takes precedence over later queued prompts. It receives a
-new content-derived run ID and must complete before normal oldest-first Inbox
-processing resumes. The dashboard only exposes **Opnieuw indienen** while a
-predecessor is actively blocking the queue. It asks for confirmation, copies
-the immutable archived prompt into the iCloud Inbox transport with `Retry-Of`,
-and does not bypass watcher ownership, bootstrap or runner checks. This
-deliberately supplies sequential safety before a future Engineering Intent
-`depends_on` model can express finer-grained rules.
+The corrective replacement takes precedence over later queued prompts. It
+receives a new content-derived run ID and must complete before normal
+oldest-first Inbox processing resumes. Retry Execution requires explicit
+confirmation showing Run ID, prompt title, repository and execution mode, plus
+an explanation that the original stays unchanged and a Retry relationship is
+recorded. Neither action bypasses watcher ownership, bootstrap or runner
+checks. This deliberately supplies sequential safety before a future
+Engineering Intent `depends_on` model can express finer-grained rules.
 
 Commands: `python3 -m tools.engineering.inbox_watcher once|run|status|install|uninstall|doctor|migrate-icloud-archives`.

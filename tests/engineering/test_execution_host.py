@@ -1048,6 +1048,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
 
+    def test_retry_report_records_immutable_execution_lineage(self) -> None:
+        self.prompt.write_text(
+            "Retry-Of: inbox-original\nOriginal-Run-ID: inbox-original\nRetry-Generation: 1\n"
+            "Retry-Timestamp: 2026-08-03T12:00:00+00:00\n# Retry objective\n",
+            encoding="utf-8",
+        )
+        state = TransactionState("inbox-retry", "pcvantol/djconnect", str(self.prompt), "BLOCKED", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Retry Relationship", body)
+        self.assertIn("- Retry Of: `inbox-original`", body)
+        self.assertIn("- Original Run: `inbox-original`", body)
+        self.assertIn("- Retry Generation: `1`", body)
+        self.assertIn("- Current Run: `inbox-retry`", body)
+
     def test_runtime_metadata_uses_only_cli_reported_values(self) -> None:
         metadata = extract_codex_runtime_metadata(
             "model: gpt-5.6-terra\nreasoning effort: medium\nsandbox: workspace-write\n",

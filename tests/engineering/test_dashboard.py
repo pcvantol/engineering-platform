@@ -587,7 +587,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
         self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], "5")
+        self.assertEqual(details["schema_version"], "6")
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:
@@ -1039,6 +1039,46 @@ class DashboardStatusTest(unittest.TestCase):
                     run_id="inbox-blocked",
                     diagnostic="retry_run_id=inbox-retry",
                 )
+            execution_retry_outcome = {
+                "retry_of": "inbox-blocked",
+                "original_run_id": "inbox-blocked",
+                "retry_generation": 1,
+                "retry_timestamp": "2026-08-03T12:00:00+00:00",
+                "filename": "retry-inbox-blocked.md",
+                "retry_run_id": "inbox-retry",
+            }
+            with (
+                patch("tools.engineering.dashboard.cloud_root", return_value=root),
+                patch(
+                    "tools.engineering.dashboard.submit_execution_retry",
+                    return_value=execution_retry_outcome,
+                ) as submit_execution_retry,
+                patch("tools.engineering.dashboard.log_event") as execution_retry_log,
+            ):
+                connection.request(
+                    "POST",
+                    "/api/execution-retry",
+                    body='{"run_id":"inbox-blocked"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), execution_retry_outcome)
+                submit_execution_retry.assert_called_once_with(root, root, "inbox-blocked")
+                execution_retry_log.assert_any_call(
+                    ANY,
+                    logging.INFO,
+                    "execution_retry_triggered",
+                    run_id="inbox-blocked",
+                    diagnostic="retry_run_id=inbox-retry",
+                )
+            connection.request(
+                "POST",
+                "/api/execution-retry",
+                body="{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(connection.getresponse().status, 400)
             connection.request(
                 "POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"}
             )

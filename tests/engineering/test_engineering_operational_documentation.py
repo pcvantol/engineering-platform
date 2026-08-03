@@ -47,7 +47,7 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("## Private dashboard evidence access", reporting)
         self.assertIn("not in an editor", reporting)
         storage = (ROOT / "docs" / "engineering" / "ENGINEERING_STORAGE.md").read_text(encoding="utf-8")
-        self.assertIn("schema `5`", storage)
+        self.assertIn("schema `6`", storage)
         self.assertIn("engineering_schema_migrations", storage)
         self.assertIn("prompt_execution_history", storage)
         self.assertIn("dashboard user actions", storage)

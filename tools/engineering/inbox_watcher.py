@@ -44,6 +44,9 @@ MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
 RETRY_OF_PATTERN = re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
+ORIGINAL_RUN_ID_PATTERN = re.compile(r"(?mi)^original[ _-]run[ _-]id\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
+RETRY_GENERATION_PATTERN = re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s*$")
+RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$")
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 
@@ -347,6 +350,22 @@ def _retry_of(content: str) -> str | None:
     return match.group(1) if match else None
 
 
+def retry_metadata(content: str) -> dict[str, object]:
+    """Read only the bounded retry lineage headers from a submitted prompt."""
+    parent = _retry_of(content)
+    if parent is None:
+        return {"retry_of": None, "original_run_id": None, "retry_generation": None, "retry_timestamp": None}
+    original = ORIGINAL_RUN_ID_PATTERN.search(content)
+    generation = RETRY_GENERATION_PATTERN.search(content)
+    timestamp = RETRY_TIMESTAMP_PATTERN.search(content)
+    return {
+        "retry_of": parent,
+        "original_run_id": original.group(1) if original else parent,
+        "retry_generation": int(generation.group(1)) if generation else 1,
+        "retry_timestamp": timestamp.group(1).strip() if timestamp else None,
+    }
+
+
 def _blocking_predecessor(root: Path) -> dict[str, str] | None:
     """Return terminal predecessor evidence that must fail closed for the queue."""
     prior = _previous_prompt_context(root)
@@ -380,6 +399,62 @@ def _archived_prompt_for_run(repo: Path, run_id: str) -> tuple[Path, str] | None
     return None
 
 
+def _terminal_phase_for_run(repo: Path, run_id: str) -> str | None:
+    phase, _ = _runner_result(repo, run_id)
+    if phase in TERMINAL_PHASES:
+        return phase
+    try:
+        from .prompt_history import prompt_history
+        for record in prompt_history(repo):
+            if record.get("run_id") == run_id:
+                return record.get("status") if record.get("status") in TERMINAL_PHASES else None
+    except Exception:
+        pass
+    predecessor = _blocking_predecessor(repo)
+    if predecessor and predecessor["run_id"] == run_id:
+        return predecessor["phase"]
+    return None
+
+
+def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recovery: bool = False) -> dict[str, object]:
+    """Create one explicitly requested new execution for a terminal BLOCKED run."""
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    with _lock(repo):
+        terminal_phase = _terminal_phase_for_run(repo, run_id)
+        if terminal_phase != "BLOCKED" and not (queue_recovery and terminal_phase in BLOCKING_PREDECESSOR_PHASES):
+            raise RetrySubmissionError("Alleen een terminal geblokkeerde uitvoering kan opnieuw worden uitgevoerd.")
+        candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
+        if any(content is not None and _retry_of(content) == run_id for _, content in candidates):
+            raise RetrySubmissionError("Een uitvoering opnieuw proberen staat al in de wachtrij.")
+        archived = _archived_prompt_for_run(repo, run_id)
+        if archived is None:
+            raise RetrySubmissionError("De oorspronkelijke geblokkeerde prompt is lokaal niet beschikbaar.")
+        source, content = archived
+        prior = retry_metadata(content)
+        original = str(prior["original_run_id"] or run_id)
+        generation = int(prior["retry_generation"] or 0) + 1
+        timestamp = datetime.now(timezone.utc).isoformat()
+        operation = "Queue recovery replacement" if queue_recovery else "Explicit execution retry"
+        retry_content = (
+            f"Retry-Of: {run_id}\nOriginal-Run-ID: {original}\nRetry-Generation: {generation}\n"
+            f"Retry-Timestamp: {timestamp}\n<!-- {operation}: {uuid.uuid4().hex} -->\n\n{content}"
+        )
+        inbox = folders(root)["Inbox"]
+        suffix = source.suffix.lower() if source.suffix.lower() in {".md", ".markdown", ".txt"} else ".md"
+        filename = f"retry-{run_id}-{uuid.uuid4().hex[:8]}{suffix}"
+        destination, temporary = inbox / filename, inbox / f".{filename}.tmp"
+        try:
+            temporary.write_text(retry_content, encoding="utf-8")
+            os.replace(temporary, destination)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            raise RetrySubmissionError("De nieuwe uitvoering kon niet veilig in de Inbox worden geplaatst.") from error
+        _, retry_run_id, _ = _job_id(destination, retry_content)
+        return {"retry_of": run_id, "original_run_id": original, "retry_generation": generation,
+                "retry_timestamp": timestamp, "filename": filename, "retry_run_id": retry_run_id}
+
+
 def submit_predecessor_retry(repo: Path, root: Path) -> dict[str, str]:
     """Explicitly resubmit the current blocking prompt through the Inbox transport.
 
@@ -387,39 +462,14 @@ def submit_predecessor_retry(repo: Path, root: Path) -> dict[str, str]:
     A unique, inert marker prevents an accidental duplicate retry from reusing
     an already recorded deterministic run identity.
     """
-    with _lock(repo):
-        predecessor = _blocking_predecessor(repo)
-        if predecessor is None:
-            raise RetrySubmissionError("Er is geen geblokkeerde voorafgaande prompt om opnieuw in te dienen.")
-        candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
-        if any(content is not None and _retry_of(content) == predecessor["run_id"] for _, content in candidates):
-            raise RetrySubmissionError("Een herindiening voor deze voorafgaande prompt staat al in de wachtrij.")
-        archived = _archived_prompt_for_run(repo, predecessor["run_id"])
-        if archived is None:
-            raise RetrySubmissionError("De oorspronkelijke geblokkeerde prompt is lokaal niet beschikbaar voor herindiening.")
-        source, content = archived
-        retry_content = (
-            f"Retry-Of: {predecessor['run_id']}\n"
-            f"<!-- Owner-triggered retry: {datetime.now(timezone.utc).isoformat()} {uuid.uuid4().hex} -->\n\n"
-            f"{content}"
-        )
-        inbox = folders(root)["Inbox"]
-        suffix = source.suffix.lower() if source.suffix.lower() in {".md", ".markdown", ".txt"} else ".md"
-        filename = f"retry-{predecessor['run_id']}-{uuid.uuid4().hex[:8]}{suffix}"
-        destination = inbox / filename
-        temporary = inbox / f".{filename}.tmp"
-        try:
-            temporary.write_text(retry_content, encoding="utf-8")
-            os.replace(temporary, destination)
-        except OSError as error:
-            temporary.unlink(missing_ok=True)
-            raise RetrySubmissionError("De herindiening kon niet veilig in de Inbox worden geplaatst.") from error
-        _, retry_run_id, _ = _job_id(destination, retry_content)
-        return {
-            "blocking_run_id": predecessor["run_id"],
-            "filename": filename,
-            "retry_run_id": retry_run_id,
-        }
+    predecessor = _blocking_predecessor(repo)
+    if predecessor is None:
+        raise RetrySubmissionError("Er is geen geblokkeerde voorafgaande prompt om de wachtrij te hervatten.")
+    queued = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
+    if not any(content is not None and _retry_of(content) != predecessor["run_id"] for _, content in queued):
+        raise RetrySubmissionError("Queue recovery is alleen beschikbaar wanneer afhankelijke Inbox-werk wacht.")
+    outcome = submit_execution_retry(repo, root, predecessor["run_id"], queue_recovery=True)
+    return {"blocking_run_id": predecessor["run_id"], **outcome}  # type: ignore[return-value]
 
 def _move(source: Path, destination: Path) -> None:
     """Move a prompt out of iCloud, allowing the expected cross-device boundary."""
@@ -576,6 +626,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                     "filename": source.name,
                     "digest": digest,
                     "received_at": datetime.now(timezone.utc).isoformat(),
+                    "retry": retry_metadata(content),
                 },
                 indent=2,
             )
@@ -673,6 +724,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 executed_at=datetime.now(timezone.utc),
                 report=delivered,
                 git_commit=_terminal_git_commit(repo, run_id),
+                **retry_metadata(content),
             )
         except Exception as error:
             log_event(
@@ -684,6 +736,7 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             )
         try:
             execution_seconds, usage, repository = _telemetry_values(repo, run_id)
+            lineage = retry_metadata(content)
             persist_execution_async(
                 repo,
                 ExecutionTelemetry(
@@ -702,6 +755,10 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                     execution_host_version=EngineeringPlatformManifest.load(
                         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
                     ).platform_version,
+                    retry_of=lineage["retry_of"],
+                    original_run_id=lineage["original_run_id"],
+                    retry_generation=lineage["retry_generation"],
+                    retry_timestamp=lineage["retry_timestamp"],
                 ),
                 on_error=lambda error: log_event(
                     logger,

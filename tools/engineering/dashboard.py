@@ -1,4 +1,4 @@
-"""Private Engineering Status dashboard with a bounded predecessor-retry action."""
+"""Private Engineering Status dashboard with distinct queue recovery and execution retry actions."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from .providers import TailscaleProvider
 from .providers import LaunchdProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, cloud_root, submit_predecessor_retry
+from .inbox_watcher import RetrySubmissionError, cloud_root, submit_execution_retry, submit_predecessor_retry
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -50,7 +50,7 @@ from . import dashboard_state
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
-DASHBOARD_VERSION = "1.2.87"
+DASHBOARD_VERSION = "1.2.88"
 DASHBOARD_STARTED_AT = time.monotonic()
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
 APP_ICON_SVG = "engineering-status-icon.svg"
@@ -968,10 +968,10 @@ def _dashboard_html(
 <details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong>Workspace</strong></summary><p class="field"><span class="label">Naam</span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label">Workspace locatie</span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label">Tracked files</span><span>$TRACKED_FILES</span></p><div class="field"><span class="label">Engineering-database</span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label">Databasegrootte</span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label">Schema-versie</span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p></details>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong>Inbox-wachtrij</strong></summary><p class="category-description">Prompts worden uitgevoerd op volgorde van aanmaakdatum.</p><p class="estimate-meta" id="queueSummary">Wachtrij laden…</p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
-<details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong>Promptgeschiedenis</strong></summary><p class="category-description">Alle terminale Engineering Platform-uitvoeringen, lokaal gecachet in de Engineering SQLite-opslag.</p><div class="log-controls"><label for="promptHistoryFilter">Zoeken<input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" placeholder="Zoek in alle velden"></label></div><div class="log-table-wrap"><table class="log-table" aria-label="Promptgeschiedenis"><thead><tr><th data-history-sort-key="status" scope="col">Status</th><th data-history-sort-key="title" scope="col">Prompttitel</th><th data-history-sort-key="executed_at" scope="col">Uitgevoerd op</th><th data-history-sort-key="git_commit" scope="col">Git-commit</th><th scope="col">Rapport</th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="5">Promptgeschiedenis laden…</td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" aria-label="Paginering Promptgeschiedenis"></nav></details>
+<details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong>Promptgeschiedenis</strong></summary><p class="category-description">Alle terminale Engineering Platform-uitvoeringen, lokaal gecachet in de Engineering SQLite-opslag.</p><div class="log-controls"><label for="promptHistoryFilter">Zoeken<input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" placeholder="Zoek in alle velden"></label></div><div class="log-table-wrap"><table class="log-table" aria-label="Promptgeschiedenis"><thead><tr><th data-history-sort-key="status" scope="col">Status</th><th data-history-sort-key="title" scope="col">Prompttitel</th><th data-history-sort-key="executed_at" scope="col">Uitgevoerd op</th><th data-history-sort-key="git_commit" scope="col">Git-commit</th><th scope="col">Rapport</th><th scope="col">Actie</th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="6">Promptgeschiedenis laden…</td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" aria-label="Paginering Promptgeschiedenis"></nav></details>
 <details class="current-run" id="currentRun" aria-label="Huidige uitvoering" hidden><summary class="current-run__title"><span class="label">Actieve prompt</span><h2 id="currentPrompt">Laden…</h2><div class="field"><span class="label">Bestandsnaam</span><pre id="currentFile">Laden…</pre></div></summary><div class="current-run__grid">
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" aria-label="Status onbekend"></span><strong>Promptstatus</strong></div><p class="field"><span class="label">Watcher</span><span id="watcher">Laden…</span></p><p class="field"><span class="label">Fase</span><span id="phase">Laden…</span></p><p class="field"><span class="label">Huidige Codex-activiteit</span><span id="action">Laden…</span></p></div>
-<div class="card" id="predecessorGate" hidden><strong>Wachtrij geblokkeerd</strong><p class="field"><span class="label">Blokkerende run</span><code id="predecessorRun"></code></p><p class="field"><span class="label">Voorafgaande prompt</span><span id="predecessorPrompt"></span></p><p class="field"><span class="label">Eindstatus</span><span id="predecessorPhase"></span></p><div class="field"><span class="label">Herstelactie</span><pre id="predecessorAction"></pre></div><button class="predecessor-retry" id="predecessorRetry" type="button">Opnieuw indienen</button><p class="predecessor-retry-status" id="predecessorRetryStatus" role="status" aria-live="polite"></p></div>
+<div class="card" id="predecessorGate" hidden><strong>Wachtrij geblokkeerd</strong><p class="field"><span class="label">Blokkerende run</span><code id="predecessorRun"></code></p><p class="field"><span class="label">Voorafgaande prompt</span><span id="predecessorPrompt"></span></p><p class="field"><span class="label">Eindstatus</span><span id="predecessorPhase"></span></p><div class="field"><span class="label">Herstelactie</span><pre id="predecessorAction"></pre></div><button class="predecessor-retry" id="predecessorRetry" type="button">Resume Queue</button><p class="predecessor-retry-status" id="predecessorRetryStatus" role="status" aria-live="polite"></p></div>
 <div class="card"><strong>Geschatte uitvoeringstijd</strong><p class="estimate-primary" id="executionEstimate">Nog niet beschikbaar…</p><p class="estimate-meta" id="executionEstimateMeta" hidden></p></div>
 <div class="card"><strong>Uitvoering</strong><p class="field"><span class="label">Run-ID</span><span id="runId"></span></p><p class="field"><span class="label">Prompt gestart op</span><span id="promptStarted">Laden…</span></p><p class="field"><span class="label">Wachtrij</span><span id="queue"></span></p></div>
 <div class="card execution-context" id="executionContext" hidden><strong>Uitvoeringscontext</strong><p class="field"><span class="label">Modus</span><span id="executionMode"></span></p><p class="field"><span class="label">Repository</span><span id="targetRepository"></span></p><div class="field"><span class="label">Lokale checkout</span><pre id="checkoutPath"></pre></div><p class="field"><span class="label">Actieve branch</span><span id="activeBranch"></span></p></div>
@@ -1116,7 +1116,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     status_code,
                 )
                 return
-            if request_path == "/api/predecessor-retry":
+            if request_path in {"/api/queue-recovery", "/api/predecessor-retry"}:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if length != 2 or self.rfile.read(length) != b"{}":
@@ -1125,7 +1125,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     log_event(
                         logger,
                         logging.INFO,
-                        "predecessor_retry_submission_triggered",
+                        "queue_recovery_triggered" if request_path == "/api/queue-recovery" else "predecessor_retry_submission_triggered",
                         run_id=outcome["blocking_run_id"],
                         diagnostic=f"retry_run_id={outcome['retry_run_id']}",
                     )
@@ -1145,6 +1145,22 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     "application/json; charset=utf-8",
                     202,
                 )
+                return
+            if request_path == "/api/execution-retry":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
+                        raise ValueError
+                    outcome = submit_execution_retry(root, cloud_root(repo=root), payload["run_id"])
+                    log_event(logger, logging.INFO, "execution_retry_triggered", run_id=payload["run_id"], diagnostic=f"retry_run_id={outcome['retry_run_id']}")
+                except RetrySubmissionError as error:
+                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De uitvoering kan nu niet veilig opnieuw worden gestart."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path == "/api/audit/user-action":
                 try:

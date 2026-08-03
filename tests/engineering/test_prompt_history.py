@@ -41,6 +41,12 @@ class PromptHistoryTest(unittest.TestCase):
                         "executed_at": "2026-08-02T14:00:00Z",
                         "git_commit": "abc1234",
                         "report_available": True,
+                        "retry_of": None,
+                        "original_run_id": None,
+                        "retry_generation": None,
+                        "retry_timestamp": None,
+                        "execution_mode": None,
+                        "repository": None,
                     }
                 ],
             )
@@ -85,3 +91,23 @@ class PromptHistoryTest(unittest.TestCase):
                     prompt_title="unsafe",
                     executed_at="now",
                 )
+
+    def test_persists_retry_relationship_without_merging_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root,
+                run_id="inbox-retry123",
+                terminal_state="BLOCKED",
+                prompt_title="Retry prompt",
+                executed_at="2026-08-03T12:00:00Z",
+                retry_of="inbox-original",
+                original_run_id="inbox-original",
+                retry_generation=1,
+                retry_timestamp="2026-08-03T11:59:00Z",
+            )
+            entry = prompt_history(root)[0]
+            self.assertEqual(entry["run_id"], "inbox-retry123")
+            self.assertEqual(entry["retry_of"], "inbox-original")
+            self.assertEqual(entry["original_run_id"], "inbox-original")
+            self.assertEqual(entry["retry_generation"], 1)

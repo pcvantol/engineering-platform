@@ -27,8 +27,10 @@ boundary. Existing commands remain compatibility interfaces.
   Version. The dashboard presents those values only for the matching completed
   run and never infers unavailable values.
 - Strict sequential Inbox safety: a `BLOCKED` or `FAILED` predecessor holds
-  later submissions at `WAITING_FOR_PREDECESSOR` until an explicit
-  `Retry-Of` replacement completes. This is the safe default until a future
+  later submissions at `WAITING_FOR_PREDECESSOR` until **Resume Queue** creates
+  a corrective `Retry-Of` replacement. **Retry Execution** remains separately
+  available for every terminal `BLOCKED` run and records immutable lineage.
+  This is the safe default until a future
   Engineering Intent dependency model can express finer-grained ordering.
 - iCloud Drive is submission transport only. Claimed prompts, immutable
   execution copies, status, reports, diagnostics and component logs are

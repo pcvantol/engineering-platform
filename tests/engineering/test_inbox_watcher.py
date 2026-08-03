@@ -369,9 +369,57 @@ class InboxWatcherTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.inbox / "existing.md").write_text(f"Retry-Of: {run_id}\n# Existing retry", encoding="utf-8")
+        (self.inbox / "later.md").write_text("# Dependent work", encoding="utf-8")
 
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_predecessor_retry(self.repo, self.root)
+
+    def test_queue_recovery_requires_waiting_dependent_work(self) -> None:
+        original = "# Blocked predecessor"
+        archived = inbox_watcher.local_folders(self.repo)["Failed"] / "blocked__blocked.txt"
+        archived.write_text(original, encoding="utf-8")
+        _, run_id, _ = inbox_watcher._job_id(archived, original)
+        status_directory = self.repo / ".engineering" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
+            json.dumps({"last_executed_run": run_id, "last_executed_phase": "BLOCKED"}), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "afhankelijke Inbox-werk"):
+            inbox_watcher.submit_predecessor_retry(self.repo, self.root)
+
+    def test_execution_retry_is_available_without_waiting_queue_and_records_lineage(self) -> None:
+        original = "# Blocked prompt\n\nKeep this evidence immutable."
+        archived = inbox_watcher.local_folders(self.repo)["Failed"] / "blocked__blocked.txt"
+        archived.write_text(original, encoding="utf-8")
+        _, run_id, _ = inbox_watcher._job_id(archived, original)
+        checkpoint = self.repo / ".engineering" / "engineering-runs"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "BLOCKED"}), encoding="utf-8")
+
+        outcome = inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
+
+        retry = (self.inbox / str(outcome["filename"])).read_text(encoding="utf-8")
+        self.assertIn(f"Retry-Of: {run_id}", retry)
+        self.assertIn(f"Original-Run-ID: {run_id}", retry)
+        self.assertIn("Retry-Generation: 1", retry)
+        self.assertIn(original, retry)
+        self.assertEqual(archived.read_text(encoding="utf-8"), original)
+        self.assertNotEqual(outcome["retry_run_id"], run_id)
+
+    def test_execution_retry_refuses_non_blocked_or_duplicate_execution(self) -> None:
+        original = "# Failed prompt"
+        archived = inbox_watcher.local_folders(self.repo)["Failed"] / "failed__failed.txt"
+        archived.write_text(original, encoding="utf-8")
+        _, run_id, _ = inbox_watcher._job_id(archived, original)
+        checkpoint = self.repo / ".engineering" / "engineering-runs"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "FAILED"}), encoding="utf-8")
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Alleen een terminal"):
+            inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
+        (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "BLOCKED"}), encoding="utf-8")
+        (self.inbox / "pending.md").write_text(f"Retry-Of: {run_id}\n# Pending", encoding="utf-8")
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
+            inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
 
     def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
         (self.root / "Completed").mkdir()

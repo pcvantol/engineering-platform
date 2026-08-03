@@ -16,7 +16,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 5
+ENGINEERING_STORAGE_SCHEMA_VERSION = 6
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -193,12 +193,28 @@ def _schema_v5(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v6(connection: sqlite3.Connection) -> None:
+    """Persist immutable retry lineage separately from the original run."""
+    for statement in (
+        "ALTER TABLE prompt_execution_history ADD COLUMN retry_of TEXT",
+        "ALTER TABLE prompt_execution_history ADD COLUMN original_run_id TEXT",
+        "ALTER TABLE prompt_execution_history ADD COLUMN retry_generation INTEGER",
+        "ALTER TABLE prompt_execution_history ADD COLUMN retry_timestamp TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN retry_of TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN original_run_id TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN retry_generation INTEGER",
+        "ALTER TABLE execution_runs ADD COLUMN retry_timestamp TEXT",
+    ):
+        connection.execute(statement)
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
     3: _schema_v3,
     4: _schema_v4,
     5: _schema_v5,
+    6: _schema_v6,
 }
 
 

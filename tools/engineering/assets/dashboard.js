@@ -2897,7 +2897,7 @@ function renderPromptHistory() {
     const row = document.createElement("tr"),
       cell = document.createElement("td");
     cell.className = "log-empty";
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.textContent = "Geen prompts in de geschiedenis voor deze selectie.";
     row.append(cell);
     body.append(row);
@@ -2909,6 +2909,7 @@ function renderPromptHistory() {
         executed = document.createElement("td"),
         commit = document.createElement("td"),
         report = document.createElement("td"),
+        action = document.createElement("td"),
         timestamp = Date.parse(String(entry.executed_at || ""));
       status.className =
         "prompt-history-status prompt-history-status--" +
@@ -2935,7 +2936,15 @@ function renderPromptHistory() {
         link.textContent = "⇩";
         report.append(link);
       } else report.textContent = "—";
-      row.append(status, title, executed, commit, report);
+      if (entry.status === "BLOCKED" && entry.run_id) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "predecessor-retry";
+        retry.textContent = "Retry Execution";
+        retry.addEventListener("click", () => submitExecutionRetry(entry));
+        action.append(retry);
+      } else action.textContent = "—";
+      row.append(status, title, executed, commit, report, action);
       body.append(row);
     }
   navigation.replaceChildren();
@@ -3575,15 +3584,15 @@ function submitPredecessorRetry() {
     run = latestStatus?.blocking_predecessor_run;
   if (!run || button.disabled) return;
   confirmDashboardAction(
-    "Prompt opnieuw indienen",
-    "Deze actie dient de geblokkeerde prompt opnieuw in. Doorgaan?",
-    "Opnieuw indienen",
+    "Resume Queue",
+    "Deze queue recovery herstelt de wachtende Inbox-volgorde. De oorspronkelijke geblokkeerde uitvoering blijft onveranderd.",
+    "Resume Queue",
     "#f0b66a",
   ).then((confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
-    status.textContent = "Herindiening wordt klaargezet…";
-    fetch("/api/predecessor-retry", {
+    status.textContent = "Queue recovery wordt klaargezet…";
+    fetch("/api/queue-recovery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -3595,18 +3604,43 @@ function submitPredecessorRetry() {
       .then((result) => {
         if (!result.ok)
           throw Error(
-            result.body.error || "Herindiening kon niet worden gestart.",
+            result.body.error || "Queue recovery kon niet worden gestart.",
           );
         status.textContent =
-          "Herindiening staat in de Inbox en wordt door de watcher opgepakt.";
+          "Queue recovery staat klaar; de watcher hervat na de vervangende uitvoering.";
       })
       .catch((error) => {
         status.textContent =
-          error.message || "Herindiening kon niet worden gestart.";
+          error.message || "Queue recovery kon niet worden gestart.";
       })
       .finally(() => {
         button.disabled = false;
       });
+  });
+}
+function submitExecutionRetry(entry) {
+  if (!entry?.run_id) return;
+  const title = String(entry.title || "Prompttitel niet beschikbaar");
+  const repository = String(entry.repository || "repository context not recorded");
+  const mode = String(entry.execution_mode || "execution mode not recorded");
+  confirmDashboardAction(
+    "Retry Execution",
+    "Run ID: " + entry.run_id + "\nPrompt title: " + title + "\nRepository: " + repository + "\nExecution Mode: " + mode + "\n\nA new engineering execution will start using the current repository state. The original execution remains unchanged. A Retry relationship will be recorded.",
+    "Retry Execution",
+    "#f0b66a",
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    fetch("/api/execution-retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: entry.run_id }),
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || "Retry Execution kon niet worden gestart.");
+        return refreshPromptHistory();
+      })
+      .catch((error) => window.alert(error.message || "Retry Execution kon niet worden gestart."));
   });
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
