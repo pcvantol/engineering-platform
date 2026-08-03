@@ -572,6 +572,38 @@ function renderMarkdownDocument(target, value) {
   target.replaceChildren();
   renderMarkdownAnswer(target, value);
 }
+function lastTargetEvidence(value) {
+  const labels = [
+    ["Execution Host", "Execution Host"],
+    ["Target Repository", "Target repository"],
+    ["Target Commit", "Target commit"],
+  ];
+  const details = labels
+    .map(([reportLabel, displayLabel]) => {
+      const match = String(value || "").match(
+        new RegExp("^- " + reportLabel + ": `([^`\\n]+)`$", "m"),
+      );
+      return match ? displayLabel + ": " + match[1] : "";
+    })
+    .filter(Boolean);
+  const changed = (String(value || "").match(/^- Changed file: `/gm) || []).length;
+  if (changed) details.push("Evidence Bundle: " + changed + " gewijzigde bestanden");
+  let field = $("lastTargetEvidence");
+  if (!field) {
+    field = document.createElement("div");
+    field.className = "field";
+    field.id = "lastTargetEvidence";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "Uitvoeringsbewijs";
+    const output = document.createElement("pre");
+    output.id = "lastTargetEvidenceValue";
+    field.append(label, output);
+    $("lastFile").closest(".field").insertAdjacentElement("afterend", field);
+  }
+  field.hidden = !details.length;
+  $("lastTargetEvidenceValue").textContent = details.join(String.fromCharCode(10));
+}
 function report() {
   if (!lastExecutedRun) return Promise.resolve();
   if (reportLoaded) return reportRequest;
@@ -586,6 +618,7 @@ function report() {
         return;
       }
       renderMarkdownDocument($("reportContent"), x);
+      lastTargetEvidence(x);
     })
     .catch(() => {
       $("reportContent").textContent =
@@ -958,6 +991,7 @@ function renderHealthStatus(x, snapshot = {}) {
   $("lastExecution").hidden = !previous;
   $("report").hidden = !previous;
   $("reportAnalysis").hidden = !previous;
+  if (previous) report();
   $("predecessorGate").hidden = !blockedPredecessor;
   $("predecessorRun").textContent =
     x.blocking_predecessor_run || "Niet beschikbaar";

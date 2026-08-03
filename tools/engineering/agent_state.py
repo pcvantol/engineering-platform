@@ -60,6 +60,7 @@ class TransactionState:
     latest_repository_evidence: str | None = None
     latest_github_evidence: str | None = None
     agent_execution_seconds: float | None = None
+    validation_evidence: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
@@ -78,12 +79,15 @@ class TransactionState:
             "finalization_head_sha": None, "finalization_merge_commit": None,
             "latest_repository_evidence": None, "latest_github_evidence": None,
             "agent_execution_seconds": None,
+            "validation_evidence": (),
             "repair_iterations": 0,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
         elif set(raw) != expected:
             raise StateError("checkpoint fields are incompatible")
+        if isinstance(raw.get("validation_evidence"), list):
+            raw = {**raw, "validation_evidence": tuple(raw["validation_evidence"])}
         try:
             state = cls(**raw)
         except TypeError as error:
@@ -125,6 +129,23 @@ class TransactionState:
             or not 0 <= state.agent_execution_seconds <= 86_400
         ):
             raise StateError("checkpoint agent execution duration is invalid")
+        if (
+            not isinstance(state.validation_evidence, tuple)
+            or len(state.validation_evidence) > 12
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"command", "result"}
+                or any(
+                    not isinstance(value, str)
+                    or not value
+                    or len(value) > 240
+                    or value != redact_diagnostic(value, limit=240)
+                    for value in item.values()
+                )
+                for item in state.validation_evidence
+            )
+        ):
+            raise StateError("checkpoint validation evidence is invalid or unsafe")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state

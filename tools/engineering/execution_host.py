@@ -118,6 +118,7 @@ class AgentResult:
     diagnostic: str | None = None
     repository_path: str | None = None
     commit_sha: str | None = None
+    validation_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,22 @@ class ExecutionContext:
     lifecycle_policy: str
     selected_preflight: str
     run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TerminalEvidenceBundle:
+    """Read-only repository evidence rendered into a terminal report."""
+
+    target_workspace: str
+    target_repository: str
+    target_branch: str
+    target_commit: str
+    worktree_state: str
+    changed_files: tuple[str, ...]
+    files_added: tuple[str, ...]
+    files_modified: tuple[str, ...]
+    files_removed: tuple[str, ...]
+    diff_check: str
 
 
 def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
@@ -497,6 +514,7 @@ class CodexCliClient:
                 "diagnostic",
                 "repository_path",
                 "commit_sha",
+                "validation_evidence",
             ],
             "properties": {
                 "terminal_state": {
@@ -517,6 +535,12 @@ class CodexCliClient:
                 "diagnostic": {"type": "string", "maxLength": 500},
                 "repository_path": {"type": ["string", "null"]},
                 "commit_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+                "validation_evidence": {
+                    "type": "array", "maxItems": 12,
+                    "items": {"type": "object", "additionalProperties": False,
+                              "required": ["command", "result"],
+                              "properties": {"command": {"type": "string", "maxLength": 240}, "result": {"type": "string", "maxLength": 240}}},
+                },
             },
         }
         with tempfile.NamedTemporaryFile(
@@ -556,6 +580,16 @@ class CodexCliClient:
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
             result = AgentResult(**raw)
+            if not isinstance(result.validation_evidence, (list, tuple)):
+                raise TypeError("validation evidence must be a list")
+            result = replace(
+                result,
+                validation_evidence=tuple(
+                    {"command": redact_diagnostic(item.get("command", ""), limit=240), "result": redact_diagnostic(item.get("result", ""), limit=240)}
+                    for item in result.validation_evidence
+                    if isinstance(item, dict) and item.get("command") and item.get("result")
+                ),
+            )
             if result.diagnostic is not None:
                 result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
             return result
@@ -644,7 +678,7 @@ This is an explicit Genesis Mode transaction. Its target is a local-only direct 
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
-Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, and commit_sha. Use null for fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -688,6 +722,12 @@ class EngineeringRunner:
             state,
             agent_execution_seconds=round((state.agent_execution_seconds or 0) + measured, 3),
         )
+
+    def _record_validation_evidence(self, state: TransactionState, result: AgentResult) -> TransactionState:
+        """Persist only bounded report evidence; it has no lifecycle authority."""
+        if not result.validation_evidence:
+            return state
+        return replace(state, validation_evidence=result.validation_evidence)
 
     def run(
         self,
@@ -813,6 +853,7 @@ class EngineeringRunner:
                 self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context
             )
             state = self._record_agent_execution_time(state)
+            state = self._record_validation_evidence(state, result)
             self._persist_agent_usage(state.run_id)
         except CodexInvocationError as error:
             state = self._record_agent_execution_time(state)
@@ -1005,6 +1046,7 @@ class EngineeringRunner:
                 + f"\n\nRepair objective: {objective}",
             )
             repair = self._record_agent_execution_time(repair)
+            repair = self._record_validation_evidence(repair, result)
             self._persist_agent_usage(repair.run_id)
         except CodexInvocationError as error:
             repair = self._record_agent_execution_time(repair)
@@ -1068,6 +1110,7 @@ class EngineeringRunner:
                 assemble_prompt(Path(finalization.prompt_path), finalization) + instruction,
             )
             finalization = self._record_agent_execution_time(finalization)
+            finalization = self._record_validation_evidence(finalization, result)
             self._persist_agent_usage(finalization.run_id)
         except CodexInvocationError as error:
             finalization = self._record_agent_execution_time(finalization)
@@ -1305,6 +1348,150 @@ def _pull_request_summary(evidence: PullRequestEvidence) -> str:
     )
 
 
+def _git_output(root: Path, *args: str) -> str | None:
+    """Return bounded Git output without allowing evidence collection to affect a run."""
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(root), *args), text=True, capture_output=True, check=False
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _target_workspace(root: Path, state: TransactionState) -> Path:
+    """Resolve the engineering target without changing execution selection."""
+    return Path(state.genesis_repository_path).expanduser().resolve() if state.execution_mode == "GENESIS" and state.genesis_repository_path else root.resolve()
+
+
+def _target_repository_name(target: Path, fallback: str) -> str:
+    remote = _git_output(target, "remote", "get-url", "origin")
+    if remote:
+        return remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
+    return fallback
+
+
+def _evidence_baseline(state: TransactionState, target: Path, target_commit: str) -> str | None:
+    """Find the parent preceding the terminal transaction when Git can prove it."""
+    first_commit = (
+        state.genesis_commit_sha
+        if state.execution_mode == "GENESIS"
+        else state.implementation_merge_commit or state.finalization_merge_commit
+    )
+    if not first_commit:
+        return None
+    parent = _git_output(target, "rev-parse", f"{first_commit}^")
+    return parent if parent and _git_output(target, "rev-parse", target_commit) else None
+
+
+def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEvidenceBundle:
+    """Collect a bounded, read-only target-repository evidence bundle."""
+    target = _target_workspace(root, state)
+    branch = _git_output(target, "branch", "--show-current") or "unavailable"
+    commit = state.genesis_commit_sha or _git_output(target, "rev-parse", "HEAD") or "unavailable"
+    status = _git_output(target, "status", "--porcelain", "--untracked-files=all")
+    worktree = "unavailable" if status is None else ("clean" if not status else "dirty")
+    baseline = _evidence_baseline(state, target, commit)
+    root_genesis_commit = state.execution_mode == "GENESIS" and state.genesis_commit_sha == commit
+    names = (
+        _git_output(target, "diff", "--name-status", baseline, commit)
+        if baseline
+        else _git_output(target, "diff-tree", "--root", "--no-commit-id", "-r", "--name-status", commit)
+        if root_genesis_commit
+        else None
+    )
+    added: list[str] = []
+    modified: list[str] = []
+    removed: list[str] = []
+    if names:
+        for row in names.splitlines():
+            status_code, _, path = row.partition("\t")
+            if not path:
+                continue
+            if status_code.startswith("A"):
+                added.append(path)
+            elif status_code.startswith("D"):
+                removed.append(path)
+            else:
+                modified.append(path)
+    changed = tuple(sorted(set(added + modified + removed)))
+    diff = (
+        _git_output(target, "diff", "--check", baseline, commit)
+        if baseline
+        else _git_output(target, "diff-tree", "--root", "--check", commit)
+        if root_genesis_commit
+        else None
+    )
+    diff_check = (
+        "passed" if (baseline or root_genesis_commit) and diff == "" else "not available: transaction baseline was not recorded"
+    )
+    return TerminalEvidenceBundle(
+        target_workspace=str(target),
+        target_repository=_target_repository_name(target, state.repository),
+        target_branch=branch,
+        target_commit=commit,
+        worktree_state=worktree,
+        changed_files=changed,
+        files_added=tuple(added),
+        files_modified=tuple(modified),
+        files_removed=tuple(removed),
+        diff_check=diff_check,
+    )
+
+
+def _evidence_lines(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
+    if not values:
+        return (f"- {label}: none recorded",)
+    return tuple(f"- {label}: `{value}`" for value in values)
+
+
+def _implementation_evidence(bundle: TerminalEvidenceBundle) -> str:
+    """Classify file-level evidence without inferring unrecorded implementation intent."""
+    changed = bundle.changed_files
+    groups = {
+        "Implemented components": tuple(path for path in changed if path.startswith("tools/engineering/")),
+        "Updated models": tuple(path for path in changed if "model" in path.casefold() or "state" in path.casefold()),
+        "Updated documentation": tuple(path for path in changed if path.endswith(".md")),
+        "Updated tests": tuple(path for path in changed if path.startswith("tests/") or "/test_" in path),
+        "Updated contracts": tuple(path for path in changed if any(token in path.casefold() for token in ("contract", "schema", "openapi"))),
+        "Updated schemas": tuple(path for path in changed if path.endswith((".json", ".yaml", ".yml"))),
+    }
+    lines: list[str] = []
+    for label, files in groups.items():
+        lines.extend(_evidence_lines(label, files))
+    return "\n".join(lines)
+
+
+def _validation_evidence_lines(state: TransactionState) -> tuple[str, ...]:
+    if not state.validation_evidence:
+        return ("- Executed tests: not recorded by the runner.", "- Test results: not recorded by the runner.")
+    return tuple(
+        line
+        for item in state.validation_evidence
+        for line in (
+            f"- Executed test: `{item['command']}`",
+            f"  - Result: {item['result']}",
+        )
+    )
+
+
+def _reconciliation_evidence(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> str:
+    if "reconcil" not in objective.casefold():
+        return ""
+    changed = ", ".join(f"`{path}`" for path in bundle.changed_files) or "no changed files recorded"
+    return "\n".join(
+        (
+            "## Reconciliation Evidence",
+            "- Initial classification: not separately persisted by the runner.",
+            f"- Final classification: `{state.phase}`.",
+            "- Required assessment items: target identity, repository evidence, validation evidence and terminal checkpoint are included in this report.",
+            f"- Changes made: {changed}.",
+            "- Remaining limitations: historical assessment and per-test execution details are not persisted by the runner.",
+            "",
+        )
+    )
+
+
 def format_management_summary(state: TransactionState) -> str:
     """Return a checkpoint-only completion summary without exposing prompt text."""
     return "\n".join(
@@ -1363,6 +1550,10 @@ def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
     )
     if any(section not in body for section in required_sections):
         return False
+    if "## Execution Target Identity" not in body:
+        return False
+    if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
+        return False
     if state.phase == "BLOCKED":
         return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
     if state.phase == "FAILED":
@@ -1379,6 +1570,14 @@ def corrected_terminal_report(state: TransactionState) -> str:
             f"- Run ID: `{state.run_id}`",
             f"- Terminal state: `{state.phase}`",
             "",
+            "## Execution Target Identity",
+            f"- Execution Host Repository: `{state.repository}`",
+            f"- Execution Mode: `{state.execution_mode}`",
+            "- Target Workspace: unavailable",
+            "- Target Repository: unavailable",
+            "- Target Branch: unavailable",
+            "- Target Commit: unavailable",
+            "",
             "## Initial Repository Assessment",
             "Assessment evidence is unavailable. This section describes only the repository before any attempted implementation.",
             "",
@@ -1389,8 +1588,18 @@ def corrected_terminal_report(state: TransactionState) -> str:
             "No reviewer findings were retained. Reviewer observations are advisory initial observations only.",
             "",
             "## Repository Truth",
+            "Execution Host, Target Repository, Target Commit, Repository Evidence and Evidence Bundle are canonical repository truth.",
             "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
             "",
+            *(
+                (
+                    "## Evidence Bundle",
+                    "Repository evidence is unavailable because the richer report assembly was inconsistent.",
+                    "",
+                )
+                if state.phase == "COMPLETE"
+                else ()
+            ),
             "## Management Summary",
             format_terminal_management_summary(state),
             "",
@@ -1414,7 +1623,7 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str)
                 f"  - Initial observation: {record['contribution']}",
                 f"  - Accepted recommendations: {record['accepted_recommendations']}",
                 f"  - Rejected recommendations: {record['rejected_recommendations']}",
-                "  - Outcome: Resolved during implementation; the final repository evidence below is authoritative."
+                "  - Resolved by: implementation evidence, changed components and repository evidence in the Evidence Bundle below."
                 if phase == "COMPLETE"
                 else "  - Outcome: Not a final repository statement; consult the terminal checkpoint and diagnostics.",
             )
@@ -1475,16 +1684,57 @@ def generate_terminal_report(
     reported_model = runtime_metadata.get("model", "not reported")
     reported_reasoning = runtime_metadata.get("reasoning_profile", "not reported")
     reported_configuration = runtime_metadata.get("configuration_profile", "not reported")
+    bundle = collect_terminal_evidence(root, state)
+    qualification_status = qualification.get("qualification") if qualification else "not recorded"
+    qualification_summary_line = (
+        f"`{qualification_status}`" if qualification else "not recorded"
+    )
+    evidence_bundle = "\n".join(
+        (
+            "## Evidence Bundle",
+            "### Repository Evidence",
+            f"- Target repository: `{bundle.target_repository}`",
+            f"- Target commit: `{bundle.target_commit}`",
+            f"- Worktree state: `{bundle.worktree_state}`",
+            *_evidence_lines("Changed file", bundle.changed_files),
+            *_evidence_lines("File added", bundle.files_added),
+            *_evidence_lines("File modified", bundle.files_modified),
+            *_evidence_lines("File removed", bundle.files_removed),
+            "",
+            "### Validation Evidence",
+            *_validation_evidence_lines(state),
+            f"- Qualification status: {qualification_summary_line}.",
+            "- Schema validation: persisted terminal checkpoint accepted by the report generator.",
+            "- Example validation: not recorded by the runner.",
+            f"- git diff --check result: {bundle.diff_check}.",
+            "",
+            "### Implementation Evidence",
+            _implementation_evidence(bundle),
+            "",
+        )
+    ) if state.phase == "COMPLETE" else ""
     body = "\n".join(
         (
             "# Engineering Report",
             "",
             f"- Timestamp: {timestamp}",
             f"- Run ID: `{state.run_id}`",
-            f"- Repository: `{state.repository}`",
             f"- Prompt: `{state.prompt_path}`",
             f"- Terminal state: `{state.phase}`",
             f"- Objective: {objective}",
+            "",
+            "## Execution Target Identity",
+            "- Execution Host: `Engineering Platform`",
+            f"- Execution Host Repository: `{state.repository}`",
+            f"- Execution Mode: `{state.execution_mode}`",
+            f"- Target Workspace: `{bundle.target_workspace}`",
+            f"- Target Repository: `{bundle.target_repository}`",
+            f"- Target Branch: `{bundle.target_branch}`",
+            f"- Target Commit: `{bundle.target_commit}`",
+            f"- Execution Host Version: `{manifest.platform_version}`",
+            f"- Runner Version: `{manifest.runner_version}`",
+            f"- Bootstrap Contract: `{manifest.bootstrap_contract}`",
+            f"- Checkpoint Format: `{manifest.checkpoint_format}`",
             "",
             "## Engineering Platform",
             f"- Platform Version: `{manifest.platform_version}`",
@@ -1524,9 +1774,12 @@ def generate_terminal_report(
             _format_reviewer_records(reviewer_records, state.phase),
             "",
             "## Repository Truth",
+            "Execution Host, Target Repository, Target Commit, Repository Evidence and Evidence Bundle are the canonical engineering outcome.",
             "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
             "The Engineering Outcome and Management Summary above are derived from that priority order.",
             "",
+            evidence_bundle,
+            _reconciliation_evidence(objective, state, bundle),
             "## Validation",
             "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations."
             if state.phase == "COMPLETE"

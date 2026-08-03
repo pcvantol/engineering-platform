@@ -16,18 +16,51 @@ Each report separates three viewpoints:
 3. **Engineering Outcome** and **Management Summary** describe the terminal
    repository outcome.
 
-When a transaction reaches `COMPLETE`, an initial finding about a missing
-capability is labelled as resolved during implementation unless the terminal
-checkpoint records a remaining limitation.
+When a transaction reaches `COMPLETE`, a reviewer finding remains advisory.
+If implementation addressed it, the report states **Resolved by** and points
+to implementation, changed-component and repository evidence in the Evidence
+Bundle. It never treats a reviewer observation as final truth by itself.
+
+## Multi-repository reporting
+
+Every terminal report has an **Execution Target Identity**. It distinguishes
+the Engineering Platform **Execution Host** from the engineering **Target
+Repository** and records the Execution Host Repository, Execution Mode, Target
+Workspace, Target Repository, Target Branch, Target Commit, Execution Host
+Version, Runner Version, Bootstrap Contract and Checkpoint Format.
+
+Managed execution normally uses the host repository as its target. Genesis
+execution normally uses a separate local target repository. The host is never
+described as the target merely because it generated the report.
+
+## Evidence Bundle
+
+Every `COMPLETE` report includes a structured **Evidence Bundle**. It exposes:
+
+- repository evidence: target repository and commit, worktree state, and
+  changed, added, modified and removed files;
+- validation evidence: recorded tests/results when available, qualification,
+  checkpoint-schema and example-validation status, plus `git diff --check`;
+- implementation evidence: changed components, models, documentation, tests,
+  contracts and schemas; and
+- reconciliation evidence when the objective requests reconciliation:
+  initial and final classification, required assessment coverage, changes and
+  remaining limitations.
+
+New runs persist up to twelve redacted `{command, result}` validation summaries
+from the terminal agent result. Older runs and runs that provide none remain
+explicitly marked `not recorded by the runner`. The runner still does not
+persist an initial assessment taxonomy.
 
 ## Repository truth
 
 The report resolves evidence in this order:
 
-1. persisted repository state and terminal checkpoint;
-2. resulting commits;
-3. validation evidence; and
-4. advisory reviewer observations.
+1. Execution Host, Target Repository and Target Commit;
+2. persisted repository state and terminal checkpoint;
+3. Repository Evidence and Evidence Bundle;
+4. resulting commits and validation evidence; and
+5. advisory reviewer observations.
 
 Reviewer findings cannot override repository evidence. `BLOCKED` and `FAILED`
 reports never claim successful implementation or delivery.
@@ -44,6 +77,11 @@ The dashboard displays that analysis only within **Laatst uitgevoerd** and only
 when its run identifier matches the displayed terminal run. A failed or absent
 analysis never changes the terminal checkpoint, report, repository state,
 validation result or lifecycle outcome.
+
+For the last completed execution, the dashboard also presents a compact
+read-only summary of the Execution Host, Target Repository, Target Commit and
+Evidence Bundle changed-file count. The complete Evidence Bundle remains in
+the Engineering Report, so the dashboard does not duplicate its detail.
 
 ## Private dashboard evidence access
 

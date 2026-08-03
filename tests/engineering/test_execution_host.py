@@ -1094,10 +1094,73 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("## Reviewer Findings", body)
         self.assertIn("## Repository Truth", body)
         self.assertIn("Initial observation: The capability does not yet exist.", body)
-        self.assertIn("Resolved during implementation", body)
+        self.assertIn("Resolved by: implementation evidence", body)
         self.assertIn("Resulting commits: implementation `" + "a" * 40, body)
         self.assertIn("Repository state: branch=main; clean=True", body)
         self.assertTrue(terminal_report_matches_state(body, state))
+
+    def test_complete_managed_report_exposes_target_identity_and_evidence_bundle(self) -> None:
+        subprocess.run(("git", "init", "-b", "main", str(self.root)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.email", "report@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.name", "Report Test"), check=True)
+        (self.root / "modified.txt").write_text("before\n", encoding="utf-8")
+        (self.root / "removed.txt").write_text("remove\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "baseline"), check=True, capture_output=True)
+        (self.root / "modified.txt").write_text("after\n", encoding="utf-8")
+        (self.root / "added.txt").write_text("added\n", encoding="utf-8")
+        (self.root / "removed.txt").unlink()
+        subprocess.run(("git", "-C", str(self.root), "add", "-A"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "implementation"), check=True, capture_output=True)
+        commit = subprocess.check_output(("git", "-C", str(self.root), "rev-parse", "HEAD"), text=True).strip()
+        state = TransactionState(
+            "managed-evidence", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            implementation_merge_commit=commit, terminal=True,
+        )
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Execution Target Identity", body)
+        self.assertIn("Execution Host Repository: `pcvantol/djconnect`", body)
+        self.assertIn(f"Target Commit: `{commit}`", body)
+        self.assertIn("## Evidence Bundle", body)
+        self.assertIn("File added: `added.txt`", body)
+        self.assertIn("File modified: `modified.txt`", body)
+        self.assertIn("File removed: `removed.txt`", body)
+        self.assertIn("git diff --check result: passed", body)
+
+    def test_complete_report_renders_structured_validation_evidence(self) -> None:
+        state = TransactionState(
+            "validation-evidence", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed (12 tests)"},),
+            terminal=True,
+        )
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("Executed test: `python -m unittest tests.engineering`", body)
+        self.assertIn("Result: passed (12 tests)", body)
+
+    def test_complete_genesis_report_keeps_host_and_target_identities_distinct(self) -> None:
+        target = self.root / "genesis-report-target"
+        target.mkdir()
+        subprocess.run(("git", "init", "-b", "main", str(target)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.email", "report@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(target), "config", "user.name", "Report Test"), check=True)
+        subprocess.run(("git", "-C", str(target), "remote", "add", "origin", "git@github.com:pcvantol/forge.git"), check=True)
+        (target / "README.md").write_text("# target\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(target), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(target), "commit", "-m", "genesis"), check=True, capture_output=True)
+        commit = subprocess.check_output(("git", "-C", str(target), "rev-parse", "HEAD"), text=True).strip()
+        self.prompt.write_text("Reconciliation required\n", encoding="utf-8")
+        state = TransactionState(
+            "genesis-evidence", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            execution_mode="GENESIS", genesis_repository_path=str(target), genesis_commit_sha=commit,
+            terminal=True,
+        )
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("Execution Host Repository: `pcvantol/djconnect`", body)
+        self.assertIn("Target Repository: `pcvantol/forge`", body)
+        self.assertIn(f"Target Commit: `{commit}`", body)
+        self.assertIn("## Reconciliation Evidence", body)
+        self.assertIn("Initial classification:", body)
+        self.assertIn("Final classification: `COMPLETE`", body)
 
     def test_assessment_only_report_does_not_claim_delivery(self) -> None:
         state = TransactionState(
