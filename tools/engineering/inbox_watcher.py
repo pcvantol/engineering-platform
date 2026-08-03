@@ -419,6 +419,48 @@ def _terminal_phase_for_run(repo: Path, run_id: str) -> str | None:
     return None
 
 
+def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard_operator") -> dict[str, object]:
+    """Acknowledge one terminal execution without changing engineering evidence."""
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    with _lock(repo):
+        status_path = repo / ".engineering" / "status" / "status.json"
+        try:
+            current = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RetrySubmissionError("Er is geen actieve terminale uitvoering om te bevestigen.") from error
+        if current.get("watcher_state") == "ENGINEERING_RUN_ACTIVE" or current.get("run_id"):
+            raise RetrySubmissionError("Een actieve uitvoering kan niet worden bevestigd.")
+        phase = _terminal_phase_for_run(repo, run_id)
+        if phase not in TERMINAL_PHASES or current.get("last_executed_run") != run_id:
+            raise RetrySubmissionError("Alleen de huidige terminale uitvoering kan worden bevestigd.")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        audit_path = status_path.with_name("execution_dismissals.json")
+        try:
+            records = json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.exists() else []
+        except (OSError, json.JSONDecodeError) as error:
+            raise RetrySubmissionError("De dismissal-audit is niet veilig beschikbaar.") from error
+        if not isinstance(records, list):
+            raise RetrySubmissionError("De dismissal-audit is ongeldig.")
+        record = {"run_id": run_id, "terminal_state": phase, "dismissed": True, "dismissed_at": timestamp, "dismissed_by": dismissed_by}
+        records.append(record)
+        temporary = audit_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(records, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, audit_path)
+        status(
+            repo,
+            "WATCHER_IDLE",
+            queued_jobs=current.get("queue_depth", 0),
+            queue_items=current.get("queue_items", []),
+            last_executed_filename=None,
+            last_executed_title=None,
+            last_executed_run=None,
+            last_executed_phase=None,
+            current_action="Execution Host Idle",
+        )
+        return record
+
+
 def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recovery: bool = False) -> dict[str, object]:
     """Create one explicitly requested new execution for a terminal BLOCKED run."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):

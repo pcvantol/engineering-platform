@@ -28,7 +28,7 @@ from .providers import TailscaleProvider
 from .providers import LaunchdProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, cloud_root, submit_execution_retry, submit_predecessor_retry
+from .inbox_watcher import RetrySubmissionError, cloud_root, dismiss_execution, submit_execution_retry, submit_predecessor_retry
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -1160,6 +1160,22 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     self._send(b'{"error":"De uitvoering kan nu niet veilig opnieuw worden gestart."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/execution-dismiss":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
+                        raise ValueError
+                    outcome = dismiss_execution(root, payload["run_id"])
+                    log_event(logger, logging.INFO, "execution_dismissed", run_id=payload["run_id"])
+                except RetrySubmissionError as error:
+                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De uitvoering kan nu niet veilig worden bevestigd."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return

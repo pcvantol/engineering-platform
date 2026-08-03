@@ -59,6 +59,16 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("engineering_memory.py", runner)
         self.assertIn("live_status.py", runner)
 
+    def test_execution_host_operations_documents_the_recent_host_increments(self) -> None:
+        operations = (ROOT / "docs" / "engineering" / "EXECUTION_HOST_OPERATIONS.md").read_text(encoding="utf-8")
+        self.assertIn("PRs #715–#723", operations)
+        self.assertIn("Workspace Preflight", operations)
+        self.assertIn("Workspace authorization", operations)
+        self.assertIn("Configuration Resolver", operations)
+        self.assertIn("Dismiss Execution", operations)
+        self.assertIn("Retry Execution", operations)
+        self.assertIn("Queue Recovery", operations)
+
     def test_roadmap_and_active_backlog_distinguish_completed_1_5_from_maintenance(self) -> None:
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(
             encoding="utf-8"

@@ -465,6 +465,21 @@ class InboxWatcherTest(unittest.TestCase):
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
 
+    def test_dismiss_terminal_execution_clears_operational_state_and_preserves_audit(self) -> None:
+        run_id = "inbox-dismissed"
+        runs = self.repo / ".engineering" / "engineering-runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.json").write_text(json.dumps({"phase": "BLOCKED"}), encoding="utf-8")
+        status = self.repo / ".engineering" / "status"
+        status.mkdir(parents=True, exist_ok=True)
+        (status / "status.json").write_text(json.dumps({"watcher_state": "JOB_BLOCKED", "last_executed_run": run_id, "last_executed_phase": "BLOCKED", "last_executed_title": "Blocked prompt", "queue_depth": 0, "queue_items": []}), encoding="utf-8")
+        outcome = inbox_watcher.dismiss_execution(self.repo, run_id)
+        self.assertTrue(outcome["dismissed"])
+        self.assertEqual(json_status(self.repo)["watcher_state"], "WATCHER_IDLE")
+        self.assertIsNone(json_status(self.repo)["last_executed_run"])
+        audit = json.loads((status / "execution_dismissals.json").read_text(encoding="utf-8"))
+        self.assertEqual(audit[-1]["run_id"], run_id)
+
     def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
         (self.root / "Completed").mkdir()
         (self.root / "Reports").mkdir()

@@ -88,4 +88,18 @@ recorded. Neither action bypasses watcher ownership, bootstrap or runner
 checks. This deliberately supplies sequential safety before a future
 Engineering Intent `depends_on` model can express finer-grained rules.
 
+## Dismiss Execution
+
+**Dismiss Execution** is a confirmed operator acknowledgement, not an
+engineering operation. It is available only for the current terminal execution
+and clears Active Execution so the watcher returns to idle without changing the
+queue. The confirmation shows Run ID, prompt title and terminal state, and
+explains that no work will restart.
+
+Dismiss records `dismissed`, `dismissed_at` and `dismissed_by` in local audit
+evidence. Engineering Reports, terminal evidence, telemetry, Prompt History
+and retry relationships remain immutable. A dismissed `BLOCKED` execution may
+still be retried later, while Queue Recovery remains the separate explicit
+operation for dependent Inbox work. Dismiss never resumes that queue.
+
 Commands: `python3 -m tools.engineering.inbox_watcher once|run|status|install|uninstall|doctor|migrate-icloud-archives`.

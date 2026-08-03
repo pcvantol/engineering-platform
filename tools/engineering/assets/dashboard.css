@@ -179,8 +179,12 @@ html[data-theme="dark"] .markdown-copy-wrap :is(.copy.copy--glyph,.download.down
 /* Prompt-history navigation is an evidence action and fills with its red category color. */
 #promptHistory .log-pagination button:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#271923!important}
 
+/* Terminal execution actions use the explicit operational acknowledgement palette. */
+#promptHistory .execution-history-action{background:#4f453c;border-color:#e7b876;border-radius:7px;color:#f6f3ef;font:12px system-ui;min-height:32px;min-width:0;padding:5px 9px}#promptHistory .execution-history-action:hover:not(:disabled){background:#e7b876;border-color:#e7b876;color:#17151a}
+#promptHistoryRows .prompt-history-actions{vertical-align:middle}#promptHistoryRows .execution-history-action{margin-top:0}
+
 /* Keep report actions available while a long historical report is being read. */
-.report-view-modal__header{align-items:flex-start;background:inherit;display:grid!important;gap:16px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:sticky;top:0;z-index:3}.report-view-modal__title{margin:0;min-width:0}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}
+.report-view-modal__panel{--report-modal-surface:#24242d}.report-view-modal__header{align-items:flex-start;background:var(--report-modal-surface);box-shadow:0 12px 0 var(--report-modal-surface);display:grid!important;gap:16px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:sticky;top:0;z-index:3}.report-view-modal__title{margin:0;min-width:0}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}
 
 /* Modal titles have a consistent category-colored ruler; close glyphs stay compact. */
 .component-modal h2{border-bottom:1px solid #a3e635;padding-bottom:12px}.confirmation-modal h2{border-bottom:1px solid #c7a6ff;margin:0;padding-bottom:12px}.report-view-modal__header{border-bottom:1px solid var(--category-color)}.component-modal__close,.report-view-modal__close{font-size:18px}

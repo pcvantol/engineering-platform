@@ -1181,7 +1181,15 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("formats displayed log timestamps as dd-MM-yyyy HH:mm:ss", async ({ page }) => {
+    await page.route("**/api/logs/**", (route) =>
+      route.fulfill({ contentType: "application/x-ndjson", body: "" }),
+    );
+    const logsLoaded = Promise.all([
+      page.waitForResponse((response) => response.url().endsWith("/api/logs/inbox")),
+      page.waitForResponse((response) => response.url().endsWith("/api/logs/dashboard")),
+    ]);
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await logsLoaded;
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
       componentLogEntries.inbox = structuredLogEntries(

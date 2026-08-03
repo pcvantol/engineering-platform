@@ -170,6 +170,13 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertTrue((root / "dashboard.css").is_file())
         self.assertTrue((root / "dashboard.js").is_file())
         self.assertTrue((root / "dashboard_status_store.mjs").is_file())
+        stylesheet = (root / "dashboard.css").read_text(encoding="utf-8")
+        self.assertIn("--report-modal-surface", stylesheet)
+        self.assertIn("background:var(--report-modal-surface)", stylesheet)
+        self.assertIn(".execution-history-action{background:#4f453c", stylesheet)
+        self.assertIn("min-height:32px;min-width:0;padding:5px 9px", stylesheet)
+        self.assertIn(".execution-history-action:hover:not(:disabled){background:#e7b876", stylesheet)
+        self.assertIn(".prompt-history-actions{vertical-align:middle}", stylesheet)
 
     def test_codex_usage_is_shown_only_for_the_displayed_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1079,6 +1086,58 @@ class DashboardStatusTest(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(connection.getresponse().status, 400)
+            dismissal = {
+                "run_id": "inbox-blocked",
+                "dismissed": True,
+                "dismissed_at": "2026-08-03T12:01:00+00:00",
+                "dismissed_by": "dashboard_operator",
+            }
+            with (
+                patch("tools.engineering.dashboard.dismiss_execution", return_value=dismissal) as dismiss,
+                patch("tools.engineering.dashboard.log_event") as dismiss_log_event,
+            ):
+                connection.request(
+                    "POST",
+                    "/api/execution-dismiss",
+                    body='{"run_id":"inbox-blocked"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), dismissal)
+                dismiss.assert_called_once_with(root, "inbox-blocked")
+                dismiss_log_event.assert_any_call(
+                    ANY,
+                    logging.INFO,
+                    "execution_dismissed",
+                    run_id="inbox-blocked",
+                )
+            with patch(
+                "tools.engineering.dashboard.dismiss_execution",
+                side_effect=dashboard.RetrySubmissionError("De uitvoering is nog actief."),
+            ):
+                connection.request(
+                    "POST",
+                    "/api/execution-dismiss",
+                    body='{"run_id":"inbox-active"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "De uitvoering is nog actief."})
+            for body in ("{}", '[]', '{"run_id":1}', '{"run_id":"inbox-blocked","extra":true}'):
+                connection.request(
+                    "POST",
+                    "/api/execution-dismiss",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                self.assertEqual(
+                    json.loads(response.read()),
+                    {"error": "De uitvoering kan nu niet veilig worden bevestigd."},
+                )
             connection.request(
                 "POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"}
             )
