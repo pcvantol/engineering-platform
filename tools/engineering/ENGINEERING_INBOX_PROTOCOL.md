@@ -15,6 +15,24 @@ authorization and a stable run ID. Reports remain under `.engineering/reports/`
 and status under `.engineering/status/`. iCloud is transport only; it retains no
 reports, status or prompt archive after a job is claimed.
 
+## Execution Host Preflight Level 1
+
+Before claiming a discovered Inbox item, the watcher runs fail-closed **Execution
+Host Preflight Level 1**. It validates only the local Execution Host: readable
+platform configuration, required runtime directories and their write access,
+configured free disk capacity, Codex CLI presence/invocation, enabled telemetry
+SQLite access, structured logging initialization, and host identity/version/
+Bootstrap Contract. It does not inspect a Git repository, workspace state,
+Engineering Actions, capability or mission.
+
+`DJCONNECT_ENGINEERING_PREFLIGHT_MIN_FREE_BYTES` configures the minimum free
+disk threshold in bytes (default: 1 GiB). A `FAIL` leaves the Inbox item in
+place, starts no run and moves no prompt into `Running`. Evidence is stored
+locally under `.engineering/status/host_preflight.json`; each failure records a
+check identifier, bounded reason and recovery recommendation. `WARNING` is
+reserved for future non-blocking host observations. Level 2 will add separate
+Workspace Preflight checks.
+
 The private status page shows the current unclaimed queue from this watcher
 projection, oldest first. Each bounded entry contains only its filename,
 Markdown title and File Date Modified timestamp; it never exposes prompt body

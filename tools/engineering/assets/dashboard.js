@@ -1029,6 +1029,9 @@ function renderHealthStatus(x, snapshot = {}) {
         ? "Herstel de geblokkeerde prompt om opnieuw uit te voeren."
         : "Geen actieve actie"),
   );
+  const preflight = snapshot.host_preflight || {};
+  $("hostPreflightStatus").textContent = preflight.outcome || "Niet beschikbaar";
+  $("hostPreflightTimestamp").textContent = preflight.timestamp || "Nog niet uitgevoerd";
   promptStarted(snapshot.prompt_started);
   renderEstimate(x);
   processMetrics(active, snapshot.process_metrics);

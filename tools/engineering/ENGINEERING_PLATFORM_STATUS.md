@@ -32,6 +32,11 @@ boundary. Existing commands remain compatibility interfaces.
   available for every terminal `BLOCKED` run and records immutable lineage.
   This is the safe default until a future
   Engineering Intent dependency model can express finer-grained ordering.
+- Execution Host Preflight Level 1 runs before every Inbox claim. It validates
+  host-only configuration, runtime directories, configurable disk capacity,
+  Codex CLI availability, telemetry storage, structured logging and host
+  identity. A failed check preserves the Inbox item and prevents an engineering
+  run; compact evidence is retained locally and included in the report.
 - iCloud Drive is submission transport only. Claimed prompts, immutable
   execution copies, status, reports, diagnostics and component logs are
   canonical local `.engineering/` evidence.
@@ -84,6 +89,11 @@ Every future capability requires Implementation, Qualification and Evidence.
 It is not complete before qualification. Continuous improvement may address
 qualification, diagnostics, compatibility and maintenance; it must not
 continuously expand the feature set.
+
+The next bounded enhancement is **Execution Host Preflight Level 2 (Workspace
+Preflight)**: separately validate the engineering workspace only after Level 1
+host readiness passes. It must not broaden Level 1 into Git, mission, action or
+capability validation.
 
 Engineering Memory remains advisory and may improve recommendations only.
 Repository evidence remains authoritative and Memory never autonomously changes

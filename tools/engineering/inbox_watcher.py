@@ -37,6 +37,7 @@ from .component_logging import (
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .telemetry import ExecutionTelemetry, persist_execution_async
 from .prompt_history import record_prompt_execution
+from .host_preflight import execute as execute_host_preflight
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -592,6 +593,19 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
         else:
             source, content = candidates[0]
         job_id, run_id, digest = _job_id(source, content)
+        preflight = execute_host_preflight(repo, run_id=run_id)
+        if preflight.outcome == "FAIL":
+            status(
+                repo,
+                "HOST_PREFLIGHT_FAILED",
+                queued_jobs=len(candidates),
+                queue_items=_queue_items(candidates),
+                run_id=None,
+                current_action="Execution Host preflight blokkeert het claimen van Inbox-werk.",
+                diagnostic="Execution Host preflight failed; no Inbox item was claimed.",
+            )
+            log_event(logger, logging.ERROR, "host_preflight_failed", run_id=run_id)
+            return 1
         if _already_seen(areas, job_id):
             status(
                 repo,

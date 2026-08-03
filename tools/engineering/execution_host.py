@@ -51,6 +51,7 @@ from .status_model import build as build_canonical_status, publish as publish_ca
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import migrate_legacy_workspace
 from .providers import GitHubProvider, CodexCliProvider
+from .host_preflight import latest as latest_host_preflight
 
 
 class RunnerError(RuntimeError):
@@ -1749,6 +1750,20 @@ def generate_terminal_report(
             "",
         )
     ) if state.phase == "COMPLETE" else ""
+    preflight = latest_host_preflight(root)
+    if preflight.get("run_id") not in {None, state.run_id}:
+        preflight = {}
+    preflight_checks = preflight.get("checks") or [] if isinstance(preflight, dict) else []
+    if not isinstance(preflight_checks, (list, tuple)):
+        preflight_checks = ()
+    preflight_outcome = preflight.get("outcome", "unavailable") if isinstance(preflight, dict) else "unavailable"
+    preflight_timestamp = preflight.get("timestamp", "unavailable") if isinstance(preflight, dict) else "unavailable"
+    preflight_duration = preflight.get("duration_ms", "unavailable") if isinstance(preflight, dict) else "unavailable"
+    preflight_summary = ", ".join(
+        f"{item.get('identifier')}={item.get('outcome')}"
+        for item in preflight_checks
+        if isinstance(item, dict) and isinstance(item.get("identifier"), str)
+    ) or "unavailable"
     body = "\n".join(
         (
             "# Engineering Report",
@@ -1787,6 +1802,12 @@ def generate_terminal_report(
             "",
             "## Engineering Platform Qualification",
             qualification_summary,
+            "",
+            "## Execution Host Preflight",
+            f"- Outcome: `{preflight_outcome}`",
+            f"- Timestamp: `{preflight_timestamp}`",
+            f"- Duration: `{preflight_duration}` ms",
+            f"- Checks: {preflight_summary}",
             "",
             "## Authorization",
             f"- Owner authorization: `{state.owner_authorized}`",

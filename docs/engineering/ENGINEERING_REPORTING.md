@@ -33,6 +33,16 @@ Managed execution normally uses the host repository as its target. Genesis
 execution normally uses a separate local target repository. The host is never
 described as the target merely because it generated the report.
 
+## Execution Host Preflight evidence
+
+Before an Inbox item is claimed, Execution Host Preflight Level 1 records local
+host evidence: Execution Host identity, version, Bootstrap Contract, timestamp,
+duration, outcome and compact per-check results. Its checks cover only host
+readiness and fail closed before a transaction becomes active. Every terminal
+Engineering Report includes this evidence without exposing internal command or
+filesystem details. Workspace and Git checks are deliberately deferred to
+Execution Host Preflight Level 2.
+
 ## Evidence Bundle
 
 Every `COMPLETE` report includes a structured **Evidence Bundle**. It exposes:

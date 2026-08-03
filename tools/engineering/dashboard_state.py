@@ -11,6 +11,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from .host_preflight import latest as latest_host_preflight
 
 
 JsonReader = Callable[[Path], bytes]
@@ -167,6 +168,7 @@ def snapshot(
             "process_metrics": read_json(process_metrics_reader, fallback={}) if active else {},
             "component_log_versions": component_log_versions_reader(root),
             "component_versions": {"dashboard": dashboard_version, "worker": worker_version},
+            "host_preflight": latest_host_preflight(root),
         },
         separators=(",", ":"),
     ).encode()
