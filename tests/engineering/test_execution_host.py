@@ -610,7 +610,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_additional_workspace_roots_are_absent_without_local_configuration(self) -> None:
         self.assertEqual(additional_workspace_write_roots(self.root), ())
 
-    def test_additional_workspace_roots_reject_invalid_and_non_sibling_configuration(self) -> None:
+    def test_additional_workspace_roots_reject_invalid_and_filesystem_root_configuration(self) -> None:
         configuration = self.root / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json"
         configuration.parent.mkdir(parents=True, exist_ok=True)
         configuration.write_text(
@@ -620,18 +620,18 @@ class LocalAgentRunnerTest(unittest.TestCase):
         local = self.root / ".engineering"
         local.mkdir()
         (local / "engineering-platform.local.json").write_text(
-            json.dumps({"workspace": {"provisioning_root": str(self.root / "missing")}}),
+            json.dumps({"workspace": {"workspace_authorization": {"allowed_roots": [{"path": str(self.root / "missing"), "repository_scope": "direct_children"}], "allowed_repositories": [], "denied_repositories": [], "symlink_policy": "reject", "case_sensitivity": "host"}}}),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(RunnerError, "existing directory"):
+        with self.assertRaisesRegex(RunnerError, "existing non-root directory"):
             additional_workspace_write_roots(self.root)
 
         external = Path(self.root.anchor).resolve()
         (local / "engineering-platform.local.json").write_text(
-            json.dumps({"workspace": {"provisioning_root": str(external)}}),
+            json.dumps({"workspace": {"workspace_authorization": {"allowed_roots": [{"path": str(external), "repository_scope": "direct_children"}], "allowed_repositories": [], "denied_repositories": [], "symlink_policy": "reject", "case_sensitivity": "host"}}}),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(RunnerError, "direct parent"):
+        with self.assertRaisesRegex(RunnerError, "non-root"):
             additional_workspace_write_roots(self.root)
 
     def test_genesis_mode_reconciles_a_clean_local_commit_without_remote_or_pr(self) -> None:
@@ -650,7 +650,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
-        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.dj_engineer.target_repository_authorization", return_value=None):
             state = runner.run(self.prompt, run_id="genesis-run")
         self.assertEqual(state.phase, "COMPLETE")
         self.assertEqual(state.execution_mode, "GENESIS")
@@ -671,7 +671,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.prompt.write_text(f"Execution Mode: Genesis\n\nTarget repository:\n\n{target}\n", encoding="utf-8")
         agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None)
-        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.dj_engineer.target_repository_authorization", return_value=None):
             state = runner.run(self.prompt, run_id="genesis-before-managed")
         self.assertEqual(state.phase, "COMPLETE")
         self.assertEqual(state.genesis_repository_path, str(target))
@@ -866,7 +866,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         local.mkdir(exist_ok=True)
         workspace_root = self.root.parent.resolve()
         (local / "engineering-platform.local.json").write_text(
-            __import__("json").dumps({"workspace": {"provisioning_root": str(workspace_root)}}),
+            __import__("json").dumps({"workspace": {"workspace_authorization": {"allowed_roots": [{"path": str(workspace_root), "repository_scope": "direct_children"}], "allowed_repositories": [], "denied_repositories": [], "symlink_policy": "reject", "case_sensitivity": "host"}}}),
             encoding="utf-8",
         )
         captured: list[str] = []

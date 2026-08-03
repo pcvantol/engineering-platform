@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from time import monotonic
 
-from .platform_api import PlatformConfiguration, PlatformConfigurationError
+from .platform_api import PlatformConfiguration, PlatformConfigurationError, RepositoryAuthorization
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,9 @@ class WorkspacePreflightResult:
     timestamp: str
     duration_ms: int
     checks: tuple[WorkspacePreflightCheck, ...]
+    canonical_target_path: str | None = None
+    authorization_match: str | None = None
+    authorization_policy: str | None = None
 
     def payload(self, run_id: str | None = None) -> dict[str, object]:
         value = asdict(self)
@@ -78,7 +81,7 @@ def _resolve_target(root: Path, prompt: str, mode: str, configuration: PlatformC
     requested = _prompt_value(prompt, "Target repository")
     if not requested:
         return None
-    return Path(requested).expanduser().resolve()
+    return Path(requested).expanduser()
 
 
 def _writable(path: Path) -> bool:
@@ -125,15 +128,22 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
     target = _resolve_target(root, prompt, mode, configuration)
     target_display = str(target) if target else "unavailable"
     target_exists = target is not None and target.is_dir()
+    try:
+        canonical_candidate = str(target.resolve(strict=True)) if target and target_exists else None
+    except OSError:
+        canonical_candidate = None
     checks.append(_check("target_repository", target_exists, "Target repository resolves to an existing directory." if target_exists else "Target repository cannot be resolved to an existing directory.", "Select an existing engineering target repository."))
-    approved = False
-    if target and target_exists:
-        if mode == "MANAGED":
-            approved = target == root.resolve()
-        elif configuration and configuration.workspace.provisioning_root:
-            approved_root = Path(configuration.workspace.provisioning_root).resolve()
-            approved = target.parent == approved_root
-    checks.append(_check("approved_workspace_root", approved, "Target repository belongs to an approved workspace root." if approved else "Target repository is outside the approved workspace root.", "Use the configured workspace root for the target repository."))
+    authorization: RepositoryAuthorization | None = None
+    if target and target_exists and configuration:
+        authorization = configuration.authorize_target_repository(target, mode)
+    authorized = bool(authorization and authorization.authorized)
+    canonical_target = (authorization.canonical_target if authorization else None) or canonical_candidate
+    checks.append(_check(
+        "WORKSPACE_TARGET_AUTHORIZED",
+        authorized,
+        authorization.reason if authorization else "Workspace authorization configuration is unavailable.",
+        authorization.recovery if authorization else "Restore trusted workspace authorization configuration.",
+    ))
 
     git_directory: Path | None = None
     if target_exists:
@@ -185,7 +195,10 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
             checks.append(_check("managed_synchronization", synchronized, "Managed target is synchronized with its upstream." if synchronized else "Managed target is not synchronized with its upstream.", "Synchronize the expected branch with its configured upstream."))
     workspace = configuration.workspace.name if configuration else "unavailable"
     outcome = "FAIL" if any(check.outcome == "FAIL" for check in checks) else "PASS"
-    result = WorkspacePreflightResult(outcome, workspace, target_display, branch, mode, timestamp, round((monotonic() - started) * 1000), tuple(checks))
+    result = WorkspacePreflightResult(
+        outcome, workspace, target_display, branch, mode, timestamp, round((monotonic() - started) * 1000), tuple(checks),
+        canonical_target, authorization.matched if authorization else None, authorization.scope if authorization else None,
+    )
     _persist(root, result, run_id)
     return result
 
@@ -198,4 +211,4 @@ def latest(root: Path) -> dict[str, object]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in ("outcome", "workspace", "target_repository", "branch", "execution_mode", "timestamp", "duration_ms", "checks", "run_id") if key in payload}
+    return {key: payload[key] for key in ("outcome", "workspace", "target_repository", "canonical_target_path", "authorization_match", "authorization_policy", "branch", "execution_mode", "timestamp", "duration_ms", "checks", "run_id") if key in payload}

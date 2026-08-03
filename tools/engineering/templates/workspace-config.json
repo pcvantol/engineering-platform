@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "platform": {
     "id": "engineering-platform",
     "name": "Engineering Platform",
@@ -12,7 +12,14 @@
     "id": "replace-workspace-id",
     "name": "Replace Workspace Name",
     "repository": {"provider": "github", "owner": "replace-owner", "name": "replace-repository", "default_branch": "main"},
-    "branding": {"dashboard_title": "Replace Workspace Name"}
+    "branding": {"dashboard_title": "Replace Workspace Name"},
+    "workspace_authorization": {
+      "allowed_roots": [],
+      "allowed_repositories": [],
+      "denied_repositories": [],
+      "symlink_policy": "reject",
+      "case_sensitivity": "host"
+    }
   },
   "providers": {"runtime": "codex_cli", "repository": "github", "service_manager": "launchd", "remote_submission": "icloud_inbox", "private_remote_access": "tailscale", "dashboard": "private_http"}
 }

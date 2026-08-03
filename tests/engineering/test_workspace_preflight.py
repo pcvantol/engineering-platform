@@ -88,7 +88,7 @@ class WorkspacePreflightTest(unittest.TestCase):
         target = Path(self.temporary.name) / "other" / "target"
         self._initialize(target)
         self._set_workspace_root(Path(self.temporary.name) / "approved")
-        self.assertIn("approved_workspace_root", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n")))
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n")))
 
     def test_genesis_success_needs_no_remote(self) -> None:
         target = Path(self.temporary.name) / "workspace" / "target"
@@ -98,5 +98,59 @@ class WorkspacePreflightTest(unittest.TestCase):
         self.assertEqual(result.outcome, "PASS")
         self.assertEqual(result.execution_mode, "GENESIS")
 
+    def test_explicit_workspace_root_authorizes_forge_direct_child(self) -> None:
+        workspace = Path(self.temporary.name) / "GitHub"
+        target = workspace / "forge"
+        self._initialize(target)
+        self._set_workspace_authorization([{"path": str(workspace), "repository_scope": "direct_children"}])
+        self.assertEqual(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n").outcome, "PASS")
+
+    def test_direct_children_reject_nested_repository_but_descendants_accept_it(self) -> None:
+        workspace = Path(self.temporary.name) / "GitHub"
+        target = workspace / "group" / "forge"
+        self._initialize(target)
+        self._set_workspace_authorization([{"path": str(workspace), "repository_scope": "direct_children"}])
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n")))
+        self._set_workspace_authorization([{"path": str(workspace), "repository_scope": "descendants"}])
+        self.assertEqual(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n").outcome, "PASS")
+
+    def test_allow_list_authorizes_and_deny_list_wins(self) -> None:
+        target = Path(self.temporary.name) / "outside" / "forge"
+        self._initialize(target)
+        self._set_workspace_authorization([], allowed=[str(target)])
+        self.assertEqual(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n").outcome, "PASS")
+        self._set_workspace_authorization([], allowed=[str(target)], denied=[str(target)])
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n")))
+
+    def test_path_prefix_traversal_and_symlink_escape_are_rejected(self) -> None:
+        workspace = Path(self.temporary.name) / "GitHub"
+        target = Path(self.temporary.name) / "GitHub-lookalike" / "forge"
+        self._initialize(target)
+        self._set_workspace_authorization([{"path": str(workspace), "repository_scope": "descendants"}])
+        result = workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {target}\n")
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(result))
+        nested = workspace / "nested" / "forge"
+        self._initialize(nested)
+        traversal = workspace / "nested" / ".." / "nested" / "forge"
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {traversal}\n")))
+        link = workspace / "link"
+        workspace.mkdir(exist_ok=True)
+        link.symlink_to(target.parent, target_is_directory=True)
+        self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {link / target.name}\n")))
+
     def _set_workspace_root(self, root: Path) -> None:
+        configuration = json.loads((self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
+        configuration["schema_version"] = 1
+        configuration["workspace"].pop("workspace_authorization", None)
+        (self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").write_text(json.dumps(configuration), encoding="utf-8")
         (self.root / ".engineering" / "engineering-platform.local.json").write_text(json.dumps({"workspace": {"provisioning_root": str(root)}}), encoding="utf-8")
+
+    def _set_workspace_authorization(self, roots: list[dict[str, str]], *, allowed: list[str] | None = None, denied: list[str] | None = None) -> None:
+        authorization = {
+            "allowed_roots": roots,
+            "allowed_repositories": allowed or [],
+            "denied_repositories": denied or [],
+            "symlink_policy": "reject",
+            "case_sensitivity": "host",
+        }
+        (self.root / ".engineering" / "engineering-platform.local.json").write_text(json.dumps({"workspace": {"workspace_authorization": authorization}}), encoding="utf-8")

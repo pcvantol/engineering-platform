@@ -35,8 +35,12 @@ reserved for future non-blocking host observations.
 ## Execution Host Preflight Level 2 (Workspace Preflight)
 
 After Host Preflight passes and before the Inbox item is claimed, Workspace
-Preflight validates only the selected engineering workspace. It resolves the
-target under an approved workspace root, verifies Git metadata access and
+Preflight validates only the selected engineering workspace. It canonically
+resolves the target and evaluates the trusted Workspace Authorization policy:
+configured roots with `direct_children` or explicit `descendants` scope,
+optional repository allow-list and deny-list (deny wins), and the configured
+symlink policy. The stable `WORKSPACE_TARGET_AUTHORIZED` check fails closed
+before a claim when no policy authorizes the target. It then verifies Git metadata access and
 write access, requires a clean staged/unstaged/untracked worktree, and rejects
 index locks or unfinished merge, rebase, cherry-pick, revert and bisect work.
 Managed execution also requires the configured branch, a valid origin and an

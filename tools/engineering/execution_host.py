@@ -102,28 +102,36 @@ def _retry_relationship(state: TransactionState) -> tuple[str, ...]:
 
 
 def additional_workspace_write_roots(root: Path) -> tuple[Path, ...]:
-    """Return the single configured sibling-project root, or no extra write root.
-
-    The local setting is deliberately limited to the current repository's direct
-    parent. It enables a new sibling project without giving a transaction broad
-    filesystem write authority.
-    """
-    local = root / ".engineering" / "engineering-platform.local.json"
-    if not local.is_file():
+    """Return trusted workspace roots for a bounded Genesis invocation."""
+    if not (root / ".engineering" / "engineering-platform.local.json").is_file():
         return ()
     try:
-        configured = PlatformConfiguration.load(root).workspace.provisioning_root
+        policy = PlatformConfiguration.load(root).resolve_repository_authorization_policy()
     except PlatformConfigurationError as error:
         raise RunnerError(str(error)) from error
-    if configured is None:
-        return ()
-    candidate = Path(configured).expanduser()
-    if candidate.is_symlink() or not candidate.is_dir():
-        raise RunnerError("Configured Engineering Workspace Root must be an existing directory, not a symlink.")
-    resolved = candidate.resolve()
-    if root.resolve().parent != resolved:
-        raise RunnerError("Configured Engineering Workspace Root must be the current repository's direct parent directory.")
-    return (resolved,)
+    roots: list[Path] = []
+    for configured in policy.allowed_roots:
+        candidate = Path(configured.path).expanduser()
+        if candidate.is_symlink() or not candidate.is_dir() or candidate == Path(candidate.anchor):
+            raise RunnerError("Configured Engineering Workspace Root must be an existing non-root directory, not a symlink.")
+        roots.append(candidate.resolve())
+    for configured in policy.allowed_repositories:
+        candidate = Path(configured).expanduser()
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise RunnerError("Configured Engineering Repository Allow-List entry must be an existing directory, not a symlink.")
+        roots.append(candidate.resolve().parent)
+    return tuple(dict.fromkeys(roots))
+
+
+def target_repository_authorization(root: Path, target: Path) -> str | None:
+    """Return a bounded Genesis authorization blocker, if any."""
+    try:
+        authorization = PlatformConfiguration.load(root).authorize_target_repository(target, "GENESIS")
+    except PlatformConfigurationError as error:
+        return f"Genesis preflight blocked: {error}"
+    if authorization.authorized:
+        return None
+    return f"Genesis preflight blocked: WORKSPACE_TARGET_AUTHORIZED: {authorization.reason} Recovery: {authorization.recovery}"
 
 
 @dataclass(frozen=True)
@@ -821,13 +829,13 @@ class EngineeringRunner:
                 return self._save_terminal(
                     state, "BLOCKED", "genesis_workspace_preflight", preflight
                 )
-            allowed = additional_workspace_write_roots(self.root)
-            if context.target_repository.parent.resolve() not in allowed:
+            authorization_blocker = target_repository_authorization(self.root, context.target_repository)
+            if authorization_blocker:
                 return self._save_terminal(
                     state,
                     "BLOCKED",
                     "genesis_repository_scope",
-                    "Genesis preflight blocked: Target repository is outside the configured direct-child workspace root.",
+                    authorization_blocker,
                 )
             owner = self._active_genesis_transaction(context.target_repository, state.run_id)
             if owner:
@@ -937,9 +945,9 @@ class EngineeringRunner:
         if not result.repository_path or not result.commit_sha:
             return self._save_terminal(state, "BLOCKED", "genesis_checkpoint_required", "Genesis Mode requires repository path and commit checkpoint evidence.")
         target = Path(result.repository_path).expanduser()
-        allowed = additional_workspace_write_roots(self.root)
-        if not target.is_absolute() or target.parent.resolve() not in allowed:
-            return self._save_terminal(state, "BLOCKED", "genesis_repository_scope", "Genesis repository is outside the configured direct-child workspace root.")
+        authorization_blocker = target_repository_authorization(self.root, target)
+        if not target.is_absolute() or authorization_blocker:
+            return self._save_terminal(state, "BLOCKED", "genesis_repository_scope", authorization_blocker or "Genesis preflight blocked: WORKSPACE_TARGET_AUTHORIZED: target path must be absolute.")
         try:
             head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=target, text=True, capture_output=True, check=False)
             clean = subprocess.run(("git", "status", "--porcelain", "--untracked-files=all"), cwd=target, text=True, capture_output=True, check=False)
@@ -1825,6 +1833,9 @@ def generate_terminal_report(
             f"- Outcome: `{workspace_preflight.get('outcome', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Workspace: `{workspace_preflight.get('workspace', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Target repository: `{workspace_preflight.get('target_repository', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Canonical target path: `{workspace_preflight.get('canonical_target_path', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Authorization match: `{workspace_preflight.get('authorization_match', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
+            f"- Authorization policy: `{workspace_preflight.get('authorization_policy', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Branch: `{workspace_preflight.get('branch', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Execution mode: `{workspace_preflight.get('execution_mode', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Timestamp: `{workspace_preflight.get('timestamp', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",

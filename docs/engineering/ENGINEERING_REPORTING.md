@@ -38,8 +38,9 @@ described as the target merely because it generated the report.
 Before an Inbox item is claimed, Execution Host Preflight Level 1 records local
 host evidence: Execution Host identity, version, Bootstrap Contract, timestamp,
 duration, outcome and compact per-check results. Level 2 then records Workspace
-Preflight evidence: workspace, target repository, branch, execution mode,
-timestamp, duration, outcome and compact per-check results. Both stages fail
+Preflight evidence: workspace, requested and canonical target repository,
+matched authorization identity and policy, branch, execution mode, timestamp,
+duration, outcome and compact per-check results. Both stages fail
 closed before an Inbox claim or active transaction. The Workspace stage checks
 only target resolution and repository readiness; it does not validate missions,
 actions or capabilities. Every terminal Engineering Report includes both

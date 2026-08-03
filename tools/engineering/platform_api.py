@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import json
 from copy import deepcopy
 from pathlib import Path
+import sys
 from .providers import registry
 
 
@@ -40,11 +41,42 @@ class WorkspaceIdentity:
 
 
 @dataclass(frozen=True)
+class AllowedWorkspaceRoot:
+    """A trusted directory which may contain engineering repositories."""
+
+    path: str
+    repository_scope: str
+
+
+@dataclass(frozen=True)
+class RepositoryAuthorizationPolicy:
+    """Fail-closed repository admission policy owned by host configuration."""
+
+    allowed_roots: tuple[AllowedWorkspaceRoot, ...]
+    allowed_repositories: tuple[str, ...]
+    denied_repositories: tuple[str, ...]
+    symlink_policy: str
+    case_sensitivity: str
+    legacy: bool = False
+
+
+@dataclass(frozen=True)
+class RepositoryAuthorization:
+    authorized: bool
+    canonical_target: str | None
+    matched: str | None
+    scope: str | None
+    reason: str
+    recovery: str
+
+
+@dataclass(frozen=True)
 class PlatformConfiguration:
     schema_version: int
     platform: PlatformIdentity
     workspace: WorkspaceIdentity
     providers: dict[str, str]
+    repository_authorization: RepositoryAuthorizationPolicy
 
     @classmethod
     def load(cls, root: Path) -> "PlatformConfiguration":
@@ -63,7 +95,7 @@ class PlatformConfiguration:
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
             raise PlatformConfigurationError("Engineering Platform configuration is invalid.") from error
         expected = {"runtime", "repository", "service_manager", "remote_submission", "private_remote_access", "dashboard"}
-        if set(raw) != {"schema_version", "platform", "workspace", "providers"} or raw.get("schema_version") != 1 or set(providers) != expected or not all(isinstance(v, str) and v for v in providers.values()):
+        if set(raw) != {"schema_version", "platform", "workspace", "providers"} or raw.get("schema_version") not in {1, 2} or set(providers) != expected or not all(isinstance(v, str) and v for v in providers.values()):
             raise PlatformConfigurationError("Engineering Platform configuration is incompatible.")
         provisioning_root = workspace.get("provisioning_root")
         if provisioning_root is not None and (
@@ -75,7 +107,155 @@ class PlatformConfiguration:
         identity = PlatformIdentity(platform["id"], platform["name"], platform["version"], platform["generation"], platform["documentation_namespace"], platform["capability_registry_version"])
         if identity.id != "engineering-platform" or identity.version != "1.5.0" or identity.generation != 2:
             raise PlatformConfigurationError("Engineering Platform identity is incompatible.")
-        return cls(1, identity, WorkspaceIdentity(workspace["id"], workspace["name"], repository["provider"], repository["owner"], repository["name"], repository["default_branch"], branding["dashboard_title"], provisioning_root), dict(providers))
+        authorization = _authorization_policy(workspace, provisioning_root)
+        return cls(int(raw["schema_version"]), identity, WorkspaceIdentity(workspace["id"], workspace["name"], repository["provider"], repository["owner"], repository["name"], repository["default_branch"], branding["dashboard_title"], provisioning_root), dict(providers), authorization)
+
+    def resolve_allowed_workspace_roots(self) -> tuple[AllowedWorkspaceRoot, ...]:
+        return self.repository_authorization.allowed_roots
+
+    def resolve_repository_authorization_policy(self) -> RepositoryAuthorizationPolicy:
+        return self.repository_authorization
+
+    def authorize_target_repository(self, path: Path, execution_mode: str) -> RepositoryAuthorization:
+        """Authorize one existing target without broadening host filesystem access."""
+        policy = self.repository_authorization
+        raw = path.expanduser()
+        if not raw.is_absolute():
+            return _denied(None, "Target repository path must be absolute.", "Resubmit with an absolute repository path.")
+        if ".." in raw.parts:
+            return _denied(None, "Target repository path contains traversal.", "Resubmit with a canonical repository path without '..'.")
+        if policy.symlink_policy == "reject" and _has_untrusted_symlink_component(raw, policy):
+            return _denied(None, "Target repository contains a symlink and the policy rejects symlinks.", "Use a non-symlink repository path or change trusted host configuration.")
+        try:
+            target = raw.resolve(strict=True)
+        except OSError:
+            return _denied(None, "Target repository cannot be resolved canonically.", "Correct the target path and retry.")
+        if not target.is_dir():
+            return _denied(str(target), "Target repository is not a directory.", "Select an existing repository directory.")
+        if execution_mode == "MANAGED":
+            return RepositoryAuthorization(True, str(target), "managed-host", "managed", "Managed target is the configured execution host.", "No action required.")
+        denied = _matching_path(target, policy.denied_repositories, policy.case_sensitivity)
+        if denied:
+            return _denied(str(target), "Target repository is explicitly denied by trusted host configuration.", "Remove the deny-list entry only when the target is approved.")
+        allowed = _matching_path(target, policy.allowed_repositories, policy.case_sensitivity)
+        if allowed:
+            return RepositoryAuthorization(True, str(target), f"allow-list:{allowed.name}", "explicit_allow_list", "Target repository is explicitly authorized.", "No action required.")
+        for root in policy.allowed_roots:
+            try:
+                canonical_root = _canonical_root(root.path)
+            except OSError:
+                continue
+            if _under_scope(target, canonical_root, root.repository_scope, policy.case_sensitivity):
+                return RepositoryAuthorization(True, str(target), f"root:{canonical_root.name}", root.repository_scope, "Target repository matches an authorized workspace root.", "No action required.")
+        return _denied(str(target), "Target repository does not match an authorized workspace root or allow-list entry.", "Add an approved root or explicit repository entry in trusted host configuration, then retry.")
+
+
+def _authorization_policy(workspace: dict[str, object], provisioning_root: str | None) -> RepositoryAuthorizationPolicy:
+    raw = workspace.get("workspace_authorization")
+    if raw is None:
+        roots = () if provisioning_root is None else (AllowedWorkspaceRoot(provisioning_root, "direct_children"),)
+        return RepositoryAuthorizationPolicy(roots, (), (), "reject", "host", legacy=True)
+    if not isinstance(raw, dict) or set(raw) - {"allowed_roots", "allowed_repositories", "denied_repositories", "symlink_policy", "case_sensitivity"}:
+        raise PlatformConfigurationError("Engineering Workspace Authorization is invalid.")
+    roots_raw = raw.get("allowed_roots", [])
+    allow_raw = raw.get("allowed_repositories", [])
+    deny_raw = raw.get("denied_repositories", [])
+    if not isinstance(roots_raw, list) or not isinstance(allow_raw, list) or not isinstance(deny_raw, list):
+        raise PlatformConfigurationError("Engineering Workspace Authorization is invalid.")
+    roots: list[AllowedWorkspaceRoot] = []
+    for entry in roots_raw:
+        if not isinstance(entry, dict) or set(entry) != {"path", "repository_scope"}:
+            raise PlatformConfigurationError("Engineering Workspace Authorization root is invalid.")
+        path, scope = entry["path"], entry["repository_scope"]
+        if not isinstance(path, str) or not Path(path).is_absolute() or scope not in {"direct_children", "descendants"}:
+            raise PlatformConfigurationError("Engineering Workspace Authorization root is invalid.")
+        roots.append(AllowedWorkspaceRoot(path, scope))
+    if not all(isinstance(path, str) and Path(path).is_absolute() for path in (*allow_raw, *deny_raw)):
+        raise PlatformConfigurationError("Engineering Workspace Authorization repository list is invalid.")
+    symlink_policy = raw.get("symlink_policy", "reject")
+    case_sensitivity = raw.get("case_sensitivity", "host")
+    if symlink_policy not in {"reject", "canonicalize_within_root"} or case_sensitivity not in {"host", "sensitive"}:
+        raise PlatformConfigurationError("Engineering Workspace Authorization is invalid.")
+    return RepositoryAuthorizationPolicy(tuple(roots), tuple(allow_raw), tuple(deny_raw), symlink_policy, case_sensitivity)
+
+
+def _canonical_root(value: str) -> Path:
+    root = Path(value)
+    if root.is_symlink() or not root.is_dir() or root == Path(root.anchor):
+        raise OSError("invalid workspace root")
+    return root.resolve(strict=True)
+
+
+def _has_untrusted_symlink_component(path: Path, policy: RepositoryAuthorizationPolicy) -> bool:
+    """Reject symlinks below a configured path, not host-owned mount aliases.
+
+    macOS commonly exposes temporary directories through `/var`, itself a
+    system symlink. A trusted configured root may therefore contain such a
+    host alias. Only components below that exact configured root are untrusted.
+    """
+    configured_paths = [Path(root.path).expanduser() for root in policy.allowed_roots]
+    configured_paths.extend(Path(value).expanduser() for value in policy.allowed_repositories)
+    configured_paths.extend(Path(value).expanduser() for value in policy.denied_repositories)
+    for configured in configured_paths:
+        try:
+            relative = path.relative_to(configured)
+        except ValueError:
+            continue
+        current = configured
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                return True
+    return False
+
+
+def _matching_path(target: Path, configured: tuple[str, ...], case_sensitivity: str) -> Path | None:
+    for value in configured:
+        try:
+            candidate = Path(value).resolve(strict=True)
+        except OSError:
+            continue
+        if _same_path(candidate, target, case_sensitivity):
+            return candidate
+    return None
+
+
+def _same_path(left: Path, right: Path, case_sensitivity: str) -> bool:
+    return _path_parts(left, case_sensitivity) == _path_parts(right, case_sensitivity)
+
+
+def _under_scope(target: Path, root: Path, scope: str, case_sensitivity: str) -> bool:
+    target_parts = _path_parts(target, case_sensitivity)
+    root_parts = _path_parts(root, case_sensitivity)
+    if len(target_parts) <= len(root_parts) or target_parts[:len(root_parts)] != root_parts:
+        return False
+    depth = len(target_parts) - len(root_parts)
+    return scope == "descendants" or depth == 1
+
+
+def _path_parts(path: Path, case_sensitivity: str) -> tuple[str, ...]:
+    parts = path.parts
+    # APFS normally has case-insensitive semantics; explicit `sensitive` keeps
+    # exact component matching for hosts and volumes that require it.
+    if case_sensitivity == "host" and sys.platform == "darwin":
+        return tuple(part.casefold() for part in parts)
+    return parts
+
+
+def _denied(target: str | None, reason: str, recovery: str) -> RepositoryAuthorization:
+    return RepositoryAuthorization(False, target, None, None, reason, recovery)
+
+
+def resolve_allowed_workspace_roots(root: Path) -> tuple[AllowedWorkspaceRoot, ...]:
+    return PlatformConfiguration.load(root).resolve_allowed_workspace_roots()
+
+
+def resolve_repository_authorization_policy(root: Path) -> RepositoryAuthorizationPolicy:
+    return PlatformConfiguration.load(root).resolve_repository_authorization_policy()
+
+
+def authorize_target_repository(root: Path, path: Path, execution_mode: str) -> RepositoryAuthorization:
+    return PlatformConfiguration.load(root).authorize_target_repository(path, execution_mode)
 
 
 def _merge(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
