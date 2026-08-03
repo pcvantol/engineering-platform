@@ -179,7 +179,7 @@ class InboxWatcherTest(unittest.TestCase):
         old_log = self.repo / ".engineering/logs/codex" / f"{run_id}.log"
         old_log.parent.mkdir(parents=True)
         old_log.write_text("previous attempt", encoding="utf-8")
-        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             run.return_value = __import__("subprocess").CompletedProcess((), 0)
             code = inbox_watcher.once(self.repo, self.root, 0)
         self.assertEqual(code, 0)
@@ -198,7 +198,7 @@ class InboxWatcherTest(unittest.TestCase):
         prompt = self.inbox / "preflight.md"
         prompt.write_text("# Preflight prompt", encoding="utf-8")
         _, run_id, _ = inbox_watcher._job_id(prompt, prompt.read_text(encoding="utf-8"))
-        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 ("engineering-execution-host",), 2, "", "Engineering Platform upgrade required."
             )
@@ -379,7 +379,7 @@ class InboxWatcherTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=retry_run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess((), 0)
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 

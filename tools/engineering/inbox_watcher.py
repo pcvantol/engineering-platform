@@ -337,6 +337,16 @@ def _job_id(source: Path, content: str) -> tuple[str, str, str]:
     return job_id, f"inbox-{digest[:16]}", digest
 
 
+def _allocate_run_id() -> str:
+    """Allocate an execution identity only after admission has passed.
+
+    A content digest remains the job fingerprint.  It must never identify an
+    execution because an operator may deliberately submit identical content
+    again after host repair or a completed prior run.
+    """
+    return f"inbox-{uuid.uuid4().hex}"
+
+
 def _archive_path(area: Path, job_id: str, source: Path) -> Path:
     return area / f"{job_id}__{source.name}"
 
@@ -396,6 +406,16 @@ def _predecessor_recovery_action(run_id: str) -> str:
 
 def _archived_prompt_for_run(repo: Path, run_id: str) -> tuple[Path, str] | None:
     """Find the immutable local failed prompt that produced ``run_id``."""
+    for job in (repo / ".engineering" / "inbox-processing").glob("*/job.json"):
+        try:
+            payload = json.loads(job.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("run_id") == run_id:
+            prompt = job.parent / "prompt.md"
+            content = stable_prompt(prompt, 0.0)
+            if content is not None:
+                return prompt, content
     for path in sorted(local_folders(repo)["Failed"].iterdir()):
         content = stable_prompt(path, 0.0)
         if content is not None and _job_id(path, content)[1] == run_id:
@@ -637,8 +657,8 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
             source, content = retries[0]
         else:
             source, content = candidates[0]
-        job_id, run_id, digest = _job_id(source, content)
-        preflight = execute_host_preflight(repo, run_id=run_id)
+        job_id, legacy_run_id, digest = _job_id(source, content)
+        preflight = execute_host_preflight(repo, run_id=None)
         if preflight.outcome == "FAIL":
             status(
                 repo,
@@ -649,9 +669,9 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 current_action="Execution Host preflight blokkeert het claimen van Inbox-werk.",
                 diagnostic="Execution Host preflight failed; no Inbox item was claimed.",
             )
-            log_event(logger, logging.ERROR, "host_preflight_failed", run_id=run_id)
+            log_event(logger, logging.ERROR, "host_preflight_failed", run_id=legacy_run_id)
             return 1
-        workspace_preflight = execute_workspace_preflight(repo, content, run_id=run_id)
+        workspace_preflight = execute_workspace_preflight(repo, content, run_id=None)
         if workspace_preflight.outcome == "FAIL":
             status(
                 repo,
@@ -662,14 +682,14 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 current_action="Workspace preflight blokkeert het claimen van Inbox-werk.",
                 diagnostic="Workspace preflight failed; no Inbox item was claimed.",
             )
-            log_event(logger, logging.ERROR, "workspace_preflight_failed", run_id=run_id)
+            log_event(logger, logging.ERROR, "workspace_preflight_failed", run_id=legacy_run_id)
             return 1
-        capability_preflight = execute_capability_preflight(repo, content, run_id=run_id)
+        capability_preflight = execute_capability_preflight(repo, content, run_id=None)
         if capability_preflight.outcome == "FAIL":
             status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
                    current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
                    diagnostic="Capability Preflight failed; no Inbox item was claimed.")
-            log_event(logger, logging.ERROR, "capability_preflight_failed", run_id=run_id)
+            log_event(logger, logging.ERROR, "capability_preflight_failed", run_id=legacy_run_id)
             return 1
         if _already_seen(areas, job_id):
             status(
@@ -680,8 +700,9 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 job_id=job_id,
                 diagnostic="Een dubbele opdracht is al geregistreerd.",
             )
-            log_event(logger, logging.WARNING, "duplicate_job_ignored", run_id=run_id)
+            log_event(logger, logging.WARNING, "duplicate_job_ignored", run_id=legacy_run_id)
             return 0
+        run_id = _allocate_run_id()
         claimed = _archive_path(areas["Running"], job_id, source)
         title = _prompt_title(content, source.name)
         try:

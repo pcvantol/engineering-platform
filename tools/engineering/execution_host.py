@@ -1473,7 +1473,12 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
     )
     return TerminalEvidenceBundle(
         target_workspace=str(target),
-        target_repository=_target_repository_name(target, state.repository),
+        # Genesis evidence belongs to the selected local target, never to the
+        # Engineering Platform host repository when that target has no origin.
+        target_repository=_target_repository_name(
+            target,
+            target.name if state.execution_mode == "GENESIS" else state.repository,
+        ),
         target_branch=branch,
         target_commit=commit,
         worktree_state=worktree,
