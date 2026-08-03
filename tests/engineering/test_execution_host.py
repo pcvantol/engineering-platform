@@ -1003,6 +1003,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
         validate_compatibility(manifest, RunnerCompatibility(runner_version="1.1.0", bootstrap_contract="2026.08", checkpoint_formats=frozenset({1, 2}), memory_formats=frozenset({1}), report_formats=frozenset({1})), "0.146.0")
 
+    def test_default_runner_compatibility_accepts_the_repository_manifest(self) -> None:
+        root = Path(__file__).parents[2]
+        manifest = EngineeringPlatformManifest.load(
+            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        )
+        validate_compatibility(manifest, RunnerCompatibility(), "0.146.0")
+
     def test_engineering_platform_rejects_incompatible_platform_version(self) -> None:
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
         with self.assertRaisesRegex(EngineeringPlatformCompatibilityError, "Engineering Platform mismatch"):
