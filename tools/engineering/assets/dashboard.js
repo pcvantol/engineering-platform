@@ -1031,6 +1031,11 @@ function renderHealthStatus(x, snapshot = {}) {
   );
   const preflight = snapshot.host_preflight || {};
   const workspacePreflight = snapshot.workspace_preflight || {};
+  const executionHost = snapshot.execution_host || {};
+  $("executionHostName").textContent = executionHost.name || "Niet beschikbaar";
+  $("executionHostVersion").textContent = executionHost.version || "Niet beschikbaar";
+  $("executionHostRuntime").textContent = executionHost.runtime || "Niet beschikbaar";
+  $("executionHostTransport").textContent = executionHost.runtime_prompt_transport || "Niet beschikbaar";
   $("hostPreflightStatus").textContent = preflight.outcome || "Niet beschikbaar";
   $("hostPreflightTimestamp").textContent = preflight.timestamp || "Nog niet uitgevoerd";
   $("workspacePreflightStatus").textContent = workspacePreflight.outcome || "Niet beschikbaar";

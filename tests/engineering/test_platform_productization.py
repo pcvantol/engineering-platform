@@ -5,7 +5,14 @@ import json
 import tempfile
 import unittest
 
-from tools.engineering.platform_api import PlatformConfiguration, capabilities, provider_registry
+from tools.engineering.platform_api import (
+    PlatformConfiguration,
+    PlatformConfigurationError,
+    execution_host_configuration,
+    capabilities,
+    provider_registry,
+)
+from unittest.mock import patch
 from tools.engineering.platform_bootstrap import (
     _merge_legacy_workspace,
     _validate_legacy_merge,
@@ -35,6 +42,36 @@ class PlatformProductizationTest(unittest.TestCase):
         providers = provider_registry(ROOT)
         self.assertEqual(providers["repository"]["selected"], "github")
         self.assertIn("status", providers["runtime"])
+
+    def test_execution_host_configuration_resolves_capabilities_deterministically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.platform_api.shutil.which", return_value="/usr/local/bin/codex"):
+            root = Path(temporary)
+            target = root / "tools" / "engineering"
+            target.mkdir(parents=True)
+            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            resolver = execution_host_configuration(root)
+            self.assertEqual(resolver.resolve_runtime_prompt_transport().provider, "icloud_inbox")
+            self.assertEqual(resolver.resolve_status_store(), root.resolve() / ".engineering" / "status")
+            self.assertEqual(resolver.resolve_report_store(), root.resolve() / ".engineering" / "reports")
+            self.assertEqual(resolver.resolve_log_store(), root.resolve() / ".engineering" / "logs")
+            self.assertEqual(resolver.resolve_telemetry_store(), root.resolve() / ".engineering" / "engineering.db")
+            self.assertEqual(resolver.resolve_runtime(), Path("/usr/local/bin/codex"))
+            identity = resolver.resolve_execution_host_identity()
+            self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
+
+    def test_execution_host_configuration_fails_closed_for_missing_or_invalid_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(PlatformConfigurationError):
+                execution_host_configuration(root)
+            target = root / "tools" / "engineering"
+            target.mkdir(parents=True)
+            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text("{}", encoding="utf-8")
+            with self.assertRaises(PlatformConfigurationError):
+                execution_host_configuration(root)
 
     def test_workspace_provisioning_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

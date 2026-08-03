@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
+from .platform_api import PlatformConfigurationError, execution_host_configuration
 
 
 JsonReader = Callable[[Path], bytes]
@@ -151,6 +152,16 @@ def snapshot(
         telemetry = telemetry_reader(root)
     except Exception:
         telemetry = []
+    try:
+        identity = execution_host_configuration(root).resolve_execution_host_identity()
+        execution_host = {
+            "name": identity.name,
+            "version": identity.version,
+            "runtime": identity.runtime,
+            "runtime_prompt_transport": identity.runtime_prompt_transport,
+        }
+    except PlatformConfigurationError:
+        execution_host = {}
     return json.dumps(
         {
             "status": status_payload,
@@ -171,6 +182,7 @@ def snapshot(
             "component_versions": {"dashboard": dashboard_version, "worker": worker_version},
             "host_preflight": latest_host_preflight(root),
             "workspace_preflight": latest_workspace_preflight(root),
+            "execution_host": execution_host,
         },
         separators=(",", ":"),
     ).encode()

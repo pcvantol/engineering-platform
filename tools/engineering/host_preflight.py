@@ -120,9 +120,14 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
     except Exception:
         checks.append(_check("host_identity", False, "Execution Host identity or bootstrap contract is unavailable.", "Restore the Engineering Platform version manifest."))
 
-    directories = ("status", "reports", "logs", "inbox-processing")
-    for name in directories:
-        path = root / ".engineering" / name
+    directories = (
+        ("status", configuration.resolver(root).resolve_status_store() if configuration else None),
+        ("reports", configuration.resolver(root).resolve_report_store() if configuration else None),
+        ("logs", configuration.resolver(root).resolve_log_store() if configuration else None),
+        ("inbox-processing", configuration.resolver(root).resolve_workspace_store() / "inbox-processing" if configuration else None),
+    )
+    for name, path in directories:
+        path = path if path is not None else root / ".engineering" / name
         checks.append(_check(f"directory_{name}", path.is_dir(), f"Runtime directory {name} is available." if path.is_dir() else f"Runtime directory {name} is missing.", f"Create and secure .engineering/{name} before accepting work."))
         if path.is_dir():
             writable = _writable(path)
@@ -135,7 +140,10 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         free = shutil.disk_usage(root).free
         checks.append(_check("disk_space", free >= threshold, "Sufficient free disk space is available." if free >= threshold else "Free disk space is below the configured host threshold.", "Free disk space or lower the configured host preflight threshold."))
 
-    executable = shutil.which("codex") if configuration is not None else None
+    try:
+        executable = str(configuration.resolver(root).resolve_runtime()) if configuration is not None else None
+    except PlatformConfigurationError:
+        executable = None
     checks.append(_check("runtime_executable", bool(executable), "Configured runtime executable is available." if executable else "Configured runtime executable is unavailable.", "Install or expose the Codex CLI on the Execution Host PATH."))
     if executable:
         try:

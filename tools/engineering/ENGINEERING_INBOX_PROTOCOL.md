@@ -1,10 +1,10 @@
 # Engineering Inbox Protocol v1
 
-The local iCloud Engineering Inbox accepts UTF-8 `.txt`, `.md` and
+The configured Runtime Prompt transport accepts UTF-8 `.txt`, `.md` and
 filename-neutral files whose bounded content is recognizably Markdown;
 iOS-created `.txt` files are supported. The watcher requires a regular,
 non-empty, non-symlink file with stable size and mtime before moving it out of
-iCloud Inbox into local Engineering Platform storage. Job identity derives from
+the transport inbox into local Engineering Platform storage. Job identity derives from
 filename and content digest.
 
 Jobs are strictly sequential: `iCloud Inbox → .engineering/inbox/Running →

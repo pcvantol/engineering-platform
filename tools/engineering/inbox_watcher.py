@@ -21,7 +21,7 @@ import uuid
 
 from .platform_version import EngineeringPlatformManifest
 from .agent_state import redact_diagnostic
-from .platform_api import PlatformConfiguration
+from .platform_api import PlatformConfiguration, PlatformConfigurationError, execution_host_configuration
 from .platform_bootstrap import provision_workspace
 from .providers import LaunchdProvider
 from .status_model import build, publish
@@ -57,11 +57,12 @@ class RetrySubmissionError(ValueError):
 
 
 def cloud_root(value: str | None = None, repo: Path | None = None) -> Path:
-    """Return the per-user iCloud workspace without hard-coding a username."""
-    default = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/DJConnect Engineering"
-    if repo is not None:
-        PlatformConfiguration.load(repo)
-    return Path(value or os.environ.get("DJCONNECT_ENGINEERING_INBOX") or default).expanduser()
+    """Compatibility wrapper; transport location is resolved by the host resolver."""
+    if repo is None:
+        raise PlatformConfigurationError("Execution Host repository is required to resolve Runtime Prompt transport.")
+    if value is not None:
+        return Path(value).expanduser()
+    return execution_host_configuration(repo).resolve_runtime_prompt_transport().inbox.parent
 
 
 def folders(root: Path) -> dict[str, Path]:

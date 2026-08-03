@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import json
 from copy import deepcopy
 from pathlib import Path
+import os
+import shutil
 import sys
 from .providers import registry
 
@@ -71,6 +73,69 @@ class RepositoryAuthorization:
 
 
 @dataclass(frozen=True)
+class RuntimePromptTransport:
+    """Provider-neutral runtime-prompt transport; paths stay resolver-owned."""
+
+    provider: str
+    inbox: Path
+
+
+@dataclass(frozen=True)
+class ExecutionHostIdentity:
+    name: str
+    version: str
+    runtime: str
+    runtime_prompt_transport: str
+
+
+class ExecutionHostConfigurationResolver:
+    """The sole host-specific configuration and location resolution boundary."""
+
+    def __init__(self, root: Path, configuration: "PlatformConfiguration") -> None:
+        self._root = root.resolve()
+        self._configuration = configuration
+
+    def resolve_runtime_prompt_transport(self) -> RuntimePromptTransport:
+        provider = self._configuration.providers["remote_submission"]
+        if provider != "icloud_inbox":
+            raise PlatformConfigurationError("Configured Runtime Prompt transport is unsupported.")
+        override = os.environ.get("DJCONNECT_ENGINEERING_INBOX")
+        inbox_root = Path(override).expanduser() if override else Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/DJConnect Engineering"
+        return RuntimePromptTransport(provider, inbox_root / "Inbox")
+
+    def resolve_workspace_store(self) -> Path:
+        return self._root / ".engineering"
+
+    def resolve_status_store(self) -> Path:
+        return self.resolve_workspace_store() / "status"
+
+    def resolve_report_store(self) -> Path:
+        return self.resolve_workspace_store() / "reports"
+
+    def resolve_log_store(self) -> Path:
+        return self.resolve_workspace_store() / "logs"
+
+    def resolve_telemetry_store(self) -> Path:
+        return self.resolve_workspace_store() / "engineering.db"
+
+    def resolve_runtime(self) -> Path:
+        if self._configuration.providers["runtime"] != "codex_cli":
+            raise PlatformConfigurationError("Configured Execution Host runtime is unsupported.")
+        executable = shutil.which("codex")
+        if not executable:
+            raise PlatformConfigurationError("Configured Execution Host runtime is unavailable.")
+        return Path(executable).resolve()
+
+    def resolve_execution_host_identity(self) -> ExecutionHostIdentity:
+        return ExecutionHostIdentity(
+            self._configuration.platform.name,
+            self._configuration.platform.version,
+            self._configuration.providers["runtime"],
+            self._configuration.providers["remote_submission"],
+        )
+
+
+@dataclass(frozen=True)
 class PlatformConfiguration:
     schema_version: int
     platform: PlatformIdentity
@@ -115,6 +180,9 @@ class PlatformConfiguration:
 
     def resolve_repository_authorization_policy(self) -> RepositoryAuthorizationPolicy:
         return self.repository_authorization
+
+    def resolver(self, root: Path) -> ExecutionHostConfigurationResolver:
+        return ExecutionHostConfigurationResolver(root, self)
 
     def authorize_target_repository(self, path: Path, execution_mode: str) -> RepositoryAuthorization:
         """Authorize one existing target without broadening host filesystem access."""
@@ -256,6 +324,11 @@ def resolve_repository_authorization_policy(root: Path) -> RepositoryAuthorizati
 
 def authorize_target_repository(root: Path, path: Path, execution_mode: str) -> RepositoryAuthorization:
     return PlatformConfiguration.load(root).authorize_target_repository(path, execution_mode)
+
+
+def execution_host_configuration(root: Path) -> ExecutionHostConfigurationResolver:
+    """Return the canonical resolver; consumers must not derive host paths."""
+    return PlatformConfiguration.load(root).resolver(root)
 
 
 def _merge(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
