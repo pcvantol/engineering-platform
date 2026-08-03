@@ -39,6 +39,7 @@ from .telemetry import ExecutionTelemetry, persist_execution_async
 from .prompt_history import record_prompt_execution
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
+from .capability_preflight import execute as execute_capability_preflight
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -662,6 +663,13 @@ def once(repo: Path, root: Path, interval: float = 1.0) -> int:
                 diagnostic="Workspace preflight failed; no Inbox item was claimed.",
             )
             log_event(logger, logging.ERROR, "workspace_preflight_failed", run_id=run_id)
+            return 1
+        capability_preflight = execute_capability_preflight(repo, content, run_id=run_id)
+        if capability_preflight.outcome == "FAIL":
+            status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
+                   current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
+                   diagnostic="Capability Preflight failed; no Inbox item was claimed.")
+            log_event(logger, logging.ERROR, "capability_preflight_failed", run_id=run_id)
             return 1
         if _already_seen(areas, job_id):
             status(

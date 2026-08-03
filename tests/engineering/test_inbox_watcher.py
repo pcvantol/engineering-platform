@@ -14,6 +14,7 @@ from unittest.mock import patch
 from tools.engineering import inbox_watcher
 from tools.engineering.host_preflight import HostPreflightResult
 from tools.engineering.workspace_preflight import WorkspacePreflightResult
+from tools.engineering.capability_preflight import CapabilityPreflightResult
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
 
@@ -38,12 +39,18 @@ class InboxWatcherTest(unittest.TestCase):
             return_value=WorkspacePreflightResult("PASS", "DJConnect", "repo", "main", "MANAGED", "now", 1, ()),
         )
         self.workspace_preflight.start()
+        self.capability_preflight = patch(
+            "tools.engineering.inbox_watcher.execute_capability_preflight",
+            return_value=CapabilityPreflightResult("PASS", "now", 1, (), "RETRYABLE", None, "Capability admission passed."),
+        )
+        self.capability_preflight.start()
         inbox = inbox_watcher.folders(self.root)["Inbox"]
         self.inbox = inbox
 
     def tearDown(self) -> None:
         self.preflight.stop()
         self.workspace_preflight.stop()
+        self.capability_preflight.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()
 
@@ -231,6 +238,19 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
         run.assert_not_called()
         self.assertEqual(json_status(self.repo)["watcher_state"], "WORKSPACE_PREFLIGHT_FAILED")
+
+    def test_failed_capability_preflight_prevents_inbox_claim(self) -> None:
+        prompt = self.inbox / "capability-failure.md"
+        prompt.write_text("# Capability failure", encoding="utf-8")
+        failed = CapabilityPreflightResult("FAIL", "now", 1, (), "RETRYABLE_AFTER_HOST_REPAIR", "CAPABILITY", "Repair host.")
+        with patch("tools.engineering.inbox_watcher.execute_capability_preflight", return_value=failed), patch(
+            "tools.engineering.inbox_watcher.subprocess.run"
+        ) as run:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
+        self.assertTrue(prompt.exists())
+        self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
+        run.assert_not_called()
+        self.assertEqual(json_status(self.repo)["watcher_state"], "CAPABILITY_PREFLIGHT_FAILED")
 
     def test_status_helpers_keep_previous_context_and_bound_details(self) -> None:
         status = self.repo / ".engineering" / "status"

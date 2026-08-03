@@ -53,6 +53,7 @@ from .platform_bootstrap import migrate_legacy_workspace
 from .providers import GitHubProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
+from .capability_preflight import latest as latest_capability_preflight
 
 
 class RunnerError(RuntimeError):
@@ -1784,6 +1785,9 @@ def generate_terminal_report(
         for item in workspace_checks
         if isinstance(item, dict) and isinstance(item.get("identifier"), str)
     ) or "unavailable"
+    capability_preflight = latest_capability_preflight(root)
+    if capability_preflight.get("run_id") not in {None, state.run_id}:
+        capability_preflight = {}
     body = "\n".join(
         (
             "# Engineering Report",
@@ -1841,6 +1845,12 @@ def generate_terminal_report(
             f"- Timestamp: `{workspace_preflight.get('timestamp', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
             f"- Duration: `{workspace_preflight.get('duration_ms', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}` ms",
             f"- Checks: {workspace_summary}",
+            "",
+            "## Capability Preflight",
+            f"- Outcome: `{capability_preflight.get('outcome', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}`",
+            f"- Recoverability: `{capability_preflight.get('recoverability', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}`",
+            f"- Failure Origin: `{capability_preflight.get('failure_origin', 'none') if isinstance(capability_preflight, dict) else 'none'}`",
+            f"- Recommendation: {capability_preflight.get('recommendation', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}",
             "",
             "## Authorization",
             f"- Owner authorization: `{state.owner_authorized}`",

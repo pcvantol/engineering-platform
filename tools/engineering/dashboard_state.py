@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
+from .capability_preflight import latest as latest_capability_preflight
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 
 
@@ -182,6 +183,7 @@ def snapshot(
             "component_versions": {"dashboard": dashboard_version, "worker": worker_version},
             "host_preflight": latest_host_preflight(root),
             "workspace_preflight": latest_workspace_preflight(root),
+            "capability_preflight": latest_capability_preflight(root),
             "execution_host": execution_host,
         },
         separators=(",", ":"),

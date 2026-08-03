@@ -1031,6 +1031,7 @@ function renderHealthStatus(x, snapshot = {}) {
   );
   const preflight = snapshot.host_preflight || {};
   const workspacePreflight = snapshot.workspace_preflight || {};
+  const capabilityPreflight = snapshot.capability_preflight || {};
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || "Niet beschikbaar";
   $("executionHostVersion").textContent = executionHost.version || "Niet beschikbaar";
@@ -1040,6 +1041,16 @@ function renderHealthStatus(x, snapshot = {}) {
   $("hostPreflightTimestamp").textContent = preflight.timestamp || "Nog niet uitgevoerd";
   $("workspacePreflightStatus").textContent = workspacePreflight.outcome || "Niet beschikbaar";
   $("workspacePreflightTimestamp").textContent = workspacePreflight.timestamp || "Nog niet uitgevoerd";
+  // Older dashboard fixtures and cached shells do not have Level 3 fields.
+  // Keep the canonical status renderer backward compatible while they refresh.
+  const capabilityField = (id, value) => {
+    const element = $(id);
+    if (element) element.textContent = value;
+  };
+  capabilityField("capabilityPreflightStatus", capabilityPreflight.outcome || "Niet beschikbaar");
+  capabilityField("capabilityRecoverability", capabilityPreflight.recoverability || "Niet beschikbaar");
+  capabilityField("capabilityFailureOrigin", capabilityPreflight.failure_origin || "—");
+  capabilityField("capabilityRecommendation", capabilityPreflight.recommendation || "Niet beschikbaar");
   promptStarted(snapshot.prompt_started);
   renderEstimate(x);
   processMetrics(active, snapshot.process_metrics);

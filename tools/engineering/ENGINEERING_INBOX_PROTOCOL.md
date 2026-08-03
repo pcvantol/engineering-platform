@@ -51,9 +51,33 @@ A Workspace Preflight `FAIL` leaves the Inbox item untouched, starts no
 transaction and records a bounded identifier, reason and recovery
 recommendation in `.engineering/status/workspace_preflight.json`. This evidence
 contains workspace, target repository, branch, execution mode, timestamp,
-duration, checks and outcome. It does not inspect Missions, Engineering
-Actions, Runtime Prompts or capabilities. Capability-specific checks are a
-future Level 3 concern.
+duration, checks and outcome. It does not inspect Missions or Engineering
+Actions.
+
+## Execution Host Preflight Level 3 (Capability Preflight)
+
+After Levels 1 and 2 pass and still before Inbox claim, Capability Preflight
+evaluates the transaction's bounded, provider-neutral declaration against the
+current Execution Host. Supported declarations include minimum **Execution Host
+Version** and **Runner Version**, configuration/storage schema, checkpoint,
+memory and report format, execution mode, required runtime components, provider
+support and named capabilities. The host contract remains authoritative.
+
+Failure leaves the Inbox item in place: no Run ID is allocated, no target
+repository is changed, no execution telemetry is created and no Engineering
+Report is generated. Instead the host writes bounded capability evidence to
+`.engineering/status/capability_preflight.json`, including validated and
+missing requirements, diagnostic identifiers, recovery recommendation,
+**Failure Origin** (`CAPABILITY`) and **Recoverability**.
+
+Recoverability is independent from a terminal execution state. A capability
+failure is normally `RETRYABLE_AFTER_HOST_REPAIR`: repairing or upgrading the
+host permits a new admission attempt, but does not restart engineering. Retry
+availability is therefore based on recoverability, not merely on whether an
+earlier execution ended `BLOCKED` or `FAILED`. Capability failures are counted
+separately from engineering executions. The dashboard projects status,
+recoverability, failure origin and the recommended operator action without
+showing internal paths.
 
 The private status page shows the current unclaimed queue from this watcher
 projection, oldest first. Each bounded entry contains only its filename,

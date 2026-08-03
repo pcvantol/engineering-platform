@@ -77,7 +77,9 @@ not need iCloud Drive to render a current or completed run:
 - `.engineering/status/host_preflight.json` supplies the compact Execution Host
   Preflight outcome and latest timestamp; it never exposes check internals;
 - `.engineering/status/workspace_preflight.json` supplies the compact Workspace
-  Preflight outcome and latest timestamp; it never exposes check internals;
+  Preflight projection.
+- `.engineering/status/capability_preflight.json` supplies bounded Capability
+  Preflight outcome, Recoverability, Failure Origin and operator recommendation.
 - `.engineering/reports/` supplies the Engineering Report and its advisory
   analysis for the matching terminal run; and
 - `engineering_component_logs` in `.engineering/engineering.db` supplies
