@@ -48,7 +48,9 @@ jobs:
           import json
           from pathlib import Path
 
-          minimum = 80.0
+          # The platform quality bar is strictly greater than 80%, rather than
+          # allowing an exactly-80% result through by accident.
+          minimum = 80.01
           targets = (
               "tools/engineering/dashboard.py",
               "tools/engineering/platform_bootstrap.py",
@@ -62,7 +64,7 @@ jobs:
           for target in targets:
               covered = files.get(target, {}).get("summary", {}).get("percent_covered")
               if covered is None or covered < minimum:
-                  failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum {minimum:.0f}%)")
+                  failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum >80%)")
               else:
                   print(f"{target}: {covered:.2f}%")
           if failures:

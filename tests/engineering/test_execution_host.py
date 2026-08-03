@@ -31,6 +31,7 @@ from tools.engineering.execution_host import (
     format_management_summary,
     terminal_report_matches_state,
     generate_terminal_report,
+    project_codex_activity,
     write_redacted_codex_cli_log,
     write_codex_usage,
     write_live_status,
@@ -124,11 +125,21 @@ class LiveStatusFakeAgent(FakeAgent):
         super().__init__(result)
         self.live_phase: str | None = None
         self.live_action: str | None = None
+        self.activity_action: str | None = None
+        self.activity_callback: object | None = None
+
+    def set_activity_callback(self, callback: object) -> None:
+        self.activity_callback = callback
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         payload = json.loads((root / ".engineering" / "status" / "current.json").read_text())
         self.live_phase = payload["phase"]
         self.live_action = payload["current_action"]
+        if callable(self.activity_callback):
+            self.activity_callback("Codex bewerkt bestanden")
+            self.activity_action = json.loads(
+                (root / ".engineering" / "status" / "current.json").read_text()
+            )["current_action"]
         return super().invoke(root, prompt)
 
 
@@ -517,6 +528,48 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner.run(self.prompt, run_id="live-phase-run")
         self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
         self.assertEqual(agent.live_action, "invoke_agent")
+        self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
+
+    def test_codex_activity_projection_is_fixed_and_never_echoes_event_content(self) -> None:
+        self.assertEqual(
+            project_codex_activity(
+                {"type": "item.started", "item": {"type": "reasoning", "text": "private reasoning"}}
+            ),
+            "Codex plant de volgende stap",
+        )
+        self.assertEqual(
+            project_codex_activity(
+                {"type": "item.updated", "item": {"type": "file_change", "changes": [{"path": "secret.md"}]}}
+            ),
+            "Codex bewerkt bestanden",
+        )
+        self.assertIsNone(project_codex_activity({"type": "item.completed", "item": {"type": "agent_message"}}))
+        self.assertIsNone(project_codex_activity({"type": "item.started", "item": {"type": "unknown", "prompt": "secret"}}))
+
+    @patch("tools.engineering.execution_host.subprocess.Popen")
+    def test_codex_client_streams_only_safe_activity_labels(self, popen: object) -> None:
+        class Process:
+            stdout = iter(
+                (
+                    '{"type":"item.started","item":{"type":"reasoning","text":"secret reasoning"}}\n',
+                    '{"type":"item.started","item":{"type":"command_execution","command":"cat secrets.txt"}}\n',
+                    '{"type":"item.completed","item":{"type":"agent_message","text":"secret final"}}\n',
+                )
+            )
+
+            def wait(self) -> int:
+                return 0
+
+        popen.return_value = Process()
+        observed: list[str] = []
+        client = CodexCliClient()
+        client.set_activity_callback(observed.append)
+
+        result = client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(observed, ["Codex plant de volgende stap", "Codex voert een opdracht uit"])
+        self.assertNotIn("secret", " ".join(observed))
 
     def test_live_status_records_execution_context(self) -> None:
         state = TransactionState(

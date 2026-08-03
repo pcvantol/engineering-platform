@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 import uuid
 
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
@@ -243,6 +243,28 @@ class AgentClient(Protocol):
     def invoke(self, root: Path, prompt: str) -> AgentResult: ...
 
 
+def project_codex_activity(event: object) -> str | None:
+    """Map a Codex JSONL event to bounded progress metadata.
+
+    The dashboard receives only a fixed activity label. Raw reasoning, prompts,
+    command text, tool arguments and tool output are intentionally ignored.
+    """
+    if not isinstance(event, dict) or event.get("type") not in {"item.started", "item.updated"}:
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    labels = {
+        "reasoning": "Codex plant de volgende stap",
+        "command_execution": "Codex voert een opdracht uit",
+        "file_change": "Codex bewerkt bestanden",
+        "web_search": "Codex onderzoekt referentiemateriaal",
+        "mcp_tool_call": "Codex gebruikt een ontwikkeltool",
+        "agent_message": "Codex formuleert het resultaat",
+    }
+    return labels.get(item.get("type"))
+
+
 class SubprocessRepositoryClient:
     def __init__(self, provider: GitHubProvider | None = None) -> None:
         self.provider = provider or GitHubProvider()
@@ -379,6 +401,11 @@ class CodexCliClient:
         self.last_usage: dict[str, int | float | str] = {}
         self.last_execution_seconds: float | None = None
         self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
+        self._activity_callback: Callable[[str], None] | None = None
+
+    def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
+        """Set the optional local-only sink for safe live activity labels."""
+        self._activity_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -512,13 +539,7 @@ class CodexCliClient:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))
             started = time.monotonic()
-            completed = subprocess.run(
-                tuple(command),
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            completed = self._run_invocation(tuple(command), root)
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             self.last_runtime_metadata = extract_codex_runtime_metadata(
@@ -543,6 +564,31 @@ class CodexCliClient:
                 "Codex CLI did not return the required structured terminal result.",
                 _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt),
             ) from error
+
+    def _run_invocation(
+        self, command: tuple[str, ...], root: Path
+    ) -> subprocess.CompletedProcess[str]:
+        """Run Codex, streaming only the approved activity projection when enabled."""
+        if self._activity_callback is None:
+            return subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        lines: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.append(line)
+            try:
+                activity = project_codex_activity(json.loads(line))
+            except json.JSONDecodeError:
+                activity = None
+            if activity is not None:
+                self._activity_callback(activity)
+        return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
 
 
 def _redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
@@ -759,6 +805,10 @@ class EngineeringRunner:
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         try:
+            if hasattr(self.agent, "set_activity_callback"):
+                self.agent.set_activity_callback(
+                    lambda activity: write_live_status(self.root, state, activity)
+                )
             result = self.agent.invoke(
                 self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context
             )
