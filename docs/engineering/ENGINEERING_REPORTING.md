@@ -4,6 +4,48 @@ Engineering Reports are local, derived evidence for a terminal Engineering
 Platform transaction. They do not alter lifecycle, reviewer selection,
 qualification or repository authority.
 
+## Engineering Evidence 2.0
+
+Engineering Evidence 2.0 makes each Engineering Report a self-contained audit
+artefact while keeping **Repository Truth** authoritative. The evidence flow is:
+
+```text
+Repository Truth → Execution Evidence → Engineering Evidence → Engineering Report
+```
+
+The report explains the underlying repository and checkpoint evidence; it never
+becomes an independent source of truth. Before publication, the generator
+performs report consistency validation. A report with a missing required
+Evidence 2.0 section, absent explicit deliverable answer, missing repository
+commit, missing complete-run Evidence Bundle, or the former unqualified
+`Implemented Components: none recorded` output is rejected.
+
+Every terminal report includes these derived sections:
+
+- **Component Inventory** — architectural components inferred automatically
+  from changed implementation files, with their source files.
+- **Deliverable Answer** — an explicit `YES`/`NO`, `PASS`/`FAIL` and `GO`/
+  `NO-GO` answer when the prompt requests one, derived from the persisted
+  terminal checkpoint.
+- **Commit Strategy** — Genesis Local Commit, Managed Pull Request, Managed
+  Merge, Finalization or managed execution evidence, including the applicable
+  commit and PR evidence.
+- **Branch Traceability** — preflight branch, execution branch, final branch,
+  final commit and the recorded transition.
+- **Requirement Traceability** — prompt requirement → implemented component →
+  repository files → regression tests → validation evidence.
+- **Validation Traceability** — each recorded validation and documentation
+  validation with its purpose, result and repository evidence.
+- **Execution Statistics** — execution count, evidence-backed engineering
+  actions, Forge mission count, repair iterations, execution duration and
+  validation duration status.
+- **Engineering Evidence Summary** — compact JSON for read-only consumers.
+
+Component and traceability records are generated from repository files,
+terminal checkpoint data and bounded recorded validation evidence. They require
+no manual report authoring. When an item was not recorded, the report says so
+explicitly instead of inferring it.
+
 ## Report interpretation
 
 Each report separates three viewpoints:
@@ -64,6 +106,14 @@ New runs persist up to twelve redacted `{command, result}` validation summaries
 from the terminal agent result. Older runs and runs that provide none remain
 explicitly marked `not recorded by the runner`. The runner still does not
 persist an initial assessment taxonomy.
+
+## Documentation validation
+
+The Validation Traceability section always records documentation validation as
+a distinct validation item. Its scope is the canonical Engineering Report
+Evidence Contract and the rendered report sections; its result is evidence that
+the report is generated from that contract. This does not replace repository
+documentation tests when those are recorded by the runner.
 
 ## Repository truth
 

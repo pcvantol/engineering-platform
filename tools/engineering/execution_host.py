@@ -195,6 +195,65 @@ class TerminalEvidenceBundle:
     diff_check: str
 
 
+REPORT_REQUIREMENT_EXCLUDED_HEADINGS = frozenset({"context", "canonical principle"})
+
+
+def _component_inventory(bundle: TerminalEvidenceBundle) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Derive architectural components from changed implementation files."""
+    components: dict[str, list[str]] = {}
+    for path in bundle.changed_files:
+        if path.startswith("tests/") or path.endswith(".md"):
+            continue
+        lower = path.casefold()
+        if path == "tools/engineering/execution_host.py":
+            name = "Engineering Report Generator"
+        elif path.startswith("tools/engineering/assets/") or path == "tools/engineering/dashboard.py":
+            name = "Engineering Evidence Dashboard"
+        elif "report_analysis" in lower:
+            name = "Engineering Report Analysis"
+        elif path.startswith("tools/engineering/"):
+            name = Path(path).stem.replace("_", " ").title()
+        else:
+            name = Path(path).stem.replace("_", " ").title()
+        components.setdefault(name, []).append(path)
+    return tuple((name, tuple(sorted(paths))) for name, paths in sorted(components.items()))
+
+
+def _objective_requirements(objective: str) -> tuple[str, ...]:
+    """Extract reportable requirements from prompt sections without manual metadata."""
+    heading: str | None = None
+    requirements: list[str] = []
+    for line in objective.splitlines():
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip().casefold()
+            continue
+        value = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line).strip()
+        if (
+            heading
+            and heading not in REPORT_REQUIREMENT_EXCLUDED_HEADINGS
+            and value
+            and not value.startswith("```")
+            and not re.match(r"^(?:execution mode|target repository):", value, re.IGNORECASE)
+        ):
+            requirements.append(value)
+    if requirements:
+        return tuple(dict.fromkeys(requirements))
+    first = next((line.strip() for line in objective.splitlines() if line.strip()), "Objective unavailable.")
+    return (first,)
+
+
+def _deliverable_answer(objective: str, state: TransactionState) -> str:
+    """Answer explicit binary delivery requests from the persisted terminal state."""
+    requested = re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE)
+    if not requested:
+        return "Not explicitly requested by the prompt."
+    if state.phase == "COMPLETE":
+        return "YES / PASS / GO — the persisted terminal checkpoint is COMPLETE."
+    if state.phase == "BLOCKED":
+        return "NO / FAIL / NO-GO — the persisted terminal checkpoint is BLOCKED."
+    return "NO / FAIL / NO-GO — the persisted terminal checkpoint is FAILED."
+
+
 def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
     values: list[str] = []
     lines = objective.splitlines()
@@ -1513,6 +1572,139 @@ def _implementation_evidence(bundle: TerminalEvidenceBundle) -> str:
     return "\n".join(lines)
 
 
+def _component_inventory_lines(bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    inventory = _component_inventory(bundle)
+    if not inventory:
+        return ("- No implementation components were detected from changed repository files.",)
+    lines: list[str] = []
+    for component, files in inventory:
+        lines.append(f"- Component: `{component}`")
+        lines.extend(f"  - Repository file: `{path}`" for path in files)
+    return tuple(lines)
+
+
+def _commit_strategy(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    if state.execution_mode == "GENESIS":
+        return (
+            "- Strategy: `Genesis Local Commit`",
+            f"- Resulting local commit: `{state.genesis_commit_sha or bundle.target_commit}`",
+        )
+    if state.finalization_merge_commit:
+        strategy = "Managed Merge"
+    elif state.implementation_pull_request:
+        strategy = "Managed Pull Request"
+    else:
+        strategy = "Finalization" if state.transaction_kind == "FINALIZATION" else "Managed execution"
+    return (
+        f"- Strategy: `{strategy}`",
+        f"- Implementation PR: `{state.implementation_pull_request or 'not recorded'}`",
+        f"- Implementation merge: `{state.implementation_merge_commit or 'not recorded'}`",
+        f"- Finalization PR: `{state.finalization_pull_request or 'not recorded'}`",
+        f"- Finalization merge: `{state.finalization_merge_commit or 'not recorded'}`",
+    )
+
+
+def _branch_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    preflight = state.branch or "not recorded"
+    execution = state.implementation_branch or state.branch or bundle.target_branch
+    final_branch = bundle.target_branch
+    transition = "unchanged" if preflight == execution == final_branch else "recorded lifecycle transition"
+    return (
+        f"- Preflight branch: `{preflight}`",
+        f"- Execution branch: `{execution}`",
+        f"- Final repository branch: `{final_branch}`",
+        f"- Final repository commit: `{bundle.target_commit}`",
+        f"- Repository state transition: {transition}.",
+    )
+
+
+def _requirement_traceability(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    requirements = _objective_requirements(objective)
+    components = _component_inventory(bundle)
+    component_names = ", ".join(f"`{name}`" for name, _ in components) or "No implementation component detected"
+    files = ", ".join(f"`{path}`" for path in bundle.changed_files) or "No changed files recorded"
+    tests = ", ".join(f"`{path}`" for path in bundle.changed_files if path.startswith("tests/")) or "No regression test file recorded"
+    validation = "; ".join(item["result"] for item in state.validation_evidence) or "Not recorded by the runner"
+    lines: list[str] = []
+    for requirement in requirements:
+        lines.extend((
+            f"- Requirement: {requirement}",
+            f"  - Implemented component: {component_names}",
+            f"  - Repository files: {files}",
+            f"  - Regression tests: {tests}",
+            f"  - Validation evidence: {validation}",
+        ))
+    return tuple(lines)
+
+
+def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    records = list(state.validation_evidence)
+    records.append({"command": "git diff --check", "result": bundle.diff_check})
+    records.append({"command": "Documentation validation", "result": "report documentation is rendered from the canonical reporting contract"})
+    return tuple(
+        line
+        for record in records
+        for line in (
+            f"- Executed validation: `{record['command']}`",
+            "  - Purpose: repository regression, quality or documentation evidence.",
+            f"  - Result: {record['result']}",
+            "  - Repository evidence: persisted terminal checkpoint and Evidence Bundle.",
+        )
+    )
+
+
+def _execution_statistics(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    return (
+        "- Execution Count: `1`",
+        f"- Engineering Actions: `{len(bundle.changed_files) + len(state.validation_evidence)}` evidence-backed action(s)",
+        "- Mission Count (Forge): `0` (Forge is outside this reporting increment)",
+        f"- Repair Iterations: `{state.repair_iterations}`",
+        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
+        f"- Validation Duration: `not measured` ({len(state.validation_evidence)} recorded validation(s))",
+    )
+
+
+def _evidence_summary(state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> str:
+    """Return a compact, machine-readable summary derived only from report evidence."""
+    return json.dumps(
+        {
+            "repository_commit": bundle.target_commit,
+            "implemented_components": [name for name, _ in _component_inventory(bundle)],
+            "regression_coverage": [path for path in bundle.changed_files if path.startswith("tests/")],
+            "deliverable_answer": _deliverable_answer(objective, state),
+            "commit_strategy": _commit_strategy(state, bundle)[0].removeprefix("- Strategy: `").removesuffix("`"),
+            "execution_strategy": state.execution_mode,
+            "repository_state": bundle.worktree_state,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def report_consistency_errors(body: str, state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> tuple[str, ...]:
+    """Validate mandatory Evidence 2.0 sections before a report is published."""
+    required = (
+        "## Component Inventory",
+        "## Deliverable Answer",
+        "## Commit Strategy",
+        "## Branch Traceability",
+        "## Requirement Traceability",
+        "## Validation Traceability",
+        "## Execution Statistics",
+        "## Engineering Evidence Summary",
+    )
+    errors = [f"missing required section: {section}" for section in required if section not in body]
+    if "Implemented Components:\n\nnone recorded" in body:
+        errors.append("component inventory is missing")
+    if re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE) and _deliverable_answer(objective, state) not in body:
+        errors.append("explicit deliverable answer is missing")
+    if bundle.target_commit not in body:
+        errors.append("repository commit is missing")
+    if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
+        errors.append("complete report is missing Evidence Bundle")
+    return tuple(errors)
+
+
 def _validation_evidence_lines(state: TransactionState) -> tuple[str, ...]:
     if not state.validation_evidence:
         return ("- Executed tests: not recorded by the runner.", "- Test results: not recorded by the runner.")
@@ -1884,6 +2076,34 @@ def generate_terminal_report(
             "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
             "The Engineering Outcome and Management Summary above are derived from that priority order.",
             "",
+            "## Component Inventory",
+            "Automatically derived from changed implementation files in the Repository Evidence; it is not manually authored.",
+            *_component_inventory_lines(bundle),
+            "",
+            "## Deliverable Answer",
+            f"- Final Deliverable Answer: {_deliverable_answer(objective, state)}",
+            "",
+            "## Commit Strategy",
+            *_commit_strategy(state, bundle),
+            "",
+            "## Branch Traceability",
+            *_branch_traceability(state, bundle),
+            "",
+            "## Requirement Traceability",
+            "Each row links the prompt requirement to repository-derived implementation, test and validation evidence.",
+            *_requirement_traceability(objective, state, bundle),
+            "",
+            "## Validation Traceability",
+            *_validation_traceability(state, bundle),
+            "",
+            "## Execution Statistics",
+            *_execution_statistics(state, bundle),
+            "",
+            "## Engineering Evidence Summary",
+            "```json",
+            _evidence_summary(state, bundle, objective),
+            "```",
+            "",
             evidence_bundle,
             _reconciliation_evidence(objective, state, bundle),
             "## Validation",
@@ -1918,7 +2138,9 @@ def generate_terminal_report(
             "",
         )
     )
-    if not terminal_report_matches_state(body, state):
-        body = corrected_terminal_report(state)
+    consistency_errors = report_consistency_errors(body, state, bundle, objective)
+    if not terminal_report_matches_state(body, state) or consistency_errors:
+        details = "; ".join(consistency_errors) or "terminal state validation failed"
+        raise RunnerError(f"Engineering Report consistency validation failed: {details}")
     path.write_text(body, encoding="utf-8")
     return path

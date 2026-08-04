@@ -30,6 +30,8 @@ from tools.engineering.execution_host import (
     genesis_workspace_preflight,
     format_management_summary,
     terminal_report_matches_state,
+    report_consistency_errors,
+    collect_terminal_evidence,
     generate_terminal_report,
     project_codex_activity,
     write_redacted_codex_cli_log,
@@ -1157,6 +1159,61 @@ class LocalAgentRunnerTest(unittest.TestCase):
         body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
         self.assertIn("Executed test: `python -m unittest tests.engineering`", body)
         self.assertIn("Result: passed (12 tests)", body)
+
+    def test_engineering_evidence_2_report_is_self_validating_and_traceable(self) -> None:
+        self.prompt.write_text(
+            "# Engineering Evidence 2.0\n\n## Deliverable\n\n- Produce a self-validating report.\n\n"
+            "## Tests\n\n- Add report regression coverage.\n\n## Validation\n\n- PASS when report consistency validation succeeds.\n",
+            encoding="utf-8",
+        )
+        state = TransactionState(
+            "evidence-2", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            branch="codex/evidence-2", implementation_branch="codex/evidence-2",
+            validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed"},),
+            agent_execution_seconds=12.5, terminal=True,
+        )
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        for section in (
+            "## Component Inventory",
+            "## Deliverable Answer",
+            "## Commit Strategy",
+            "## Branch Traceability",
+            "## Requirement Traceability",
+            "## Validation Traceability",
+            "## Execution Statistics",
+            "## Engineering Evidence Summary",
+        ):
+            self.assertIn(section, body)
+        self.assertIn("YES / PASS / GO", body)
+        self.assertIn("Requirement: Produce a self-validating report.", body)
+        self.assertIn("Executed validation: `Documentation validation`", body)
+        self.assertIn('"deliverable_answer": "YES / PASS / GO', body)
+
+    def test_component_inventory_is_derived_from_implementation_evidence(self) -> None:
+        subprocess.run(("git", "init", "-b", "main", str(self.root)), check=True, capture_output=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.email", "report@example.invalid"), check=True)
+        subprocess.run(("git", "-C", str(self.root), "config", "user.name", "Report Test"), check=True)
+        implementation = self.root / "tools" / "engineering" / "execution_host.py"
+        implementation.parent.mkdir(parents=True, exist_ok=True)
+        implementation.write_text("before\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "baseline"), check=True, capture_output=True)
+        implementation.write_text("after\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
+        subprocess.run(("git", "-C", str(self.root), "commit", "-m", "report component"), check=True, capture_output=True)
+        commit = subprocess.check_output(("git", "-C", str(self.root), "rev-parse", "HEAD"), text=True).strip()
+        state = TransactionState("component-inventory", "pcvantol/djconnect", str(self.prompt), "COMPLETE", implementation_merge_commit=commit, terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("Component: `Engineering Report Generator`", body)
+        self.assertIn("Repository file: `tools/engineering/execution_host.py`", body)
+
+    def test_report_consistency_validation_rejects_missing_evidence_2_sections(self) -> None:
+        state = TransactionState("inconsistent-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        errors = report_consistency_errors(
+            "# Engineering Report\n", state, collect_terminal_evidence(self.root, state), "PASS"
+        )
+        self.assertIn("missing required section: ## Component Inventory", errors)
+        self.assertIn("explicit deliverable answer is missing", errors)
 
     def test_complete_genesis_report_keeps_host_and_target_identities_distinct(self) -> None:
         target = self.root / "genesis-report-target"
