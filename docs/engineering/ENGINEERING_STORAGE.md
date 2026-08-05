@@ -57,7 +57,8 @@ Producer Type, optional Mission/Engineering Action/Correlation IDs, Execution
 Host identity and version, Run ID, receipt timestamp and terminal outcome.
 Forge owns Producer Contract semantics; Engineering Platform owns these local
 execution receipts. This metadata supports operations and analytics only and
-never affects scheduling or execution.
+never affects scheduling or execution. It does not become Forge Decision
+Evidence, Mission planning state or Runtime planning state.
 
 ## Component logging
 

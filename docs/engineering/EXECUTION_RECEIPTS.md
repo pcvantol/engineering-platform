@@ -13,4 +13,5 @@ Receipts are producer-neutral: Forge owns Producer semantics; Engineering
 Platform owns execution semantics. Producer information supports auditability,
 traceability, usage statistics, execution-distribution analysis and future
 operational analytics only. It cannot influence execution behaviour or
-scheduling.
+scheduling. A receipt is not Mission planning, Decision Evidence or a Forge
+runtime record.

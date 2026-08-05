@@ -4,6 +4,20 @@ This is the current operator guide for the Engineering Platform Execution Host.
 It consolidates the operational outcome of PRs #715–#723 without replacing
 their immutable Prompt History or finalization evidence.
 
+## Stable execution boundary
+
+The Execution Host is generic. It executes compliant Engineering Actions with
+the same lifecycle, preflight, evidence and terminal semantics for every
+Producer. Human Architect, Forge and future Producer identity is retained only
+as provenance; operators must not use it to infer planning authority or alter
+execution behaviour.
+
+Forge owns Mission planning, Runtime Prompts, Decision Evidence and Runtime
+Instance concepts. The Execution Host owns action execution, qualification,
+Execution Evidence, Engineering Reports and Execution Receipts. It does not
+implement Forge, recommend Missions or perform business, architecture or
+runtime planning.
+
 ## Admission and target safety
 
 Execution Host Preflight validates host readiness before an Inbox claim.

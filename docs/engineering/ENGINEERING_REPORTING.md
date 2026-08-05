@@ -85,6 +85,10 @@ Action ID, plus Execution Constraint Version. Reports expose those values in a
 legacy prompt has no Producer metadata, the report records `HUMAN` and
 `legacy`. Producer metadata never changes execution behaviour.
 
+The report is execution evidence, not Forge Decision Evidence. It does not
+interpret, recreate or recommend Missions, Runtime Prompts, Runtime Instances
+or planning decisions.
+
 ## Execution Host and Workspace Preflight evidence
 
 Before an Inbox item is claimed, Execution Host Preflight Level 1 records local

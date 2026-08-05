@@ -1,15 +1,20 @@
 # Engineering Platform Status
 
-**Engineering Platform:** Generation 2
-**Status:** `PRODUCTIZATION_IN_PROGRESS`
+**Engineering Platform:** 1.x
+**Status:** `FEATURE_COMPLETE`
 
 ## Closure
 
-Engineering Platform 1.5 productizes the stable Generation 1 foundation while
-remaining inside this repository. Platform Identity is independent; Workspace
+Engineering Platform 1.x is a stable, producer-neutral execution platform.
+It remains inside this repository. Platform Identity is independent; Workspace
 Identity supplies consumer branding, repository metadata and active providers.
 The Public Platform API and provider registry are the supported extension
 boundary. Existing commands remain compatibility interfaces.
+
+Engineering Platform executes compliant Engineering Actions from a Human
+Architect, Forge or a future Producer. Producer identity is immutable
+provenance for traceability, audit and Execution Evidence only. It never
+changes execution semantics.
 
 ## Stable capability set
 
@@ -87,10 +92,19 @@ Architecture Revision. Only Evidence-driven Enhancement and Architecture
 Revision may introduce a capability, and both require explicit architectural
 approval.
 
-Every future capability requires Implementation, Qualification and Evidence.
-It is not complete before qualification. Continuous improvement may address
-qualification, diagnostics, compatibility and maintenance; it must not
+Every future capability requires explicit architectural authorization,
+Implementation, Qualification and Evidence. It is not complete before
+qualification. Continuous improvement may address platform hardening, security,
+performance, operational tooling, generic execution capabilities, Execution
+Host evolution and Forge-driven execution-contract changes; it must not
 continuously expand the feature set.
+
+Engineering Platform does not acquire Forge-specific planning capability when
+Forge evolves. Forge remains the primary source of architectural innovation for
+Mission planning, Runtime Prompts, Decision Evidence and Runtime Instance
+concepts. Engineering Platform evolution remains limited to generic execution
+platform concerns unless an explicitly authorized platform revision changes
+this boundary.
 
 **Execution Host Preflight Level 3 (Capability Preflight)** is delivered by PR
 [#730](https://github.com/pcvantol/djconnect/pull/730), merged as
