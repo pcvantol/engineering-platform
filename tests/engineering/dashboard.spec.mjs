@@ -251,6 +251,10 @@ test.describe("Engineering Status browser smoke", () => {
           },
         },
       });
+      Object.defineProperty(navigator, "platform", {
+        configurable: true,
+        value: "iPhone",
+      });
       document.querySelector("#promptHistoryChatModal").showModal();
       chatMessage("assistant", "Copy this iOS-safe message");
     });
@@ -263,6 +267,36 @@ test.describe("Engineering Status browser smoke", () => {
       fallback: window.__copyFallbackCalls,
       clipboard: window.__clipboardCalls,
     }))).toEqual({ fallback: 1, clipboard: 0 });
+  });
+
+  test("uses the Clipboard API before the legacy fallback in modern browsers", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => typeof window.chatMessage === "function");
+    await page.evaluate(() => {
+      window.__copyFallbackCalls = 0;
+      window.__clipboardCalls = 0;
+      document.execCommand = () => {
+        window.__copyFallbackCalls += 1;
+        return true;
+      };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: () => {
+            window.__clipboardCalls += 1;
+            return Promise.resolve();
+          },
+        },
+      });
+      document.querySelector("#promptHistoryChatModal").showModal();
+      chatMessage("assistant", "Copy this browser message");
+    });
+
+    await page.locator("#chatMessages .chat-message__copy").click();
+    await expect.poll(() => page.evaluate(() => ({
+      fallback: window.__copyFallbackCalls,
+      clipboard: window.__clipboardCalls,
+    }))).toEqual({ fallback: 0, clipboard: 1 });
   });
 
   test("places the active prompt category first", async ({ page }) => {

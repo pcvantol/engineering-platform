@@ -690,18 +690,36 @@ function fallbackCopy(value) {
   area.remove();
   if (!copied) throw Error(t("copy.failed"));
 }
+function isIOSBrowser() {
+  return /iPad|iPhone|iPod/.test(navigator.platform || navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
 function copyText(value) {
+  const modernClipboard = navigator.clipboard && window.isSecureContext;
   // iOS Safari permits the legacy copy command only while the original tap is
-  // still being handled. Do that synchronously, then use the modern API only
-  // when the browser does not support the fallback.
+  // still being handled. Other browsers use the Clipboard API first: some of
+  // them report a successful legacy copy without updating the system clipboard.
+  if (isIOSBrowser()) {
+    try {
+      fallbackCopy(value);
+      showCopyToast();
+      return Promise.resolve();
+    } catch (fallbackError) {
+      if (!modernClipboard) return Promise.reject(fallbackError);
+      return navigator.clipboard.writeText(value).then(() => showCopyToast());
+    }
+  }
+  if (modernClipboard)
+    return navigator.clipboard.writeText(value).then(showCopyToast, () => {
+      fallbackCopy(value);
+      showCopyToast();
+    });
   try {
     fallbackCopy(value);
     showCopyToast();
     return Promise.resolve();
   } catch (fallbackError) {
-    if (!navigator.clipboard || !window.isSecureContext)
-      return Promise.reject(fallbackError);
-    return navigator.clipboard.writeText(value).then(() => showCopyToast());
+    return Promise.reject(fallbackError);
   }
 }
 let copyToastTimer;
