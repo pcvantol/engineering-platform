@@ -338,18 +338,24 @@ function consumeRateLimitReset() {
         body: await response.json(),
       }))
       .then((result) => {
-        if (!result.ok) throw Error(t("ui.reset_failed"));
         const messages = {
           reset: t("ui.reset_used"),
           nothingToReset: t("ui.reset_nothing"),
           noCredit: t("ui.reset_no_credit"),
           alreadyRedeemed: t("ui.reset_already_redeemed"),
         };
+        if (!result.ok && !messages[result.body?.outcome]) {
+          throw Error(
+            typeof result.body?.error === "string"
+              ? result.body.error
+              : t("ui.reset_failed"),
+          );
+        }
         status.textContent = messages[result.body.outcome] || t("ui.reset_processed");
         if (result.body.rate_limits) rateLimits(result.body.rate_limits);
       })
-      .catch(() => {
-        status.textContent = t("ui.reset_failed");
+      .catch((error) => {
+        status.textContent = error instanceof Error ? error.message : t("ui.reset_failed");
       })
       .finally(() => {
         button.disabled = false;

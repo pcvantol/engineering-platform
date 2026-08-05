@@ -1265,7 +1265,18 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read()), {"outcome": "reset", "rate_limits": {"reset_credits": 1}})
-                reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_completed")
+                reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_completed", diagnostic="outcome=reset")
+            for outcome in ("nothingToReset", "noCredit", "alreadyRedeemed"):
+                with (
+                    patch("tools.engineering.dashboard._consume_codex_rate_limit_reset_credit", return_value=outcome),
+                    patch("tools.engineering.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
+                    patch("tools.engineering.dashboard.log_event") as reset_log_event,
+                ):
+                    connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 409)
+                    self.assertEqual(json.loads(response.read()), {"outcome": outcome, "rate_limits": {"reset_credits": 1}})
+                    reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_not_consumed", diagnostic=f"outcome={outcome}")
             with patch("tools.engineering.dashboard.log_event") as audit_log_event:
                 connection.request("POST", "/api/audit/user-action", body='{"action":"chat_downloaded"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
@@ -1325,11 +1336,15 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
-            with patch("tools.engineering.dashboard._consume_codex_rate_limit_reset_credit", side_effect=dashboard.RateLimitResetError("Reset niet beschikbaar.")):
+            with (
+                patch("tools.engineering.dashboard._consume_codex_rate_limit_reset_credit", side_effect=dashboard.RateLimitResetError("Reset niet beschikbaar.")),
+                patch("tools.engineering.dashboard.log_event") as reset_failure_log_event,
+            ):
                 connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 503)
                 response.read()
+                reset_failure_log_event.assert_any_call(ANY, logging.WARNING, "ai_usage_reset_failed", diagnostic="Reset niet beschikbaar.")
             with patch("tools.engineering.dashboard._clear_component_log", side_effect=OSError("Niet beschikbaar.")):
                 connection.request("POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()

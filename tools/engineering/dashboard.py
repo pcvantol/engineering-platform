@@ -1239,12 +1239,18 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     if length != 2 or self.rfile.read(length) != b"{}":
                         raise ValueError
                     outcome = _consume_codex_rate_limit_reset_credit()
-                    log_event(logger, logging.INFO, "ai_usage_reset_completed")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "ai_usage_reset_completed" if outcome == "reset" else "ai_usage_reset_not_consumed",
+                        diagnostic=f"outcome={outcome}",
+                    )
                     payload = {
                         "outcome": outcome,
                         "rate_limits": json.loads(_codex_rate_limits()),
                     }
                 except RateLimitResetError as error:
+                    log_event(logger, logging.WARNING, "ai_usage_reset_failed", diagnostic=str(error))
                     content = json.dumps({"error": str(error)}, ensure_ascii=False).encode()
                     self._send(content, "application/json; charset=utf-8", 503)
                     return

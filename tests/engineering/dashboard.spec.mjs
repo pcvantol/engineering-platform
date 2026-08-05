@@ -2380,6 +2380,21 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(reset).toHaveCSS("color", "rgb(17, 42, 32)");
   });
 
+  test("shows the reset outcome instead of a generic failure for a valid conflict response", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
+    await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
+    await page.route("**/api/rate-limit-reset", (route) => route.fulfill({
+      status: 409,
+      json: { outcome: "nothingToReset", rate_limits: { reset_credits: 1 } },
+    }));
+
+    await page.locator("#rateLimitReset").click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(page.locator("#rateLimitResetStatus")).toHaveText("Er is op dit moment niets om te resetten.");
+  });
+
   test("parses each newline-delimited JSON log entry separately", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const entries = await page.evaluate(() => structuredLogEntries(
