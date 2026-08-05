@@ -1196,6 +1196,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
         for section in (
             "## Component Inventory",
+            "## Deliverable Projection",
+            "## Qualification Projection",
+            "## Runtime Projection",
+            "## Execution Receipt Projection",
+            "## Decision Evidence Projection",
+            "## Statistics Projection",
             "## Deliverable Answer",
             "## Commit Strategy",
             "## Branch Traceability",
@@ -1207,6 +1213,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertIn(section, body)
         self.assertIn("YES / PASS / GO", body)
         self.assertIn("Requirement: Produce a self-validating report.", body)
+        self.assertIn("Runtime evidence: run `evidence-2`; execution mode `MANAGED`.", body)
+        self.assertIn("Execution Status: `COMPLETE`", body)
+        self.assertIn("Receipt ID: `evidence-2`", body)
+        self.assertIn("### Mission Statistics", body)
         self.assertIn("Executed validation: `Documentation validation`", body)
         self.assertIn('"deliverable_answer": "YES / PASS / GO', body)
 
@@ -1234,6 +1244,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "# Engineering Report\n", state, collect_terminal_evidence(self.root, state), "PASS"
         )
         self.assertIn("missing required section: ## Component Inventory", errors)
+        self.assertIn("missing required section: ## Deliverable Projection", errors)
+        self.assertIn("missing required section: ## Qualification Projection", errors)
+        self.assertIn("missing required section: ## Statistics Projection", errors)
         self.assertIn("explicit deliverable answer is missing", errors)
 
     def test_complete_genesis_report_keeps_host_and_target_identities_distinct(self) -> None:

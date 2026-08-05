@@ -23,7 +23,23 @@ commit, missing complete-run Evidence Bundle, or the former unqualified
 Every terminal report includes these derived sections:
 
 - **Component Inventory** — architectural components inferred automatically
-  from changed implementation files, with their source files.
+  from changed implementation files, with their source files and added,
+  modified or removed classifications.
+- **Deliverable Projection** — every extracted requested deliverable has an
+  explicit requested, delivered or undelivered outcome, with runtime,
+  documentation and validation artefacts separately identified.
+- **Qualification Projection** — execution, qualification, runtime,
+  validation and governance status are separate facts. `COMPLETE` is never
+  rendered as a synonym for a qualification pass.
+- **Runtime Projection** — report-bound runtime instance and identity,
+  Producer mission reference, dispatcher and queue availability, plus only
+  persisted receipt and decision-evidence references.
+- **Execution Receipt Projection** and **Decision Evidence Projection** —
+  immutable run and Producer provenance references only; the report never
+  reproduces receipt or Decision Evidence content.
+- **Statistics Projection** — Mission, execution, Engineering Action and
+  runtime counts are separately scoped. An Engineering execution never implies
+  Mission completion.
 - **Deliverable Answer** — an explicit `YES`/`NO`, `PASS`/`FAIL` and `GO`/
   `NO-GO` answer when the prompt requests one, derived from the persisted
   terminal checkpoint.

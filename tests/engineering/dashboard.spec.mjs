@@ -505,15 +505,11 @@ test.describe("Engineering Status browser smoke", () => {
       ["es", "Ubicación del espacio de trabajo", "Revisores especializados", "Tokens de entrada", "Usar restablecimiento"],
     ];
     for (const [language, workspaceLocation, reviewers, inputTokens, reset] of expectations) {
+      const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-      // Let the deterministic initial snapshot finish before injecting this
-      // test-specific runtime state. This prevents an async snapshot response
-      // from overwriting the localized usage values.
-      await page.waitForFunction(
-        () => document.body.classList.contains("dashboard-ready"),
-        null,
-        { timeout: 5000 },
-      );
+      // Do not inject the localized runtime projection before the initial
+      // snapshot response has completed; it could otherwise overwrite usage.
+      await statusLoaded;
       await page.locator("#dashboardLocale").selectOption(language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await page.waitForFunction(() => typeof window.r === "function");
@@ -2515,6 +2511,27 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(entries.nth(0)).toHaveAttribute("aria-label", "Positie 1: Eerst uitvoeren");
     await expect(entries.nth(1)).toContainText("Later uitvoeren");
     await expect(page.locator("#queueSummary")).toHaveText("2 prompts in de wachtrij.");
+  });
+
+  test("shows the Codex CLI blocker in the Inbox queue", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => r({
+      watcher_state: "HOST_PREFLIGHT_FAILED",
+      diagnostic: "Execution Host Preflight blocked by runtime_invocation.",
+      queue_depth: 1,
+      queue_items: [{ filename: "waiting.txt", title: "Waiting prompt" }],
+    }, {}));
+
+    await page.getByTestId("engineering-inbox-queue").locator("summary").click();
+    await expect(page.locator("#inboxBlocker")).toBeVisible();
+    await expect(page.locator("#inboxBlocker")).toHaveText(
+      "De Inbox wacht omdat de lokale Codex CLI niet kan starten. Herstel dit handmatig met: npm install -g @openai/codex@latest",
+    );
   });
 
   test("renders provider limit rows on separate lines", async ({ page }) => {

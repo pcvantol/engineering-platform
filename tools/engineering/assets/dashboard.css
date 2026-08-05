@@ -159,6 +159,10 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 /* Component cards use symmetric vertical padding; the info action belongs at the card centre. */
 .platform-health__component{align-items:start;cursor:pointer;grid-template-areas:"indicator name info" "indicator detail info";grid-template-columns:auto minmax(0,1fr) auto;padding:12px 10px;row-gap:8px}.platform-health__component .indicator{align-self:center;grid-area:indicator}.platform-health__component-name{grid-area:name}.platform-health__component-detail{grid-area:detail;margin:0}.component-info{align-self:center;grid-area:info}
 .chat-input{resize:vertical}
+
+/* Make a blocked Inbox actionable without sending people to Technical details. */
+.queue-blocker{background:#4d2631;border:1px solid #ff9f43;border-radius:8px;color:#ffd8b1;font-size:14px;line-height:1.4;margin:12px 0;padding:10px}.queue-blocker:empty{display:none}
+html[data-theme="light"] .queue-blocker{background:#fff0df;color:#683e10}
 html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .predecessor-retry:hover:not(:disabled){background:#fff0dc}
 
 /* Download glyphs share the same single-line circular chrome as peer actions. */

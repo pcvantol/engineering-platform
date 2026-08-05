@@ -1664,6 +1664,16 @@ def _component_inventory_lines(bundle: TerminalEvidenceBundle) -> tuple[str, ...
     for component, files in inventory:
         lines.append(f"- Component: `{component}`")
         lines.extend(f"  - Repository file: `{path}`" for path in files)
+        lines.extend(
+            f"  - Change classification: `{classification}`"
+            for classification, candidates in (
+                ("added", bundle.files_added),
+                ("modified", bundle.files_modified),
+                ("removed", bundle.files_removed),
+            )
+            if any(path in candidates for path in files)
+        )
+    lines.append("- Generated Components: none recorded by repository evidence.")
     return tuple(lines)
 
 
@@ -1698,6 +1708,7 @@ def _branch_traceability(state: TransactionState, bundle: TerminalEvidenceBundle
         f"- Execution branch: `{execution}`",
         f"- Final repository branch: `{final_branch}`",
         f"- Final repository commit: `{bundle.target_commit}`",
+        f"- Result commit: `{bundle.target_commit}`",
         f"- Repository state transition: {transition}.",
     )
 
@@ -1715,8 +1726,11 @@ def _requirement_traceability(objective: str, state: TransactionState, bundle: T
             f"- Requirement: {requirement}",
             f"  - Implemented component: {component_names}",
             f"  - Repository files: {files}",
+            f"  - Runtime evidence: run `{state.run_id}`; execution mode `{state.execution_mode}`.",
+            f"  - Execution evidence: terminal checkpoint `{state.phase}`.",
             f"  - Regression tests: {tests}",
             f"  - Validation evidence: {validation}",
+            "  - Report evidence: this immutable Engineering Report.",
         ))
     return tuple(lines)
 
@@ -1748,6 +1762,105 @@ def _execution_statistics(state: TransactionState, bundle: TerminalEvidenceBundl
     )
 
 
+def _statistics_projection(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    """Project separately scoped metrics without inferring mission completion."""
+    return (
+        "### Mission Statistics",
+        "- Mission Count: `0` (Forge mission state is not inferred by Engineering Platform).",
+        "### Execution Statistics",
+        "- Execution Count: `1`",
+        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
+        "### Engineering Action Statistics",
+        f"- Evidence-backed actions: `{len(bundle.changed_files) + len(state.validation_evidence)}`",
+        "### Runtime Statistics",
+        "- Runtime execution count: `1` for this report-bound Run ID.",
+    )
+
+
+def _deliverable_projection(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    """Project requested outcomes and repository artefacts without claiming intent."""
+    requested = _objective_requirements(objective)
+    delivered = bundle.changed_files if state.phase == "COMPLETE" else ()
+    documentation = tuple(path for path in delivered if path.endswith(".md"))
+    validation = tuple(path for path in delivered if path.startswith("tests/"))
+    runtime = tuple(path for path in delivered if path.startswith("tools/engineering/"))
+    return (
+        "### Requested Deliverables",
+        *(f"- Requested: {item}" for item in requested),
+        "### Delivered Artefacts",
+        *_evidence_lines("Delivered artifact", delivered),
+        "### Undelivered Artefacts",
+        *(
+            ("- None recorded: terminal checkpoint is COMPLETE.",)
+            if state.phase == "COMPLETE"
+            else ("- Requested deliverables are not claimed as delivered by this terminal checkpoint.",)
+        ),
+        "### Runtime Deliverables",
+        *_evidence_lines("Runtime deliverable", runtime),
+        "### Documentation Deliverables",
+        *_evidence_lines("Documentation deliverable", documentation),
+        "### Validation Deliverables",
+        *_evidence_lines("Validation deliverable", validation),
+    )
+
+
+def _qualification_projection(
+    state: TransactionState,
+    qualification_status: object,
+    runtime_provider: str,
+) -> tuple[str, ...]:
+    """Keep execution, qualification, runtime and governance outcomes distinct."""
+    validation = "recorded" if state.validation_evidence else "not recorded"
+    return (
+        f"- Execution Status: `{state.phase}`",
+        f"- Qualification Status: `{qualification_status or 'not recorded'}`",
+        f"- Runtime Status: `{'reported' if runtime_provider != 'unavailable' else 'not reported'}`",
+        f"- Validation Status: `{validation}`",
+        f"- Governance Status: `{state.latest_github_evidence or 'not recorded'}`",
+    )
+
+
+def _runtime_projection(
+    state: TransactionState,
+    producer: ProducerMetadata,
+    runtime_provider: str,
+    reported_model: str,
+) -> tuple[str, ...]:
+    """Render only persisted runtime provenance and Producer references."""
+    return (
+        f"- Runtime Instance: `{state.run_id}`",
+        f"- Runtime Identity: provider `{runtime_provider}`; model `{reported_model}`",
+        f"- Mission State: `{producer.mission_id or 'not recorded'}`",
+        f"- Dispatcher: `not recorded by the runner`",
+        f"- Queue: `not recorded by the runner`",
+        f"- Execution Receipt Reference: `{state.run_id}`",
+        f"- Decision Evidence Reference: `{producer.correlation_id or producer.engineering_action_id or 'not recorded'}`",
+    )
+
+
+def _execution_receipt_projection(state: TransactionState, producer: ProducerMetadata) -> tuple[str, ...]:
+    return (
+        f"- Receipt ID: `{state.run_id}`",
+        "- Execution Host: `Engineering Platform`",
+        f"- Run ID: `{state.run_id}`",
+        f"- Correlation ID: `{producer.correlation_id or 'not recorded'}`",
+        f"- Receipt Status: `{state.phase}`",
+        f"- Receipt Resolution: `{state.terminal_condition}`",
+    )
+
+
+def _decision_evidence_projection(producer: ProducerMetadata) -> tuple[str, ...]:
+    if not any((producer.correlation_id, producer.mission_id, producer.engineering_action_id)):
+        return ("- No Decision Evidence reference was recorded by the Producer.",)
+    return (
+        f"- Decision Evidence ID: `{producer.correlation_id or 'not recorded'}`",
+        f"- Decision Type: `{producer.producer_type}` provenance reference",
+        f"- Mission: `{producer.mission_id or 'not recorded'}`",
+        "- Confidence: `not recorded by Engineering Platform`",
+        f"- Reasoning Reference: `{producer.engineering_action_id or 'not recorded'}`",
+    )
+
+
 def _evidence_summary(state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> str:
     """Return a compact, machine-readable summary derived only from report evidence."""
     return json.dumps(
@@ -1769,7 +1882,12 @@ def report_consistency_errors(body: str, state: TransactionState, bundle: Termin
     """Validate mandatory Evidence 2.0 sections before a report is published."""
     required = (
         "## Component Inventory",
-        "## Deliverable Answer",
+        "## Deliverable Projection",
+        "## Qualification Projection",
+        "## Runtime Projection",
+        "## Execution Receipt Projection",
+        "## Decision Evidence Projection",
+        "## Statistics Projection",
         "## Commit Strategy",
         "## Branch Traceability",
         "## Requirement Traceability",
@@ -2214,6 +2332,21 @@ def generate_terminal_report(
             "Automatically derived from changed implementation files in the Repository Evidence; it is not manually authored.",
             *_component_inventory_lines(bundle),
             "",
+            "## Deliverable Projection",
+            *_deliverable_projection(objective, state, bundle),
+            "",
+            "## Qualification Projection",
+            *_qualification_projection(state, qualification_status, runtime_provider),
+            "",
+            "## Runtime Projection",
+            *_runtime_projection(state, producer, runtime_provider, reported_model),
+            "",
+            "## Execution Receipt Projection",
+            *_execution_receipt_projection(state, producer),
+            "",
+            "## Decision Evidence Projection",
+            *_decision_evidence_projection(producer),
+            "",
             "## Deliverable Answer",
             f"- Final Deliverable Answer: {_deliverable_answer(objective, state)}",
             "",
@@ -2232,6 +2365,9 @@ def generate_terminal_report(
             "",
             "## Execution Statistics",
             *_execution_statistics(state, bundle),
+            "",
+            "## Statistics Projection",
+            *_statistics_projection(state, bundle),
             "",
             "## Engineering Evidence Summary",
             "```json",

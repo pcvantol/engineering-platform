@@ -467,6 +467,14 @@ function queueItems(x, queueDepth) {
     container.append(row);
   });
 }
+function renderInboxBlocker(status) {
+  const blocker = $("inboxBlocker"),
+    runtimeInvocationFailed = status?.watcher_state === "HOST_PREFLIGHT_FAILED" &&
+      String(status?.diagnostic || "").includes("runtime_invocation");
+  blocker.textContent = runtimeInvocationFailed
+    ? t("queue.runtime_invocation_blocked")
+    : "";
+}
 function promptStarted(x) {
   promptStartedAt = x?.started_at ? Date.parse(x.started_at) : undefined;
   $("promptStarted").textContent = promptStartedAt
@@ -851,6 +859,7 @@ function renderHealthStatus(x, snapshot = {}) {
       "currentDiagnostic",
     );
   $("runId").textContent = x.run_id || t("value.none");
+  renderInboxBlocker(x);
   queueItems(x.queue_items, x.queue_depth);
   $("implementation").textContent = x.implementation_pr || t("value.none");
   $("finalization").textContent = x.finalization_pr || t("value.none");
