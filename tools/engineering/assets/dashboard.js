@@ -338,8 +338,7 @@ function consumeRateLimitReset() {
         body: await response.json(),
       }))
       .then((result) => {
-        if (!result.ok)
-          throw Error(result.body.error || t("ui.reset_failed"));
+        if (!result.ok) throw Error(t("ui.reset_failed"));
         const messages = {
           reset: t("ui.reset_used"),
           nothingToReset: t("ui.reset_nothing"),
@@ -349,8 +348,8 @@ function consumeRateLimitReset() {
         status.textContent = messages[result.body.outcome] || t("ui.reset_processed");
         if (result.body.rate_limits) rateLimits(result.body.rate_limits);
       })
-      .catch((error) => {
-        status.textContent = error.message;
+      .catch(() => {
+        status.textContent = t("ui.reset_failed");
       })
       .finally(() => {
         button.disabled = false;
@@ -477,7 +476,7 @@ let componentLogsLoaded = false,
   componentLogEntries = { inbox: [], dashboard: [] };
 function structuredLogEntries(text) {
   const normalized = String(text ?? "").trim();
-  if (!normalized || normalized === "Nog geen applicatielog beschikbaar.") return [];
+  if (!normalized || !normalized.startsWith("{")) return [];
   return normalized
     .split(/\r?\n/)
     .filter(Boolean)
@@ -646,8 +645,8 @@ function askCodex() {
       chatMessage("assistant", answer);
       $("chatStatus").textContent = "";
     })
-    .catch((error) => {
-      $("chatStatus").textContent = error.message;
+    .catch(() => {
+      $("chatStatus").textContent = t("chat.unavailable");
     })
     .finally(() => {
       $("chatSend").disabled = false;
@@ -683,16 +682,21 @@ function fallbackCopy(value) {
   area.setSelectionRange(0, area.value.length);
   const copied = document.execCommand("copy");
   area.remove();
-  if (!copied) throw Error("copy unavailable");
+  if (!copied) throw Error(t("copy.failed"));
 }
 function copyText(value) {
-  const copy =
-    navigator.clipboard && window.isSecureContext
-      ? navigator.clipboard.writeText(value).catch(() => fallbackCopy(value))
-      : Promise.resolve().then(() => fallbackCopy(value));
-  return copy.then(() => {
+  // iOS Safari permits the legacy copy command only while the original tap is
+  // still being handled. Do that synchronously, then use the modern API only
+  // when the browser does not support the fallback.
+  try {
+    fallbackCopy(value);
     showCopyToast();
-  });
+    return Promise.resolve();
+  } catch (fallbackError) {
+    if (!navigator.clipboard || !window.isSecureContext)
+      return Promise.reject(fallbackError);
+    return navigator.clipboard.writeText(value).then(() => showCopyToast());
+  }
 }
 let copyToastTimer;
 function showCopyToast() {
@@ -1204,28 +1208,31 @@ function applyAccessibility() {
   chatStatus.setAttribute("aria-live", "polite");
   messages.setAttribute("role", "log");
   messages.setAttribute("aria-relevant", "additions text");
-  document.querySelectorAll(".log-table").forEach((table, index) => {
+  document.querySelectorAll("#componentLogs .log-table").forEach((table, index) => {
     table.setAttribute(
       "aria-label",
-      index === 0
-        ? "Logregels van Inbox-watcher"
-        : "Logregels van Statusdashboard",
+        index === 0 ? t("logs.inbox_entries") : t("logs.dashboard_entries"),
     );
     table.querySelectorAll("th.log-sortable").forEach((header) => {
       header.setAttribute("role", "button");
       header.setAttribute(
         "aria-label",
-        header.textContent.trim() + " sorteren",
+        t("table.sort_by", { column: header.textContent.trim() }),
       );
     });
   });
-  const live = document.createElement("div");
-  live.className = "sr-only";
-  live.id = "dashboardStatusAnnouncement";
-  live.setAttribute("role", "status");
-  live.setAttribute("aria-live", "polite");
-  live.setAttribute("aria-atomic", "true");
-  document.body.append(live);
+  let live = $("dashboardStatusAnnouncement");
+  if (!live) {
+    live = document.createElement("div");
+    live.className = "sr-only";
+    live.id = "dashboardStatusAnnouncement";
+    live.setAttribute("role", "status");
+    live.setAttribute("aria-live", "polite");
+    live.setAttribute("aria-atomic", "true");
+    document.body.append(live);
+  }
+  if (indicator.dataset.localizationObserver === "true") return;
+  indicator.dataset.localizationObserver = "true";
   let previous = "";
   new MutationObserver(() => {
     const message = indicator.getAttribute("aria-label") || "";
@@ -1396,12 +1403,12 @@ function refreshComponentLogs(versions = {}) {
       renderComponentLogs();
     })
     .catch(() => {
-      componentLogEntries.inbox = structuredLogEntries(
-        '{"level":"ERROR","event":"inbox_log_unavailable","diagnostic":"Inbox-log is niet beschikbaar."}',
-      );
-      componentLogEntries.dashboard = structuredLogEntries(
-        '{"level":"ERROR","event":"dashboard_log_unavailable","diagnostic":"Dashboard-log is niet beschikbaar."}',
-      );
+      componentLogEntries.inbox = structuredLogEntries(JSON.stringify({
+        level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable"),
+      }));
+      componentLogEntries.dashboard = structuredLogEntries(JSON.stringify({
+        level: "ERROR", event: "dashboard_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
+      }));
       $("componentLogControls").hidden = false;
       renderComponentLogs();
     });
@@ -2204,9 +2211,9 @@ function updatePullRefresh(distance) {
     "pull-refresh--visible",
     pullRefreshDistance > 8,
   );
-  pullRefresh.textContent = ready
-    ? "Laat los om te vernieuwen"
-    : "Trek omlaag om te vernieuwen";
+  pullRefresh.textContent = t(
+    ready ? "refresh.release_to_refresh" : "refresh.pull_to_refresh",
+  );
   pullRefresh.setAttribute("aria-hidden", String(pullRefreshDistance <= 8));
 }
 function startPullRefresh(event) {
@@ -2578,6 +2585,7 @@ const dashboardLocaleSelector = $("dashboardLocale");
 function applyDashboardLocale() {
   document.documentElement.lang = dashboardLocale;
   document.title = t("dashboard.title");
+  $("dashboardAppleWebAppTitle").content = t("dashboard.title");
   dashboardLocaleSelector.value = dashboardLocale;
   localizeTemplateBindings();
   const replacements = [
@@ -2648,6 +2656,7 @@ function applyDashboardLocale() {
   localizeTechnicalDetails();
   localizeLogControls();
   localizePromptHistoryTable();
+  applyAccessibility();
   renderPromptHistory();
   addCategoryIcons();
   addCategoryDescriptions();
@@ -2821,15 +2830,15 @@ function chatHistoryMarkdown() {
     .map(
       (entry) =>
         "## " +
-        (entry.role === "user" ? "Jij" : "AI-assistent") +
+        t(entry.role === "user" ? "chat.user" : "chat.assistant") +
         "\n\n" +
         entry.text.trim(),
     )
     .filter(Boolean);
   return [
-    "# AI-gesprek",
+    "# " + t("chat.download_title"),
     "",
-    "Model: " + $("chatModel").textContent.trim(),
+    t("chat.download_model", { model: $("chatModel").textContent.trim() }),
     "",
     ...entries,
   ].join("\n\n");
@@ -3423,9 +3432,9 @@ function updateChatActions() {
 }
 $("clearChat").addEventListener("click", () =>
   confirmDashboardAction(
-    "Chat wissen",
-    "Dit wist alleen de lokale chatweergave. Promptgeschiedenis en rapporten blijven behouden.",
-    "Chat wissen",
+    t("chat.clear_title"),
+    t("chat.clear_description"),
+    t("chat.clear_title"),
   ).then((confirmed) => {
     if (!confirmed) return;
     chatHistory = [];
@@ -3464,8 +3473,7 @@ async function restartPlatformComponent(button) {
         },
       ),
       payload = await response.json();
-    if (!response.ok)
-      throw Error(payload.error || "Herstarten is niet gelukt.");
+    if (!response.ok) throw Error(t("ui.component_restart_failed"));
     if (component === "dashboard") {
       $("componentModalStatus").textContent =
         t("ui.component_restart_started");
@@ -3474,9 +3482,8 @@ async function restartPlatformComponent(button) {
       return;
     }
     $("componentModalStatus").textContent = t("ui.component_restart_started");
-  } catch (error) {
-    $("componentModalStatus").textContent =
-      error.message || t("ui.component_restart_failed");
+  } catch {
+    $("componentModalStatus").textContent = t("ui.component_restart_failed");
   } finally {
     button.disabled = false;
   }

@@ -309,8 +309,10 @@ The Engineering Platform validation workflow runs a Playwright Chromium smoke
 test against a locally started dashboard. It uses an iPhone-sized viewport and
 checks the private status surface, workspace category and collapsed completed
 prompt category. Its localization coverage switches through all five supported
-languages and verifies that visible interface copy and rendered preflight enum
-labels change with the selected language. Run the same validation locally with:
+languages and verifies that visible interface copy, template and web-app-title
+bindings, dynamic dialogs, pull-to-refresh feedback, downloadable chat labels,
+accessibility names and rendered preflight enum labels change with the selected
+language. Run the same validation locally with:
 
 ```sh
 npm ci

@@ -85,6 +85,11 @@ test.describe("Engineering Status browser smoke", () => {
       // otherwise it may overwrite localized template placeholders.
       await page.locator("#dashboardLocale").selectOption(language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await expect(page).toHaveTitle(sourceTranslator("dashboard.title"));
+      await expect(page.locator("#dashboardAppleWebAppTitle")).toHaveAttribute(
+        "content",
+        sourceTranslator("dashboard.title"),
+      );
 
       const templateBindings = await page.locator(
         "[data-i18n], [data-i18n-placeholder], [data-i18n-aria-label], [data-i18n-title]",
@@ -116,6 +121,11 @@ test.describe("Engineering Status browser smoke", () => {
           "format.unavailable",
           "logs.loading",
           "estimate.not_available",
+          // Log tables replace this template accessibility name with their
+          // component-specific localized name at runtime.
+          "history.table_label",
+          "logs.inbox_watcher",
+          "logs.status_dashboard",
           // The indicator's accessible name is deliberately enriched at runtime
           // with the resolved status, e.g. "Prompt status: complete".
           "status.unknown",
@@ -156,7 +166,7 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("keeps client-created dashboard text localized in all five languages", async ({ page }) => {
+  test("enforces the source-to-interface localization contract in all five languages", async ({ page }) => {
     const dashboardSource = readFileSync(
       path.join(repository, "tools/engineering/assets/dashboard.js"),
       "utf8",
@@ -170,6 +180,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
       "", "⧉", "↑", "i", "↺", "⌫", "▤", "✦", "💬", "—",
     ]));
+    expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
 
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -192,7 +203,66 @@ test.describe("Engineering Status browser smoke", () => {
         "aria-label",
         DASHBOARD_MESSAGES[language]["copy.message"],
       );
+
+      await page.evaluate(() => {
+        updatePullRefresh(80);
+        document.querySelector("#promptHistoryChatModal").showModal();
+        document.querySelector("#clearChat").hidden = false;
+      });
+      await expect(page.getByTestId("pull-refresh")).toHaveText(
+        DASHBOARD_MESSAGES[language]["refresh.release_to_refresh"],
+      );
+      await expect(page.locator("#componentLogs .log-table").first()).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["logs.inbox_entries"],
+      );
+      await expect(page.locator("#componentLogs .log-table").nth(1)).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["logs.dashboard_entries"],
+      );
+      await page.locator("#clearChat").click();
+      await expect(page.locator("#confirmationModalTitle")).toHaveText(
+        DASHBOARD_MESSAGES[language]["chat.clear_title"],
+      );
+      await expect(page.locator("#confirmationModalText")).toHaveText(
+        DASHBOARD_MESSAGES[language]["chat.clear_description"],
+      );
+      await page.keyboard.press("Escape");
+      await page.locator("#promptHistoryChatModal").evaluate((modal) => modal.close());
     }
+  });
+
+  test("copies chat text synchronously for iOS Safari", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => typeof window.chatMessage === "function");
+    await page.evaluate(() => {
+      window.__copyFallbackCalls = 0;
+      window.__clipboardCalls = 0;
+      document.execCommand = (command) => {
+        if (command === "copy") window.__copyFallbackCalls += 1;
+        return command === "copy";
+      };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: () => {
+            window.__clipboardCalls += 1;
+            return Promise.resolve();
+          },
+        },
+      });
+      document.querySelector("#promptHistoryChatModal").showModal();
+      chatMessage("assistant", "Copy this iOS-safe message");
+    });
+
+    await page.locator("#chatMessages .chat-message__copy").click();
+    await expect(page.locator("#copyToast")).toHaveText(
+      DASHBOARD_MESSAGES.nl["copy.success"],
+    );
+    await expect.poll(() => page.evaluate(() => ({
+      fallback: window.__copyFallbackCalls,
+      clipboard: window.__clipboardCalls,
+    }))).toEqual({ fallback: 1, clipboard: 0 });
   });
 
   test("places the active prompt category first", async ({ page }) => {
