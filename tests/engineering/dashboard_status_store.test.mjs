@@ -6,6 +6,10 @@ import {
   normalizeDashboardSnapshot,
   normalizeDashboardStatus,
 } from "../../tools/engineering/assets/dashboard_status_store.mjs";
+import {
+  createLocaleService,
+  normalizeLocale,
+} from "../../tools/engineering/assets/dashboard_locales.mjs";
 
 test("normalizes only object-shaped status and snapshots", () => {
   const fallback = { watcher_state: "DEGRADED" };
@@ -61,4 +65,18 @@ test("requires one renderer and falls back safely on malformed updates", () => {
   store.update([], []);
 
   assert.deepEqual(rendered, [[fallback, {}]]);
+});
+
+test("centralizes dashboard language, formatting and collation", () => {
+  for (const language of ["en", "nl", "de", "fr", "es"]) {
+    const locale = createLocaleService(language);
+    assert.equal(locale.language, language);
+    assert.notEqual(locale.dateTime(new Date("2026-08-03T19:40:44Z")), "");
+    assert.notEqual(locale.logDateTime(new Date("2026-08-03T19:40:44Z")), "");
+    assert.notEqual(locale.number(0.3, { maximumFractionDigits: 1 }), "");
+    assert.equal(typeof locale.compare("agent-2", "agent-10"), "number");
+    assert.equal(locale.lower("ÉVÉNEMENT"), "événement");
+  }
+  assert.equal(normalizeLocale("nl-NL"), "nl");
+  assert.equal(normalizeLocale("unsupported"), "en");
 });

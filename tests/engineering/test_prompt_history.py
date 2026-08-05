@@ -45,8 +45,18 @@ class PromptHistoryTest(unittest.TestCase):
                         "original_run_id": None,
                         "retry_generation": None,
                         "retry_timestamp": None,
+                        "target_checkout_path": None,
+                        "tracked_file_count": None,
+                        "target_branch": None,
                         "execution_mode": None,
                         "repository": None,
+                        "producer_id": "legacy",
+                        "producer_type": "HUMAN",
+                        "producer_version": None,
+                        "correlation_id": None,
+                        "mission_id": None,
+                        "engineering_action_id": None,
+                        "execution_constraint_version": None,
                     }
                 ],
             )
@@ -80,6 +90,33 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertEqual(history[0]["git_commit"], "abcdef1")
             self.assertTrue(history[0]["report_available"])
 
+    def test_backfill_preserves_the_explicit_report_for_a_duplicate_legacy_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reports = root / ".engineering" / "reports"
+            reports.mkdir(parents=True)
+            actual = reports / "2026-08-03T19-40-44Z_inbox-duplicate.md"
+            fallback = reports / "corrected_inbox-duplicate.md"
+            actual.write_text(
+                "# Engineering Report\n- Run ID: `inbox-duplicate`\n- Terminal state: `COMPLETE`\n",
+                encoding="utf-8",
+            )
+            fallback.write_text(
+                "# Engineering Report\n- Run ID: `inbox-duplicate`\n- Terminal state: `COMPLETE`\n",
+                encoding="utf-8",
+            )
+            record_prompt_execution(
+                root,
+                run_id="inbox-duplicate",
+                terminal_state="COMPLETE",
+                prompt_title="Canonical report",
+                executed_at="2026-08-03T19:40:44Z",
+                report=actual,
+            )
+
+            self.assertEqual(prompt_history(root)[0]["report_available"], True)
+            self.assertEqual(report_for_prompt_history(root, "inbox-duplicate"), actual.read_bytes())
+
     def test_rejects_non_terminal_or_invalid_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -91,6 +128,26 @@ class PromptHistoryTest(unittest.TestCase):
                     prompt_title="unsafe",
                     executed_at="now",
                 )
+
+    def test_preserves_terminal_target_checkout_and_tracked_file_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "forge"
+            checkout.mkdir()
+            record_prompt_execution(
+                root,
+                run_id="inbox-workspace",
+                terminal_state="COMPLETE",
+                prompt_title="Workspace snapshot",
+                executed_at="2026-08-04T12:00:00Z",
+                target_checkout_path=checkout,
+                tracked_file_count=1655,
+                target_branch="forge-phase-evidence",
+            )
+            entry = prompt_history(root)[0]
+            self.assertEqual(entry["target_checkout_path"], str(checkout.resolve()))
+            self.assertEqual(entry["tracked_file_count"], 1655)
+            self.assertEqual(entry["target_branch"], "forge-phase-evidence")
 
     def test_persists_retry_relationship_without_merging_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -19,6 +19,7 @@ REPORT_COMMIT = re.compile(
     r"^- (?:Target Commit|Genesis-commit|Implementation Merge Commit|Finalization Merge Commit): `?([0-9a-f]{7,64})`?$",
     re.MULTILINE | re.IGNORECASE,
 )
+REPORT_TARGET_BRANCH = re.compile(r"^- Target Branch: `([^`\n]{1,255})`$", re.MULTILINE)
 RETRY_OF = re.compile(r"^- Retry Of: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
 ORIGINAL_RUN = re.compile(r"^- Original Run: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
 RETRY_GENERATION = re.compile(r"^- Retry Generation: `(\d+)`$", re.MULTILINE)
@@ -49,6 +50,31 @@ def _relative_report(root: Path, report: Path | None) -> str | None:
     return str(relative)
 
 
+def _safe_checkout_path(value: object) -> str | None:
+    """Keep only an absolute, bounded terminal checkout snapshot."""
+    if not isinstance(value, (str, Path)):
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        return None
+    resolved = str(path.resolve())
+    return resolved if len(resolved) <= 1_000 else None
+
+
+def _safe_tracked_file_count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10_000_000 else None
+
+
+def _safe_target_branch(value: object) -> str | None:
+    """Keep a bounded, single-line branch snapshot safe for presentation."""
+    if not isinstance(value, str):
+        return None
+    branch = value.strip()
+    if not branch or len(branch) > 255 or any(character in branch for character in "\0\r\n"):
+        return None
+    return branch
+
+
 def record_prompt_execution(
     root: Path,
     *,
@@ -62,6 +88,9 @@ def record_prompt_execution(
     original_run_id: object = None,
     retry_generation: object = None,
     retry_timestamp: object = None,
+    target_checkout_path: object = None,
+    tracked_file_count: object = None,
+    target_branch: object = None,
 ) -> None:
     """Upsert a terminal prompt projection without changing execution authority."""
     safe_run_id = _safe_run_id(run_id)
@@ -73,6 +102,9 @@ def record_prompt_execution(
     original = _safe_run_id(original_run_id)
     generation = retry_generation if isinstance(retry_generation, int) and retry_generation >= 1 else None
     timestamp = _safe_timestamp(retry_timestamp) if parent and retry_timestamp else None
+    checkout_path = _safe_checkout_path(target_checkout_path)
+    tracked_files = _safe_tracked_file_count(tracked_file_count)
+    branch = _safe_target_branch(target_branch)
     if parent is None:
         original = generation = timestamp = None
     elif original is None:
@@ -86,8 +118,9 @@ def record_prompt_execution(
             """
             INSERT INTO prompt_execution_history(
                 run_id, terminal_state, prompt_title, executed_at, git_commit, report_path, retry_of,
-                original_run_id, retry_generation, retry_timestamp, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                original_run_id, retry_generation, retry_timestamp, target_checkout_path,
+                tracked_file_count, target_branch, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 terminal_state=excluded.terminal_state,
                 prompt_title=excluded.prompt_title,
@@ -98,6 +131,9 @@ def record_prompt_execution(
                 original_run_id=COALESCE(excluded.original_run_id, prompt_execution_history.original_run_id),
                 retry_generation=COALESCE(excluded.retry_generation, prompt_execution_history.retry_generation),
                 retry_timestamp=COALESCE(excluded.retry_timestamp, prompt_execution_history.retry_timestamp),
+                target_checkout_path=COALESCE(excluded.target_checkout_path, prompt_execution_history.target_checkout_path),
+                tracked_file_count=COALESCE(excluded.tracked_file_count, prompt_execution_history.tracked_file_count),
+                target_branch=COALESCE(excluded.target_branch, prompt_execution_history.target_branch),
                 updated_at=excluded.updated_at
             """,
             (
@@ -111,6 +147,9 @@ def record_prompt_execution(
                 original,
                 generation,
                 timestamp,
+                checkout_path,
+                tracked_files,
+                branch,
                 now,
             ),
         )
@@ -135,6 +174,7 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
     original_run = ORIGINAL_RUN.search(content)
     retry_generation = RETRY_GENERATION.search(content)
     retry_timestamp = RETRY_TIMESTAMP.search(content)
+    target_branch = REPORT_TARGET_BRANCH.search(content)
     return {
         "run_id": run.group(1),
         "terminal_state": state.group(1),
@@ -154,17 +194,31 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
         "original_run_id": original_run.group(1) if original_run else None,
         "retry_generation": int(retry_generation.group(1)) if retry_generation else None,
         "retry_timestamp": retry_timestamp.group(1) if retry_timestamp else None,
+        "target_branch": target_branch.group(1) if target_branch else None,
     }
 
 
 def backfill_prompt_history(root: Path) -> None:
     """Cache legacy reports and telemetry rows into the canonical history index."""
     reports = root / ".engineering" / "reports"
+    connection = open_storage(root)
+    try:
+        indexed_run_ids = {
+            row[0]
+            for row in connection.execute("SELECT run_id FROM prompt_execution_history").fetchall()
+            if isinstance(row[0], str)
+        }
+    finally:
+        connection.close()
     if reports.is_dir():
         for report in reports.glob("*.md"):
             record = _report_record(root, report)
-            if record is not None:
+            # The stored report path is the canonical terminal projection.  A
+            # legacy fallback can share a Run ID with a later, real report;
+            # never let a filesystem scan replace that explicit reference.
+            if record is not None and record["run_id"] not in indexed_run_ids:
                 record_prompt_execution(root, **record)
+                indexed_run_ids.add(record["run_id"])
     connection = open_storage(root)
     try:
         rows = connection.execute(
@@ -196,7 +250,11 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
             """
             SELECT history.run_id, history.terminal_state, history.prompt_title, history.executed_at,
                 history.git_commit, history.report_path, history.retry_of, history.original_run_id,
-                history.retry_generation, history.retry_timestamp, runs.execution_mode, runs.repository
+                history.retry_generation, history.retry_timestamp, history.target_checkout_path,
+                history.tracked_file_count, history.target_branch, runs.execution_mode, runs.repository,
+                runs.producer_id, runs.producer_type, runs.producer_version,
+                runs.correlation_id, runs.mission_id, runs.engineering_action_id,
+                runs.execution_constraint_version
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
             ORDER BY history.executed_at DESC, history.run_id DESC
@@ -218,8 +276,18 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
             "original_run_id": row[7],
             "retry_generation": row[8],
             "retry_timestamp": row[9],
-            "execution_mode": row[10],
-            "repository": row[11],
+            "target_checkout_path": row[10],
+            "tracked_file_count": row[11],
+            "target_branch": row[12],
+            "execution_mode": row[13],
+            "repository": row[14],
+            "producer_id": row[15] or "legacy",
+            "producer_type": row[16] or "HUMAN",
+            "producer_version": row[17],
+            "correlation_id": row[18],
+            "mission_id": row[19],
+            "engineering_action_id": row[20],
+            "execution_constraint_version": row[21],
         }
         for row in rows
     ]

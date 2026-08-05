@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -128,6 +129,46 @@ class InboxWatcherTest(unittest.TestCase):
         (self.inbox / "legacy.txt").write_text("plain prompt text", encoding="utf-8")
         self.assertEqual([path.name for path in inbox_watcher.discover(self.root, 0)], ["legacy.txt"])
 
+    def test_queue_scan_and_admission_keep_the_oldest_prompt_together(self) -> None:
+        oldest = self.inbox / "first.md"
+        newest = self.inbox / "second.md"
+        oldest.write_text("# First", encoding="utf-8")
+        newest.write_text("# Second", encoding="utf-8")
+        base = time.time_ns()
+        os.utime(oldest, ns=(base, base))
+        os.utime(newest, ns=(base + 1_000_000, base + 1_000_000))
+
+        candidates = inbox_watcher._scan_queue(self.root, 0)
+        admission = inbox_watcher._admit_queue_candidate(
+            self.repo,
+            candidates,
+            child_run_id=None,
+            child_job_id=None,
+            logger=logging.getLogger("test"),
+        )
+
+        self.assertEqual([path.name for path, _ in candidates], ["first.md", "second.md"])
+        self.assertEqual(admission.source, oldest)
+        self.assertEqual(admission.content, "# First")
+
+    def test_detached_runner_admission_targets_its_exact_job(self) -> None:
+        prompt = self.inbox / "job.md"
+        prompt.write_text("# Prompt", encoding="utf-8")
+        candidates = inbox_watcher._scan_queue(self.root, 0)
+        job_id, _, _ = inbox_watcher._job_id(prompt, "# Prompt")
+
+        admission = inbox_watcher._admit_queue_candidate(
+            self.repo,
+            candidates,
+            child_run_id="inbox-detached-run",
+            child_job_id=job_id,
+            logger=logging.getLogger("test"),
+        )
+
+        self.assertEqual(admission.source, prompt)
+        self.assertEqual(admission.content, "# Prompt")
+        self.assertEqual(admission.exit_code, 0)
+
     def test_queue_projection_contains_only_filename_title_and_modified_time(self) -> None:
         prompt = self.inbox / "queued.md"
         prompt.write_text("# Queue title\nSensitive prompt body", encoding="utf-8")
@@ -150,6 +191,29 @@ class InboxWatcherTest(unittest.TestCase):
         (status / "current.json").write_text('{"run_id":"inbox-stale","phase":"INITIALIZE"}', encoding="utf-8")
         (checkpoint / "inbox-stale.json").write_text('{"phase":"BLOCKED"}', encoding="utf-8")
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_terminal_workspace_snapshot_uses_the_genesis_checkout_and_git_index(self) -> None:
+        target = self.repo.parent / "forge"
+        checkpoint = self.repo / ".engineering" / "engineering-runs" / "inbox-snapshot.json"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(
+            json.dumps(
+                {
+                    "execution_mode": "GENESIS",
+                    "genesis_repository_path": str(target),
+                }
+            ),
+            encoding="utf-8",
+        )
+        files = subprocess.CompletedProcess(("git",), 0, b"README.md\0src/app.py\0", b"")
+        branch = subprocess.CompletedProcess(("git",), 0, "forge-phase-e", "")
+        with patch("tools.engineering.inbox_watcher.subprocess.run", side_effect=(files, branch)):
+            checkout, tracked_files, target_branch = inbox_watcher._terminal_workspace_snapshot(
+                self.repo, "inbox-snapshot"
+            )
+        self.assertEqual(checkout, str(target.resolve()))
+        self.assertEqual(tracked_files, 2)
+        self.assertEqual(target_branch, "forge-phase-e")
 
     def test_contradictory_terminal_report_is_not_accepted_for_delivery(self) -> None:
         report = self.repo / "contradictory.md"
@@ -193,6 +257,123 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
         self.assertFalse(old_log.exists())
+
+    def test_background_watcher_detaches_runner_and_keeps_admission_active(self) -> None:
+        (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
+        run_id = "inbox-detached-run"
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "tools.engineering.inbox_watcher.subprocess.Popen"
+        ) as popen:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
+
+        command = popen.call_args.args[0]
+        environment = popen.call_args.kwargs["env"]
+        self.assertIn("tools.engineering.inbox_watcher", command)
+        self.assertIn("once", command)
+        self.assertEqual(environment[inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT], run_id)
+        self.assertTrue(environment[inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT])
+        self.assertTrue((self.inbox / "job.txt").exists())
+        self.assertTrue(inbox_watcher._active_transaction(self.repo))
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "RUNNER_STARTING")
+        self.assertEqual(snapshot["run_id"], run_id)
+
+    def test_active_detached_runner_keeps_scanning_and_publishes_later_inbox_prompts(self) -> None:
+        (self.inbox / "running.txt").write_text("# Running prompt", encoding="utf-8")
+        run_id = "inbox-detached-run"
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "tools.engineering.inbox_watcher.subprocess.Popen"
+        ):
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
+
+        queued = self.inbox / "later.txt"
+        queued.write_text("# Later prompt", encoding="utf-8")
+
+        self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
+
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "RUNNER_STARTING")
+        self.assertEqual(snapshot["run_id"], run_id)
+        self.assertEqual(snapshot["queue_depth"], 2)
+        self.assertEqual(
+            {item["filename"] for item in snapshot["queue_items"]},
+            {"later.txt", "running.txt"},
+        )
+
+    def test_detached_runner_execution_keeps_scanning_when_a_second_prompt_arrives(self) -> None:
+        """The polling watcher must observe later Inbox work during a real child run."""
+        running = self.inbox / "running.md"
+        running.write_text("# Running prompt", encoding="utf-8")
+        runner_started = threading.Event()
+        release_runner = threading.Event()
+        child_finished = threading.Event()
+        child_results: list[int] = []
+
+        def run_command(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(arguments[-2:], ["--run-id", "inbox-detached-run"])
+            # The child reads its identity before invoking the host.  Removing
+            # it here lets the concurrently polling parent stay a parent.
+            os.environ.pop(inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT, None)
+            os.environ.pop(inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT, None)
+            runner_started.set()
+            self.assertTrue(release_runner.wait(timeout=5))
+            checkpoint = self.repo / ".engineering" / "engineering-runs" / "inbox-detached-run.json"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+            report = self.repo / ".engineering" / "reports" / "report_inbox-detached-run.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(
+                "- Terminal state: `COMPLETE`\nCOMPLETE — delivered\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        def detach_runner(*_: object, **kwargs: object) -> object:
+            environment = dict(kwargs["env"])
+
+            def execute_child() -> None:
+                with patch.dict(os.environ, environment, clear=False):
+                    child_results.append(inbox_watcher.once(self.repo, self.root, 0))
+                child_finished.set()
+
+            threading.Thread(target=execute_child, daemon=True).start()
+            return object()
+
+        with (
+            patch("tools.engineering.inbox_watcher._allocate_run_id", return_value="inbox-detached-run"),
+            patch("tools.engineering.inbox_watcher.subprocess.Popen", side_effect=detach_runner),
+            patch("tools.engineering.inbox_watcher.subprocess.run", side_effect=run_command),
+        ):
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
+            self.assertTrue(runner_started.wait(timeout=5))
+
+            later = self.inbox / "later.md"
+            later.write_text("# Later prompt", encoding="utf-8")
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
+
+            snapshot = json_status(self.repo)
+            self.assertEqual(snapshot["run_id"], "inbox-detached-run")
+            self.assertEqual(snapshot["queue_depth"], 1)
+            self.assertEqual([item["filename"] for item in snapshot["queue_items"]], ["later.md"])
+
+            release_runner.set()
+            self.assertTrue(child_finished.wait(timeout=5))
+
+        self.assertEqual(child_results, [0])
+        self.assertTrue((self.inbox / "later.md").exists())
+
+    def test_detached_runner_does_not_hold_the_polling_watcher_lock(self) -> None:
+        lock_path = self.repo / ".engineering" / "engineering-inbox.lock"
+
+        with patch.dict(
+            os.environ,
+            {inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT: "inbox-detached-run"},
+            clear=False,
+        ):
+            with inbox_watcher._lock(self.repo):
+                self.assertFalse(lock_path.exists())
+
+        self.assertFalse(lock_path.exists())
 
     def test_preflight_failure_delivers_a_terminal_report_and_failed_phase(self) -> None:
         prompt = self.inbox / "preflight.md"

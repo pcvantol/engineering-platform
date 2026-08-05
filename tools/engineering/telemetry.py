@@ -12,8 +12,10 @@ from pathlib import Path
 from threading import Lock, Thread, current_thread
 from time import monotonic
 from typing import Callable
+from statistics import mean
 
 from .storage import open_storage
+from .producer import ProducerMetadata
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -40,6 +42,12 @@ class ExecutionTelemetry:
     original_run_id: str | None = None
     retry_generation: int | None = None
     retry_timestamp: str | None = None
+    prompt_characters: int | None = None
+    runtime_provider: str | None = None
+    runtime_model: str | None = None
+    reasoning_profile: str | None = None
+    configuration_profile: str | None = None
+    producer: ProducerMetadata = ProducerMetadata()
 
 
 def _utc(value: datetime) -> datetime:
@@ -52,6 +60,16 @@ def _timestamp(value: datetime) -> str:
 
 def _integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _runtime_value(value: object) -> str | None:
+    """Keep a bounded, display-safe runtime profile value for local aggregation."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.casefold() in {"not reported", "unavailable"}:
+        return None
+    return normalized[:120]
 
 
 def persist_execution(
@@ -75,12 +93,15 @@ def persist_execution(
     try:
         connection.execute(
             """
-            INSERT OR REPLACE INTO execution_runs(
+            INSERT OR IGNORE INTO execution_runs(
                 run_id, execution_date, arrived_at, execution_started_at, execution_finished_at,
                 queue_wait_seconds, execution_seconds, total_execution_seconds, terminal_state, input_tokens, output_tokens,
                 total_tokens, execution_mode, workspace, repository, execution_host_version, retry_of,
-                original_run_id, retry_generation, retry_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                original_run_id, retry_generation, retry_timestamp, prompt_characters,
+                runtime_provider, runtime_model, reasoning_profile, configuration_profile
+                , producer_id, producer_type, producer_version, correlation_id, mission_id,
+                engineering_action_id, execution_constraint_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 telemetry.run_id,
@@ -103,6 +124,32 @@ def persist_execution(
                 telemetry.original_run_id,
                 telemetry.retry_generation,
                 telemetry.retry_timestamp,
+                _integer(telemetry.prompt_characters),
+                _runtime_value(telemetry.runtime_provider),
+                _runtime_value(telemetry.runtime_model),
+                _runtime_value(telemetry.reasoning_profile),
+                _runtime_value(telemetry.configuration_profile),
+                telemetry.producer.producer_id,
+                telemetry.producer.producer_type,
+                telemetry.producer.producer_version,
+                telemetry.producer.correlation_id,
+                telemetry.producer.mission_id,
+                telemetry.producer.engineering_action_id,
+                telemetry.producer.execution_constraint_version,
+            ),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO execution_receipts(
+                run_id, producer_id, producer_type, producer_version, mission_id,
+                engineering_action_id, correlation_id, execution_constraint_version,
+                execution_host, execution_host_version, receipt_timestamp, execution_outcome
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                telemetry.run_id, telemetry.producer.producer_id, telemetry.producer.producer_type,
+                telemetry.producer.producer_version, telemetry.producer.mission_id,
+                telemetry.producer.engineering_action_id, telemetry.producer.correlation_id,
+                telemetry.producer.execution_constraint_version, "Engineering Platform",
+                telemetry.execution_host_version, _timestamp(finished), telemetry.terminal_state,
             ),
         )
         connection.execute(
@@ -218,3 +265,60 @@ def execution_timing(root: Path, run_id: str) -> dict[str, float | str]:
     if isinstance(row[2], str):
         result["finished_at"] = row[2]
     return result
+
+
+def comparable_duration_estimate(
+    root: Path,
+    *,
+    prompt_characters: object,
+    runtime_metadata: object,
+) -> dict[str, float | int | str]:
+    """Return a size-adjusted estimate from complete runs with one exact runtime profile.
+
+    This is intentionally advisory: it never affects scheduling or engineering
+    state.  Missing or unreported profile fields yield no estimate rather than
+    mixing incomparable providers, models or reasoning settings.
+    """
+    characters = _integer(prompt_characters)
+    if not characters or not isinstance(runtime_metadata, dict):
+        return {}
+    signature = tuple(
+        _runtime_value(runtime_metadata.get(key))
+        for key in ("runtime_provider", "model", "reasoning_profile", "configuration_profile")
+    )
+    if any(value is None for value in signature):
+        return {}
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(
+            """
+            SELECT execution_seconds, prompt_characters
+            FROM execution_runs
+            WHERE terminal_state = 'COMPLETE'
+              AND runtime_provider = ? AND runtime_model = ?
+              AND reasoning_profile = ? AND configuration_profile = ?
+              AND execution_seconds IS NOT NULL AND prompt_characters > 0
+            ORDER BY execution_finished_at DESC
+            LIMIT 20
+            """,
+            signature,
+        ).fetchall()
+    finally:
+        connection.close()
+    scaled = [float(seconds) * characters / int(size) for seconds, size in rows if seconds >= 0]
+    if len(scaled) < 2:
+        return {}
+    ordered = sorted(scaled)
+    # The observed spread gives an honest range while avoiding a single old
+    # outlier dominating the indicator.  The arithmetic mean keeps the value
+    # easy to explain and deterministic for a fixed evidence set.
+    lower = ordered[max(0, (len(ordered) - 1) // 4)]
+    upper = ordered[min(len(ordered) - 1, (len(ordered) - 1) * 3 // 4)]
+    return {
+        "sample_count": len(scaled),
+        "average_seconds": round(mean(scaled), 3),
+        "lower_seconds": round(min(lower, upper), 3),
+        "upper_seconds": round(max(lower, upper), 3),
+        "runtime_provider": signature[0],
+        "model": signature[1],
+    }

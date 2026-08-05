@@ -15,6 +15,17 @@ authorization and a stable run ID. Reports remain under `.engineering/reports/`
 and status under `.engineering/status/`. iCloud is transport only; it retains no
 reports, status or prompt archive after a job is claimed.
 
+## Producer Contract
+
+The Execution Host consumes declared Producer metadata as immutable provenance:
+`Producer ID`, `Producer Type`, `Producer Version`, `Producer Correlation ID`,
+optional `Mission ID`, optional `Engineering Action ID`, and `Execution
+Constraint Version`. Forge owns this contract and its semantics. The Execution
+Host does not implement or interpret Forge logic; it persists and reports the
+metadata only. Missing metadata remains compatible with existing prompts and
+records `Producer Type: HUMAN` and `Producer ID: legacy`. Producer identity
+never changes admission, scheduling, preflight, lifecycle or execution.
+
 ## Execution Host Preflight Level 1
 
 Before claiming a discovered Inbox item, the watcher runs fail-closed **Execution
@@ -111,6 +122,39 @@ an explanation that the original stays unchanged and a Retry relationship is
 recorded. Neither action bypasses watcher ownership, bootstrap or runner
 checks. This deliberately supplies sequential safety before a future
 Engineering Intent `depends_on` model can express finer-grained rules.
+
+## Development Host Drift Diagnostics
+
+Development Host Qualification remains fail-closed and its admission behavior is
+unchanged. When any preflight blocks admission, Engineering Platform now writes
+an immutable evidence document under `.engineering/drift-evidence/` and
+references the current evidence from the relevant preflight status projection.
+Each evidence item contains a generated Drift ID, Category, Severity, Expected
+Value, Observed Value, Resolution Recommendation, Detection Timestamp,
+Qualification Stage, Affected Component, Affected Repository and Affected
+Runtime. Evidence is append-only: a later qualification cannot rewrite an
+earlier observed drift.
+
+Supported categories are: **Runtime Database**, **Runtime Identity**, **Runtime
+Schema**, **Execution Host Version**, **Bootstrap Contract**, **Checkpoint
+Format**, **Memory Format**, **Report Format**, **Configuration**, **Workspace**,
+**Repository**, **Capability**, **Producer Contract** and **Execution Policy**.
+The taxonomy is extensible. Current Level 1 checks project runtime database,
+runtime identity and configuration failures; Level 2 checks project workspace
+and repository failures; Level 3 checks project version, schema, format,
+capability and execution-policy failures. Producer Contract remains a supported
+diagnostic category for a future producer validation check; producer metadata
+continues to have no admission effect today.
+
+The Dashboard projects the first current blocking drift read-only, including
+severity, affected component, expected state, observed state and resolution.
+The Engineering Report renders every drift item with its blocking reason,
+required action and affected repository/runtime. A blocked qualification also
+states retry/resume guidance: repair the listed prerequisite first, then retry
+admission; resuming an unclaimed execution is not appropriate. Operator
+intervention is required while blocking drift remains. These statements are
+diagnostics only and do not alter retry, resume, queue or execution lifecycle
+semantics.
 
 ## Dismiss Execution
 

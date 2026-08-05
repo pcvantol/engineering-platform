@@ -22,6 +22,22 @@ executes the bounded Codex workflow and produces the resulting local reports.
 Its Inbox watcher is the transport and queue-facing part of that host; it has
 no authority beyond the normal Engineering Platform lifecycle.
 
+The watcher admits at most one execution and then starts its runner as a
+separate local process. It does not wait for that runner: subsequent polling
+cycles keep scanning the Inbox and publishing the ordered queue while the
+admission record prevents a second execution from starting. A terminal
+checkpoint clears that admission record; the historical run and its report
+remain the source of evidence.
+
+The detached runner never owns the polling lock for its engineering lifetime.
+The watcher may therefore refresh only the bounded queue projection while the
+runner is active, preserving the active Run ID and runner phase in the same
+status snapshot. This scan is read-only: a newly discovered Inbox prompt is
+shown immediately in **Inbox-wachtrij**, but is not claimed until the active
+execution reaches a terminal checkpoint. During an in-place upgrade, a watcher
+may encounter one older runner that still owns the previous lock; it still
+performs that read-only queue refresh and never starts a second runner.
+
 ## Dashboard module boundaries
 
 `tools/engineering/dashboard.py` is the intentionally thin dashboard façade:
@@ -31,13 +47,36 @@ read-only status and server-sent-event snapshot composition. The façade passes
 its bounded repository readers into that state module, preserving the existing
 endpoint contracts while keeping the dashboard state model independently
 testable. The page markup remains in the façade; `tools/engineering/assets/
-dashboard.css` and `dashboard.js` own presentation and browser interaction and
-are served only as same-origin dashboard assets. Neither module has authority
+dashboard.css`, `dashboard.js` and `dashboard_locales.mjs` own presentation,
+browser interaction and user-facing copy. The locale module is the canonical
+catalog for the five supported language families (`en`, `nl`, `de`, `fr`,
+`es`); it normalizes a browser preference, persists an operator selection and
+falls back explicitly to English. These assets are served only as same-origin
+dashboard assets. Neither module has authority
 to start engineering work or change a target repository. The small
 `dashboard_status_store.mjs` module owns only status/snapshot normalization and
 single-path delivery to the renderer; it has direct Node unit tests. Browser
 behaviour, markup and styling remain covered by Playwright rather than fragile
 source-text assertions.
+
+`dashboard_locales.mjs` also owns the dashboard locale service. Renderers use
+that single service for UI copy, Amsterdam date/time formatting, numeric
+formatting, casing, pluralisation and collation; they must not select a locale
+or construct an `Intl` formatter themselves.
+
+The Promptgeschiedenis detail endpoint follows the same boundary: its lookup
+reads one immutable terminal history row and bounded companion data, while a
+small dashboard projector owns the JSON presentation and report-derived
+Evidence Bundle summary. The projector works only with data for that selected
+Run ID, copies the stored history before adding display-only provenance, and
+does not write storage or modify a report. A missing or non-readable report
+therefore yields no derived evidence rather than a fallback from another run.
+
+The Execution Host continues to publish stable machine enum values such as
+`PASS`, `RETRYABLE_AFTER_HOST_REPAIR` and `CAPABILITY` in its local status
+contract. The dashboard translates those values only at the presentation
+boundary through the same locale catalog, so the operator sees a human-friendly
+label in the selected language while API and storage values remain stable.
 
 The dashboard assets also own the presentation contract: the sticky title bar
 uses the same `18px` outer corner radius as the top-level categories, while
@@ -49,6 +88,42 @@ download controls; their stroke is a single, solid border in both themes.
 The Engineering Status SVG and touch PNG are same-origin assets. They are
 served with `no-store` so an actively running local dashboard never needs to
 reuse an outdated visual asset after an upgrade.
+
+Top-level dashboard categories are separated by a `24px` rhythm and do not
+use elevation shadows; their coloured borders and spacing provide hierarchy.
+The Dashboard UI component layer groups header, main-section, scrolling/focus,
+log-control and modal refinements, with shared spacing, focus and surface
+variables rather than late one-off overrides.
+The dedicated scroll region reserves a scrollbar gutter and has inline
+background padding, so overlay scrollbars never cover interactive content.
+At narrower widths the title-bar controls move to their own wrapping row
+before they can overlap the dashboard title. Labels above vertical input and
+select controls retain an `8px` gap before a focus outline. Component logs
+provide text search, level and multi-select event filtering; the adjacent
+reset glyph clears those filters without changing the selected sort order.
+
+Component logs use one client-side pipeline: parse once, derive the available
+event values, apply the current filters, sort per table column and then
+paginate. There is no separate legacy renderer or global sort control to
+override that result.
+
+During an active execution, the Execution Host publishes a bounded reviewer
+runtime projection with only reviewer identity, capability, selection reason,
+state and lifecycle timestamps. The dashboard uses this projection to show the
+live specialist-reviewer count (for example, `2 of 3` active). It does not
+infer reviewer activity from the user's unrelated Codex processes. Reviewer
+observations remain read-only advisory input; the primary runner alone retains
+lifecycle authority.
+
+CPU and process-count telemetry is also run-bound. When the Execution Host
+starts the foreground Codex runner, it records that runner's PID and dedicated
+process group; the record is removed when the runner exits. The dashboard
+counts only processes in that recorded group. Other Codex sessions on the
+operator's machine are deliberately excluded.
+
+AI-provider usage follows the same exact-run rule. While a run is active, its
+usage card remains empty until the CLI has published usage for that active Run
+ID; usage from the previously completed run is never reused as a live value.
 
 ## ESET Firewall
 
@@ -89,6 +164,11 @@ not need iCloud Drive to render a current or completed run:
 iCloud Drive is solely an Inbox transport source for the separate watcher.
 The dashboard does not read iCloud reports, status or archived prompts.
 
+Prompt History and its read-only execution-detail dialog expose the stored
+Producer ID, Type, Version, Correlation ID and optional Mission and Engineering
+Action IDs for the selected run only. Producer metadata is audit evidence: it
+cannot be edited in the dashboard and never affects execution or scheduling.
+
 At every page load, the dashboard first retrieves one complete, read-only
 same-origin status snapshot. This fills all categories even when the
 browser-local **Automatisch vernieuwen** preference is off. The page then
@@ -117,13 +197,22 @@ update. With automatic refresh disabled, the visible state remains static until
 the maintainer refreshes or re-enables it. These are presentation preferences;
 they never alter an Engineering run or its evidence.
 
-The **Laatst uitgevoerde prompt** and **Promptgeschiedenis** views fetch report
-content only when a maintainer opens it. A delivered report can be viewed in a
-large read-only Markdown dialog, copied to the clipboard or downloaded as a
-Markdown file. The advisory AI analysis uses the same bounded interaction.
-When a report or analysis does not exist, the dashboard states that explicitly
-and does not present a download or copy control. Copy confirmation is a local
-toast only; it does not send report content to another service.
+**Promptgeschiedenis** is the sole entry point for terminal execution detail.
+Selecting a table row opens a near-fullscreen, read-only detail dialog with
+the evidence, timing, runtime provenance, token usage, commits and reviewer
+results that belong to that exact Run ID. Engineering reports and advisory AI
+analyses stay separate row actions: they open their own Markdown dialogs and
+can be downloaded without duplicating their content in the detail dialog.
+The dashboard has no separate or hidden **Laatst uitgevoerde prompt** card;
+the selected Promptgeschiedenis row is the canonical presentation of a
+terminal execution.
+The adjacent AI-chat glyph opens a separate near-fullscreen, read-only
+question-and-answer context for that same Run ID. It receives only the selected
+run's bounded evidence and cannot start engineering work or alter repository
+state. Its browser-session history is isolated per Run ID.
+When an artifact does not exist, the dashboard states that explicitly and does
+not present its action. Copy confirmation is a local toast only; it does not
+send report content to another service.
 
 When an execution ends as `BLOCKED`, the **Actieve prompt** category remains
 visible and opens with that run's identity and recovery context; it is not
@@ -138,8 +227,10 @@ The bottom status bar contains the Engineering Platform version, the most
 recent refresh timestamp and the server-push connection state. The active
 prompt category contains no separate time card.
 
-The title bar and bottom status bar remain visible; the workspace and all
-dashboard categories between them scroll in one dedicated content area.
+The title bar and bottom status bar remain visible; all dashboard categories
+between them scroll in one dedicated content area. Workspace metadata remains
+a top-level, collapsible operational category immediately after **Technische
+details**, preserving its own independent status and evidence boundary.
 The title-bar section switch persists the deliberate all-open or all-closed
 choice across a browser reload; a later status update cannot reverse it.
 
@@ -217,7 +308,9 @@ authority.
 The Engineering Platform validation workflow runs a Playwright Chromium smoke
 test against a locally started dashboard. It uses an iPhone-sized viewport and
 checks the private status surface, workspace category and collapsed completed
-prompt category. Run the same validation locally with:
+prompt category. Its localization coverage switches through all five supported
+languages and verifies that visible interface copy and rendered preflight enum
+labels change with the selected language. Run the same validation locally with:
 
 ```sh
 npm ci
@@ -309,18 +402,19 @@ review in the supported browser and a contrast review of the rendered page.
 
 ## Private read-only AI advice
 
-**AI-gesprek** is available only through this same private listener. Its
-bounded context is the repository identity, the latest terminal prompt and
-the matching local Engineering Report. The visible interface is
+**AI-gesprek** is available only through this same private listener, from the
+AI-chat glyph in a selected **Promptgeschiedenis** row. Its bounded context is
+the repository identity, that exact terminal prompt and its matching local
+Engineering Report. The visible interface is
 provider-neutral; the current configured adapter is Codex CLI and is shown as
 such. It starts an ephemeral, read-only process and cannot inspect or submit
 Inbox files, modify a repository,
 create or merge pull requests, or trigger release, deployment or publication.
 Any requested implementation must be submitted as a new Engineering prompt.
 
-Conversation history is browser-session-local and is reset when the displayed
-last-executed run changes. It is not Engineering Memory and is never an Inbox,
-runner or repository-control channel.
+Conversation history is browser-session-local and scoped by Run ID, so one
+terminal prompt can never supply conversation context to another. It is not
+Engineering Memory and is never an Inbox, runner or repository-control channel.
 
 During an active prompt, the execution card can present a bounded, safe
 **Huidige Codex-activiteit** label such as planning, reading files, editing or

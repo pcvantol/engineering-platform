@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.engineering.codex_chat import CodexChatError, respond
+from tools.engineering.prompt_history import record_prompt_execution
 
 
 class CodexChatTest(unittest.TestCase):
@@ -61,3 +62,36 @@ class CodexChatTest(unittest.TestCase):
                 respond(root, {}, "Hallo", [])
             with self.assertRaises(CodexChatError):
                 respond(root, {"last_executed_run": "inbox-last"}, "Hallo", [{}])
+
+    def test_response_uses_the_explicit_history_run_instead_of_the_latest_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / ".engineering" / "reports" / "selected.md"
+            report.parent.mkdir(parents=True)
+            report.write_text("# Geselecteerd rapport", encoding="utf-8")
+            record_prompt_execution(
+                root,
+                run_id="inbox-selected",
+                terminal_state="COMPLETE",
+                prompt_title="Geselecteerde prompt",
+                executed_at="2026-08-03T12:00:00Z",
+                report=report,
+            )
+            git = subprocess.CompletedProcess(("git",), 0, "## main\n", "")
+            codex = subprocess.CompletedProcess(
+                ("codex",), 0,
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Rungebonden advies."}}) + "\n", "",
+            )
+            with patch("tools.engineering.codex_chat.subprocess.run", side_effect=(git, codex)) as run:
+                answer = respond(
+                    root,
+                    {"last_executed_run": "inbox-other", "last_executed_title": "Andere prompt"},
+                    "Wat is de status?",
+                    [],
+                    "inbox-selected",
+                )
+            self.assertEqual(answer, "Rungebonden advies.")
+            context = run.call_args_list[1].args[0][-1]
+            self.assertIn("inbox-selected", context)
+            self.assertIn("Geselecteerde prompt", context)
+            self.assertNotIn("inbox-other", context)

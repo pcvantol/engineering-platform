@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .agent_state import redact_diagnostic
 
@@ -98,26 +98,45 @@ def select_reviewers(objective: str, prompt_path: Path, transaction_kind: str, m
     return tuple(result)
 
 
-def run_reviews(root: Path, selections: tuple[ReviewerSelection, ...], objective: str, client: ReviewerClient | None) -> tuple[ReviewerResult, ...]:
+ReviewerProgressCallback = Callable[[ReviewerSelection, str, ReviewerResult | None], None]
+
+
+def run_reviews(
+    root: Path,
+    selections: tuple[ReviewerSelection, ...],
+    objective: str,
+    client: ReviewerClient | None,
+    progress: ReviewerProgressCallback | None = None,
+) -> tuple[ReviewerResult, ...]:
     """Run independent read-only reviews in parallel; any failure remains advisory."""
     if not selections:
         return ()
     if client is None:
-        return tuple(ReviewerResult(item.reviewer, "Reviewer client unavailable; primary review continues.", failed=True) for item in selections)
+        results = tuple(ReviewerResult(item.reviewer, "Reviewer client unavailable; primary review continues.", failed=True) for item in selections)
+        if progress:
+            for selection, result in zip(selections, results, strict=True):
+                progress(selection, "failed", result)
+        return results
 
     def invoke(selection: ReviewerSelection) -> ReviewerResult:
+        if progress:
+            progress(selection, "started", None)
         try:
             result = client.review(root, selection, objective)
             if result.reviewer != selection.reviewer:
-                return ReviewerResult(selection.reviewer, "Reviewer identity mismatch; primary review continues.", failed=True)
-            return ReviewerResult(
+                result = ReviewerResult(selection.reviewer, "Reviewer identity mismatch; primary review continues.", failed=True)
+            else:
+                result = ReviewerResult(
                 selection.reviewer,
                 redact_diagnostic(result.contribution, limit=240),
                 tuple(redact_diagnostic(value, limit=240) for value in result.recommendations[:3]),
                 result.failed,
             )
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
-            return ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
+            result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)
+        if progress:
+            progress(selection, "failed" if result.failed else "completed", result)
+        return result
 
     with ThreadPoolExecutor(max_workers=len(selections)) as executor:
         completed = {item.reviewer: executor.submit(invoke, item) for item in selections}

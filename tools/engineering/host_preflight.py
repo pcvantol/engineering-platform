@@ -21,6 +21,7 @@ from .component_logging import component_logger
 from .platform_api import PlatformConfiguration, PlatformConfigurationError
 from .platform_version import EngineeringPlatformManifest
 from .storage import open_storage
+from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
 
 
 DEFAULT_MINIMUM_FREE_BYTES = 1_073_741_824
@@ -45,6 +46,8 @@ class HostPreflightResult:
     timestamp: str
     duration_ms: int
     checks: tuple[HostPreflightCheck, ...]
+    drift_evidence: tuple[dict[str, str], ...] = ()
+    resume_guidance: dict[str, object] | None = None
 
     def payload(self, run_id: str | None = None) -> dict[str, object]:
         result = asdict(self)
@@ -178,6 +181,9 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         if any(check.outcome == "WARNING" for check in checks)
         else "PASS"
     )
+    drift_evidence = persist_drift_evidence(root, evidence_for_checks(
+        checks, stage="Execution Host Preflight", repository=str(root.resolve())
+    ))
     result = HostPreflightResult(
         outcome,
         configuration.platform.name if configuration else "Engineering Platform",
@@ -186,6 +192,8 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         timestamp,
         round((monotonic() - started) * 1000),
         tuple(checks),
+        drift_evidence,
+        guidance(drift_evidence),
     )
     _persist(root, result, run_id)
     return result
@@ -199,4 +207,4 @@ def latest(root: Path) -> dict[str, object]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in ("outcome", "timestamp", "duration_ms", "execution_host", "version", "bootstrap_contract", "checks", "run_id") if key in payload}
+    return {key: payload[key] for key in ("outcome", "timestamp", "duration_ms", "execution_host", "version", "bootstrap_contract", "checks", "drift_evidence", "resume_guidance", "run_id") if key in payload}

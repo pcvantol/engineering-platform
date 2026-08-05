@@ -1,7 +1,13 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
+import {
+  createTranslator,
+  DASHBOARD_MESSAGES,
+  SUPPORTED_LOCALES,
+} from "../../tools/engineering/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dashboardUrl = "http://127.0.0.1:8876";
@@ -38,6 +44,157 @@ test.afterAll(() => {
 test.describe("Engineering Status browser smoke", () => {
   test.use({ viewport: { width: 390, height: 844 }, colorScheme: "dark", locale: "nl-NL", reducedMotion: "reduce" });
 
+  test("keeps every supported UI catalog complete", () => {
+    const canonicalKeys = Object.keys(DASHBOARD_MESSAGES.en).sort();
+    for (const locale of SUPPORTED_LOCALES) {
+      expect(Object.keys(DASHBOARD_MESSAGES[locale]).sort(), locale).toEqual(canonicalKeys);
+      for (const key of canonicalKeys) expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
+    }
+  });
+
+  test("uses catalogued copy for every UI label in every supported language", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+    }));
+    const dashboardSource = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      "utf8",
+    );
+    const staticallyRequestedKeys = [
+      ...dashboardSource.matchAll(/\bt\(\s*["']([^"']+)["']\s*(?:,|\))/g),
+    ].map((match) => match[1]);
+
+    for (const language of SUPPORTED_LOCALES) {
+      const sourceTranslator = createTranslator(language);
+      for (const key of staticallyRequestedKeys) {
+        expect(
+          Object.hasOwn(DASHBOARD_MESSAGES[language], key),
+          `${language} is missing the statically requested UI label: ${key}`,
+        ).toBe(true);
+      }
+
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForFunction(
+        () => typeof window.__djconnectDashboardLocalizationCalls === "function",
+      );
+      await page.waitForFunction(
+        () => document.body.classList.contains("dashboard-ready"),
+      );
+      // Change language only after the asynchronous snapshot has rendered;
+      // otherwise it may overwrite localized template placeholders.
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+
+      const templateBindings = await page.locator(
+        "[data-i18n], [data-i18n-placeholder], [data-i18n-aria-label], [data-i18n-title]",
+      ).evaluateAll((elements) => elements.flatMap((element) => [
+        element.dataset.i18n && {
+          key: element.dataset.i18n,
+          property: "textContent",
+          value: element.textContent,
+        },
+        element.dataset.i18nPlaceholder && {
+          key: element.dataset.i18nPlaceholder,
+          property: "placeholder",
+          value: element.getAttribute("placeholder"),
+        },
+        element.dataset.i18nAriaLabel && {
+          key: element.dataset.i18nAriaLabel,
+          property: "aria-label",
+          value: element.getAttribute("aria-label"),
+        },
+        element.dataset.i18nTitle && {
+          key: element.dataset.i18nTitle,
+          property: "title",
+          value: element.getAttribute("title"),
+        },
+      ].filter(Boolean)));
+      for (const binding of templateBindings.filter(
+        ({ key }) => ![
+          "format.loading",
+          "format.unavailable",
+          "logs.loading",
+          "estimate.not_available",
+          // The indicator's accessible name is deliberately enriched at runtime
+          // with the resolved status, e.g. "Prompt status: complete".
+          "status.unknown",
+        ].includes(key),
+      )) {
+        expect(
+          binding.value,
+          `${language}:${binding.key} must update the template ${binding.property}`,
+        ).toBe(sourceTranslator(binding.key));
+      }
+
+      const calls = await page.evaluate(() =>
+        window.__djconnectDashboardLocalizationCalls(),
+      );
+      expect(calls.length, `${language} should render localized dashboard copy`).toBeGreaterThan(0);
+
+      for (const { key, values, fallback, text } of calls) {
+        if (!Object.hasOwn(DASHBOARD_MESSAGES[language], key) && fallback !== key) {
+          expect(
+            text,
+            `${language}:${key} must preserve its explicit data fallback`,
+          ).toBe(fallback);
+          continue;
+        }
+        expect(
+          Object.hasOwn(DASHBOARD_MESSAGES[language], key),
+          `${language} is missing the UI label used by the dashboard: ${key}`,
+        ).toBe(true);
+        expect(
+          DASHBOARD_MESSAGES[language][key],
+          `${language}:${key} must not be empty`,
+        ).toBeTruthy();
+        expect(
+          text,
+          `${language}:${key} differs from its source-catalogue value`,
+        ).toBe(sourceTranslator(key, values, fallback));
+      }
+    }
+  });
+
+  test("keeps client-created dashboard text localized in all five languages", async ({ page }) => {
+    const dashboardSource = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      "utf8",
+    );
+    const staticPresentationLiterals = [
+      ...dashboardSource.matchAll(/(?:\.textContent|\.title)\s*=\s*(["'])(.*?)\1/g),
+    ].map((match) => match[2]);
+
+    // Visible words must come from t(). The remaining literals are deliberate
+    // control glyphs, empty cleanup values, or the neutral empty-table mark.
+    expect(new Set(staticPresentationLiterals)).toEqual(new Set([
+      "", "⧉", "↑", "i", "↺", "⌫", "▤", "✦", "💬", "—",
+    ]));
+
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await page.waitForFunction(() => typeof window.chatMessage === "function");
+      await page.evaluate(() => {
+        document.querySelector("#chatMessages").replaceChildren();
+        chatMessage("assistant", "Localized assistant reply");
+      });
+
+      const message = page.locator("#chatMessages .chat-message--assistant");
+      await expect(message.locator(".chat-message__role")).toHaveText(
+        DASHBOARD_MESSAGES[language]["chat.assistant"],
+      );
+      await expect(message.locator(".chat-message__copy")).toHaveAttribute(
+        "title",
+        DASHBOARD_MESSAGES[language]["copy.message"],
+      );
+      await expect(message.locator(".chat-message__copy")).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["copy.message"],
+      );
+    }
+  });
+
   test("places the active prompt category first", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(
@@ -45,6 +202,112 @@ test.describe("Engineering Status browser smoke", () => {
         (dashboard) => dashboard.firstElementChild?.id,
       ),
     ).resolves.toBe("currentRun");
+  });
+
+  test("opens execution details from prompt history in its dedicated modal", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    await page.route("**/api/prompt-history/inbox-modal/details", (route) => route.fulfill({
+      json: {
+        history: {
+          run_id: "inbox-modal",
+          status: "COMPLETE",
+          title: "Modal prompt",
+          executed_at: "2026-08-04T08:00:00Z",
+        },
+        execution: { seconds: 42, total_seconds: 61 },
+        evidence: ["Execution Host: Engineering Platform"],
+      },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-modal",
+        status: "COMPLETE",
+        title: "Modal prompt",
+        executed_at: "2026-08-04T08:00:00Z",
+      }];
+      renderPromptHistory();
+    });
+
+    await page.locator("#promptHistoryRows tr td").nth(1).click();
+    await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+    await expect(page.locator("#promptHistoryDetailModal")).toHaveClass(/dashboard-modal-shell--evidence/);
+    await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__panel")).toHaveClass(/dashboard-modal-shell__panel/);
+    await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__header")).toHaveClass(/dashboard-modal-shell__header/);
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
+    await expect(page.locator("dialog[open]")).toHaveCount(1);
+  });
+
+  test("uses the shared modal shell with contextual accents", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    for (const [selector, modifier, accent] of [
+      ["#promptHistoryReportModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
+      ["#promptHistoryDetailModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
+      ["#promptHistoryChatModal", "dashboard-modal-shell--chat", "rgb(208, 164, 255)"],
+    ]) {
+      const modal = page.locator(selector);
+      await expect(modal).toHaveClass(new RegExp(modifier));
+      await modal.evaluate((element) => element.showModal());
+      await expect(modal.locator(".dashboard-modal-shell__panel")).toHaveCSS("border-top-color", accent);
+      await expect(modal.locator(".dashboard-modal-shell__close")).toHaveCSS("border-top-color", accent);
+      await modal.evaluate((element) => element.close());
+    }
+  });
+
+  test("keeps the execution-details modal as compact as the report modal on iPhone", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryDetailModal");
+    const panel = modal.locator(".prompt-detail-modal__panel");
+
+    await modal.evaluate((element) => {
+      document.querySelector("#promptHistoryDetailContent").innerHTML =
+        "<p>Uitvoeringsbewijs</p>".repeat(100);
+      element.showModal();
+    });
+
+    const box = await panel.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBeGreaterThanOrEqual(10);
+    expect(box.width).toBeLessThanOrEqual(390 * 0.94 + 1);
+    expect(box.height).toBeLessThanOrEqual(844 * 0.9 + 1);
+    await expect(panel).toHaveCSS("border-top-left-radius", "18px");
+    await expect(page.locator("#promptHistoryDetailContent")).toHaveCSS("scrollbar-gutter", "stable both-edges");
+    await expect(page.locator("#promptHistoryDetailContent")).toHaveCSS("padding-left", "8px");
+    await expect(page.locator("#promptHistoryDetailContent")).toHaveCSS("padding-right", "8px");
+    expect(await page.locator("#promptHistoryDetailContent").evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    )).toBe(true);
+  });
+
+  test("keeps the prompt-history AI chat as compact as the detail modal on iPhone", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const detailModal = page.locator("#promptHistoryDetailModal");
+    const chatModal = page.locator("#promptHistoryChatModal");
+
+    await detailModal.evaluate((element) => element.showModal());
+    const detailBox = await detailModal.locator(".prompt-detail-modal__panel").boundingBox();
+    await detailModal.evaluate((element) => element.close());
+    await chatModal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message">Bericht</article>'.repeat(100);
+      element.showModal();
+    });
+    const chatBox = await chatModal.locator(".prompt-chat-modal__panel").boundingBox();
+
+    expect(detailBox).not.toBeNull();
+    expect(chatBox).not.toBeNull();
+    expect(chatBox.x).toBeCloseTo(detailBox.x, 0);
+    expect(chatBox.width).toBeCloseTo(detailBox.width, 0);
+    expect(chatBox.height).toBeCloseTo(detailBox.height, 0);
+    expect(chatBox.height).toBeLessThanOrEqual(844 * 0.9 + 1);
+    expect(await page.locator("#chatMessages").evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    )).toBe(true);
   });
 
   test("shows the refresh timestamp in the bottom status bar", async ({ page }) => {
@@ -56,6 +319,348 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".footer #updateMode")).toContainText(
       "Serverpush:",
     );
+  });
+
+  test("uses the selected locale service for copy and date formatting", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardLocale").selectOption("de");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator("html")).toHaveAttribute("lang", "de");
+    await expect(page.locator(".footer #lastRefresh")).toContainText("Zuletzt aktualisiert:");
+    await expect(page.locator("#dashboardLocale option:checked")).toHaveText("Deutsch");
+  });
+
+  test("changes visible interface copy for each supported language", async ({ page }) => {
+    const expectations = [
+      ["en", "Language", "Refresh automatically", "AI analysis", "Passed", "Execution", "Resume Queue", "Active prompt", "Inbox queue", "Prompts are executed in order of creation date.", "Engineering Status", "Loading data…", "Pull requests", "Implementation", "None", "Engineering Platform version", "Automatic refresh is off"],
+      ["nl", "Taal", "Automatisch vernieuwen", "AI-analyse", "Geslaagd", "Uitvoering", "Wachtrij hervatten", "Actieve prompt", "Inbox-wachtrij", "Prompts worden uitgevoerd op volgorde van aanmaakdatum.", "Engineeringstatus", "Gegevens laden…", "Pull requests", "Implementatie", "geen", "Engineering Platform-versie", "Automatisch vernieuwen is uit"],
+      ["de", "Sprache", "Automatisch aktualisieren", "KI-Analyse", "Erfolgreich", "Ausführung", "Warteschlange fortsetzen", "Aktiver Prompt", "Inbox-Warteschlange", "Prompts werden in der Reihenfolge ihres Erstellungsdatums ausgeführt.", "Engineering-Status", "Daten werden geladen…", "Pull Requests", "Implementierung", "Keine", "Engineering-Plattformversion", "Automatische Aktualisierung ist aus"],
+      ["fr", "Langue", "Actualiser automatiquement", "Analyse IA", "Réussi", "Exécution", "Reprendre la file", "Prompt actif", "File de réception", "Les prompts sont exécutés dans l’ordre de leur date de création.", "État de l’ingénierie", "Chargement des données…", "Pull requests", "Implémentation", "Aucun", "Version d’Engineering Platform", "Actualisation automatique désactivée"],
+      ["es", "Idioma", "Actualizar automáticamente", "Análisis de IA", "Superado", "Ejecución", "Reanudar cola", "Prompt activo", "Cola de entrada", "Los prompts se ejecutan por orden de fecha de creación.", "Estado de ingeniería", "Cargando datos…", "Solicitudes de extracción", "Implementación", "Ninguno", "Versión de Engineering Platform", "Actualización automática desactivada"],
+    ];
+
+    for (const [language, localeLabel, refreshLabel, analysisLabel, passLabel, detailTitle, queueAction, activePrompt, queueTitle, queueDescription, dashboardTitle, splashLoading, pullRequestsTitle, implementationLabel, noneLabel, platformVersionLabel, refreshOffLabel] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await expect(page.locator(".dashboard-locale span")).toHaveText(localeLabel);
+      await expect(page.locator(".auto-refresh-toggle span")).toHaveText(refreshLabel);
+      await expect(page.locator("#promptHistoryAnalysisHeader")).toHaveText(analysisLabel);
+      await expect(page.locator("#predecessorRetry")).toHaveText(queueAction);
+      await expect(page.locator("#currentRun > summary .label")).toHaveText(activePrompt);
+      await expect(page.locator("#queueItems > summary > strong")).toHaveText(queueTitle);
+      await expect(page.locator("#queueItems > summary > .category-description").first()).toHaveText(queueDescription);
+      await expect(page.locator("#queueItems > summary > [data-category-description]")).toHaveCount(1);
+      await expect(page.locator("#queueSummary")).not.toHaveClass(/category-description/);
+      await expect(page.locator("#dashboardTitle")).toHaveText(dashboardTitle);
+      await expect(page.locator("#dashboardSplashTitle")).toHaveText(dashboardTitle);
+      await expect(page.locator("#dashboardSplashLoading")).toHaveText(splashLoading);
+      await expect(page.locator("#technicalPullRequestsTitle")).toHaveText(pullRequestsTitle);
+      await expect(page.locator("#technicalImplementationLabel")).toHaveText(implementationLabel);
+      await page.evaluate(() => r({}));
+      await expect(page.locator("#implementation")).toHaveText(noneLabel);
+      await expect(page.locator("#platformVersionLabel")).toHaveText(platformVersionLabel);
+      await page.locator("#autoRefresh").check();
+      await page.locator("#autoRefresh").uncheck();
+      await expect(page.locator("#updateMode")).toHaveText(refreshOffLabel);
+      expect(await page.title()).toBe(dashboardTitle);
+      expect(await page.evaluate(() => enumLabel("PASS"))).toBe(passLabel);
+      await page.evaluate(() => renderPromptHistoryDetail({
+        history: { run_id: "inbox-localization", status: "COMPLETE", title: "Prompt", executed_at: "2026-08-03T20:53:29Z" },
+      }));
+      await expect(page.locator("#promptHistoryDetailContent h3").first()).toHaveText(detailTitle);
+    }
+  });
+
+  test("localizes the AI chat question placeholder for every supported language", async ({ page }) => {
+    const expectations = [
+      ["en", "For example: what are the most important next steps from this report?"],
+      ["nl", "Bijvoorbeeld: wat zijn de belangrijkste vervolgstappen uit dit rapport?"],
+      ["de", "Zum Beispiel: Was sind die wichtigsten nächsten Schritte aus diesem Bericht?"],
+      ["fr", "Par exemple : quelles sont les principales étapes suivantes de ce rapport ?"],
+      ["es", "Por ejemplo: ¿cuáles son los pasos siguientes más importantes de este informe?"],
+    ];
+
+    for (const [language, placeholder] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("#chatInput")).toHaveAttribute("placeholder", placeholder);
+    }
+  });
+
+  test("localizes dashboard chrome and dynamic runtime copy for every supported language", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+    }));
+    const expectations = [
+      ["en", "Workspace location", "Specialist reviewers", "Input tokens", "Use reset"],
+      ["nl", "Werkruimtelocatie", "Specialistische reviewers", "Invoertokens", "Gebruik reset"],
+      ["de", "Arbeitsbereichspfad", "Spezialisierte Reviewer", "Eingabetoken", "Zurücksetzung verwenden"],
+      ["fr", "Emplacement de l’espace de travail", "Évaluateurs spécialisés", "Jetons d’entrée", "Utiliser la réinitialisation"],
+      ["es", "Ubicación del espacio de trabajo", "Revisores especializados", "Tokens de entrada", "Usar restablecimiento"],
+    ];
+    for (const [language, workspaceLocation, reviewers, inputTokens, reset] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      // Let the deterministic initial snapshot finish before injecting this
+      // test-specific runtime state. This prevents an async snapshot response
+      // from overwriting the localized usage values.
+      await page.waitForFunction(
+        () => document.body.classList.contains("dashboard-ready"),
+        null,
+        { timeout: 5000 },
+      );
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await page.waitForFunction(() => typeof window.r === "function");
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "inbox-localized-runtime",
+        current_phase: "EXECUTE_AGENT",
+        reviewer_agents: [{ reviewer: "validation", capability: "ENGINEERING", status: "running" }],
+      }, {
+        usage: { input_tokens: 42 },
+        rate_limits: { provider: "codex_cli", reset_credits: 1 },
+      }));
+      await expect(page.locator("#workspaceCard .field .label").nth(1)).toHaveText(workspaceLocation);
+      await expect(page.locator("#activeReviewerAgents strong")).toHaveText(reviewers);
+      await expect(page.locator("#usageDetails")).toContainText(inputTokens);
+      await expect(page.locator("#rateLimitReset")).toHaveText(reset);
+    }
+  });
+
+  test("formats preflight timestamps through the selected dashboard locale", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    expect(await page.evaluate(() => [
+      formatTimestamp("2026-08-03T20:53:29.203403+00:00"),
+      formatTimestamp("2026-08-03T20:53:29.354948+00:00"),
+    ])).toEqual([
+      "maandag 3 augustus 2026 om 22:53:29",
+      "maandag 3 augustus 2026 om 22:53:29",
+    ]);
+  });
+
+  test("renders host, workspace and capability preflight fields through one presentation", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+    }));
+    const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await statusLoaded;
+    await page.evaluate(() => r({}, {
+      host_preflight: { outcome: "PASS", timestamp: "2026-08-03T20:53:29Z" },
+      workspace_preflight: { outcome: "FAIL", timestamp: "2026-08-03T20:53:29Z" },
+      capability_preflight: {
+        outcome: "PASS",
+        recoverability: "RETRYABLE",
+        failure_origin: "CAPABILITY",
+        recommendation: "Capability admission passed.",
+      },
+    }));
+    await expect(page.locator("#hostPreflightStatus")).toHaveText("Geslaagd");
+    await expect(page.locator("#workspacePreflightStatus")).toHaveText("Mislukt");
+    await expect(page.locator("#capabilityPreflightStatus")).toHaveText("Geslaagd");
+    await expect(page.locator("#capabilityRecoverability")).toHaveText("Opnieuw proberen mogelijk");
+    await expect(page.locator("#capabilityFailureOrigin")).toHaveText("Capability");
+    await expect(page.locator("#capabilityRecommendation")).toHaveText("Capabilitytoelating geslaagd.");
+  });
+
+  test("localizes dynamically rendered telemetry copy for every supported language", async ({ page }) => {
+    const expectations = [
+      ["en", "Execution Host telemetry", "Operational trends for the last seven days. Telemetry is not repository evidence."],
+      ["nl", "Execution Host-telemetrie", "Operationele trends van de laatste zeven dagen. Telemetrie is geen repositorybewijs."],
+      ["de", "Execution-Host-Telemetrie", "Betriebstrends der letzten sieben Tage. Telemetrie ist kein Repository-Nachweis."],
+      ["fr", "Télémétrie de l’hôte d’exécution", "Tendances opérationnelles des sept derniers jours. La télémétrie n’est pas une preuve de dépôt."],
+      ["es", "Telemetría del host de ejecución", "Tendencias operativas de los últimos siete días. La telemetría no es evidencia del repositorio."],
+    ];
+    for (const [language, title, description] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await page.waitForFunction(
+        () => typeof window.executionTelemetry === "function",
+      );
+      await page.evaluate(() => {
+        document.querySelector("#executionTelemetry")?.remove();
+        window.executionTelemetry([]);
+      });
+      await expect(page.locator("#executionTelemetry summary strong")).toHaveText(title);
+      await expect(page.locator("#executionTelemetry .category-description")).toHaveText(description);
+    }
+  });
+
+  test("localizes search and level filter controls for every supported language", async ({ page }) => {
+    const expectations = [
+      ["en", "Search", "Search all fields", "Level", "All levels"],
+      ["nl", "Zoeken", "Zoek in alle velden", "Niveau", "Alle niveaus"],
+      ["de", "Suchen", "Alle Felder durchsuchen", "Stufe", "Alle Stufen"],
+      ["fr", "Rechercher", "Rechercher dans tous les champs", "Niveau", "Tous les niveaux"],
+      ["es", "Buscar", "Buscar en todos los campos", "Nivel", "Todos los niveles"],
+    ];
+    for (const [language, search, placeholder, level, allLevels] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await expect(page.locator("label[for=logFilter]")).toHaveText(search);
+      await expect(page.locator("#logFilter")).toHaveAttribute("placeholder", placeholder);
+      await expect(page.locator("label[for=logLevelFilter]")).toContainText(level);
+      await expect(page.locator("#logLevelFilter option[value='']")).toHaveText(allLevels);
+    }
+  });
+
+  test("localizes component log table headings for every supported language", async ({ page }) => {
+    const expectations = [
+      ["en", "Inbox watcher", ["#", "Timestamp", "Level", "Event", "Run ID", "Details"]],
+      ["nl", "Inbox-watcher", ["#", "Tijdstip", "Niveau", "Gebeurtenis", "Run-ID", "Details"]],
+      ["de", "Inbox-Watcher", ["#", "Zeitpunkt", "Stufe", "Ereignis", "Run-ID", "Details"]],
+      ["fr", "Surveillant de la boîte de réception", ["#", "Horodatage", "Niveau", "Événement", "ID d’exécution", "Détails"]],
+      ["es", "Monitor de bandeja de entrada", ["#", "Marca de tiempo", "Nivel", "Evento", "ID de ejecución", "Detalles"]],
+    ];
+    for (const [language, title, headers] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await expect(page.locator("#componentLogs .log-card-header strong").first()).toHaveText(title);
+      await expect(page.locator("#inboxComponentLog").locator("xpath=preceding-sibling::thead[1]/tr/th")).toHaveText(headers);
+    }
+  });
+
+  test("localizes prompt history column headings for every supported language", async ({ page }) => {
+    const expectations = [
+      ["en", ["Status", "Prompt title", "Executed at", "Report", "AI analysis", "AI chat", "Action", "Details"]],
+      ["nl", ["Status", "Prompttitel", "Uitgevoerd op", "Rapport", "AI-analyse", "AI-gesprek", "Actie", "Details"]],
+      ["de", ["Status", "Prompttitel", "Ausgeführt am", "Bericht", "KI-Analyse", "KI-Chat", "Aktion", "Details"]],
+      ["fr", ["État", "Titre du prompt", "Exécuté le", "Rapport", "Analyse IA", "Chat IA", "Action", "Détails"]],
+      ["es", ["Estado", "Título del prompt", "Ejecutado el", "Informe", "Análisis de IA", "Chat de IA", "Acción", "Detalles"]],
+    ];
+    for (const [language, headers] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.locator("#dashboardLocale").selectOption(language);
+      await expect(page.locator("html")).toHaveAttribute("lang", language);
+      await expect(page.locator("#promptHistory .log-table thead th")).toHaveText(headers);
+    }
+  });
+
+  test("rerenders prompt history pagination in the selected language", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#dashboardLocale").selectOption("en");
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await page.waitForFunction(
+      () => typeof window.renderPromptHistory === "function",
+    );
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = Array.from({ length: 101 }, (_, index) => ({
+        run_id: `inbox-${index}`,
+        title: `Prompt ${index}`,
+        status: "COMPLETE",
+      }));
+      renderPromptHistory();
+    });
+    await expect(page.locator("#promptHistoryPagination")).toContainText("Page 1 of 11 · 101 prompts");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(10);
+    expect(await page.locator("#promptHistory .log-table-wrap").evaluate((wrap) => {
+      const style = getComputedStyle(wrap), table = wrap.querySelector("table");
+      return style.minHeight === "0px" && style.maxHeight === "none" &&
+        Math.abs(wrap.getBoundingClientRect().height - table.getBoundingClientRect().height) <= 2;
+    })).toBe(true);
+    await expect(page.locator("#promptHistoryPagination button").first()).toHaveText("Previous");
+    await expect(page.locator("#promptHistoryPagination button").last()).toHaveText("Next");
+  });
+
+  test("uses the prompt title column to fill available history table space", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    const layout = await page.locator("#promptHistory .log-table-wrap").evaluate((wrap) => {
+      const table = wrap.querySelector("table");
+      const titleHeader = table.querySelector("th:nth-child(2)");
+      const statusHeader = table.querySelector("th:nth-child(1)");
+      return {
+        wrapWidth: Math.round(wrap.getBoundingClientRect().width),
+        tableWidth: Math.round(table.getBoundingClientRect().width),
+        titleWidth: Math.round(titleHeader.getBoundingClientRect().width),
+        statusWidth: Math.round(statusHeader.getBoundingClientRect().width),
+      };
+    });
+    expect(layout.tableWidth).toBeGreaterThanOrEqual(layout.wrapWidth - 2);
+    expect(layout.tableWidth).toBeLessThanOrEqual(layout.wrapWidth + 2);
+    expect(layout.titleWidth).toBeGreaterThan(layout.statusWidth * 2.5);
+  });
+
+  test("keeps prompt history horizontally scrollable only on an iPhone-sized viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    const scroll = await page.locator("#promptHistory .log-table-wrap").evaluate((wrap) => ({
+      scrollWidth: wrap.scrollWidth,
+      clientWidth: wrap.clientWidth,
+    }));
+    expect(scroll.scrollWidth).toBeGreaterThan(scroll.clientWidth);
+  });
+
+  test("matches the iPhone portrait dashboard visual reference", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/log/**", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: {
+        status: {
+          watcher_state: "ENGINEERING_RUN_ACTIVE",
+          current_phase: "EXECUTE_AGENT",
+          current_action: "Capability review: validation",
+          run_id: "inbox-iphone-reference",
+          prompt_title: "Mobile dashboard visual reference",
+          submitted_filename: "engineering-iphone-reference.txt",
+          queue_depth: 1,
+        },
+      },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => document.body.classList.contains("dashboard-ready"),
+    );
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const image = await page.screenshot({ animations: "disabled" });
+    await testInfo.attach("iphone-portrait-dashboard", {
+      body: image,
+      contentType: "image/png",
+    });
+    await expect(page).toHaveScreenshot("iphone-portrait-dashboard.png", {
+      animations: "disabled",
+      maxDiffPixelRatio: 0.005,
+    });
+  });
+
+  test("localizes capability preflight recommendations", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    expect(await page.evaluate(() => capabilityRecommendation("Capability admission passed."))).toBe(
+      "Capabilitytoelating geslaagd.",
+    );
+    expect(await page.evaluate(() => capabilityRecommendation(
+      "Repair or upgrade the Execution Host before resubmitting.",
+    ))).toBe("Herstel of upgrade de Execution Host voordat je opnieuw indient.");
+  });
+
+  test("renders preflight enums as localized labels", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    expect(await page.evaluate(() => [
+      enumLabel("PASS"),
+      enumLabel("RETRYABLE"),
+      enumLabel("RETRYABLE_AFTER_HOST_REPAIR"),
+      enumLabel("CAPABILITY"),
+    ])).toEqual([
+      "Geslaagd",
+      "Opnieuw proberen mogelijk",
+      "Opnieuw proberen na herstel van de Execution Host",
+      "Capability",
+    ]);
   });
 
   test("keeps the status bar at the bottom while dashboard content scrolls", async ({ page }) => {
@@ -83,9 +688,19 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("labels the splash screen as loading data", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/engineering-status-icon.svg");
+    await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("aria-hidden", "true");
     await expect(page.locator(".dashboard-splash__loading")).toHaveText("Gegevens laden…");
     await expect(page.locator(".dashboard-splash__version")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+  });
+
+  test("uses the house-style orange for an active execution spinner", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#indicator").evaluate((element) => {
+      element.className = "indicator indicator--running";
+    });
+    await expect(page.locator("#indicator")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
   });
 
   test("loads the initial status before serverpush connects", async ({ page }) => {
@@ -151,6 +766,9 @@ test.describe("Engineering Status browser smoke", () => {
     const script = await request.get(`${dashboardUrl}/assets/dashboard.js`);
     expect(script.status()).toBe(200);
     expect(script.headers()["content-type"]).toContain("text/javascript");
+    const locales = await request.get(`${dashboardUrl}/assets/dashboard_locales.mjs`);
+    expect(locales.status()).toBe(200);
+    expect(locales.headers()["content-type"]).toContain("text/javascript");
     const statusStore = await request.get(`${dashboardUrl}/assets/dashboard_status_store.mjs`);
     expect(statusStore.status()).toBe(200);
     expect(statusStore.headers()["content-type"]).toContain("text/javascript");
@@ -249,6 +867,105 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#action")).toHaveText("Codex bewerkt bestanden");
   });
 
+  test("keeps specialist reviewer titles blue in light mode", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#themeToggle").click();
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "review-run",
+      reviewer_agents: [{ reviewer: "repository_governance", capability: "engineering", status: "completed" }],
+    }, {}));
+    await expect(page.locator(".reviewer-agent__name")).toHaveCSS("color", "rgb(47, 134, 189)");
+  });
+
+  test("uses related primary and secondary accents for category titles and field labels", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "paired-colours",
+      prompt_title: "Kleurenhiërarchie",
+      submitted_filename: "paired-colours.md",
+    }, {}));
+
+    await expect(page.locator("#currentRun > summary > .label")).toHaveCSS("color", "rgb(101, 197, 217)");
+    await expect(page.locator("#currentRun .card .label").first()).toHaveCSS("color", "rgb(167, 231, 242)");
+    await expect(page.locator("#technicalDetails .card .label").first()).toHaveCSS("color", "rgb(249, 182, 216)");
+  });
+
+  test("uses neutral content below the tinted heading of an expanded main category", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+      document.getElementById("workspaceCard").open = true;
+    });
+
+    const surfaces = await page.locator("#workspaceCard").evaluate((element) => {
+      const summary = element.querySelector("summary");
+      return {
+        content: getComputedStyle(element).backgroundColor,
+        heading: getComputedStyle(summary).backgroundColor,
+      };
+    });
+    expect(surfaces.content).toBe("rgb(36, 36, 45)");
+    expect(surfaces.heading).not.toBe(surfaces.content);
+  });
+
+  test("keeps main-category descriptions visible inside collapsed headings", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const workspace = page.locator("#workspaceCard");
+    await workspace.evaluate((element) => { element.open = false; });
+
+    const description = workspace.locator(":scope > summary > .category-description");
+    await expect(description).toHaveText("De actieve werkruimte van dit project.");
+    await expect(description).toBeVisible();
+    await expect(workspace.locator(":scope > summary")).toHaveCSS("border-bottom-width", "0px");
+    await expect(workspace.locator(":scope > summary")).toHaveCSS("margin-bottom", "0px");
+    await workspace.evaluate((element) => { element.open = true; });
+    await expect(workspace.locator(":scope > summary")).toHaveCSS("border-bottom-width", "1px");
+  });
+
+  test("refines the active duration indication with comparable runtime history", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "duration-run",
+      prompt_characters: 1000,
+    }, {
+      duration_estimate: {
+        sample_count: 3,
+        lower_seconds: 1800,
+        upper_seconds: 2400,
+      },
+    }));
+
+    await expect(page.locator("#executionEstimate")).toHaveText("Indicatieve totale duur: 22–30 minuten");
+    await expect(page.locator("#executionEstimateMeta")).toContainText(
+      "3 vergelijkbare voltooide uitvoeringen",
+    );
+  });
+
+  test("shows the elapsed duration explanation only once without learned history", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE" }, build_commit: "" },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "EXECUTE_AGENT", run_id: "duration-copy",
+      prompt_characters: 1000,
+    }, { prompt_started: { started_at: new Date().toISOString() }, duration_estimate: {} }));
+    await expect(page.locator("#executionEstimateMeta")).toHaveText(
+      "0 minuten verstreken.\nGebaseerd op promptomvang, fase en verstreken tijd. Geen live Codex-voortgang of tokenverbruik.",
+    );
+  });
+
   test("keeps the active prompt category visible for a blocked predecessor", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
@@ -276,7 +993,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#predecessorRun")).toHaveText("blocked-run");
   });
 
-  test("keeps the active prompt category visible for a terminal blocked run", async ({ page }) => {
+  test("keeps a terminal blocked run out of Active Prompt", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       contentType: "application/json",
@@ -294,17 +1011,27 @@ test.describe("Engineering Status browser smoke", () => {
       last_executed_phase: "BLOCKED",
     }, {}));
 
-    await expect(page.locator("#currentRun")).toBeVisible();
-    await expect(page.locator("#currentRun")).toHaveAttribute("open", "");
-    await expect(page.locator("#phase")).toHaveText("Geblokkeerd");
-    await expect(page.locator("#runId")).toHaveText("blocked-run");
+    await expect(page.locator("#currentRun")).toBeHidden();
     await expect(page.locator("#predecessorGate")).toBeHidden();
+    await expect(page.locator("#queueItems")).toBeVisible();
   });
 
   test("allows the AI question field to grow only vertically", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#codexChat").evaluate((element) => { element.open = true; });
+    await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
     await expect(page.locator("#chatInput")).toHaveCSS("resize", "vertical");
+  });
+
+  test("keeps comfortable inner padding when the AI question field is focused", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
+    const input = page.locator("#chatInput");
+    await input.focus();
+
+    await expect(input).toHaveCSS("padding-top", "14px");
+    await expect(input).toHaveCSS("padding-left", "16px");
+    await expect(input).toHaveCSS("padding-bottom", "58px");
+    await expect(input).toHaveCSS("padding-right", "62px");
   });
 
   test("bounds and sanitizes free-form dashboard input client-side", async ({ page }) => {
@@ -357,6 +1084,29 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalClose")).toHaveCSS("min-width", "32px");
   });
 
+  test("centres the component modal panel within iPhone-width viewports", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "inbox_watcher",
+      healthy: true,
+      detail: "connected",
+      launchd: {},
+    }));
+
+    const geometry = await page.locator("#componentModal").evaluate((modal) => {
+      const panel = modal.querySelector(".component-modal__panel").getBoundingClientRect();
+      const viewport = document.documentElement.clientWidth;
+      return {
+        containerWidth: modal.getBoundingClientRect().width,
+        leftGutter: panel.left,
+        rightGutter: viewport - panel.right,
+      };
+    });
+    expect(geometry.containerWidth).toBe(390);
+    expect(Math.abs(geometry.leftGutter - geometry.rightGutter)).toBeLessThanOrEqual(1);
+  });
+
   test("uses a green hover fill for the component-detail close action", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
@@ -387,7 +1137,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(restart).toHaveCSS("color", "rgb(24, 35, 15)");
   });
 
-  test("renders action-coloured confirmation dialogs as light surfaces in light mode", async ({ page }) => {
+  test("keeps the confirmation cancel action dark in dark mode", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "dashboard",
+      healthy: true,
+      detail: "running",
+      launchd: {},
+      restart_supported: true,
+    }));
+    await page.locator("#componentModalRestart").click();
+    await page.mouse.move(0, 0);
+
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", "rgb(36, 36, 45)");
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("color", "rgb(247, 243, 238)");
+  });
+
+  test("renders house-orange confirmation dialogs as light surfaces in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.getByTestId("theme-toggle").click();
     await page.evaluate(() => showComponentModal({
@@ -403,14 +1169,15 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("background-color", "rgb(247, 251, 255)");
     await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("color", "rgb(24, 34, 48)");
     await expect(page.locator("#confirmationModalText")).toHaveCSS("color", "rgb(24, 34, 48)");
-    await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(163, 230, 53)");
-    expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(163, 230, 53)");
-    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(163, 230, 53)");
+    await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(240, 182, 106)");
+    await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(240, 182, 106)");
+    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await page.locator("#confirmationModalCancel").hover();
-    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", "rgb(163, 230, 53)");
-    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("border-top-color", "rgb(163, 230, 53)");
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    await expect(page.locator("#confirmationModalCancel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await page.locator("#confirmationModalConfirm").hover();
-    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("background-color", "rgb(163, 230, 53)");
+    await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("background-color", "rgb(240, 182, 106)");
   });
 
   test("shows the splash screen before reloading the dashboard", async ({ page }) => {
@@ -461,20 +1228,20 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => page.evaluate(() => componentDetailsRefreshTimer)).toBeNull();
   });
 
-  test("renders reports and their actions as light surfaces in light mode", async ({ page }) => {
+  test("renders prompt-history report actions as light surfaces in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#themeToggle").click();
-    await page.locator("#report").evaluate((element) => { element.hidden = false; element.open = true; });
-    await page.locator("#reportAnalysis").evaluate((element) => { element.hidden = false; element.open = true; });
-    await page.locator("#reportContent").evaluate((element) => { element.textContent = "# Rapport\n\nInhoud"; });
-    await page.locator("#reportAnalysisContent").evaluate((element) => { element.textContent = "# Analyse\n\nInhoud"; });
-    await page.locator("#copyReport").evaluate((element) => { element.hidden = false; });
-    await page.locator("#downloadReport").evaluate((element) => { element.hidden = false; });
-    for (const selector of ["#reportContent", "#reportAnalysisContent", "#copyReport", "#downloadReport"]) {
+    await page.evaluate(() => {
+      document.querySelector("#promptHistoryReportModal").showModal();
+      document.querySelector("#promptHistoryReportContent").textContent = "# Rapport\n\nInhoud";
+      document.querySelector("#promptHistoryReportCopy").hidden = false;
+      document.querySelector("#promptHistoryReportDownload").hidden = false;
+    });
+    for (const selector of ["#promptHistoryReportContent", "#promptHistoryReportCopy", "#promptHistoryReportDownload"]) {
       expect(await page.locator(selector).evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(24, 24, 31)");
     }
-    await expect(page.locator("#downloadReport")).toHaveText("⇩");
-    expect(await page.locator("#downloadReport").evaluate((element) => getComputedStyle(element, "::before").content)).toContain("↓");
+    await expect(page.locator("#promptHistoryReportDownload")).toHaveText("⇩");
+    expect(await page.locator("#promptHistoryReportDownload").evaluate((element) => getComputedStyle(element, "::before").content)).toContain("↓");
   });
 
   test("keeps report-modal actions and markdown code light in light mode", async ({ page }) => {
@@ -496,34 +1263,22 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator(selector)).toHaveCSS("background-color", "rgb(238, 244, 251)");
   });
 
-  test("uses light glyphs for dark report copy and download actions", async ({ page }) => {
+  test("uses light glyphs for dark prompt-history report actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
-    await page.locator("#lastExecution").evaluate((element) => { element.hidden = false; });
-    await page.locator("#lastExecutionGroup").evaluate((element) => { element.style.display = "grid"; });
-    await page.locator("#report").evaluate((element) => { element.hidden = false; element.open = true; });
-    await page.locator("#copyReport").evaluate((element) => { element.hidden = false; });
-    await page.locator("#downloadReport").evaluate((element) => { element.hidden = false; });
-    const download = page.locator("#downloadReport");
+    await page.evaluate(() => {
+      document.querySelector("#promptHistoryReportModal").showModal();
+      document.querySelector("#promptHistoryReportCopy").hidden = false;
+      document.querySelector("#promptHistoryReportDownload").hidden = false;
+    });
+    const download = page.locator("#promptHistoryReportDownload");
 
-    for (const action of [download, page.locator("#copyReport")])
+    for (const action of [download, page.locator("#promptHistoryReportCopy")])
       await expect(action).toHaveCSS("color", "rgb(247, 243, 238)");
-  });
-
-  test("places report disclosure arrows at the far right", async ({ page }) => {
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-
-    for (const selector of ["#report > summary", "#reportAnalysis > summary"]) {
-      const arrow = await page.locator(selector).evaluate((element) => {
-        const style = getComputedStyle(element, "::before");
-        return [style.position, style.right, style.top];
-      });
-      expect(arrow).toEqual(["absolute", "0px", "0px"]);
-    }
   });
 
   test("renders log actions in the light category style", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.getByTestId("theme-toggle").click();
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => renderLogPagination("inbox", 1, 1));
@@ -552,8 +1307,11 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("fills the historical report action red on hover", async ({ page }) => {
+  test("fills the historical report action blue on hover", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
@@ -568,11 +1326,11 @@ test.describe("Engineering Status browser smoke", () => {
       promptHistoryPage = 1;
       renderPromptHistory();
     });
-    const report = page.locator("#promptHistoryRows .prompt-history-report");
+    const report = page.locator('[title="Bekijk engineeringrapport voor Rapport hover"]');
 
     await report.hover();
-    await expect(report).toHaveCSS("background-color", "rgb(255, 113, 143)");
-    await expect(report).toHaveCSS("color", "rgb(39, 25, 35)");
+    await expect(report).toHaveCSS("background-color", "rgb(141, 199, 255)");
+    await expect(report).toHaveCSS("color", "rgb(23, 35, 49)");
   });
 
   test("downloads each redacted component log", async ({ page }) => {
@@ -596,7 +1354,6 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
     for (const button of [
-      page.locator("#downloadChat"),
       page.getByTestId("download-inbox-log"),
       page.getByTestId("download-dashboard-log"),
     ]) {
@@ -606,10 +1363,9 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("fills the chat download glyph with its purple category on hover", async ({ page }) => {
+  test("fills the prompt-scoped chat download glyph with its purple category on hover", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
-    await page.locator("#codexChat").evaluate((element) => { element.open = true; });
+    await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
     const download = page.locator("#downloadChat");
     await page.addStyleTag({ content: "#downloadChat[hidden]{display:flex!important}" });
 
@@ -618,10 +1374,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(download).toHaveCSS("color", "rgb(23, 21, 26)");
   });
 
-  test("fills the AI question send action with its purple category on hover", async ({ page }) => {
+  test("fills the prompt-scoped AI question send action with its purple category on hover", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
-    await page.locator("#codexChat").evaluate((element) => { element.open = true; });
+    await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
     const send = page.locator("#chatSend");
 
     await send.hover();
@@ -633,11 +1388,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(send).toHaveCSS("color", "rgb(23, 21, 26)");
   });
 
-  test("uses a light resting surface for the chat clear glyph in light mode", async ({ page }) => {
+  test("uses a light resting surface for the prompt-scoped chat clear glyph in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.getByTestId("theme-toggle").click();
     await page.evaluate(() => {
-      document.querySelector("#codexChat").open = true;
+      document.querySelector("#promptHistoryChatModal").showModal();
       document.querySelector("#clearChat").hidden = false;
     });
     const clear = page.locator("#clearChat");
@@ -645,6 +1400,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(clear).toBeVisible();
     await expect(clear).toHaveCSS("background-color", "rgb(255, 247, 255)");
     await expect(clear).toHaveCSS("color", "rgb(104, 73, 138)");
+    await clear.hover();
+    await expect(clear).toHaveCSS("background-color", "rgb(208, 164, 255)");
+    await expect(clear).toHaveCSS("color", "rgb(23, 21, 26)");
     await page.evaluate(() => {
       chatMessage("user", "Eigen bericht");
       chatMessage("assistant", "AI-antwoord");
@@ -687,6 +1445,26 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.getByTestId("copy-toast")).toHaveCSS("border-color", "rgb(240, 182, 106)");
     await expect(page.locator("#autoRefresh")).toHaveCSS("background-color", "rgb(240, 182, 106)");
     await expect(page.locator(".rate-limit-reset")).toHaveCSS("border-color", "rgb(81, 216, 138)");
+  });
+
+  test("keeps the copy toast above an open report modal", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      document.querySelector("#promptHistoryReportModal").showModal();
+      showCopyToast();
+    });
+    await expect(page.getByTestId("copy-toast")).toHaveClass(/copy-toast--visible/);
+    await expect(page.getByTestId("copy-toast")).toBeVisible();
+    expect(await page.getByTestId("copy-toast").evaluate(
+      (toast) => toast.matches(":popover-open"),
+    )).toBeTruthy();
+    const box = await page.getByTestId("copy-toast").boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(844);
   });
 
   test("pads title bar content evenly from both horizontal edges", async ({ page }) => {
@@ -759,6 +1537,58 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toHaveCSS("box-shadow", "none");
   });
 
+  test("keeps prompt-detail shell focusable without a visible selection ring", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryDetailModal");
+
+    await modal.evaluate((element) => { element.showModal(); element.focus(); });
+    await expect(modal).toBeFocused();
+    await expect(modal).toHaveCSS("outline-style", "none");
+    await expect(modal).toHaveCSS("box-shadow", "none");
+  });
+
+  test("keeps prompt-chat shell focusable without a visible selection ring", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+
+    await modal.evaluate((element) => { element.showModal(); element.focus(); });
+    await expect(modal).toBeFocused();
+    await expect(modal).toHaveCSS("outline-style", "none");
+    await expect(modal).toHaveCSS("box-shadow", "none");
+  });
+
+  test("keeps the prompt-detail close action at the top right while scrolling", async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 360 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryDetailModal"),
+      panel = modal.locator(".prompt-detail-modal__panel"),
+      content = page.locator("#promptHistoryDetailContent"),
+      header = modal.locator(".prompt-detail-modal__header"),
+      close = page.locator("#promptHistoryDetailClose");
+
+    await modal.evaluate((element) => {
+      document.querySelector("#promptHistoryDetailContent").innerHTML =
+        "<p>Detailregel</p>".repeat(120);
+      element.showModal();
+    });
+    const before = {
+      close: await close.boundingBox(),
+      header: await header.boundingBox(),
+    };
+    await content.evaluate((element) => { element.scrollTop = 180; });
+    const after = {
+      close: await close.boundingBox(),
+      header: await header.boundingBox(),
+    }, panelBox = await panel.boundingBox();
+
+    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(180);
+    expect(after.close.y).toBe(before.close.y);
+    expect(after.header.y).toBe(before.header.y);
+    expect(after.close.x + after.close.width).toBeGreaterThan(panelBox.x + panelBox.width - 48);
+    await close.click();
+    await expect(modal).not.toBeVisible();
+  });
+
   test("uses light glyphs for all dark report-modal actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
@@ -791,8 +1621,11 @@ test.describe("Engineering Status browser smoke", () => {
     const panelBox = await modal.locator(".report-view-modal__panel").boundingBox();
     const actions = modal.locator(".report-view-modal__actions");
     const actionBoxBeforeScroll = await actions.boundingBox();
-    const panel = modal.locator(".report-view-modal__panel");
-    await panel.evaluate((element) => { element.scrollTop = 160; });
+    const header = modal.locator(".report-view-modal__header");
+    const content = modal.locator("#promptHistoryReportContent");
+    const headerBox = await header.boundingBox();
+    const contentBox = await content.boundingBox();
+    await content.evaluate((element) => { element.scrollTop = 160; });
     const actionBoxAfterScroll = await actions.boundingBox();
 
     expect(box.y).toBeGreaterThanOrEqual(18);
@@ -800,7 +1633,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(panelBox.y).toBeGreaterThanOrEqual(18);
     expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(282);
     expect(actionBoxBeforeScroll.x + actionBoxBeforeScroll.width).toBeGreaterThan(panelBox.x + panelBox.width - 44);
-    await expect.poll(() => panel.evaluate((element) => element.scrollTop)).toBe(160);
+    expect(contentBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height);
+    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(160);
     expect(actionBoxAfterScroll.y).toBe(actionBoxBeforeScroll.y);
   });
 
@@ -826,22 +1660,43 @@ test.describe("Engineering Status browser smoke", () => {
     // client-side projection first so a legitimate SSE update cannot replace
     // that deterministic fixture midway through the assertions.
     await page.locator("#autoRefresh").uncheck();
-    await expect(page.getByTestId("engineering-dashboard-title")).toHaveText("Engineering Status");
+    await expect(page.getByTestId("engineering-dashboard-title")).toHaveText("Engineeringstatus");
     await expect(page.getByTestId("dashboard-splash")).toBeHidden();
     await expect(page.locator("#dashboardFavicon")).toHaveAttribute("href", "/assets/engineering-status-icon.svg");
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/assets/engineering-status-icon-180.png");
     await expect(page.getByTestId("dashboard-app-icon")).toHaveAttribute("src", "/assets/engineering-status-icon.svg");
     await expect(page.getByTestId("engineering-workspace")).not.toHaveAttribute("open", "");
+    expect(await page.getByTestId("engineering-workspace").evaluate((element) => element.parentElement.id)).toBe("engineering-dashboard-content");
     await expect(page.getByTestId("engineering-inbox-queue")).not.toHaveAttribute("open", "");
     await expect(page.getByTestId("platform-health")).not.toHaveAttribute("open", "");
     await expect(page.locator("#queueItems > summary .category-icon")).toHaveText("☷");
     await expect(page.locator("#workspaceCard > summary .category-icon")).toHaveText("⌂");
     await expect(page.locator("#rateLimits > summary .category-icon")).toHaveText("◔");
     await expect(page.locator("#componentLogs > summary .category-icon")).toHaveText("≡");
-    await expect(page.locator("#codexChat > summary .category-icon")).toHaveText("✦");
-    for (const selector of ["#workspaceCard > summary", "#queueItems > summary", "#rateLimits > summary", "#componentLogs > summary", "#codexChat > summary"]) {
+    for (const selector of ["#workspaceCard > summary", "#queueItems > summary", "#rateLimits > summary", "#componentLogs > summary"]) {
       expect(await page.locator(selector).evaluate((summary) => getComputedStyle(summary, "::before").right)).toBe("0px");
     }
+    const arrowGeometry = await page.locator("#queueItems").evaluate((category) => {
+      const position = () => {
+        const summary = category.querySelector("summary");
+        const style = getComputedStyle(summary, "::before");
+        return {
+          arrowRight: summary.getBoundingClientRect().right - parseFloat(style.right),
+          arrowTop: summary.getBoundingClientRect().top + parseFloat(style.top),
+          width: style.width,
+        };
+      };
+      const closed = position();
+      category.open = true;
+      const opened = position();
+      category.open = false;
+      return { closed, opened };
+    });
+    expect(arrowGeometry.closed.width).toBe("24px");
+    expect(arrowGeometry.opened.width).toBe("24px");
+    expect(Math.abs(arrowGeometry.closed.arrowRight - arrowGeometry.opened.arrowRight)).toBeLessThanOrEqual(0.1);
+    expect(Math.abs(arrowGeometry.closed.arrowTop - arrowGeometry.opened.arrowTop)).toBeLessThanOrEqual(0.1);
+    await expect(page.locator("#currentRun > summary > .current-run__category-description")).toHaveCount(1);
     await expect(page.locator(".current-run__category-description")).toHaveText("De actieve engineeringprompt, met actuele voortgang, uitvoeringstijd en uitvoeringscontext.");
     expect(await page.locator("#indicator").evaluate((element) => element.parentElement.className)).toBe("current-run__prompt-heading");
     await expect(page.locator("#loadComponentLogs")).toHaveCount(0);
@@ -849,10 +1704,6 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => showCopyToast());
     await expect(page.getByTestId("copy-toast")).toHaveText("Gekopieerd naar klembord");
     await expect(page.getByTestId("copy-toast")).toHaveClass(/copy-toast--visible/);
-    const collapsedCategoryHeights = await page.evaluate(() => [
-      "workspaceCard", "platformHealth", "codexChat", "technicalDetails", "componentLogs",
-    ].map((id) => document.getElementById(id).getBoundingClientRect().height));
-    expect(Math.max(...collapsedCategoryHeights) - Math.min(...collapsedCategoryHeights)).toBeLessThan(1);
     await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
     await expect(page.locator(".component-info").first()).toBeVisible();
     await page.locator(".component-info").first().click();
@@ -864,9 +1715,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#executionTelemetryRows tr td").first()).toHaveText("01-08-2026");
     expect(await page.evaluate(() => [
       document.getElementById("technicalDetails").nextElementSibling.id,
+      document.getElementById("workspaceCard").nextElementSibling.id,
       document.getElementById("executionTelemetry").nextElementSibling.id,
       document.getElementById("platformHealth").nextElementSibling.id,
-    ])).toEqual(["executionTelemetry", "platformHealth", "componentLogs"]);
+    ])).toEqual(["workspaceCard", "executionTelemetry", "platformHealth", "componentLogs"]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
     expect(await page.evaluate(() => {
       const mainCategory = document.getElementById("componentLogs");
@@ -881,100 +1733,6 @@ test.describe("Engineering Status browser smoke", () => {
       nested: ["1px", "1px", "1px", "1px"],
     });
     await expect(page.locator("#componentLogControls")).not.toHaveAttribute("hidden", "");
-    expect(await page.locator("#reportContent").evaluate((element) => element.parentElement.className)).toBe("markdown-copy-wrap");
-    expect(await page.locator("#reportAnalysisContent").evaluate((element) => element.parentElement.className)).toBe("markdown-copy-wrap");
-    await expect(page.locator("#copyReport")).toHaveClass(/copy--glyph/);
-    await expect(page.locator("#copyReport")).toHaveText("⧉");
-    await expect(page.locator("#downloadReport")).toHaveClass(/download--glyph/);
-    await expect(page.locator("#downloadReportAnalysis")).toHaveClass(/download--glyph/);
-    expect(await page.locator("#reportContent").evaluate((element) => getComputedStyle(element).paddingRight)).toBe("108px");
-    await expect(page.locator("#copyReport")).toHaveAttribute("hidden", "");
-    await expect(page.locator("#downloadReport")).toHaveAttribute("hidden", "");
-    await expect(page.locator("#copyReportAnalysis")).toHaveAttribute("hidden", "");
-    expect(await page.locator("#lastFinalStatus").evaluate((element) => element.previousElementSibling.id)).toBe("lastIndicator");
-    await page.evaluate(() => lastExecutionTime({ seconds: 75, total_seconds: 125, finished_at: "2026-08-01T10:01:30Z" }));
-    await expect(page.locator("#lastExecutionFinishedAtValue")).toHaveText("zaterdag 1 augustus 2026 om 12:01:30");
-    await expect(page.locator("#lastExecutionTimeValue")).toHaveText("1 min 15 sec");
-    await expect(page.locator("#lastTotalExecutionTimeValue")).toHaveText("2 min 5 sec");
-    await page.evaluate(() => lastRuntimeMetadata({
-      runtime_provider: "codex_cli",
-      model: "gpt-5.6-terra",
-      reasoning_profile: "medium",
-      configuration_profile: "sandbox: workspace-write",
-      codex_cli_version: "0.146.0",
-    }));
-    await expect(page.locator("#lastRuntimeProviderValue")).toHaveText("codex_cli");
-    await expect(page.locator("#lastModelValue")).toHaveText("gpt-5.6-terra");
-    await expect(page.locator("#lastReasoningProfileValue")).toHaveText("medium");
-    await expect(page.locator("#lastConfigurationProfileValue")).toHaveText("sandbox: workspace-write");
-    await expect(page.locator("#lastCodexCliVersionValue")).toHaveText("0.146.0");
-    await page.evaluate(() => lastRuntimeMetadata({ runtime_provider: "codex_cli" }));
-    await expect(page.locator("#lastModel")).toHaveAttribute("hidden", "");
-    await page.evaluate(() => {
-      const target = document.getElementById("reportContent");
-      target.replaceChildren();
-      renderMarkdownAnswer(target, "# Rapporttitel\n\n- eerste bevinding\n- **belangrijk bewijs**");
-    });
-    await expect(page.locator("#reportContent h3")).toHaveText("Rapporttitel");
-    await expect(page.locator("#reportContent li")).toHaveCount(2);
-    await expect(page.locator("#reportContent strong")).toHaveText("belangrijk bewijs");
-
-    const lastExecution = page.getByTestId("last-executed-prompt-category");
-    await page.evaluate(() => {
-      document.getElementById("promptRuns").hidden = false;
-      document.getElementById("lastExecutionGroup").hidden = false;
-      document.querySelector('[data-testid="last-executed-prompt-category"]').hidden = false;
-    });
-    const categorySummary = lastExecution.locator(":scope > summary");
-    await expect(categorySummary).toContainText("Laatst uitgevoerde prompt");
-    await expect(lastExecution).not.toHaveAttribute("open", "");
-    await expect(lastExecution).toHaveCSS("row-gap", "0px");
-    await lastExecution.evaluate((element) => { element.open = true; });
-    await expect(lastExecution).toHaveAttribute("open", "");
-
-    const sendButton = page.locator("#chatSend");
-    await expect(sendButton).toHaveCSS("background-color", "rgb(52, 40, 63)");
-    await expect(sendButton).toHaveCSS("border-bottom-left-radius", "8px");
-    expect(await sendButton.evaluate((button) => {
-      const style = getComputedStyle(button);
-      return { bottom: style.bottom, right: style.right };
-    })).toEqual({ bottom: "10px", right: "10px" });
-    await expect(page.locator("#downloadChat")).toHaveAttribute("hidden", "");
-    await expect(page.locator("#codexChat > .category-description")).toHaveText("Stel korte, alleen-lezen vragen over de laatst uitgevoerde prompt en het bijbehorende rapport. Dit start geen engineering of wijzigingen.");
-    await expect(page.locator("#codexChat .estimate-meta")).toHaveCount(0);
-    await page.evaluate(() => {
-      chatHistory = [{ role: "user", text: "Wat zijn de volgende stappen?" }];
-      renderChatHistory();
-    });
-    await expect(page.locator("#downloadChat")).not.toHaveAttribute("hidden", "");
-    await expect(page.locator("#downloadChat")).toHaveText("⇩");
-    expect(await page.locator("#downloadChat").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
-    expect(await page.locator("#downloadChat").evaluate((element) => getComputedStyle(element, "::before").content)).toContain("↓");
-    await page.evaluate(() => chatMessage("assistant", "Een antwoord."));
-    expect(await page.locator(".chat-message--user .chat-message__body").evaluate((element) => getComputedStyle(element).fontFamily)).toBe(
-      await page.locator(".chat-message--assistant .chat-message__body").evaluate((element) => getComputedStyle(element).fontFamily),
-    );
-    expect(await page.locator("#chatInput").evaluate((element) => getComputedStyle(element).fontFamily)).toBe(
-      await page.locator(".chat-message--assistant .chat-message__body").evaluate((element) => getComputedStyle(element).fontFamily),
-    );
-    await expect(page.locator('label[for="chatInput"]')).toHaveCSS("margin-bottom", "10px");
-    await expect(page.locator(".chat-message__copy")).toHaveCount(2);
-    await expect(page.locator(".chat-message--assistant .chat-message__copy")).toHaveAttribute("aria-label", "Kopieer bericht");
-    await page.locator("#codexChat").evaluate((element) => { element.open = true; });
-    await page.locator(".chat-message--user .chat-message__copy").hover();
-    await expect(page.locator(".chat-message--user .chat-message__copy")).toHaveCSS("background-color", "rgb(141, 199, 255)");
-    await expect(page.locator(".chat-message--user .chat-message__copy")).toHaveCSS("color", "rgb(23, 21, 26)");
-    await page.locator(".chat-message--assistant .chat-message__copy").hover();
-    await expect(page.locator(".chat-message--assistant .chat-message__copy")).toHaveCSS("background-color", "rgb(208, 164, 255)");
-    await expect(page.locator(".chat-message--assistant .chat-message__copy")).toHaveCSS("color", "rgb(23, 21, 26)");
-    await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: () => Promise.resolve() },
-    }));
-    await page.locator(".chat-message--assistant .chat-message__copy").click();
-    await expect(page.getByTestId("copy-toast")).toHaveText("Gekopieerd naar klembord");
-    await expect(page.getByTestId("copy-toast")).toHaveClass(/copy-toast--visible/);
-    expect(await page.evaluate(() => chatHistoryMarkdown())).toContain("## Jij\n\nWat zijn de volgende stappen?");
   });
 
   test("sorts the two component-log tables independently", async ({ page }) => {
@@ -995,6 +1753,35 @@ test.describe("Engineering Status browser smoke", () => {
     await dashboardLevel.click();
     await expect(dashboardLevel).toHaveAttribute("aria-sort", "ascending");
     await expect(inboxLevel).toHaveAttribute("aria-sort", "ascending");
+  });
+
+  test("keeps each component-log table horizontally scrollable on iPhone", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+
+    const tables = page.locator("#componentLogs .log-table");
+    await expect(tables).toHaveCount(2);
+    for (const table of [tables.nth(0), tables.nth(1)]) {
+      const geometry = await table.evaluate((element) => {
+        const container = element.parentElement;
+        container.scrollLeft = 80;
+        return {
+          overflowX: getComputedStyle(container).overflowX,
+          scrollable: container.scrollWidth > container.clientWidth,
+          scrollLeft: container.scrollLeft,
+          tableWidth: element.getBoundingClientRect().width,
+          cellWhiteSpace: getComputedStyle(element.querySelector("td")).whiteSpace,
+        };
+      });
+      expect(geometry).toMatchObject({
+        overflowX: "auto",
+        scrollable: true,
+        scrollLeft: 80,
+        cellWhiteSpace: "nowrap",
+      });
+      expect(geometry.tableWidth).toBeGreaterThanOrEqual(780);
+    }
   });
 
   test("paginates the two component-log tables independently", async ({ page }) => {
@@ -1049,8 +1836,16 @@ test.describe("Engineering Status browser smoke", () => {
       await route.fulfill({ json: { runs: [] } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
+      const legacyCommitHeader = document.createElement("th");
+      legacyCommitHeader.dataset.historySortKey = "git_commit";
+      legacyCommitHeader.textContent = "Git-commit";
+      document.querySelector("#promptHistory thead tr").insertBefore(
+        legacyCommitHeader,
+        document.querySelector("#promptHistory thead tr").children[3],
+      );
       document.querySelector("#promptHistory").open = true;
       promptHistoryEntries = Array.from({ length: 26 }, (_, index) => ({
         run_id: `inbox-history-${index}`,
@@ -1059,12 +1854,16 @@ test.describe("Engineering Status browser smoke", () => {
         executed_at: `2026-08-02T12:${String(index).padStart(2, "0")}:00Z`,
         git_commit: index % 2 ? "abcdef1" : null,
         report_available: index % 2 === 1,
+        analysis_available: index % 2 === 1,
       }));
       renderPromptHistory();
     });
 
-    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(25);
-    await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 2 · 26 prompts");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(10);
+    await expect(page.locator("#promptHistory th")).toHaveCount(8);
+    await expect(page.locator('#promptHistory th[data-history-sort-key="git_commit"]')).toHaveCount(0);
+    await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(8);
+    await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 prompts");
     const nextPromptHistoryPage = page.locator("#promptHistoryPagination").getByRole("button", { name: "Volgende" });
     await nextPromptHistoryPage.hover();
     await expect(nextPromptHistoryPage).toHaveCSS("background-color", "rgb(255, 113, 143)");
@@ -1076,6 +1875,7 @@ test.describe("Engineering Status browser smoke", () => {
     const reportView = page.locator("#promptHistoryRows .prompt-history-report");
     await expect(reportView).toHaveCount(1);
     await expect(reportView).toHaveText("▤");
+    await expect(reportView).toHaveCSS("border-top-color", "rgb(141, 199, 255)");
     await page.route("**/api/prompt-history/**/report", (route) => route.fulfill({
       contentType: "text/markdown",
       body: "# Historisch rapport\n\nDit rapport wordt in een dialoog getoond.",
@@ -1083,12 +1883,349 @@ test.describe("Engineering Status browser smoke", () => {
     await reportView.click();
     await expect(page.locator("#promptHistoryReportModal")).toBeVisible();
     await expect(page.locator("#promptHistoryReportModal")).toBeFocused();
+    await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
     await expect(page.locator("#promptHistoryReportContent")).toContainText("Historisch rapport");
     await expect(page.locator("#promptHistoryReportDownload")).toBeVisible();
     await expect(page.locator("#promptHistoryReportCopy")).toBeVisible();
     await page.locator("#promptHistoryReportClose").click();
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
+    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
+      json: {
+        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence" },
+        execution: { seconds: 42, total_seconds: 61 },
+        runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
+        usage: { input_tokens: 120, output_tokens: 45 },
+        commits: { "Genesis-commit": "abcdef1" },
+        evidence: ["Execution Host: Engineering Platform"],
+        reviewers: [],
+      },
+    }));
+    await page.locator("#promptHistoryRows tr td").nth(1).click();
+    await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+    await expect(page.locator("#promptHistoryDetailModal")).toBeFocused();
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("0.146.0");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Doelrepository");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("pcvantol/forge");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Lokale checkout");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("/Users/example/Documents/GitHub/forge");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Getrackte bestanden");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("1655");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Uitvoeringsmodus");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("GENESIS");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Actieve branch");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("forge-phase-evidence");
+    await expect(page.locator("#promptHistoryDetailContent .prompt-detail-status .indicator--green")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Doorlooptijd");
+    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Runtime");
+    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Git-commit");
+    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Uitvoeringsbewijs");
+    await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("pcvantol/djconnect");
+    await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("Historisch rapport");
+    await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("Historische AI-analyse");
+    await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
+    await page.locator("#promptHistoryDetailClose").click();
+    await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    const detailsView = page.locator("#promptHistoryRows .prompt-history-details");
+    await expect(detailsView).toHaveCount(1);
+    await expect(detailsView).toHaveText("i");
+    await detailsView.click();
+    await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+    await page.locator("#promptHistoryDetailClose").click();
+    await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    const analysisView = page.locator("#promptHistoryRows .prompt-history-analysis").first();
+    await expect(page.locator("#promptHistoryRows .prompt-history-analysis")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryRows a.prompt-history-analysis")).toHaveCount(0);
+    await expect(analysisView).toHaveCSS("color", "rgb(141, 199, 255)");
+    await page.route("**/api/prompt-history/**/analysis", (route) => route.fulfill({
+      contentType: "text/markdown",
+      body: "# Historische AI-analyse\n\nDit advies hoort bij precies deze uitvoering.",
+    }));
+    await analysisView.click();
+    await expect(page.locator("#promptHistoryReportModal")).toBeVisible();
+    await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    await expect(page.locator("#promptHistoryReportContent")).toContainText("Historische AI-analyse");
+    await expect(page.locator("#promptHistoryReportDownload")).toBeVisible();
+    await page.locator("#promptHistoryReportClose").click();
+    const chat = page.locator("#promptHistoryRows .prompt-history-chat");
+    await expect(chat).toHaveCount(1);
+    await expect(chat).toHaveText("💬");
+    await expect(chat).toHaveCSS("border-top-color", "rgb(208, 164, 255)");
+    await expect(chat).toHaveCSS("color", "rgb(208, 164, 255)");
+    await chat.click();
+    await expect(page.locator("#promptHistoryChatModal")).toBeVisible();
+    await expect(page.locator("#promptHistoryChatModal")).toBeFocused();
+    let submittedRun;
+    await page.route("**/api/codex-chat", async (route) => {
+      submittedRun = route.request().postDataJSON().run_id;
+      await route.fulfill({ json: { answer: "Dit advies hoort bij de geselecteerde prompt.", model: "Codex CLI" } });
+    });
+    await page.locator("#chatInput").fill("Wat is de volgende stap?");
+    await page.locator("#chatInput").press("Control+Enter");
+    await expect(page.locator("#chatMessages")).toContainText("geselecteerde prompt");
+    expect(submittedRun).toBe("inbox-history-25");
+    await page.locator("#promptHistoryChatClose").click();
+    await expect(page.locator("#promptHistoryChatModal")).not.toBeVisible();
     await expect(page.getByTestId("download-inbox-log")).toHaveCount(1);
+  });
+
+  test("retries one transiently empty prompt-history projection", async ({ page }) => {
+    let requests = 0;
+    await page.route("**/api/prompt-history", async (route) => {
+      requests += 1;
+      await route.fulfill({
+        json: requests === 1
+          ? { runs: [] }
+          : {
+              runs: [{
+                run_id: "inbox-recovered-history",
+                status: "COMPLETE",
+                title: "Recovered prompt history",
+                executed_at: "2026-08-04T19:00:00Z",
+              }],
+            },
+      });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#promptHistoryRows")).toContainText("Recovered prompt history", {
+      timeout: 3_000,
+    });
+    expect(requests).toBe(2);
+  });
+
+  test("scrolls only chat bubbles inside a prompt-history conversation", async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 520 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal"),
+      messages = page.locator("#chatMessages"),
+      header = modal.locator(".prompt-chat-modal__header"),
+      input = page.locator("#chatInput");
+
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message">Bericht</article>'.repeat(100);
+      element.showModal();
+    });
+    const before = {
+      header: await header.boundingBox(),
+      input: await input.boundingBox(),
+    };
+    await messages.evaluate((element) => { element.scrollTop = 160; });
+    const after = {
+      header: await header.boundingBox(),
+      input: await input.boundingBox(),
+    };
+
+    await expect.poll(() => messages.evaluate((element) => element.scrollTop)).toBe(160);
+    expect(after.header.y).toBe(before.header.y);
+    expect(after.input.y).toBe(before.input.y);
+  });
+
+  test("keeps the chat composer and status inside the prompt-history modal", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 760 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message chat-message--assistant">Lang bericht</article>'.repeat(60);
+      document.querySelector("#chatStatus").textContent = "Codex denkt na…";
+      element.showModal();
+    });
+
+    const bounds = await modal.evaluate((element) => {
+      const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+      return { panel: rect(".prompt-chat-modal__panel"), chat: rect("#codexChat"), input: rect("#chatInput"), model: rect("#chatModel"), status: rect("#chatStatus") };
+    });
+    expect(bounds.input.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
+    expect(bounds.input.left).toBeGreaterThan(bounds.chat.left);
+    expect(bounds.input.right).toBeLessThan(bounds.chat.right);
+    expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
+    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
+    expect(bounds.input.y - bounds.status.bottom).toBeGreaterThanOrEqual(12);
+  });
+
+  test("keeps the thinking status visible above the AI question box after it is resized", async ({ page }) => {
+    await page.setViewportSize({ width: 2048, height: 1152 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message chat-message--assistant">Antwoord</article>'.repeat(30);
+      document.querySelector("#chatInput").style.height = "260px";
+      document.querySelector("#chatStatus").textContent = "Codex denkt na…";
+      element.showModal();
+    });
+
+    const bounds = await modal.evaluate((element) => {
+      const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+      return { panel: rect(".prompt-chat-modal__panel"), input: rect("#chatInput"), model: rect("#chatModel"), status: rect("#chatStatus") };
+    });
+    expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
+    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
+    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.input.y);
+  });
+
+  test("reserves space for the chat model and thinking state in a short viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message chat-message--assistant">Lang bericht</article>'.repeat(60);
+      document.querySelector("#chatInput").style.height = "260px";
+      document.querySelector("#chatStatus").textContent = "Codex denkt na…";
+      element.showModal();
+    });
+
+    const bounds = await modal.evaluate((element) => {
+      const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+      return { panel: rect(".prompt-chat-modal__panel"), input: rect("#chatInput"), model: rect("#chatModel"), status: rect("#chatStatus") };
+    });
+    expect(bounds.input.height).toBeLessThanOrEqual(128);
+    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.input.y);
+    expect(bounds.input.bottom).toBeLessThanOrEqual(bounds.panel.bottom - 10);
+    expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom - 4);
+  });
+
+  test("uses a distinct purple surface for AI answers in a prompt-history conversation", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal"),
+      panel = modal.locator(".prompt-chat-modal__panel");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message chat-message--assistant">Antwoord</article>';
+      element.showModal();
+    });
+    const answer = page.locator("#chatMessages .chat-message--assistant");
+
+    await expect(answer).toHaveCSS("background-color", "rgb(60, 42, 77)");
+    expect(await answer.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    )).not.toBe(await panel.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    ));
+  });
+
+  test("uses the shared neutral surface for prompt-history detail and chat modal shells", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const selector of [
+      ".prompt-detail-modal__panel",
+      ".prompt-chat-modal__panel",
+    ]) {
+      await expect(page.locator(selector)).toHaveCSS("background-color", "rgb(36, 36, 45)");
+    }
+  });
+
+  test("uses purpose-matched glyphs in modal titles", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const [selector, glyph] of [
+      ["#componentModalTitle", "⚙"],
+      ["#confirmationModalTitle", "!"],
+      ["#promptHistoryReportModalTitle", "▤"],
+      ["#promptHistoryDetailTitle", "i"],
+      ["#promptHistoryChatTitle", "💬"],
+    ]) {
+      expect(await page.locator(selector).evaluate(
+        (title) => getComputedStyle(title, "::before").content,
+      )).toContain(glyph);
+    }
+  });
+
+  test("sizes prompt-history chat bubbles to their content", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#promptHistoryChatModal").evaluate((modal) => {
+      document.querySelector("#chatMessages").innerHTML =
+        '<article class="chat-message chat-message--user"><span class="chat-message__role">Jij</span><div class="chat-message__body">Korte vraag</div></article>';
+      modal.showModal();
+    });
+
+    const sizes = await page.locator("#chatMessages").evaluate((container) => {
+      const message = container.querySelector(".chat-message");
+      return {
+        container: container.getBoundingClientRect().height,
+        message: message.getBoundingClientRect().height,
+      };
+    });
+    expect(sizes.container).toBeGreaterThan(200);
+    expect(sizes.message).toBeLessThan(100);
+  });
+
+  test("retains terminal status colours in the light prompt-history table", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#themeToggle").click();
+    await page.evaluate(() => {
+      promptHistoryEntries = [
+        { run_id: "inbox-complete", status: "COMPLETE", title: "Complete", executed_at: "2026-08-03T12:00:00Z" },
+        { run_id: "inbox-blocked", status: "BLOCKED", title: "Blocked", executed_at: "2026-08-03T11:00:00Z" },
+        { run_id: "inbox-failed", status: "FAILED", title: "Failed", executed_at: "2026-08-03T10:00:00Z" },
+      ];
+      renderPromptHistory();
+    });
+    await expect(page.locator(".prompt-history-status--complete")).toHaveCSS("color", "rgb(20, 134, 91)");
+    await expect(page.locator(".prompt-history-status--blocked")).toHaveCSS("color", "rgb(166, 90, 0)");
+    await expect(page.locator(".prompt-history-status--failed")).toHaveCSS("color", "rgb(180, 35, 64)");
+  });
+
+  test("searches prompt history by localized terminal status", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardLocale").selectOption("nl");
+    await expect(page.locator("html")).toHaveAttribute("lang", "nl");
+    await page.evaluate(() => {
+      promptHistoryEntries = [
+        { run_id: "inbox-complete", status: "COMPLETE", title: "Completed prompt" },
+        { run_id: "inbox-blocked", status: "BLOCKED", title: "Blocked prompt" },
+      ];
+      renderPromptHistory();
+      document.querySelector("#promptHistory").open = true;
+    });
+
+    await page.locator("#promptHistoryFilter").fill("voltooid");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryRows")).toContainText("Voltooid");
+    await page.locator("#promptHistoryFilter").fill("geblokkeerd");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryRows")).toContainText("Geblokkeerd");
+
+    await page.locator("#dashboardLocale").selectOption("en");
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await page.locator("#promptHistoryFilter").fill("complete");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(1);
+    await page.locator("#promptHistoryFilter").fill("blocked");
+    await expect(page.locator("#promptHistoryRows tr")).toHaveCount(1);
+  });
+
+  test("retains severity colours in the light component-log table", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#themeToggle").click();
+    await page.evaluate(() => {
+      document.querySelector("#inboxComponentLog").innerHTML =
+        '<tr><td class="log-level log-level--info">INFO</td><td class="log-level log-level--error">ERROR</td></tr>';
+    });
+
+    await expect(page.locator("#inboxComponentLog .log-level--info").first()).toHaveCSS("color", "rgb(23, 105, 170)");
+    await expect(page.locator("#inboxComponentLog .log-level--error").first()).toHaveCSS("color", "rgb(180, 35, 64)");
+  });
+
+  test("uses a light inline-code surface in AI answers when light mode is enabled", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#themeToggle").click();
+    await page.evaluate(() => {
+      const message = document.createElement("article");
+      message.className = "chat-message chat-message--assistant";
+      message.innerHTML = '<div class="chat-message__body"><p><code>git diff --check</code></p></div>';
+      document.querySelector("#chatMessages").append(message);
+    });
+    await expect(page.locator(".chat-message--assistant code")).toHaveCSS("background-color", "rgb(233, 238, 246)");
+    await expect(page.locator(".chat-message--assistant code")).toHaveCSS("color", "rgb(24, 34, 48)");
   });
 
   test("opens and closes all visible dashboard categories with the title-bar switch", async ({ page }) => {
@@ -1102,7 +2239,7 @@ test.describe("Engineering Status browser smoke", () => {
     await toggle.evaluate((button) => button.click());
     await expect(toggle).toHaveAttribute("aria-checked", "true");
     await expect(toggle).toHaveAttribute("aria-label", "Alle secties sluiten");
-    for (const id of ["workspaceCard", "promptHistory", "platformHealth", "codexChat", "technicalDetails", "componentLogs"]) {
+    for (const id of ["workspaceCard", "promptHistory", "platformHealth", "technicalDetails", "componentLogs"]) {
       await expect(page.locator(`#${id}`)).toHaveAttribute("open", "");
     }
 
@@ -1112,7 +2249,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     await toggle.evaluate((button) => button.click());
     await expect(toggle).toHaveAttribute("aria-checked", "false");
-    for (const id of ["workspaceCard", "platformHealth", "codexChat", "technicalDetails", "componentLogs"]) {
+    for (const id of ["workspaceCard", "platformHealth", "technicalDetails", "componentLogs"]) {
       await expect(page.locator(`#${id}`)).not.toHaveAttribute("open", "");
     }
   });
@@ -1128,7 +2265,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(toggle).toHaveAttribute("aria-checked", "true");
     await expect(toggle).toHaveAttribute("aria-label", "Donkere modus inschakelen");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-    await expect(page.locator("body")).toHaveCSS("background-color", "rgb(244, 247, 251)");
+    await expect(page.locator("body")).toHaveCSS("background-color", "rgb(232, 237, 244)");
     await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
     await expect(page.locator("#rateLimitReset")).toHaveCSS("background-color", "rgb(232, 255, 245)");
     await expect(page.locator("#rateLimitReset")).toHaveCSS("color", "rgb(20, 90, 66)");
@@ -1164,7 +2301,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
     const reset = page.locator("#rateLimitReset");
 
-    await reset.hover();
+    // The assertion is about the declared hover treatment.  At a narrow
+    // viewport another disclosure can overlap the button after auto-scroll,
+    // so force the pointer onto the target instead of making this style test
+    // depend on the surrounding disclosure geometry.
+    await reset.hover({ force: true });
     await expect(reset).toHaveCSS("background-color", "rgb(81, 216, 138)");
     await expect(reset).toHaveCSS("color", "rgb(17, 42, 32)");
   });
@@ -1200,7 +2341,8 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
 
-    await expect(page.locator("#inboxComponentLog tr td").nth(1)).toHaveText("02-08-2026 21:26:10");
+    await expect(page.locator("#inboxComponentLog tr td").nth(1)).toContainText("02-08-2026");
+    await expect(page.locator("#inboxComponentLog tr td").nth(1)).toContainText("21:26:10");
     await expect(page.locator("#inboxComponentLog tr").nth(1).locator("td").nth(1)).toHaveText("onbekend-tijdstip");
   });
 
@@ -1302,7 +2444,7 @@ test.describe("Engineering Status browser smoke", () => {
     }
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-size", "13px");
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-family", await page.locator("#rateLimitReset").evaluate((button) => getComputedStyle(button).fontFamily));
-    await expect(modal).toContainText("Wis de applicatielogs van Engineering Execution Host?");
+    await expect(modal).toContainText("De applicatielogs van Engineering Execution Host wissen?");
     await page.keyboard.press("Escape");
     await expect(modal).not.toBeVisible();
     expect(postCount).toBe(0);
@@ -1315,11 +2457,23 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("clears only the browser-local AI conversation through the in-app modal", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
     await page.route("**/api/codex-chat", async (route) => {
       await route.fulfill({ contentType: "application/json", body: '{"answer":"De uitvoering is gereed.","model":"Codex CLI"}' });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#codexChat").evaluate((element) => { element.open = true; });
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-chat-clear",
+        status: "COMPLETE",
+        title: "Chat clear",
+        executed_at: "2026-08-04T12:00:00Z",
+      }];
+      renderPromptHistory();
+    });
+    await page.locator("#promptHistoryRows .prompt-history-chat").click();
     await page.locator("#chatInput").fill("Wat is de status?");
     await page.locator("#chatSend").click();
 
@@ -1338,10 +2492,88 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem("djconnect-engineering-chat-history"))).toBeNull();
   });
 
+  test("refreshes status and prompt history immediately after dismissing an execution", async ({ page }) => {
+    let historyReads = 0;
+    let dismissed = false;
+    await page.route("**/api/prompt-history", async (route) => {
+      historyReads += 1;
+      await route.fulfill({ json: { runs: dismissed ? [{
+        run_id: "inbox-dismiss", status: "BLOCKED", dismissed: true,
+        title: "Dismissed prompt", executed_at: "2026-08-04T12:00:00Z",
+      }] : [{
+        run_id: "inbox-dismiss", status: "BLOCKED",
+        title: "Dismissed prompt", executed_at: "2026-08-04T12:00:00Z",
+      }] } });
+    });
+    await page.route("**/api/execution-dismiss", (route) => {
+      dismissed = true;
+      return route.fulfill({ json: { dismissed: "inbox-dismiss" } });
+    });
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-dismiss", queue_depth: 0, queue_items: [] },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    const dismissButton = page.getByRole("button", { name: "Uitvoering afsluiten" });
+    await expect(dismissButton).toBeVisible();
+    await dismissButton.click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => historyReads).toBeGreaterThan(1);
+    await expect(page.getByRole("button", { name: "Uitvoering afsluiten" })).toHaveCount(0);
+  });
+
   test("shows the iPhone pull-to-refresh threshold", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => updatePullRefresh(72));
     await expect(page.getByTestId("pull-refresh")).toHaveText("Laat los om te vernieuwen");
     await expect(page.getByTestId("pull-refresh")).toHaveClass(/pull-refresh--visible/);
+    await expect(page.getByTestId("pull-refresh")).toHaveCSS("border-color", "rgb(240, 182, 106)");
+
+    await page.getByTestId("theme-toggle").click();
+    await expect(page.getByTestId("pull-refresh")).toHaveCSS("background-color", "rgb(255, 244, 230)");
+    await expect(page.getByTestId("pull-refresh")).toHaveCSS("border-color", "rgb(240, 182, 106)");
+  });
+
+  test("only starts pull-to-refresh from the scroll region's top edge", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const result = await page.evaluate(() => {
+      const region = document.querySelector(".dashboard-scroll-region");
+      const content = document.querySelector("#currentRun");
+      const top = region.getBoundingClientRect().top;
+      const move = (clientY) => {
+        let prevented = false;
+        movePullRefresh({
+          touches: [{ clientY }],
+          preventDefault: () => { prevented = true; },
+        });
+        return prevented;
+      };
+
+      region.scrollTop = 80;
+      startPullRefresh({ touches: [{ clientY: top + 12 }], target: content });
+      const ignoredWhileScrolling = move(top + 100);
+
+      region.scrollTop = 0;
+      startPullRefresh({ touches: [{ clientY: top + 72 }], target: content });
+      const ignoredFromContent = move(top + 160);
+
+      startPullRefresh({ touches: [{ clientY: top + 12 }], target: content });
+      const handledAtTopEdge = move(top + 50);
+      const visibleAtTopEdge = document.querySelector("#pullRefresh").classList.contains("pull-refresh--visible");
+      endPullRefresh();
+      return { ignoredWhileScrolling, ignoredFromContent, handledAtTopEdge, visibleAtTopEdge };
+    });
+
+    expect(result).toEqual({
+      ignoredWhileScrolling: false,
+      ignoredFromContent: false,
+      handledAtTopEdge: true,
+      visibleAtTopEdge: true,
+    });
+    await expect(page.locator(".dashboard-scroll-region")).toHaveCSS("padding-left", "6px");
+    await expect(page.locator(".dashboard-scroll-region")).toHaveCSS("padding-right", "6px");
   });
 });

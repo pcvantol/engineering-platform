@@ -1,24 +1,62 @@
 import { createDashboardStatusStore } from "./dashboard_status_store.mjs";
+import { createLocaleService, normalizeLocale, preferredLocale } from "./dashboard_locales.mjs";
+
+function initialDashboardLocale() {
+  try {
+    return preferredLocale(JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1") || "{}"));
+  } catch {
+    return preferredLocale({});
+  }
+}
+let dashboardLocale = initialDashboardLocale(), locale = createLocaleService(dashboardLocale);
+const localizationCalls = new Map();
+function t(key, values = {}, fallback = key) {
+  const text = locale.t(key, values, fallback);
+  localizationCalls.set(JSON.stringify([key, values, fallback]), {
+    key: String(key),
+    values,
+    fallback,
+    text,
+  });
+  return text;
+}
+// Kept deliberately read-only for the browser regression suite.  It makes
+// every dashboard copy lookup auditable without adding a second translation
+// path or relying on a hand-maintained list of visible labels.
+window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.values()];
+document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
   DASHBOARD_BUILD = window.DJCONNECT_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "djconnect-engineering-dashboard-build",
-  formatTime = new Intl.DateTimeFormat("nl-NL", {
-    timeZone: "Europe/Amsterdam",
-    dateStyle: "full",
-    timeStyle: "medium",
-  }),
   fallback = {
     watcher_state: "REMOTE_ENGINEERING_DEGRADED",
-    current_phase: "status niet beschikbaar",
-    current_action:
-      "Ververs het dashboard nadat het Engineering Platform een statusupdate heeft gepubliceerd.",
+    current_phase: "UNKNOWN",
+    current_action: t("dashboard.status_unavailable"),
     queue_depth: 0,
     repository_state: "UNKNOWN",
     workspace_state: "UNKNOWN",
-    diagnostic: "Het statusverzoek kon niet worden voltooid.",
+    diagnostic: t("dashboard.status_unavailable"),
   };
-let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus;
+let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDurationEstimate;
+function formatTimestamp(value, fallback = t("format.timestamp_unavailable")) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : fallback;
+}
+function capabilityRecommendation(value) {
+  const key = {
+    "Capability admission passed.": "capability.recommendation.admission_passed",
+    "Repair or upgrade the Execution Host before resubmitting.":
+      "capability.recommendation.repair_host",
+  }[String(value || "").trim()];
+  return key ? t(key) : String(value || t("format.not_available"));
+}
+function enumLabel(value, fallback = t("format.not_available")) {
+  const enumValue = String(value || "").trim();
+  if (!enumValue) return fallback;
+  const key = `enum.${enumValue}`;
+  return t(key, {}, enumValue);
+}
 function sanitizeFreeText(value, maximumLength, multiline = false) {
   const normalized = String(value ?? "")
     .normalize("NFC")
@@ -48,52 +86,8 @@ document
   .forEach((element) =>
     element.addEventListener("input", () => sanitizeDeclaredFreeInput(element)),
   );
-const humanLabels = {
-  ENGINEERING_RUN_ACTIVE: "Engineering actief",
-  WATCHER_IDLE: "Watcher wacht",
-  REMOTE_ENGINEERING_DEGRADED: "Engineeringstatus beperkt beschikbaar",
-  JOB_CLAIMED: "Opdracht opgepakt",
-  RUNNER_STARTING: "Uitvoering wordt gestart",
-  REPORT_PUBLISHING: "Rapport wordt gepubliceerd",
-  JOB_COMPLETED: "Opdracht voltooid",
-  JOB_BLOCKED: "Opdracht geblokkeerd",
-  JOB_FAILED: "Opdracht mislukt",
-  WAITING_FOR_REPOSITORY: "Wacht op repository",
-  WAITING_FOR_PREDECESSOR: "Wacht op voorafgaande prompt",
-  INITIALIZE: "Voorbereiding",
-  EXECUTE_AGENT: "Uitvoering",
-  REPAIR_AGENT: "Herstel",
-  FINALIZE_AGENT: "Finalisatie",
-  REPOSITORY_CLEANUP: "Opschoning repository",
-  COMPLETE: "Voltooid",
-  BLOCKED: "Geblokkeerd",
-  FAILED: "Mislukt",
-  invoke_agent: "Engineering uitvoeren",
-  repository_reconciled: "Repository afgestemd",
-  MERGED_RECONCILED: "Samengevoegd en afgestemd",
-  WORKSPACE_READY: "Werkruimte gereed",
-  ACTIVE: "Actief",
-  UNKNOWN: "Onbekend",
-  "status unavailable": "status niet beschikbaar",
-};
-const dutchDiagnostics = {
-  "Engineering report was not available for delivery.":
-    "Engineeringrapport kon niet worden afgeleverd.",
-  "Runner ended without a safe terminal report.":
-    "De runner stopte zonder een veilig eindrapport.",
-  "An existing engineering transaction remains active.":
-    "Een bestaande engineeringuitvoering is nog actief.",
-  "Duplicate job digest remains recorded.":
-    "Een dubbele opdracht is al geregistreerd.",
-  "Another watcher owns the local inbox lock.":
-    "Een andere watcher beheert de lokale Inbox-vergrendeling.",
-  "No local engineering status has been published yet.":
-    "Er is nog geen lokale engineeringstatus gepubliceerd.",
-  "The status request could not be completed.":
-    "Het statusverzoek kon niet worden voltooid.",
-};
 function translate(value) {
-  return humanLabels[value] || dutchDiagnostics[value] || value;
+  return t("state." + value, {}, value);
 }
 function humanize() {
   for (const id of [
@@ -136,10 +130,10 @@ function tone(x) {
   return "grey";
 }
 function finalStatus(phase) {
-  if (phase === "COMPLETE") return ["green", "Voltooid"];
-  if (phase === "BLOCKED") return ["yellow", "Geblokkeerd"];
-  if (phase === "FAILED") return ["red", "Mislukt"];
-  return ["grey", "Status onbekend"];
+  if (phase === "COMPLETE") return ["green", t("status.complete")];
+  if (phase === "BLOCKED") return ["yellow", t("status.blocked")];
+  if (phase === "FAILED") return ["red", t("status.failed")];
+  return ["grey", t("status.unknown")];
 }
 function executionRange(x) {
   const characters = Number(x.prompt_characters) || 0;
@@ -149,20 +143,41 @@ function executionRange(x) {
   return [24, 38];
 }
 function pluralMinutes(value) {
-  return value === 1 ? "minuut" : "minuten";
+  return locale.plural(value, "unit.minute", "unit.minutes");
 }
-function estimate(x) {
+function historicalRange(estimate, fallback) {
+  const samples = Number(estimate?.sample_count) || 0,
+    lower = Number(estimate?.lower_seconds),
+    upper = Number(estimate?.upper_seconds);
+  if (samples < 2 || !Number.isFinite(lower) || !Number.isFinite(upper)) return fallback;
+  const learnedMinimum = Math.max(1, Math.round(lower / 60)),
+    learnedMaximum = Math.max(learnedMinimum, Math.ceil(upper / 60));
+  // Prompt size is represented both in the static range and in the
+  // size-adjusted history.  Retain a conservative static contribution.
+  return [
+    Math.max(1, Math.round(fallback[0] * 0.35 + learnedMinimum * 0.65)),
+    Math.max(1, Math.round(fallback[1] * 0.35 + learnedMaximum * 0.65)),
+  ];
+}
+function historicalContext(estimate, fallback) {
+  const samples = Number(estimate?.sample_count) || 0;
+  return samples >= 2
+    ? t("estimate.historical_context", { count: samples })
+    : fallback;
+}
+function hasHistoricalEstimate(estimate) {
+  return (Number(estimate?.sample_count) || 0) >= 2;
+}
+function estimate(x, durationEstimate = {}) {
   const phase = x.current_phase || "";
   if (phase === "INITIALIZE")
-    return { summary: "Voorbereiding: minder dan 1 minuut", context: "" };
+    return { summary: t("estimate.initializing"), context: "" };
   if (["EXECUTE_AGENT", "REPAIR_AGENT"].includes(phase)) {
-    const [minimum, maximum] = executionRange(x);
+    const [minimum, maximum] = historicalRange(durationEstimate, executionRange(x));
     if (!promptStartedAt)
       return {
-        summary:
-          "Indicatieve totale duur: " + minimum + "–" + maximum + " minuten",
-        context:
-          "Gebaseerd op promptomvang en fase. Live Codex-voortgang is niet beschikbaar.",
+        summary: t("estimate.total", { minimum, maximum }),
+        context: historicalContext(durationEstimate, t("estimate.total_context")),
       };
     const elapsed = Math.max(
         0,
@@ -170,54 +185,42 @@ function estimate(x) {
       ),
       remainingMinimum = Math.max(1, minimum - elapsed),
       remainingMaximum = Math.max(remainingMinimum, maximum - elapsed);
+    const elapsedContext = t("estimate.elapsed", { elapsed, minutes: pluralMinutes(elapsed) });
     return {
-      summary:
-        "Indicatief resterend: " +
-        remainingMinimum +
-        "–" +
-        remainingMaximum +
-        " minuten",
-      context:
-        elapsed +
-        " " +
-        pluralMinutes(elapsed) +
-        " verstreken." +
-        String.fromCharCode(10) +
-        "gebaseerd op promptomvang, fase en verstreken tijd. Geen live Codex-voortgang of tokenverbruik.",
+      summary: t("estimate.remaining", { minimum: remainingMinimum, maximum: remainingMaximum }),
+      context: hasHistoricalEstimate(durationEstimate)
+        ? `${elapsedContext}\n${historicalContext(durationEstimate, "")}`
+        : elapsedContext,
     };
   }
   if (phase === "FINALIZE_AGENT")
     return {
-      summary: "Finalisatie in uitvoering",
-      context:
-        "De resterende tijd is pas betrouwbaar met live Codex-voortgang.",
+      summary: t("estimate.finalizing"),
+      context: t("estimate.finalizing_context"),
     };
   if (phase === "REPOSITORY_CLEANUP")
     return {
-      summary: "Opschoning in uitvoering",
-      context: "De resterende tijd hangt af van de lokale repository.",
+      summary: t("estimate.cleanup"),
+      context: t("estimate.cleanup_context"),
     };
   if (phase === "WAIT_FOR_TERMINAL_EVIDENCE")
     return {
-      summary: "Wacht op externe verificatie",
-      context: "Geen betrouwbare ETA.",
+      summary: t("estimate.waiting"),
+      context: t("estimate.waiting_context"),
     };
-  if (phase === "COMPLETE") return { summary: "Voltooid", context: "" };
+  if (phase === "COMPLETE") return { summary: t("status.complete"), context: "" };
   if (["BLOCKED", "FAILED"].includes(phase))
-    return { summary: "Gestopt; actie nodig", context: "" };
-  return { summary: "Nog niet beschikbaar", context: "" };
+    return { summary: t("estimate.action_required"), context: "" };
+  return { summary: t("estimate.not_available"), context: "" };
 }
-function renderEstimate(x) {
-  const value = estimate(x);
+function renderEstimate(x, durationEstimate = latestDurationEstimate) {
+  const value = estimate(x, durationEstimate);
   $("executionEstimate").textContent = value.summary;
   $("executionEstimateMeta").textContent = value.context;
   $("executionEstimateMeta").hidden = !value.context;
 }
 function isActiveRun(x) {
   return x.watcher_state === "ENGINEERING_RUN_ACTIVE" && Boolean(x.run_id);
-}
-function isTerminalBlockedRun(x) {
-  return String(x?.last_executed_phase || "").toUpperCase() === "BLOCKED";
 }
 function checkBuild(build) {
   if (build === DASHBOARD_BUILD) {
@@ -235,14 +238,13 @@ function checkBuild(build) {
 }
 function clock() {
   $("lastRefresh").textContent =
-    "Laatst bijgewerkt: " +
-    (lastRefresh ? formatTime.format(lastRefresh) : "laden…");
+    t("format.last_updated", { value: lastRefresh ? locale.dateTime(lastRefresh) : t("format.loading") });
 }
 function l(id, url, run, last, container) {
   if (run === (last ? lastLogRun : currentLogRun)) return;
   if (last) lastLogRun = run;
   else currentLogRun = run;
-  $(id).textContent = "Diagnose laden…";
+  $(id).textContent = t("ui.diagnostic_loading");
   fetch(url)
     .then((x) => x.text())
     .then((x) => {
@@ -254,26 +256,26 @@ function l(id, url, run, last, container) {
       $(id).textContent = available
         ? x
         : last
-          ? "Er is geen AI-uitvoeringsdiagnose beschikbaar voor deze uitgevoerde prompt."
-          : "Er is geen AI-uitvoeringsdiagnose beschikbaar voor deze actieve prompt.";
+          ? t("ui.diagnostic_unavailable_history")
+          : t("ui.diagnostic_unavailable_active");
     })
     .catch(() => {
       $(container).hidden = false;
       $(id).textContent = last
-        ? "Er is geen AI-uitvoeringsdiagnose beschikbaar voor deze uitgevoerde prompt."
-        : "AI-uitvoeringsdiagnose is niet beschikbaar voor deze actieve prompt.";
+        ? t("ui.diagnostic_unavailable_history")
+        : t("ui.diagnostic_unavailable_active");
     });
 }
 function usage(x) {
   const labels = {
-    input_tokens: "Invoertokens",
-    cached_input_tokens: "Gecachete invoertokens",
-    output_tokens: "Uitvoertokens",
-    total_tokens: "Totaal tokens",
-    cost: "Kosten",
-    remaining: "Resterend beschikbaar",
-    plan_remaining: "Resterend in plan",
-    usage: "Gebruik",
+    input_tokens: t("detail.input_tokens"),
+    cached_input_tokens: t("ui.cached_input_tokens"),
+    output_tokens: t("ui.output_tokens"),
+    total_tokens: t("ui.total_tokens"),
+    cost: t("detail.cost"),
+    remaining: t("ui.remaining_available"),
+    plan_remaining: t("detail.plan_remaining"),
+    usage: t("ui.usage"),
   };
   let entries = Object.entries(x || {});
   $("usage").hidden = !entries.length;
@@ -288,14 +290,14 @@ function rateLimits(x) {
   const windows = Array.isArray(x?.windows) ? x.windows : [],
     credits = Number.isInteger(x?.reset_credits) ? x.reset_credits : null,
     provider =
-      typeof x?.provider === "string" ? x.provider : "Niet beschikbaar",
+      typeof x?.provider === "string" ? x.provider : t("format.not_available"),
     version =
       typeof x?.provider_version === "string"
         ? x.provider_version
-        : "versie niet beschikbaar",
+        : t("format.version_unavailable"),
     button = $("rateLimitReset");
   $("rateLimits").hidden =
-    !windows.length && credits === null && provider === "Niet beschikbaar";
+    !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
@@ -303,14 +305,13 @@ function rateLimits(x) {
     return (
       window.label +
       ": " +
-      remaining +
-      "% beschikbaar · reset " +
+      t("rate_limit.available_reset", { remaining }) + " " +
       (Number.isFinite(reset)
-        ? formatTime.format(new Date(reset * 1e3))
-        : "onbekend")
+        ? locale.dateTime(new Date(reset * 1e3))
+        : t("format.unknown"))
     );
   });
-  if (credits !== null) lines.push("Beschikbare resets: " + credits);
+  if (credits !== null) lines.push(t("ui.available_resets", { count: credits }));
   $("rateLimitDetails").textContent = lines.join(String.fromCharCode(10));
   button.hidden = !(credits > 0);
   button.disabled = false;
@@ -320,14 +321,13 @@ function consumeRateLimitReset() {
     status = $("rateLimitResetStatus");
   if (button.hidden || button.disabled) return;
   confirmDashboardAction(
-    "Gebruik reset",
-    "Deze actie verbruikt één beschikbare resetcredit.",
-    "Gebruik reset",
-    "#51d88a",
+    t("ui.reset_ready"),
+    t("ui.reset_confirmation"),
+    t("ui.reset_ready"),
   ).then((confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
-    status.textContent = "Reset gebruiken…";
+    status.textContent = t("ui.reset_in_progress");
     fetch("/api/rate-limit-reset", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -339,14 +339,14 @@ function consumeRateLimitReset() {
       }))
       .then((result) => {
         if (!result.ok)
-          throw Error(result.body.error || "Reset kon niet worden uitgevoerd.");
+          throw Error(result.body.error || t("ui.reset_failed"));
         const messages = {
-          reset: "Reset gebruikt. De gebruikslimieten zijn bijgewerkt.",
-          nothingToReset: "Er is op dit moment niets om te resetten.",
-          noCredit: "Er is geen resetcredit beschikbaar.",
-          alreadyRedeemed: "Deze resetcredit is al gebruikt.",
+          reset: t("ui.reset_used"),
+          nothingToReset: t("ui.reset_nothing"),
+          noCredit: t("ui.reset_no_credit"),
+          alreadyRedeemed: t("ui.reset_already_redeemed"),
         };
-        status.textContent = messages[result.body.outcome] || "Reset verwerkt.";
+        status.textContent = messages[result.body.outcome] || t("ui.reset_processed");
         if (result.body.rate_limits) rateLimits(result.body.rate_limits);
       })
       .catch((error) => {
@@ -357,130 +357,42 @@ function consumeRateLimitReset() {
       });
   });
 }
-function lastUsage(x) {
-  const labels = {
-    input_tokens: "Invoertokens",
-    cached_input_tokens: "Gecachete invoertokens",
-    output_tokens: "Uitvoertokens",
-    total_tokens: "Totaal tokens",
-    cost: "Kosten",
-    remaining: "Resterend beschikbaar",
-    plan_remaining: "Resterend in plan",
-    usage: "Gebruik",
-  };
-  let entries = Object.entries(x || {});
-  $("lastUsage").hidden = !entries.length;
-  $("lastUsageDetails").textContent = entries
-    .map(
-      ([key, value]) =>
-        (labels[key] || key.replaceAll("_", " ")) + ": " + value,
-    )
-    .join(String.fromCharCode(10));
-}
-function lastRuntimeMetadata(metadata) {
-  const fields = [
-    ["runtime_provider", "lastRuntimeProvider", "lastRuntimeProviderValue"],
-    ["model", "lastModel", "lastModelValue"],
-    ["reasoning_profile", "lastReasoningProfile", "lastReasoningProfileValue"],
-    [
-      "configuration_profile",
-      "lastConfigurationProfile",
-      "lastConfigurationProfileValue",
-    ],
-    ["codex_cli_version", "lastCodexCliVersion", "lastCodexCliVersionValue"],
-  ];
-  for (const [key, fieldId, valueId] of fields) {
-    const value =
-      metadata &&
-      typeof metadata[key] === "string" &&
-      metadata[key] !== "not reported"
-        ? metadata[key]
-        : "";
-    $(fieldId).hidden = !value;
-    $(valueId).textContent = value;
-  }
-}
 function processMetrics(active, x) {
   $("processMetrics").hidden = !active;
   if (!active) return;
   $("codexCpu").textContent =
-    Number(x?.cpu_percent || 0).toLocaleString("nl-NL", {
-      maximumFractionDigits: 1,
-    }) + "%";
+    locale.number(Number(x?.cpu_percent || 0), { maximumFractionDigits: 1 }) + "%";
   $("codexProcesses").textContent = x?.process_count ?? 0;
-  $("codexGpu").textContent = x?.gpu_status || "Niet beschikbaar";
+  $("codexGpu").textContent = x?.gpu_status || t("format.not_available");
 }
-function commits(x) {
-  let entries = Object.entries(x || {});
-  $("commits").hidden = !entries.length;
-  $("completionCommits").textContent = entries
-    .map(([label, sha]) => label + ": " + sha)
-    .join(String.fromCharCode(10));
-}
-function lastCommits(x) {
-  let entries = Object.entries(x || {});
-  $("lastCommits").hidden = !entries.length;
-  $("lastCommitDetails").textContent = entries
-    .map(([label, sha]) => label + ": " + sha)
-    .join(String.fromCharCode(10));
-}
-function renderLegacyLastExecutionTime(x) {
-  let seconds = Number(x?.seconds),
-    field = $("lastExecutionTime"),
-    value = $("lastExecutionTimeValue");
-  if (!field) {
-    field = document.createElement("div");
-    value = document.createElement("span");
-    const label = document.createElement("span");
-    field.className = "field";
-    field.id = "lastExecutionTime";
-    value.id = "lastExecutionTimeValue";
-    label.className = "label";
-    label.textContent = "Codex CLI-uitvoeringstijd";
-    field.append(label, value);
-    $("lastFile").closest(".field").insertAdjacentElement("afterend", field);
+function activeReviewerAgents(items) {
+  const agents = Array.isArray(items) ? items : [];
+  let card = $("activeReviewerAgents");
+  if (!card) {
+    card = document.createElement("section");
+    card.id = "activeReviewerAgents";
+    card.className = "card reviewer-agents";
+    card.innerHTML = `<strong>${t("ui.reviewer_agents")}</strong><p class="estimate-meta" id="activeReviewerSummary"></p><div class="reviewer-agents__list" id="activeReviewerList"></div>`;
+    $("currentRun")?.querySelector(".current-run__grid")?.append(card);
   }
-  field.hidden = !Number.isFinite(seconds) || seconds < 0;
-  if (field.hidden) return;
-  const hours = Math.floor(seconds / 3600),
-    minutes = Math.floor((seconds % 3600) / 60),
-    remaining = Math.round(seconds % 60);
-  value.textContent =
-    (hours ? hours + " u " : "") +
-    (minutes ? minutes + " min " : "") +
-    remaining +
-    " sec";
-}
-function reviewerAgents(items) {
-  const agents = Array.isArray(items) ? items : [],
-    card = $("reviewerAgents"),
-    list = $("reviewerAgentList");
   card.hidden = !agents.length;
+  if (!agents.length) return;
+  const running = agents.filter((agent) => agent?.status === "running").length,
+    completed = agents.filter((agent) => ["completed", "failed"].includes(agent?.status)).length,
+    summary = $("activeReviewerSummary"),
+    list = $("activeReviewerList");
+  summary.textContent = running
+    ? t("ui.reviewer_running", { running, count: agents.length })
+    : t("ui.reviewer_completed", { completed, count: agents.length });
   list.replaceChildren();
   for (const agent of agents) {
-    if (!agent || typeof agent !== "object") continue;
-    const row = document.createElement("article"),
-      name = document.createElement("p"),
-      capability = document.createElement("p"),
-      reason = document.createElement("p"),
-      recommendations = Number(agent.accepted_recommendations) || 0;
+    const row = document.createElement("article"), name = document.createElement("p"), meta = document.createElement("p");
     row.className = "reviewer-agent";
     name.className = "reviewer-agent__name";
-    capability.className = reason.className = "reviewer-agent__meta";
-    name.textContent = String(
-      agent.reviewer || "Specialistische review",
-    ).replaceAll("_", " ");
-    capability.textContent =
-      "Capaciteit: " +
-      String(agent.capability || "engineering") +
-      " · " +
-      String(agent.status || "Uitgevoerd") +
-      " · Gebruikte aanbevelingen: " +
-      recommendations;
-    reason.textContent =
-      "Geselecteerd voor: " +
-      String(agent.selected_because || "Niet vastgelegd.");
-    row.append(name, capability, reason);
+    meta.className = "reviewer-agent__meta";
+    name.textContent = String(agent.reviewer || t("ui.reviewer_default")).replaceAll("_", " ");
+    meta.textContent = `${enumLabel(agent.capability || "ENGINEERING")} · ${enumLabel(agent.status || "SELECTED")}`;
+    row.append(name, meta);
     list.append(row);
   }
 }
@@ -498,10 +410,7 @@ function queueItems(x, queueDepth) {
           return first - second;
         if (Number.isFinite(first) !== Number.isFinite(second))
           return Number.isFinite(first) ? -1 : 1;
-        return String(left.filename || "").localeCompare(
-          String(right.filename || ""),
-          "nl",
-        );
+        return locale.compare(left.filename, right.filename);
       }),
     container = $("queueList"),
     depth =
@@ -510,19 +419,17 @@ function queueItems(x, queueDepth) {
         : items.length;
   $("queueSummary").textContent =
     depth === 0
-      ? "0 prompts in de wachtrij."
-      : depth +
-        " " +
-        (depth === 1 ? "prompt" : "prompts") +
-        " in de wachtrij." +
-        (depth > items.length
-          ? " De eerste " + items.length + " worden getoond."
-          : "");
+      ? t("queue.summary_zero")
+      : t("queue.summary", {
+        count: depth,
+        prompt: locale.plural(depth, "queue.prompt", "queue.prompts"),
+        shown: depth > items.length ? t("queue.shown", { count: items.length }) : "",
+      });
   container.replaceChildren();
   if (!items.length) {
     const empty = document.createElement("li");
     empty.className = "queue-empty";
-    empty.textContent = "Geen Inbox-prompts wachten op uitvoering.";
+    empty.textContent = t("queue.empty");
     container.append(empty);
     return;
   }
@@ -533,24 +440,23 @@ function queueItems(x, queueDepth) {
       title = document.createElement("span"),
       meta = document.createElement("div"),
       modified = Date.parse(item.modified_at || ""),
-      filename = item.filename || "Bestandsnaam niet beschikbaar";
+      filename = item.filename || t("format.not_available");
     row.className = "queue-item";
     row.setAttribute(
       "aria-label",
-      "Positie " + (index + 1) + ": " + (item.title || filename),
+      t("queue.position", { position: index + 1, title: item.title || filename }),
     );
     number.className = "queue-item__number";
     number.textContent = String(index + 1);
     title.className = "queue-item__title";
     meta.className = "queue-item__meta";
     title.textContent = item.title || filename;
-    meta.textContent =
-      "Bestandsnaam: " +
-      filename +
-      " · gewijzigd: " +
-      (Number.isFinite(modified)
-        ? formatTime.format(new Date(modified))
-        : "Tijdstip niet beschikbaar");
+    meta.textContent = t("queue.filename", {
+      filename,
+      modified: Number.isFinite(modified)
+        ? locale.dateTime(new Date(modified))
+        : t("format.timestamp_unavailable"),
+    });
     body.append(title, meta);
     row.append(number, body);
     container.append(row);
@@ -559,97 +465,20 @@ function queueItems(x, queueDepth) {
 function promptStarted(x) {
   promptStartedAt = x?.started_at ? Date.parse(x.started_at) : undefined;
   $("promptStarted").textContent = promptStartedAt
-    ? formatTime.format(new Date(promptStartedAt))
-    : "Niet beschikbaar";
-  if (latestStatus) renderEstimate(latestStatus);
+    ? locale.dateTime(new Date(promptStartedAt))
+    : t("format.not_available");
+  if (latestStatus) renderEstimate(latestStatus, latestDurationEstimate);
 }
-let lastExecutedRun,
-  reportLoaded = false,
-  reportRequest,
-  analysisLoaded = false,
-  analysisRequest;
 function renderMarkdownDocument(target, value) {
   target.replaceChildren();
   renderMarkdownAnswer(target, value);
 }
-function lastTargetEvidence(value) {
-  const labels = [
-    ["Execution Host", "Execution Host"],
-    ["Target Repository", "Target repository"],
-    ["Target Commit", "Target commit"],
-  ];
-  const details = labels
-    .map(([reportLabel, displayLabel]) => {
-      const match = String(value || "").match(
-        new RegExp("^- " + reportLabel + ": `([^`\\n]+)`$", "m"),
-      );
-      return match ? displayLabel + ": " + match[1] : "";
-    })
-    .filter(Boolean);
-  const changed = (String(value || "").match(/^- Changed file: `/gm) || []).length;
-  if (changed) details.push("Evidence Bundle: " + changed + " gewijzigde bestanden");
-  let field = $("lastTargetEvidence");
-  if (!field) {
-    field = document.createElement("div");
-    field.className = "field";
-    field.id = "lastTargetEvidence";
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = "Uitvoeringsbewijs";
-    const output = document.createElement("pre");
-    output.id = "lastTargetEvidenceValue";
-    field.append(label, output);
-    $("lastFile").closest(".field").insertAdjacentElement("afterend", field);
-  }
-  field.hidden = !details.length;
-  $("lastTargetEvidenceValue").textContent = details.join(String.fromCharCode(10));
-}
-function report() {
-  if (!lastExecutedRun) return Promise.resolve();
-  if (reportLoaded) return reportRequest;
-  reportLoaded = true;
-  return (reportRequest = fetch(
-    "/api/report/last-executed?run_id=" + encodeURIComponent(lastExecutedRun),
-  )
-    .then((x) => x.text())
-    .then((x) => {
-      if (!x) {
-        $("report").hidden = true;
-        return;
-      }
-      renderMarkdownDocument($("reportContent"), x);
-      lastTargetEvidence(x);
-    })
-    .catch(() => {
-      $("reportContent").textContent =
-        "Engineeringrapport is niet beschikbaar.";
-    }));
-}
-function analysis() {
-  if (!lastExecutedRun) return Promise.resolve();
-  if (analysisLoaded) return analysisRequest;
-  analysisLoaded = true;
-  return (analysisRequest = fetch(
-    "/api/report-analysis/last-executed?run_id=" +
-      encodeURIComponent(lastExecutedRun),
-  )
-    .then((x) => x.text())
-    .then((x) => {
-      if (!x) {
-        $("reportAnalysis").hidden = true;
-        return;
-      }
-      renderMarkdownDocument($("reportAnalysisContent"), x);
-    })
-    .catch(() => {
-      $("reportAnalysisContent").textContent =
-        "Codex-analyse is niet beschikbaar.";
-    }));
-}
 let componentLogsLoaded = false,
   componentLogEntries = { inbox: [], dashboard: [] };
 function structuredLogEntries(text) {
-  return String(text || "")
+  const normalized = String(text ?? "").trim();
+  if (!normalized || normalized === "Nog geen applicatielog beschikbaar.") return [];
+  return normalized
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line, index) => {
@@ -676,8 +505,8 @@ function structuredLogEntries(text) {
         return {
           line: index + 1,
           timestamp: String(entry.timestamp || ""),
-          level: String(entry.level || "ONBEKEND").toUpperCase(),
-          event: String(entry.event || "onbekend"),
+          level: String(entry.level || t("logs.unknown_level")).toUpperCase(),
+          event: String(entry.event || t("logs.unknown_event")),
           runId: entry.run_id == null ? "" : String(entry.run_id),
           details: details,
         };
@@ -685,8 +514,8 @@ function structuredLogEntries(text) {
         return {
           line: index + 1,
           timestamp: "",
-          level: "ONGELDIGE JSON",
-          event: "onleesbare logregel",
+          level: t("logs.invalid_json"),
+          event: t("logs.unreadable"),
           runId: "",
           details: line,
         };
@@ -700,83 +529,12 @@ function logTimestamp(entry) {
 function logTimestampText(value) {
   const parsed = Date.parse(String(value || ""));
   if (!Number.isFinite(parsed)) return value ? String(value) : "—";
-  const parts = new Intl.DateTimeFormat("nl-NL", {
-    timeZone: "Europe/Amsterdam",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(parsed)).reduce((result, part) => {
-    result[part.type] = part.value;
-    return result;
-  }, {});
-  return `${parts.day}-${parts.month}-${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
-}
-function renderLegacyComponentLogs() {
-  const needle = $("logFilter").value.trim().toLocaleLowerCase("nl-NL"),
-    level = $("logLevelFilter").value,
-    sort = $("logSort").value;
-  for (const component of ["inbox", "dashboard"]) {
-    const rows = componentLogEntries[component]
-        .filter((entry) => !level || entry.level === level)
-        .filter(
-          (entry) =>
-            !needle ||
-            Object.values(entry)
-              .join(" ")
-              .toLocaleLowerCase("nl-NL")
-              .includes(needle),
-        )
-        .sort((left, right) =>
-          sort === "oldest"
-            ? logTimestamp(left) - logTimestamp(right)
-            : sort === "level"
-              ? left.level.localeCompare(right.level, "nl")
-              : sort === "event"
-                ? left.event.localeCompare(right.event, "nl")
-                : logTimestamp(right) - logTimestamp(left),
-        ),
-      body = $(component + "ComponentLog");
-    body.replaceChildren();
-    if (!rows.length) {
-      const cell = document.createElement("td"),
-        row = document.createElement("tr");
-      cell.className = "log-empty";
-      cell.colSpan = 6;
-      cell.textContent = "Geen logregels voor deze selectie.";
-      row.append(cell);
-      body.append(row);
-      continue;
-    }
-    for (const entry of rows) {
-      const row = document.createElement("tr");
-      for (const [name, value] of [
-        ["log-line-number", entry.line],
-        ["", logTimestampText(entry.timestamp)],
-        [
-          "log-level log-level--" + entry.level.toLocaleLowerCase("nl-NL"),
-          entry.level,
-        ],
-        ["", entry.event],
-        ["", entry.runId || "—"],
-        ["", entry.details || "—"],
-      ]) {
-        const cell = document.createElement("td");
-        cell.className = name;
-        cell.textContent = value;
-        row.append(cell);
-      }
-      body.append(row);
-    }
-  }
+  return locale.logDateTime(new Date(parsed));
 }
 function loadComponentLogs() {
   if (componentLogsLoaded) return;
   $("loadComponentLogs").disabled = true;
-  $("loadComponentLogs").textContent = "Logs laden…";
+  $("loadComponentLogs").textContent = t("logs.loading");
   Promise.all([
     fetch("/api/logs/inbox").then((x) => x.text()),
     fetch("/api/logs/dashboard").then((x) => x.text()),
@@ -787,27 +545,30 @@ function loadComponentLogs() {
       componentLogsLoaded = true;
       $("componentLogControls").hidden = false;
       renderComponentLogs();
-      $("loadComponentLogs").textContent = "Logs geladen";
+      $("loadComponentLogs").textContent = t("logs.loaded");
     })
     .catch(() => {
       componentLogEntries.inbox = structuredLogEntries(
-        '{"level":"ERROR","event":"inbox_log_unavailable","diagnostic":"Inbox-log is niet beschikbaar."}',
+        JSON.stringify({ level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable") }),
       );
       componentLogEntries.dashboard = structuredLogEntries(
-        '{"level":"ERROR","event":"dashboard_log_unavailable","diagnostic":"Dashboard-log is niet beschikbaar."}',
+        JSON.stringify({ level: "ERROR", event: "dashboard_log_unavailable", diagnostic: t("logs.dashboard_unavailable") }),
       );
       $("componentLogControls").hidden = false;
       renderComponentLogs();
       $("loadComponentLogs").disabled = false;
-      $("loadComponentLogs").textContent = "Opnieuw proberen";
+      $("loadComponentLogs").textContent = t("logs.retry");
     });
 }
 const CHAT_HISTORY_KEY = "djconnect-engineering-chat-history",
-  CHAT_CONTEXT_KEY = "djconnect-engineering-chat-context",
   CHAT_HISTORY_LIMIT = 20;
-function loadChatHistory() {
+let chatContextRun = "";
+function chatHistoryStorageKey(run = chatContextRun) {
+  return CHAT_HISTORY_KEY + ":" + String(run || "none");
+}
+function loadChatHistory(run) {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(CHAT_HISTORY_KEY) || "[]");
+    const saved = JSON.parse(sessionStorage.getItem(chatHistoryStorageKey(run)) || "[]");
     return Array.isArray(saved)
       ? saved
           .filter(
@@ -822,9 +583,10 @@ function loadChatHistory() {
     return [];
   }
 }
-let chatHistory = loadChatHistory();
+let chatHistory = [];
 function persistChatHistory() {
-  sessionStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
+  if (chatContextRun)
+    sessionStorage.setItem(chatHistoryStorageKey(), JSON.stringify(chatHistory));
 }
 function renderLegacyChatMessage(role, text) {
   let item = document.createElement("article"),
@@ -832,7 +594,7 @@ function renderLegacyChatMessage(role, text) {
     body = document.createElement("div");
   item.className = "chat-message chat-message--" + role;
   label.className = "chat-message__role";
-  label.textContent = role === "user" ? "Jij" : "Codex";
+  label.textContent = t(role === "user" ? "chat.user" : "chat.assistant");
   body.className = "chat-message__body";
   body.textContent = text;
   item.append(label, body);
@@ -845,20 +607,15 @@ function renderChatHistory() {
   chatHistory.forEach((entry) => chatMessage(entry.role, entry.text));
 }
 function reconcileChatContext(run) {
-  if (!latestStatus) return;
-  const context = run || "none";
-  if (sessionStorage.getItem(CHAT_CONTEXT_KEY) === context) return;
-  chatHistory = [];
-  sessionStorage.removeItem(CHAT_HISTORY_KEY);
-  sessionStorage.setItem(CHAT_CONTEXT_KEY, context);
-  renderChatHistory();
+  // Chat context is selected explicitly from Prompt History, never inferred
+  // from whichever terminal run happens to be latest in the status stream.
 }
 function askCodex() {
   let input = $("chatInput"),
     message = input.value.trim();
-  if (!message || $("chatSend").disabled) return;
+  if (!message || !chatContextRun || $("chatSend").disabled) return;
   $("chatSend").disabled = true;
-  $("chatStatus").textContent = "Codex denkt na…";
+  $("chatStatus").textContent = t("chat.thinking");
   chatHistory.push({ role: "user", text: message });
   chatHistory = chatHistory.slice(-CHAT_HISTORY_LIMIT);
   persistChatHistory();
@@ -870,6 +627,7 @@ function askCodex() {
     body: JSON.stringify({
       message: message,
       history: chatHistory.slice(0, -1).slice(-6),
+      run_id: chatContextRun,
     }),
   })
     .then(async (response) => ({
@@ -878,7 +636,7 @@ function askCodex() {
     }))
     .then((result) => {
       if (!result.ok)
-        throw Error(result.body.error || "Codex Gesprek is niet beschikbaar.");
+        throw Error(t("chat.unavailable"));
       let answer = result.body.answer;
       $("chatModel").textContent =
         result.body.model || $("chatModel").textContent;
@@ -894,6 +652,25 @@ function askCodex() {
     .finally(() => {
       $("chatSend").disabled = false;
     });
+}
+function closePromptHistoryChat() {
+  const modal = $("promptHistoryChatModal");
+  if (modal.open) modal.close();
+}
+function openPromptHistoryChat(entry) {
+  if (!entry?.run_id) return;
+  chatContextRun = String(entry.run_id);
+  chatHistory = loadChatHistory(chatContextRun);
+  $("promptHistoryChatTitle").textContent = t("history.chat_title", {
+    title: entry.title || entry.run_id,
+  });
+  $("promptHistoryChatDescription").textContent = t("history.chat_description");
+  $("chatStatus").textContent = "";
+  renderChatHistory();
+  updateChatActions();
+  const modal = $("promptHistoryChatModal");
+  if (!modal.open) modal.showModal();
+  modal.focus();
 }
 function fallbackCopy(value) {
   const area = document.createElement("textarea");
@@ -922,144 +699,119 @@ function showCopyToast() {
   const toast = $("copyToast");
   if (!toast) return;
   clearTimeout(copyToastTimer);
-  toast.textContent = "Gekopieerd naar klembord";
+  toast.textContent = t("copy.success");
   toast.hidden = false;
+  if (typeof toast.showPopover === "function" && !toast.matches(":popover-open"))
+    toast.showPopover();
   requestAnimationFrame(() => toast.classList.add("copy-toast--visible"));
   copyToastTimer = setTimeout(() => {
     toast.classList.remove("copy-toast--visible");
     setTimeout(() => {
+      if (typeof toast.hidePopover === "function" && toast.matches(":popover-open"))
+        toast.hidePopover();
       toast.hidden = true;
     }, 180);
   }, 2200);
 }
-function copyReport() {
-  report()
-    .then(() => copyText($("reportContent").textContent))
-    .catch(() => {
-      $("copyReport").textContent = "Kopiëren mislukt";
-    });
+const PREFLIGHT_PRESENTATIONS = Object.freeze([
+  ["host_preflight", [
+    ["hostPreflightStatus", "outcome"],
+    ["hostPreflightTimestamp", "timestamp", "timestamp"],
+  ]],
+  ["workspace_preflight", [
+    ["workspacePreflightStatus", "outcome"],
+    ["workspacePreflightTimestamp", "timestamp", "timestamp"],
+  ]],
+  ["capability_preflight", [
+    ["capabilityPreflightStatus", "outcome"],
+    ["capabilityRecoverability", "recoverability"],
+    ["capabilityFailureOrigin", "failure_origin"],
+    ["capabilityRecommendation", "recommendation", "recommendation"],
+  ]],
+]);
+function renderPreflightValue(key, value, formatter) {
+  if (formatter === "timestamp")
+    return formatTimestamp(value, t("format.not_available"));
+  if (formatter === "recommendation") return capabilityRecommendation(value);
+  return enumLabel(value, key === "failure_origin" ? "—" : undefined);
 }
-function copyReportAnalysis() {
-  analysis()
-    .then(() => copyText($("reportAnalysisContent").textContent))
-    .catch(() => {
-      $("copyReportAnalysis").textContent = "Kopiëren mislukt";
-    });
+function renderPreflightPresentation(snapshot = {}) {
+  for (const [preflightKey, fields] of PREFLIGHT_PRESENTATIONS) {
+    const preflight = snapshot[preflightKey] || {};
+    for (const [id, key, formatter] of fields) {
+    const element = $(id);
+    if (!element) continue;
+      element.textContent = renderPreflightValue(key, preflight[key], formatter);
+    }
+  }
+  const drift = snapshot.current_drift || {}, card = $("driftDiagnosticsCard");
+  if (card) {
+    card.hidden = !drift.drift_id;
+    const values = [["driftSeverity", drift.severity], ["driftComponent", drift.affected_component],
+      ["driftExpected", drift.expected_value], ["driftObserved", drift.observed_value],
+      ["driftResolution", drift.resolution_recommendation]];
+    for (const [id, value] of values) if ($(id)) $(id).textContent = value || t("format.not_available");
+  }
 }
-function addReportAnalysisCopy() {
-  const card = $("reportAnalysis");
-  if (!card || $("copyReportAnalysis")) return;
-  const button = document.createElement("button");
-  button.className = "copy";
-  button.id = "copyReportAnalysis";
-  button.type = "button";
-  button.title = "Kopieer analyse";
-  button.setAttribute("aria-label", "Kopieer analyse");
-  button.textContent = "⧉ Kopieer";
-  button.addEventListener("click", copyReportAnalysis);
-  card.querySelector("summary").insertAdjacentElement("afterend", button);
-}
-addReportAnalysisCopy();
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
   clock();
   x = x && typeof x === "object" ? x : fallback;
   latestStatus = x;
+  latestDurationEstimate = snapshot.duration_estimate || {};
   let active = isActiveRun(x),
     statusTone = tone(x),
     indicator = $("indicator"),
-    previous = x.last_executed_run || null,
-    lastStatus = finalStatus(x.last_executed_phase),
     components = snapshot.component_versions || {},
-    blockedPredecessor = Boolean(x.blocking_predecessor_run),
-    terminalBlocked = isTerminalBlockedRun(x),
-    blocked = blockedPredecessor || terminalBlocked;
-  if (previous !== lastExecutedRun) {
-    lastExecutedRun = previous;
-    reportLoaded = false;
-    reportRequest = undefined;
-    analysisLoaded = false;
-    analysisRequest = undefined;
-    $("report").open = false;
-    $("reportAnalysis").open = false;
-    $("reportContent").textContent = "Open dit blok om het rapport te laden.";
-    $("reportAnalysisContent").textContent =
-      "Open dit blok om de analyse te laden.";
-  }
-  $("currentRun").hidden = !(active || blocked);
-  $("promptRuns").hidden = !previous;
-  $("lastExecution").hidden = !previous;
-  $("report").hidden = !previous;
-  $("reportAnalysis").hidden = !previous;
-  if (previous) report();
+    blockedPredecessor = Boolean(x.blocking_predecessor_run);
+  // A terminal current.json/status projection is historical evidence, not an
+  // active prompt.  The watcher owns the operational view; history owns the
+  // completed, failed or blocked execution.
+  $("currentRun").hidden = !(active || blockedPredecessor);
   $("predecessorGate").hidden = !blockedPredecessor;
   $("predecessorRun").textContent =
-    x.blocking_predecessor_run || "Niet beschikbaar";
+    x.blocking_predecessor_run || t("format.not_available");
   $("predecessorPrompt").textContent =
     x.blocking_predecessor_title ||
     x.blocking_predecessor_filename ||
-    "Niet beschikbaar";
+    t("format.not_available");
   $("predecessorPhase").textContent = translate(
-    x.blocking_predecessor_phase || "Niet beschikbaar",
+    x.blocking_predecessor_phase || t("format.not_available"),
   );
   $("predecessorAction").textContent =
-    x.predecessor_recovery_action || "Niet beschikbaar";
+    x.predecessor_recovery_action || t("format.not_available");
   $("executionContext").hidden = !x.execution_mode;
-  $("executionMode").textContent = x.execution_mode || "Niet beschikbaar";
-  $("targetRepository").textContent = x.target_repository || "Niet beschikbaar";
-  $("checkoutPath").textContent = x.checkout_path || "Niet beschikbaar";
-  $("activeBranch").textContent = x.active_branch || "Niet beschikbaar";
+  $("executionMode").textContent = x.execution_mode || t("format.not_available");
+  $("targetRepository").textContent = x.target_repository || t("format.not_available");
+  $("checkoutPath").textContent = x.checkout_path || t("format.not_available");
+  $("activeBranch").textContent = x.active_branch || t("format.not_available");
   indicator.className =
     "indicator indicator--" +
     statusTone +
     (active ? " indicator--running" : "");
-  indicator.setAttribute("aria-label", "Promptstatus: " + statusTone);
-  $("lastIndicator").className =
-    "indicator indicator--small indicator--" + lastStatus[0];
-  $("lastFinalStatus").textContent = lastStatus[1];
+  indicator.setAttribute("aria-label", t("detail.prompt_status") + ": " + statusTone);
   $("watcher").textContent = translate(
     x.watcher_state || fallback.watcher_state,
   );
   $("phase").textContent = translate(
-    x.current_phase || (terminalBlocked ? x.last_executed_phase : "idle"),
+    x.current_phase || "idle",
   );
   $("action").textContent = translate(
-    x.current_action ||
-      (terminalBlocked
-        ? "Herstel de geblokkeerde prompt om opnieuw uit te voeren."
-        : "Geen actieve actie"),
+    x.current_action || t("ui.no_active_action"),
   );
-  const preflight = snapshot.host_preflight || {};
-  const workspacePreflight = snapshot.workspace_preflight || {};
-  const capabilityPreflight = snapshot.capability_preflight || {};
   const executionHost = snapshot.execution_host || {};
-  $("executionHostName").textContent = executionHost.name || "Niet beschikbaar";
-  $("executionHostVersion").textContent = executionHost.version || "Niet beschikbaar";
-  $("executionHostRuntime").textContent = executionHost.runtime || "Niet beschikbaar";
-  $("executionHostTransport").textContent = executionHost.runtime_prompt_transport || "Niet beschikbaar";
-  $("hostPreflightStatus").textContent = preflight.outcome || "Niet beschikbaar";
-  $("hostPreflightTimestamp").textContent = preflight.timestamp || "Nog niet uitgevoerd";
-  $("workspacePreflightStatus").textContent = workspacePreflight.outcome || "Niet beschikbaar";
-  $("workspacePreflightTimestamp").textContent = workspacePreflight.timestamp || "Nog niet uitgevoerd";
+  $("executionHostName").textContent = executionHost.name || t("format.not_available");
+  $("executionHostVersion").textContent = executionHost.version || t("format.not_available");
+  $("executionHostRuntime").textContent = executionHost.runtime || t("format.not_available");
+  $("executionHostTransport").textContent = executionHost.runtime_prompt_transport || t("format.not_available");
   // Older dashboard fixtures and cached shells do not have Level 3 fields.
   // Keep the canonical status renderer backward compatible while they refresh.
-  const capabilityField = (id, value) => {
-    const element = $(id);
-    if (element) element.textContent = value;
-  };
-  capabilityField("capabilityPreflightStatus", capabilityPreflight.outcome || "Niet beschikbaar");
-  capabilityField("capabilityRecoverability", capabilityPreflight.recoverability || "Niet beschikbaar");
-  capabilityField("capabilityFailureOrigin", capabilityPreflight.failure_origin || "—");
-  capabilityField("capabilityRecommendation", capabilityPreflight.recommendation || "Niet beschikbaar");
+  renderPreflightPresentation(snapshot);
   promptStarted(snapshot.prompt_started);
-  renderEstimate(x);
+  renderEstimate(x, latestDurationEstimate);
   processMetrics(active, snapshot.process_metrics);
-  $("currentPrompt").textContent =
-    x.prompt_title || (terminalBlocked ? x.last_executed_title : null) || "Niet beschikbaar";
-  $("currentFile").textContent =
-    x.submitted_filename ||
-    (terminalBlocked ? x.last_executed_filename : null) ||
-    "Niet beschikbaar";
+  $("currentPrompt").textContent = x.prompt_title || t("format.not_available");
+  $("currentFile").textContent = x.submitted_filename || t("format.not_available");
   if (!active || x.run_id !== currentLogRun)
     $("currentDiagnostic").hidden = true;
   if (active)
@@ -1070,57 +822,34 @@ function renderHealthStatus(x, snapshot = {}) {
       false,
       "currentDiagnostic",
     );
-  $("lastPrompt").textContent =
-    x.last_executed_title || "Nog geen prompt uitgevoerd";
-  $("lastFile").textContent = x.last_executed_filename || "Niet beschikbaar";
-  $("lastDiagnostic").hidden = lastStatus[0] === "green";
-  if (previous && lastStatus[0] !== "green")
-    l("lastLog", "/api/log/last", previous, true, "lastDiagnostic");
-  $("runId").textContent =
-    x.run_id || (terminalBlocked ? x.last_executed_run : null) || "geen";
-  $("queue").textContent = x.queue_depth ?? 0;
+  $("runId").textContent = x.run_id || t("value.none");
   queueItems(x.queue_items, x.queue_depth);
-  $("implementation").textContent = x.implementation_pr || "geen";
-  $("finalization").textContent = x.finalization_pr || "geen";
+  $("implementation").textContent = x.implementation_pr || t("value.none");
+  $("finalization").textContent = x.finalization_pr || t("value.none");
   $("repositoryState").textContent = translate(x.repository_state || "UNKNOWN");
   $("workspaceState").textContent = translate(x.workspace_state || "UNKNOWN");
-  $("diag").textContent = translate(x.diagnostic || "Geen diagnose");
-  $("platformVersion").textContent = x.platform_version || "Niet beschikbaar";
+  $("diag").textContent = translate(x.diagnostic || t("value.no_diagnostics"));
+  $("platformVersion").textContent = x.platform_version || t("format.not_available");
   $("dashboardVersion").textContent =
-    components.dashboard || "Niet beschikbaar";
-  $("workerVersion").textContent = components.worker || "Niet beschikbaar";
+    components.dashboard || t("format.not_available");
+  $("workerVersion").textContent = components.worker || t("format.not_available");
   usage(snapshot.usage);
   rateLimits(snapshot.rate_limits);
-  lastUsage(snapshot.last_executed_usage);
-  commits(snapshot.completion_commits);
-  lastCommits(snapshot.last_executed_commits);
-  reviewerAgents(snapshot.last_executed_reviewer_agents);
+  activeReviewerAgents(x.reviewer_agents);
 }
-let lastExecutionCategoryRun, activePromptCategoryRun;
+let activePromptCategoryRun;
 function renderRunCategory(x) {
   const active = x && typeof x === "object" && isActiveRun(x),
     blockedPredecessor = Boolean(x?.blocking_predecessor_run),
-    terminalBlocked = isTerminalBlockedRun(x),
-    blocked = blockedPredecessor || terminalBlocked,
-    current = $("currentRun"),
-    previous = x && typeof x === "object" ? x.last_executed_run || null : null,
-    group = $("lastExecutionGroup");
+    current = $("currentRun");
   const currentRunKey = active
     ? x.run_id
     : blockedPredecessor
       ? x.blocking_predecessor_run
-      : terminalBlocked
-        ? x.last_executed_run
-        : null;
+      : null;
   if (currentRunKey && current && currentRunKey !== activePromptCategoryRun) {
     activePromptCategoryRun = currentRunKey;
-    current.open = blocked;
-  }
-  if (!group) return;
-  group.hidden = !previous;
-  if (previous !== lastExecutionCategoryRun) {
-    lastExecutionCategoryRun = previous;
-    group.open = false;
+    current.open = blockedPredecessor;
   }
 }
 const dashboardStatusStore = createDashboardStatusStore({
@@ -1135,11 +864,10 @@ function renderComponentDetails() {
 }
 function renderDashboardStatus(status, snapshot) {
   renderHealthStatus(status, snapshot);
+  localizeTechnicalDetails();
   renderRunCategory(status);
-  renderReportAvailability(status, snapshot);
   renderLogsForSnapshot(snapshot);
   renderDashboardTelemetry(snapshot);
-  renderExecutionEvidence(snapshot);
   renderPredecessorRetry(status);
   renderChatStatus(status);
   renderComponentDetails();
@@ -1150,66 +878,77 @@ function renderDashboardStatus(status, snapshot) {
 function r(status, snapshot = {}) {
   dashboardStatusStore.update(status, snapshot);
 }
-let receivedDashboardServerPush = false;
+let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
+function setUpdateMode(key) {
+  updateModeKey = key;
+  $("updateMode").textContent = t(key);
+}
 async function loadInitialDashboardStatus() {
   try {
     const response = await fetch("/api/dashboard-snapshot", {
       cache: "no-store",
     });
-    if (!response.ok) throw Error("Dashboardstatus is niet beschikbaar.");
+    if (!response.ok) throw Error(t("dashboard.status_unavailable"));
     const snapshot = await response.json();
     if (!snapshot || typeof snapshot.status !== "object")
-      throw Error("Dashboardstatus is ongeldig.");
+      throw Error(t("dashboard.status_invalid"));
     if (receivedDashboardServerPush) return;
     dashboardStatusStore.update(snapshot.status, snapshot);
     humanize();
     checkBuild(snapshot.build_commit);
-    $("updateMode").textContent = "Status geladen; serverpush verbinden…";
+    setUpdateMode("refresh.connecting");
   } catch {
     if (receivedDashboardServerPush) return;
     dashboardStatusStore.update(fallback);
     humanize();
-    $("updateMode").textContent =
-      "Status laden mislukt; serverpush opnieuw verbinden…";
+    setUpdateMode("refresh.failed_reconnecting");
   }
 }
 void loadInitialDashboardStatus();
 let e = new EventSource("/api/events");
+let promptHistoryTerminalRun = null;
 e.addEventListener("dashboard", (x) => {
   if (!$("autoRefresh").checked) return;
   try {
     let snapshot = JSON.parse(x.data);
     receivedDashboardServerPush = true;
     dashboardStatusStore.update(snapshot.status, snapshot);
+    const terminalRun = snapshot.status?.last_executed_run;
+    if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
+      promptHistoryTerminalRun = terminalRun;
+      void refreshPromptHistory();
+    }
     humanize();
     checkBuild(snapshot.build_commit);
-    $("updateMode").textContent = "Serverpush: verbonden";
+    setUpdateMode("refresh.connected");
   } catch {
     dashboardStatusStore.update(fallback);
     humanize();
-    $("updateMode").textContent = "Serverpush: update ongeldig";
+    setUpdateMode("refresh.invalid");
   }
 });
 e.onerror = () => {
   $("autoRefresh").checked &&
-    ($("updateMode").textContent = "Serverpush: opnieuw verbinden…");
+    setUpdateMode("refresh.reconnecting");
 };
-$("report").addEventListener("toggle", () => {
-  $("report").open && report();
-});
-$("reportAnalysis").addEventListener("toggle", () => {
-  $("reportAnalysis").open && analysis();
-});
-$("copyReport").addEventListener("click", copyReport);
 $("loadComponentLogs").addEventListener("click", loadComponentLogs);
-for (const id of ["logFilter", "logLevelFilter", "logSort"])
-  $(id).addEventListener("input", renderComponentLogs);
 $("chatSend").addEventListener("click", askCodex);
 $("chatInput").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+  // Enter remains available for multi-line questions. Ctrl+Enter is the
+  // explicit send shortcut on every platform; Cmd+Enter remains its macOS
+  // counterpart. Do not submit while an IME composition is still active.
+  if (
+    !event.isComposing &&
+    event.key === "Enter" &&
+    (event.ctrlKey || event.metaKey)
+  ) {
     event.preventDefault();
     askCodex();
   }
+});
+$("promptHistoryChatClose").addEventListener("click", closePromptHistoryChat);
+$("promptHistoryChatModal").addEventListener("click", (event) => {
+  if (event.target === $("promptHistoryChatModal")) closePromptHistoryChat();
 });
 renderChatHistory();
 setInterval(() => {
@@ -1217,140 +956,125 @@ setInterval(() => {
   clock();
 }, 250);
 clock();
-let logSortState = { key: "timestamp", direction: "desc" };
 function logValue(entry, key) {
   if (key === "line") return Number(entry.line) || 0;
   if (key === "timestamp") return logTimestamp(entry);
-  return String(entry[key] || "").toLocaleLowerCase("nl-NL");
-}
-function updateLogSortHeaders() {
-  document
-    .querySelectorAll(".log-table th[data-sort-key]")
-    .forEach((header) => {
-      const active = header.dataset.sortKey === logSortState.key;
-      header.dataset.sortIndicator = active
-        ? logSortState.direction === "asc"
-          ? "↑"
-          : "↓"
-        : "↕";
-      header.setAttribute(
-        "aria-sort",
-        active
-          ? logSortState.direction === "asc"
-            ? "ascending"
-            : "descending"
-          : "none",
-      );
-    });
-}
-function setLogSort(key) {
-  logSortState =
-    logSortState.key === key
-      ? {
-          key: key,
-          direction: logSortState.direction === "asc" ? "desc" : "asc",
-        }
-      : { key: key, direction: key === "timestamp" ? "desc" : "asc" };
-  updateLogSortHeaders();
-  renderComponentLogs();
-}
-function renderSortedComponentLogs() {
-  const needle = $("logFilter").value.trim().toLocaleLowerCase("nl-NL"),
-    level = $("logLevelFilter").value;
-  for (const component of ["inbox", "dashboard"]) {
-    const rows = componentLogEntries[component]
-        .filter((entry) => !level || entry.level === level)
-        .filter(
-          (entry) =>
-            !needle ||
-            Object.values(entry)
-              .join(" ")
-              .toLocaleLowerCase("nl-NL")
-              .includes(needle),
-        )
-        .sort((left, right) => {
-          const first = logValue(left, logSortState.key),
-            second = logValue(right, logSortState.key),
-            result =
-              typeof first === "number" && typeof second === "number"
-                ? first - second
-                : String(first).localeCompare(String(second), "nl");
-          return logSortState.direction === "asc" ? result : -result;
-        }),
-      body = $(component + "ComponentLog");
-    body.replaceChildren();
-    if (!rows.length) {
-      const cell = document.createElement("td"),
-        row = document.createElement("tr");
-      cell.className = "log-empty";
-      cell.colSpan = 6;
-      cell.textContent = "Geen logregels voor deze selectie.";
-      row.append(cell);
-      body.append(row);
-      continue;
-    }
-    for (const entry of rows) {
-      const row = document.createElement("tr");
-      for (const [name, value] of [
-        ["log-line-number", entry.line],
-        ["", logTimestampText(entry.timestamp)],
-        [
-          "log-level log-level--" +
-            entry.level.toLocaleLowerCase("nl-NL").replaceAll(" ", "-"),
-          entry.level,
-        ],
-        ["", entry.event],
-        ["", entry.runId || "—"],
-        ["", entry.details || "—"],
-      ]) {
-        const cell = document.createElement("td");
-        cell.className = name;
-        cell.textContent = value;
-        row.append(cell);
-      }
-      body.append(row);
-    }
-  }
-}
-function configureLogSortHeaders() {
-  const keys = ["line", "timestamp", "level", "event", "runId", "details"];
-  document.querySelectorAll(".log-table").forEach((table) =>
-    table.querySelectorAll("th").forEach((header, index) => {
-      const key = keys[index];
-      header.classList.add("log-sortable");
-      header.dataset.sortKey = key;
-      header.tabIndex = 0;
-      header.addEventListener("click", () => setLogSort(key));
-      header.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          setLogSort(key);
-        }
-      });
-    }),
-  );
-  updateLogSortHeaders();
+  return locale.lower(String(entry[key] || ""));
 }
 function providerNeutralLabels() {
   const labels = [
-    ["#processMetrics>strong", "Lokale AI-processen"],
-    ["#usage>strong", "AI-providergebruik"],
-    ["#currentDiagnostic>strong", "AI-uitvoeringsdiagnose"],
-    ["#rateLimits .label", "AI-providerlimieten"],
-    ["#lastUsage .label", "AI-providergebruik"],
-    ["#lastDiagnostic .label", "AI-uitvoeringsdiagnose"],
-    ["#reportAnalysis summary strong", "AI-analyse van rapport"],
-    ["#codexChat>strong", "AI-gesprek"],
-    ["#chatMessages", "Gesprek met AI-assistent"],
-    ["label[for=chatInput]", "Nieuwe vraag aan AI-assistent"],
+    ["#processMetrics>strong", "ui.local_ai_processes"],
+    ["#usage>strong", "section.ai_provider_usage"],
+    ["#currentDiagnostic>strong", "section.ai_execution_diagnostics"],
+    ["#rateLimits .label", "section.ai_provider_limits"],
+    ["#codexChat>strong", "section.ai_conversation"],
+    ["#chatMessages", "section.ai_conversation"],
+    ["label[for=chatInput]", "section.new_ai_question"],
   ];
-  labels.forEach(([selector, text]) => {
+  labels.forEach(([selector, key]) => {
     const element = document.querySelector(selector);
     if (element) {
+      const text = t(key);
       element.textContent = text;
       if (selector === "#chatMessages")
         element.setAttribute("aria-label", text);
     }
+  });
+  $("chatInput").setAttribute("placeholder", t("history.chat_placeholder"));
+}
+function localizeTechnicalDetails() {
+  const labels = [
+    [["#technicalPullRequestsTitle", "#technicalDetails .technical-grid > .card:nth-child(1) > strong"], "technical.pull_requests"],
+    [["#technicalImplementationLabel", "#technicalDetails .technical-grid > .card:nth-child(1) .field:nth-of-type(1) .label"], "technical.implementation"],
+    [["#technicalFinalizationLabel", "#technicalDetails .technical-grid > .card:nth-child(1) .field:nth-of-type(2) .label"], "technical.finalization"],
+    [["#technicalRepositoryTitle", "#technicalDetails .technical-grid > .card:nth-child(2) > strong"], "technical.repository"],
+    [["#technicalRepositoryStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(1) .label"], "technical.repository_status"],
+    [["#technicalWorkspaceStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(2) .label"], "technical.workspace_status"],
+    [["#technicalHostPreflightTitle", "#technicalDetails .technical-grid > .card:nth-child(3) > strong"], "technical.host_preflight"],
+    [["#technicalExecutionHostLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(1) .label"], "technical.execution_host"],
+    [["#technicalExecutionHostVersionLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(2) .label"], "technical.execution_host_version"],
+    [["#technicalRuntimeLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(3) .label"], "technical.runtime"],
+    [["#technicalRuntimePromptTransportLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(4) .label"], "technical.runtime_prompt_transport"],
+    [["#technicalHostStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(5) .label"], "technical.host_status"],
+    [["#technicalLastCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(6) .label"], "technical.last_check"],
+    [["#technicalWorkspacePreflightStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(7) .label"], "technical.workspace_status"],
+    [["#technicalLastWorkspaceCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(8) .label"], "technical.last_workspace_check"],
+    [["#technicalCapabilityStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(9) .label"], "technical.capability_status"],
+    [["#technicalRecoverabilityLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(10) .label"], "technical.recoverability"],
+    [["#technicalFailureOriginLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(11) .label"], "technical.failure_origin"],
+    [["#technicalRecommendationLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(12) .label"], "technical.recommended_action"],
+    [["#technicalDiagnosticsTitle", "#technicalDetails .technical-grid > .card:nth-child(4) > strong"], "technical.diagnostics"],
+  ];
+  labels.forEach(([selectors, key]) => {
+    const element = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
+    if (element) element.textContent = t(key);
+  });
+}
+function setControlLabel(selector, key) {
+  const label = document.querySelector(selector);
+  const text = label && [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+  if (text) text.nodeValue = t(key);
+}
+function localizeLogControls() {
+  setControlLabel("label[for=promptHistoryFilter]", "filter.search");
+  setControlLabel("label[for=logFilter]", "filter.search");
+  setControlLabel("label[for=logLevelFilter]", "filter.level");
+  setControlLabel("label[for=logEventFilter]", "table.event");
+  ["promptHistoryFilter", "logFilter"].forEach((id) => {
+    const input = $(id);
+    if (input) input.placeholder = t("filter.search_placeholder");
+  });
+  const optionKeys = [
+    ["", "filter.all_levels"], ["ERROR", "filter.error"],
+    ["WARNING", "filter.warning"], ["INFO", "filter.info"], ["DEBUG", "filter.debug"],
+  ];
+  optionKeys.forEach(([value, key]) => {
+    const option = document.querySelector(`#logLevelFilter option[value="${value}"]`);
+    if (option) option.textContent = t(key);
+  });
+  const cardTitles = ["logs.inbox_watcher", "logs.status_dashboard"];
+  document.querySelectorAll("#componentLogs .log-card-header strong").forEach((title, index) => {
+    if (cardTitles[index]) title.textContent = t(cardTitles[index]);
+  });
+  const headers = [
+    "table.number", "table.timestamp", "table.level", "table.event",
+    "table.run_id", "table.details",
+  ];
+  document.querySelectorAll("#componentLogs .log-table thead th").forEach((header, index) => {
+    if (headers[index % headers.length]) header.textContent = t(headers[index % headers.length]);
+  });
+  const reset = document.querySelector(".reset-log-filters");
+  if (reset) {
+    const label = t("action.reset_log_filters");
+    reset.title = label;
+    reset.setAttribute("aria-label", label);
+  }
+}
+function localizePromptHistoryTable() {
+  const headers = [
+    "table.status", "table.prompt_title", "table.executed_at", "table.report",
+    "table.analysis", "table.chat", "table.action", "table.details",
+  ];
+  document.querySelectorAll("#promptHistory .log-table thead th").forEach((header, index) => {
+    if (headers[index]) header.textContent = t(headers[index]);
+  });
+  document.querySelector("#promptHistory .log-table")?.setAttribute(
+    "aria-label",
+    t("history.table_label"),
+  );
+}
+function localizeTemplateBindings() {
+  document.querySelectorAll("[data-i18n]").forEach((element) => {
+    element.textContent = t(element.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+    element.placeholder = t(element.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
+    element.setAttribute("aria-label", t(element.dataset.i18nAriaLabel));
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((element) => {
+    element.title = t(element.dataset.i18nTitle);
   });
 }
 function chatMessage(role, text) {
@@ -1359,113 +1083,83 @@ function chatMessage(role, text) {
     body = document.createElement("div");
   item.className = "chat-message chat-message--" + role;
   label.className = "chat-message__role";
-  label.textContent = role === "user" ? "Jij" : "AI-assistent";
+  label.textContent = t(role === "user" ? "chat.user" : "chat.assistant");
   body.className = "chat-message__body";
   body.textContent = text;
   item.append(label, body);
   $("chatMessages").append(item);
   item.scrollIntoView({ block: "nearest" });
 }
-configureLogSortHeaders();
 providerNeutralLabels();
-function groupLastExecution() {
-  const group = $("lastExecutionGroup");
-  if (!group || group.tagName === "DETAILS") return;
-  const category = document.createElement("details"),
-    summary = document.createElement("summary"),
-    title = document.createElement("strong"),
-    content = document.createElement("div");
-  category.id = group.id;
-  category.className = group.className;
-  category.dataset.testid = "last-executed-prompt-category";
-  category.hidden = group.hidden;
-  title.textContent = "Laatst uitgevoerde prompt";
-  summary.append(title);
-  content.className = "last-execution-group__content";
-  while (group.firstChild) content.append(group.firstChild);
-  category.append(summary, content);
-  group.replaceWith(category);
-}
-groupLastExecution();
 function addCategoryIcons() {
-  for (const [selector, glyph, label] of [
-    ["#workspaceCard", "⌂", "Werkruimte"],
-    ["#queueItems", "☷", "Inbox-wachtrij"],
-    ["#promptHistory", "◫", "Promptgeschiedenis"],
-    ["#platformHealth", "◈", "Platformonderdelen"],
-    ["#rateLimits", "◔", "Resterend gebruik"],
-    ["#executionTelemetry", "▥", "Execution Host-telemetrie"],
-    ["#lastExecutionGroup", "◷", "Laatst uitgevoerde prompt"],
-    ["#codexChat", "✦", "AI-gesprek"],
-    ["#technicalDetails", "⚙", "Technische details"],
-    ["#componentLogs", "≡", "Logs"],
-    ["#currentRun", "▤", "Actieve prompt"],
+  for (const [selector, glyph, labelKey] of [
+    ["#workspaceCard", "⌂", "section.workspace"],
+    ["#queueItems", "☷", "section.inbox_queue"],
+    ["#promptHistory", "◫", "section.prompt_history"],
+    ["#platformHealth", "◈", "section.platform_components"],
+    ["#rateLimits", "◔", "section.remaining_usage"],
+    ["#executionTelemetry", "▥", "section.execution_host_telemetry"],
+    ["#technicalDetails", "⚙", "section.technical_details"],
+    ["#componentLogs", "≡", "section.logs"],
+    ["#currentRun", "▤", "section.active_prompt"],
   ]) {
-    const summary = document.querySelector(selector + ">summary");
-    if (!summary || summary.querySelector(".category-icon")) continue;
-    const icon = document.createElement("span"),
-      title = summary.querySelector("strong,.label");
-    icon.className = "category-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = glyph;
+    const summary = document.querySelector(selector + ">summary"),
+      label = t(labelKey);
+    if (!summary) continue;
+    let icon = summary.querySelector(".category-icon");
+    if (!icon) {
+      icon = document.createElement("span");
+      const title = summary.querySelector("strong,.label");
+      icon.className = "category-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = glyph;
+      if (title) title.before(icon);
+      else summary.prepend(icon);
+    }
     icon.title = label;
-    if (title) title.before(icon);
-    else summary.prepend(icon);
   }
 }
 addCategoryIcons();
 function addCategoryDescriptions() {
   const descriptions = [
-    [".workspace-card", "De actieve werkruimte van dit project."],
-    ["#queueItems", "Prompts worden uitgevoerd op volgorde van aanmaakdatum."],
-    [
-      "#promptHistory",
-      "Alle terminale Engineering Platform-uitvoeringen, lokaal gecachet in de Engineering SQLite-opslag.",
-    ],
-    [
-      "#rateLimits",
-      "Beschikbare gebruiksruimte en resets van de actieve AI-provider.",
-    ],
-    [
-      "#lastExecutionGroup",
-      "De meest recent uitgevoerde prompt, met bewijs, rapport en analyse.",
-    ],
-    [
-      "#componentLogs",
-      "Geredigeerde, roterende logs van watcher en dashboard. Automatisch bijgewerkt via serverpush.",
-    ],
-    [
-      "#codexChat",
-      "Stel korte, alleen-lezen vragen over de laatst uitgevoerde prompt en het bijbehorende rapport. Dit start geen engineering of wijzigingen.",
-    ],
-    [
-      "#engineering-dashboard-content>.technical-details:not(#componentLogs)",
-      "Operationele details over pull requests, repository, werkruimte en diagnose.",
-    ],
+    [".workspace-card", "description.workspace"],
+    ["#queueItems", "description.inbox_queue"],
+    ["#promptHistory", "description.prompt_history"],
+    ["#rateLimits", "description.remaining_usage"],
+    ["#componentLogs", "description.logs"],
+    ["#engineering-dashboard-content>.technical-details:not(#componentLogs)", "description.technical_details"],
+    ["#platformHealth", "description.platform_components"],
   ];
-  for (const [selector, text] of descriptions) {
+  for (const [selector, key] of descriptions) {
     const category = document.querySelector(selector),
       summary = category?.querySelector(":scope>summary");
     if (!category || !summary) continue;
     let description =
-      category.querySelector(":scope>.category-description") ||
-      category.querySelector(":scope>.estimate-meta");
+      summary.querySelector(":scope>[data-category-description]") ||
+      category.querySelector(":scope>.category-description");
     if (!description) {
       description = document.createElement("p");
-      description.textContent = text;
-      summary.insertAdjacentElement("afterend", description);
+      summary.append(description);
     }
+    description.textContent = t(key);
     description.classList.add("category-description");
+    description.dataset.categoryDescription = "";
+    summary.append(description);
   }
 }
 addCategoryDescriptions();
 function arrangeOperationalCategories() {
   const technical = $("technicalDetails"),
+    workspace = $("workspaceCard"),
     telemetry = $("executionTelemetry"),
     health = $("platformHealth"),
     logs = $("componentLogs");
   if (!technical) return;
   let anchor = technical;
+  if (workspace) {
+    anchor.insertAdjacentElement("afterend", workspace);
+    anchor = workspace;
+  }
   if (telemetry) {
     anchor.insertAdjacentElement("afterend", telemetry);
     anchor = telemetry;
@@ -1653,7 +1347,7 @@ chatMessage = (role, text) => {
     body = document.createElement("div");
   item.className = "chat-message chat-message--assistant";
   label.className = "chat-message__role";
-  label.textContent = "AI-assistent";
+  label.textContent = t("chat.assistant");
   body.className = "chat-message__body";
   renderMarkdownAnswer(body, text);
   item.append(label, body);
@@ -1666,14 +1360,14 @@ function addChatMessageCopyButton(item, text) {
   const button = document.createElement("button");
   button.className = "chat-message__copy";
   button.type = "button";
-  button.title = "Kopieer bericht";
-  button.setAttribute("aria-label", "Kopieer bericht");
+  button.title = t("copy.message");
+  button.setAttribute("aria-label", t("copy.message"));
   button.textContent = "⧉";
   button.addEventListener("click", () => {
     copyText(String(text))
       .then(() => void recordUserAction("chat_message_copied"))
       .catch(() => {
-        button.title = "Kopiëren mislukt";
+        button.title = t("copy.failed");
       });
   });
   item.append(button);
@@ -1716,9 +1410,7 @@ function enableLiveComponentLogs() {
   const button = $("loadComponentLogs"),
     description = document.querySelector("#componentLogs .estimate-meta");
   button?.remove();
-  if (description)
-    description.textContent =
-      "Geredigeerde, roterende logs van watcher en dashboard. Automatisch bijgewerkt via serverpush.";
+  if (description) description.textContent = t("description.logs");
   $("componentLogControls").hidden = false;
   refreshComponentLogs();
 }
@@ -1726,11 +1418,13 @@ function renderLogsForSnapshot(snapshot) {
   refreshComponentLogs(snapshot.component_log_versions || {});
 }
 enableLiveComponentLogs();
-const healthComponentLabels = {
-  dashboard: "Statusdashboard",
-  inbox_watcher: "Inbox-watcher",
-  dashboard_relay: "Dashboardrelay",
-};
+function healthComponentLabel(component) {
+  return {
+    dashboard: t("logs.status_dashboard"),
+    inbox_watcher: t("component.execution_host"),
+    dashboard_relay: t("component.dashboard_relay"),
+  }[component] || component;
+}
 let healthRequestInFlight = false;
 const componentDetailsRefreshIntervalMs = 5e3;
 let activeComponentDetails = null,
@@ -1766,7 +1460,7 @@ function componentDetailField(list, label, value) {
 }
 function componentMemory(processes) {
   if (!Array.isArray(processes) || !processes.length)
-    return "Geen lokaal proces gevonden";
+    return t("ui.no_local_process");
   return processes
     .map(
       (process) =>
@@ -1785,48 +1479,47 @@ function showComponentModal(payload) {
     restart = $("componentModalRestart"),
     status = $("componentModalStatus"),
     launchd = payload.launchd || {};
-  title.textContent =
-    healthComponentLabels[payload.component] || "Componentinformatie";
+  title.textContent = healthComponentLabel(payload.component) || t("component.component_information");
   content.replaceChildren();
   const fields = document.createElement("dl");
-  componentDetailField(fields, "Machine", payload.machine);
+  componentDetailField(fields, t("component.machine"), payload.machine);
   componentDetailField(
     fields,
-    "Status",
-    (payload.healthy ? "Gezond" : "Niet gezond") +
+    t("component.status"),
+    (payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
-      (payload.detail || payload.state || "Geen toelichting"),
+      (payload.detail || payload.state || t("ui.no_component_explanation")),
   );
-  componentDetailField(fields, "Versie", payload.version);
+  componentDetailField(fields, t("component.version"), payload.version);
   componentDetailField(
     fields,
-    "Uptime",
+    t("component.uptime"),
     formatComponentUptime(payload.uptime_seconds),
   );
-  componentDetailField(fields, "Git-commit", payload.git_commit);
+  componentDetailField(fields, t("detail.git_commit"), payload.git_commit);
   componentDetailField(
     fields,
-    "Uitvoerbaar pad",
+    t("component.executable_path"),
     Array.isArray(launchd.program_arguments) && launchd.program_arguments.length
       ? launchd.program_arguments[0]
       : payload.executable_path,
   );
-  componentDetailField(fields, "Launchd-label", launchd.label);
-  componentDetailField(fields, "LaunchAgent", launchd.plist_path);
+  componentDetailField(fields, t("component.launchd_label"), launchd.label);
+  componentDetailField(fields, t("component.launch_agent"), launchd.plist_path);
   componentDetailField(
     fields,
-    "Launchd-instellingen",
+    t("component.launchd_configuration"),
     launchd.label
-      ? (launchd.loaded ? "Geladen" : "Niet geladen") +
-          " · Start bij laden: " +
-          (launchd.run_at_load ? "ja" : "nee") +
-          " · Blijf actief: " +
-          (launchd.keep_alive ? "ja" : "nee")
+      ? (launchd.loaded ? t("component.health_healthy") : t("component.health_unhealthy")) +
+          " · " + t("component.start_at_load") + ": " +
+          (launchd.run_at_load ? "✓" : "—") +
+          " · " + t("component.keep_active") + ": " +
+          (launchd.keep_alive ? "✓" : "—")
       : null,
   );
   componentDetailField(
     fields,
-    "Huidig geheugen",
+    t("component.current_memory"),
     componentMemory(payload.processes),
   );
   content.append(fields);
@@ -1846,7 +1539,7 @@ async function requestComponentDetails(component, showError = true) {
       ),
       payload = await response.json();
     if (!response.ok)
-      throw Error(payload.error || "Componentinformatie is niet beschikbaar.");
+      throw Error(payload.error || t("ui.component_information_unavailable"));
     showComponentModal(payload);
     return true;
   } catch (error) {
@@ -1889,9 +1582,7 @@ async function restartDashboardComponent() {
     component = restart.dataset.component;
   if (!component) return;
   if (
-    !legacyConfirmation(
-      "Weet je zeker dat je dit Engineering Platform-onderdeel wilt herstarten?",
-    )
+    !legacyConfirmation(t("ui.component_restart_confirmation"))
   )
     return;
   restart.disabled = true;
@@ -1906,12 +1597,11 @@ async function restartDashboardComponent() {
       ),
       payload = await response.json();
     if (!response.ok)
-      throw Error(payload.error || "Herstarten is niet gelukt.");
-    $("componentModalStatus").textContent =
-      "Herstartverzoek verzonden. De component komt zo opnieuw beschikbaar.";
+      throw Error(payload.error || t("ui.component_restart_failed"));
+    $("componentModalStatus").textContent = t("ui.component_restart_requested");
   } catch (error) {
     $("componentModalStatus").textContent =
-      error.message || "Herstarten is niet gelukt.";
+      error.message || t("ui.component_restart_failed");
   } finally {
     restart.disabled = false;
   }
@@ -1934,8 +1624,7 @@ function renderPlatformHealth(payload) {
   if (!components) {
     const message = document.createElement("p");
     message.className = "platform-health__empty";
-    message.textContent =
-      "De live gezondheidscontrole is tijdelijk niet beschikbaar.";
+    message.textContent = t("ui.component_health_unavailable");
     container.append(message);
     return;
   }
@@ -1957,19 +1646,19 @@ function renderPlatformHealth(payload) {
     item.setAttribute("role", "button");
     item.setAttribute(
       "aria-label",
-      "Meer informatie over " + (healthComponentLabels[key] || key),
+      t("component.more_information", { component: healthComponentLabel(key) }),
     );
     indicator.className = healthIndicatorClass(componentHealthy);
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
-    name.textContent = healthComponentLabels[key] || key;
+    name.textContent = healthComponentLabel(key);
     detail.className = "platform-health__component-detail";
     detail.textContent =
-      (componentHealthy ? "Gezond" : "Niet gezond") +
+      (componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
-      String(component?.detail || component?.state || "Geen toelichting") +
+      String(component?.detail || component?.state || t("ui.no_component_explanation")) +
       version +
-      (uptime ? " · Uptime " + uptime : "");
+      (uptime ? " · " + t("component.uptime") + " " + uptime : "");
     info.className = "component-info";
     info.textContent = "i";
     info.setAttribute("aria-hidden", "true");
@@ -1998,182 +1687,6 @@ async function refreshPlatformHealth() {
 }
 refreshPlatformHealth();
 window.setInterval(refreshPlatformHealth, 15e3);
-function flattenMarkdownPanels() {
-  for (const [panelId, contentId] of [
-    ["report", "reportContent"],
-    ["reportAnalysis", "reportAnalysisContent"],
-  ]) {
-    const panel = $(panelId),
-      content = $(contentId),
-      field = content?.closest(".field");
-    if (panel && field && field.parentElement === panel)
-      field.replaceWith(content);
-  }
-}
-flattenMarkdownPanels();
-function compactCopyButton(buttonId, contentId) {
-  const button = $(buttonId),
-    content = $(contentId);
-  if (!button || !content) return;
-  let wrapper = content.parentElement;
-  if (!wrapper.classList.contains("markdown-copy-wrap")) {
-    wrapper = document.createElement("div");
-    wrapper.className = "markdown-copy-wrap";
-    content.replaceWith(wrapper);
-    wrapper.append(content);
-  }
-  button.classList.add("copy--glyph");
-  button.textContent = "⧉";
-  wrapper.append(button);
-}
-function compactReportCopyButtons() {
-  compactCopyButton("copyReport", "reportContent");
-  compactCopyButton("copyReportAnalysis", "reportAnalysisContent");
-}
-compactReportCopyButtons();
-function downloadLastExecutedDocument(endpoint, filenamePrefix) {
-  if (!lastExecutedRun)
-    return Promise.reject(Error("Geen uitgevoerde prompt beschikbaar."));
-  return fetch(endpoint + "?run_id=" + encodeURIComponent(lastExecutedRun))
-    .then((response) =>
-      response.ok
-        ? response.text()
-        : Promise.reject(Error("Download is niet beschikbaar.")),
-    )
-    .then((text) => {
-      if (!text) throw Error("Download is niet beschikbaar.");
-      const link = document.createElement("a"),
-        url = URL.createObjectURL(
-          new Blob([text], { type: "text/markdown;charset=utf-8" }),
-        ),
-        safeRun = String(lastExecutedRun).replace(/[^a-z0-9._-]+/gi, "-");
-      link.href = url;
-      link.download = filenamePrefix + "-" + safeRun + ".md";
-      link.hidden = true;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    });
-}
-function addDownloadButton(
-  panelId,
-  contentId,
-  buttonId,
-  filenamePrefix,
-  label,
-) {
-  const panel = $(panelId),
-    content = $(contentId);
-  if (!panel || !content || $(buttonId)) return;
-  const button = document.createElement("button");
-  button.className = "download download--glyph";
-  button.id = buttonId;
-  button.type = "button";
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.textContent = "⇩";
-  button.hidden = true;
-  button.addEventListener("click", () =>
-    downloadLastExecutedDocument(
-      panelId === "report"
-        ? "/api/report/last-executed"
-        : "/api/report-analysis/last-executed",
-      filenamePrefix,
-    ).catch(() => {
-      button.title = "Download is niet beschikbaar.";
-    }),
-  );
-  const wrapper = content.parentElement;
-  button.classList.add("download--glyph");
-  wrapper.append(button);
-}
-addDownloadButton(
-  "report",
-  "reportContent",
-  "downloadReport",
-  "engineering-report",
-  "Download rapport",
-);
-addDownloadButton(
-  "reportAnalysis",
-  "reportAnalysisContent",
-  "downloadReportAnalysis",
-  "ai-analyse",
-  "Download AI-analyse",
-);
-const originalCopyAvailable = copyAvailable;
-copyAvailable = (id, available) => {
-  originalCopyAvailable(id, available);
-  const downloads = {
-    copyReport: "downloadReport",
-    copyReportAnalysis: "downloadReportAnalysis",
-  };
-  if (downloads[id]) originalCopyAvailable(downloads[id], available);
-};
-function placeFinalStatusIndicator() {
-  const indicator = $("lastIndicator"),
-    status = $("lastFinalStatus");
-  if (indicator && status) status.before(indicator);
-}
-placeFinalStatusIndicator();
-function copyAvailable(id, available) {
-  const button = $(id);
-  if (button) button.hidden = !available;
-}
-function updateCopyAvailability() {
-  const unavailable = (value) =>
-    !value ||
-    value.startsWith("Open dit blok") ||
-    value.includes("is niet beschikbaar.") ||
-    value.startsWith("Er is geen AI-analyse");
-  copyAvailable(
-    "copyReport",
-    !unavailable($("reportContent")?.textContent?.trim()),
-  );
-  copyAvailable(
-    "copyReportAnalysis",
-    !unavailable($("reportAnalysisContent")?.textContent?.trim()),
-  );
-}
-copyAvailable("copyReport", false);
-copyAvailable("copyReportAnalysis", false);
-const reportWithCopyAvailability = report;
-report = () =>
-  reportWithCopyAvailability().then((value) => {
-    updateCopyAvailability();
-    return value;
-  });
-const analysisWithCopyAvailability = analysis;
-analysis = () =>
-  analysisWithCopyAvailability().then((value) => {
-    updateCopyAvailability();
-    return value;
-  });
-let copyAvailabilityRun, displayedAnalysisAvailable;
-function renderReportAvailability(x, snapshot) {
-  const run = x && typeof x === "object" ? x.last_executed_run || null : null;
-  if (Object.hasOwn(snapshot, "last_executed_report_analysis_available")) {
-    displayedAnalysisAvailable = Boolean(
-      snapshot.last_executed_report_analysis_available,
-    );
-    if (displayedAnalysisAvailable === false && run) {
-      $("reportAnalysisContent").textContent =
-        "Er is geen AI-analyse beschikbaar voor deze uitgevoerde prompt.";
-      copyAvailable("copyReportAnalysis", false);
-    }
-  }
-  if (run !== copyAvailabilityRun) {
-    copyAvailabilityRun = run;
-    copyAvailable("copyReport", false);
-    copyAvailable("copyReportAnalysis", false);
-  }
-}
-const analysisWithAvailability = analysis;
-analysis = () => {
-  if (displayedAnalysisAvailable === false) return Promise.resolve();
-  return analysisWithAvailability();
-};
 function arrangeCurrentRunCategory() {
   const current = $("currentRun"),
     summary = current?.querySelector(":scope>summary"),
@@ -2188,16 +1701,15 @@ function arrangeCurrentRunCategory() {
     heading.append(prompt);
   }
   heading.append(indicator);
-  let description = current.querySelector(
+  let description = summary.querySelector(
     ":scope>.current-run__category-description",
   );
   if (!description) {
     description = document.createElement("p");
     description.className = "current-run__category-description";
-    description.textContent =
-      "De actieve engineeringprompt, met actuele voortgang, uitvoeringstijd en uitvoeringscontext.";
-    summary.insertAdjacentElement("afterend", description);
+    summary.append(description);
   }
+  description.textContent = t("description.active_prompt");
 }
 function placeCurrentRunFirst() {
   const dashboard = $("engineering-dashboard-content"),
@@ -2219,51 +1731,6 @@ function durationText(seconds) {
     " sec"
   );
 }
-function executionTimeField(id, label, after) {
-  let field = $(id),
-    value = $(id + "Value");
-  if (!field) {
-    field = document.createElement("div");
-    value = document.createElement("span");
-    const fieldLabel = document.createElement("span");
-    field.className = "field";
-    field.id = id;
-    value.id = id + "Value";
-    fieldLabel.className = "label";
-    fieldLabel.textContent = label;
-    field.append(fieldLabel, value);
-    after.insertAdjacentElement("afterend", field);
-  }
-  return [field, value];
-}
-function lastExecutionTime(x) {
-  const agent = Number(x?.seconds),
-    total = Number(x?.total_seconds),
-    finishedAt = Date.parse(x?.finished_at || ""),
-    file = $("lastFile").closest(".field"),
-    [finishedField, finishedValue] = executionTimeField(
-      "lastExecutionFinishedAt",
-      "Uitgevoerd op",
-      file,
-    ),
-    [agentField, agentValue] = executionTimeField(
-      "lastExecutionTime",
-      "Codex CLI-uitvoeringstijd",
-      finishedField,
-    ),
-    [totalField, totalValue] = executionTimeField(
-      "lastTotalExecutionTime",
-      "Totale doorlooptijd",
-      agentField,
-    );
-  finishedField.hidden = !Number.isFinite(finishedAt);
-  agentField.hidden = !Number.isFinite(agent) || agent < 0;
-  totalField.hidden = !Number.isFinite(total) || total < 0;
-  if (!finishedField.hidden)
-    finishedValue.textContent = formatTime.format(new Date(finishedAt));
-  if (!agentField.hidden) agentValue.textContent = durationText(agent);
-  if (!totalField.hidden) totalValue.textContent = durationText(total);
-}
 function renderLegacyExecutionTelemetry(rows) {
   let panel = $("executionTelemetry"),
     body = $("executionTelemetryRows");
@@ -2279,27 +1746,18 @@ function renderLegacyExecutionTelemetry(rows) {
       head = document.createElement("thead"),
       headRow = document.createElement("tr"),
       tableBody = document.createElement("tbody");
-    title.textContent = "Execution Host-telemetrie";
-    summary.append(title);
+    title.textContent = t("telemetry.title");
     description.className = "category-description";
-    description.textContent =
-      "Operationele trends van de laatste zeven dagen. Telemetrie is geen repositorybewijs.";
+    description.textContent = t("telemetry.description");
     scroll.className = "telemetry-scroll";
     table.className = "telemetry-table";
-    table.setAttribute("aria-label", "Dagelijkse Execution Host-telemetrie");
+    table.setAttribute("aria-label", t("telemetry.table_label"));
     for (const label of [
-      "Dag",
-      "Prompts",
-      "Gem. AI-tijd",
-      "Gem. totaal",
-      "Gem. wachttijd",
-      "Input",
-      "Output",
-      "Totaal",
-      "Voltooid",
-      "Geblokkeerd",
-      "Mislukt",
-    ]) {
+      "telemetry.day", "telemetry.prompts", "telemetry.average_execution",
+      "telemetry.average_total", "telemetry.average_wait", "telemetry.input",
+      "telemetry.output", "telemetry.total", "telemetry.complete",
+      "telemetry.blocked", "telemetry.failed",
+    ].map((key) => t(key))) {
       const cell = document.createElement("th");
       cell.scope = "col";
       cell.textContent = label;
@@ -2309,7 +1767,8 @@ function renderLegacyExecutionTelemetry(rows) {
     tableBody.id = "executionTelemetryRows";
     table.append(head, tableBody);
     scroll.append(table);
-    panel.append(summary, description, scroll);
+    summary.append(title, description);
+    panel.append(summary, scroll);
     const rate = $("rateLimits");
     rate?.insertAdjacentElement("afterend", panel);
     body = tableBody;
@@ -2342,8 +1801,7 @@ function renderLegacyExecutionTelemetry(rows) {
       cell = document.createElement("td");
     cell.colSpan = 11;
     cell.className = "telemetry-empty";
-    cell.textContent =
-      "Nog geen voltooide Execution Host-telemetrie beschikbaar.";
+    cell.textContent = t("telemetry.empty");
     line.append(cell);
     body.append(line);
   }
@@ -2373,26 +1831,18 @@ function executionTelemetry(rows) {
       head = document.createElement("thead"),
       headRow = document.createElement("tr"),
       tableBody = document.createElement("tbody");
-    title.textContent = "Execution Host-telemetrie";
-    summary.append(title);
+    title.textContent = t("telemetry.title");
     description.className = "category-description";
-    description.textContent =
-      "Operationele trends van de laatste zeven dagen. Telemetrie is geen repositorybewijs.";
+    description.textContent = t("telemetry.description");
     scroll.className = "telemetry-scroll";
     table.className = "telemetry-table";
-    table.setAttribute("aria-label", "Dagelijkse Execution Host-telemetrie");
+    table.setAttribute("aria-label", t("telemetry.table_label"));
     for (const label of [
-      "Dag",
-      "Prompts",
-      "Gem. uitvoering",
-      "Gem. wachttijd",
-      "Input",
-      "Output",
-      "Totaal",
-      "Voltooid",
-      "Geblokkeerd",
-      "Mislukt",
-    ]) {
+      "telemetry.day", "telemetry.prompts", "telemetry.average_execution",
+      "telemetry.average_wait", "telemetry.input", "telemetry.output",
+      "telemetry.total", "telemetry.complete", "telemetry.blocked",
+      "telemetry.failed",
+    ].map((key) => t(key))) {
       const cell = document.createElement("th");
       cell.scope = "col";
       cell.textContent = label;
@@ -2402,7 +1852,8 @@ function executionTelemetry(rows) {
     tableBody.id = "executionTelemetryRows";
     table.append(head, tableBody);
     scroll.append(table);
-    panel.append(summary, description, scroll);
+    summary.append(title, description);
+    panel.append(summary, scroll);
     const rate = $("rateLimits");
     rate?.insertAdjacentElement("afterend", panel);
     body = tableBody;
@@ -2434,8 +1885,7 @@ function executionTelemetry(rows) {
       cell = document.createElement("td");
     cell.colSpan = 10;
     cell.className = "telemetry-empty";
-    cell.textContent =
-      "Nog geen voltooide Execution Host-telemetrie beschikbaar.";
+    cell.textContent = t("telemetry.empty");
     line.append(cell);
     body.append(line);
   }
@@ -2446,6 +1896,7 @@ executionTelemetry = (rows) => {
   arrangeOperationalCategories();
   addCategoryIcons();
 };
+window.executionTelemetry = executionTelemetry;
 function updateFavicon() {
   $("dashboardFavicon").href = "/assets/engineering-status-icon.svg";
 }
@@ -2454,11 +1905,6 @@ function renderDashboardTelemetry(snapshot) {
   executionTelemetry(snapshot.telemetry);
 }
 updateFavicon();
-function renderExecutionEvidence(snapshot) {
-  lastExecutionTime(snapshot.last_executed_execution);
-  lastRuntimeMetadata(snapshot.last_executed_runtime_metadata);
-  reviewerAgents(snapshot.last_executed_reviewer_agents);
-}
 const independentLogSortStates = {
   inbox: { key: "timestamp", direction: "desc" },
   dashboard: { key: "timestamp", direction: "desc" },
@@ -2487,78 +1933,23 @@ function updateIndependentLogSortHeaders() {
     });
   });
 }
-function renderComponentLogs() {
-  const needle = $("logFilter").value.trim().toLocaleLowerCase("nl-NL"),
-    level = $("logLevelFilter").value;
-  for (const component of ["inbox", "dashboard"]) {
-    const state = independentLogSortStates[component],
-      rows = componentLogEntries[component]
-        .filter((entry) => !level || entry.level === level)
-        .filter(
-          (entry) =>
-            !needle ||
-            Object.values(entry)
-              .join(" ")
-              .toLocaleLowerCase("nl-NL")
-              .includes(needle),
-        )
-        .sort((left, right) => {
-          const first = logValue(left, state.key),
-            second = logValue(right, state.key),
-            result =
-              typeof first === "number" && typeof second === "number"
-                ? first - second
-                : String(first).localeCompare(String(second), "nl");
-          return state.direction === "asc" ? result : -result;
-        }),
-      body = $(component + "ComponentLog");
-    body.replaceChildren();
-    if (!rows.length) {
-      const cell = document.createElement("td"),
-        row = document.createElement("tr");
-      cell.className = "log-empty";
-      cell.colSpan = 6;
-      cell.textContent = "Geen logregels voor deze selectie.";
-      row.append(cell);
-      body.append(row);
-      continue;
-    }
-    for (const entry of rows) {
-      const row = document.createElement("tr");
-      for (const [name, value] of [
-        ["log-line-number", entry.line],
-        ["", logTimestampText(entry.timestamp)],
-        [
-          "log-level log-level--" +
-            entry.level.toLocaleLowerCase("nl-NL").replaceAll(" ", "-"),
-          entry.level,
-        ],
-        ["", entry.event],
-        ["", entry.runId || "—"],
-        ["", entry.details || "—"],
-      ]) {
-        const cell = document.createElement("td");
-        cell.className = name;
-        cell.textContent = value;
-        row.append(cell);
-      }
-      body.append(row);
-    }
-  }
-  updateIndependentLogSortHeaders();
-}
 function setIndependentLogSort(component, key) {
   const state = independentLogSortStates[component];
   independentLogSortStates[component] =
     state.key === key
       ? { key: key, direction: state.direction === "asc" ? "desc" : "asc" }
       : { key: key, direction: key === "timestamp" ? "desc" : "asc" };
+  independentLogPageStates[component] = 1;
   renderComponentLogs();
 }
 document.querySelectorAll(".log-table").forEach((table) => {
   const component = logComponentForTable(table);
-  table.querySelectorAll("th[data-sort-key]").forEach((header) => {
-    const key = header.dataset.sortKey;
+  const keys = ["line", "timestamp", "level", "event", "runId", "details"];
+  table.querySelectorAll("th").forEach((header, index) => {
+    const key = keys[index];
+    header.classList.add("log-sortable");
+    header.dataset.sortKey = key;
+    header.tabIndex = 0;
     header.addEventListener("click", () =>
       setIndependentLogSort(component, key),
     );
@@ -2574,18 +1965,17 @@ updateIndependentLogSortHeaders();
 const LOG_PAGE_SIZE = 50,
   independentLogPageStates = { inbox: 1, dashboard: 1 };
 function filteredComponentLogEntries(component) {
-  const needle = $("logFilter").value.trim().toLocaleLowerCase("nl-NL"),
+  const needle = locale.lower($("logFilter").value.trim()),
     level = $("logLevelFilter").value,
+    events = new Set([...$("logEventFilter").selectedOptions].map((option) => option.value)),
     state = independentLogSortStates[component];
   return componentLogEntries[component]
     .filter((entry) => !level || entry.level === level)
+    .filter((entry) => !events.size || events.has(String(entry.event || "")))
     .filter(
       (entry) =>
         !needle ||
-        Object.values(entry)
-          .join(" ")
-          .toLocaleLowerCase("nl-NL")
-          .includes(needle),
+        locale.lower(Object.values(entry).join(" ")).includes(needle),
     )
     .sort((left, right) => {
       const first = logValue(left, state.key),
@@ -2593,9 +1983,19 @@ function filteredComponentLogEntries(component) {
         result =
           typeof first === "number" && typeof second === "number"
             ? first - second
-            : String(first).localeCompare(String(second), "nl");
+            : locale.compare(first, second);
       return state.direction === "asc" ? result : -result;
     });
+}
+function updateLogValueFilters() {
+  const entries = [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
+  for (const [id, key] of [["logEventFilter", "event"]]) {
+    const select = $(id), selected = new Set([...select.selectedOptions].map((option) => option.value));
+    select.replaceChildren();
+    [...new Set(entries.map((entry) => String(entry[key] || "")).filter(Boolean))].sort((a, b) => locale.compare(a, b)).forEach((value) => {
+      const option = new Option(value, value, false, selected.has(value)); select.add(option);
+    });
+  }
 }
 function renderLogPagination(component, total, pageCount) {
   const navigation = $(component + "LogPagination");
@@ -2610,11 +2010,11 @@ function renderLogPagination(component, total, pageCount) {
   independentLogPageStates[component] = page;
   summary.className = "log-pagination__summary";
   summary.textContent = total
-    ? "Pagina " + page + " van " + pageCount + " · " + total + " regels"
-    : "Geen logregels";
+    ? t("logs.page", { page, pages: pageCount, count: total })
+    : t("logs.no_entries");
   previous.type = next.type = "button";
-  previous.textContent = "Vorige";
-  next.textContent = "Volgende";
+  previous.textContent = t("history.previous");
+  next.textContent = t("history.next");
   previous.disabled = page <= 1;
   next.disabled = page >= pageCount;
   previous.addEventListener("click", () => {
@@ -2627,7 +2027,9 @@ function renderLogPagination(component, total, pageCount) {
   });
   navigation.append(summary, previous, next);
 }
-function renderPaginatedComponentLogs() {
+function renderComponentLogs() {
+  localizeLogControls();
+  updateLogValueFilters();
   for (const component of ["inbox", "dashboard"]) {
     const rows = filteredComponentLogEntries(component),
       body = $(component + "ComponentLog"),
@@ -2644,7 +2046,9 @@ function renderPaginatedComponentLogs() {
         row = document.createElement("tr");
       cell.className = "log-empty";
       cell.colSpan = 6;
-      cell.textContent = "Geen logregels voor deze selectie.";
+      cell.textContent = componentLogEntries[component].length
+        ? t("logs.empty")
+        : t("logs.not_available");
       row.append(cell);
       body.append(row);
     } else
@@ -2655,7 +2059,7 @@ function renderPaginatedComponentLogs() {
           ["", logTimestampText(entry.timestamp)],
           [
             "log-level log-level--" +
-              entry.level.toLocaleLowerCase("nl-NL").replaceAll(" ", "-"),
+              locale.lower(entry.level).replaceAll(" ", "-"),
             entry.level,
           ],
           ["", entry.event],
@@ -2673,14 +2077,27 @@ function renderPaginatedComponentLogs() {
   }
   updateIndependentLogSortHeaders();
 }
-const setIndependentLogSortWithPagination = setIndependentLogSort;
-setIndependentLogSort = (component, key) => {
-  independentLogPageStates[component] = 1;
-  setIndependentLogSortWithPagination(component, key);
-  renderPaginatedComponentLogs();
-};
-const renderComponentLogsWithPagination = renderComponentLogs;
-renderComponentLogs = () => renderPaginatedComponentLogs();
+for (const [id, label] of [["logEventFilter", t("table.event")]]) {
+  const control = document.createElement("label"), select = document.createElement("select");
+  select.id = id; select.multiple = true; select.setAttribute("aria-label", label);
+  control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
+  select.addEventListener("change", () => { independentLogPageStates.inbox = independentLogPageStates.dashboard = 1; renderComponentLogs(); });
+}
+const resetLogFiltersButton = document.createElement("button");
+resetLogFiltersButton.className = "reset-log-filters";
+resetLogFiltersButton.type = "button";
+resetLogFiltersButton.textContent = "↺";
+const resetLogFiltersLabel = t("action.reset_log_filters");
+resetLogFiltersButton.title = resetLogFiltersLabel;
+resetLogFiltersButton.setAttribute("aria-label", resetLogFiltersLabel);
+resetLogFiltersButton.addEventListener("click", () => {
+  $("logFilter").value = "";
+  $("logLevelFilter").value = "";
+  [...$("logEventFilter").options].forEach((option) => { option.selected = false; });
+  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+  renderComponentLogs();
+});
+$("componentLogControls").append(resetLogFiltersButton);
 $("logFilter").addEventListener("input", () => {
   independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
   renderComponentLogs();
@@ -2692,14 +2109,11 @@ $("logLevelFilter").addEventListener("change", () => {
 renderComponentLogs();
 function clearComponentLog(component, button) {
   const name =
-    component === "inbox" ? "Engineering Execution Host" : "Statusdashboard";
+    component === "inbox" ? t("component.execution_host") : t("logs.status_dashboard");
   confirmDashboardAction(
-    "Logs wissen",
-    "Wis de applicatielogs van " +
-      name +
-      "? Dit kan niet ongedaan worden gemaakt.",
-    "Logs wissen",
-    "#f0b66a",
+    t("action.clear_logs"),
+    t("logs.clear_description", { component: name }),
+    t("action.clear_logs"),
   ).then(async (confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
@@ -2714,7 +2128,7 @@ function clearComponentLog(component, button) {
       );
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw Error(payload.error || "Logs wissen is niet gelukt.");
+        throw Error(payload.error || t("logs.clear_failed"));
       }
       componentLogEntries[component] = structuredLogEntries(
         await fetch("/api/logs/" + encodeURIComponent(component)).then(
@@ -2724,7 +2138,7 @@ function clearComponentLog(component, button) {
       componentLogVersion = "";
       renderComponentLogs();
     } catch {
-      button.title = "Logs wissen is niet gelukt.";
+      button.title = t("logs.clear_failed");
     } finally {
       button.disabled = false;
     }
@@ -2740,14 +2154,14 @@ document
 function downloadComponentLog(component) {
   const names = { inbox: "inbox-watcher", dashboard: "statusdashboard" },
     name = names[component];
-  if (!name) return Promise.reject(Error("Onbekend logonderdeel."));
+  if (!name) return Promise.reject(Error(t("logs.unknown_component")));
   return fetch("/api/logs/" + encodeURIComponent(component), {
     cache: "no-store",
   })
     .then((response) =>
       response.ok
         ? response.text()
-        : Promise.reject(Error("Logdownload is niet beschikbaar.")),
+        : Promise.reject(Error(t("logs.download_unavailable"))),
     )
     .then((text) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-"),
@@ -2768,19 +2182,21 @@ function downloadComponentLog(component) {
 document.querySelectorAll(".component-log-download").forEach((button) =>
   button.addEventListener("click", () =>
     downloadComponentLog(button.dataset.component).catch(() => {
-      button.title = "Logdownload is niet beschikbaar.";
+      button.title = t("logs.download_unavailable");
     }),
   ),
 );
 document.querySelectorAll(".clear-component-log").forEach((button) => {
   button.classList.add("clear-component-log--glyph");
   button.textContent = "⌫";
-  button.title = "Wis log";
-  button.setAttribute("aria-label", "Wis log");
+  button.title = t("action.clear_logs");
+  button.setAttribute("aria-label", t("action.clear_logs"));
 });
 let pullRefreshStart = null,
   pullRefreshDistance = 0;
 const pullRefresh = $("pullRefresh");
+const dashboardScrollRegion = document.querySelector(".dashboard-scroll-region");
+const pullRefreshActivationHeight = 40;
 function updatePullRefresh(distance) {
   pullRefreshDistance = Math.max(0, Math.min(distance, 112));
   const ready = pullRefreshDistance >= 72;
@@ -2794,14 +2210,21 @@ function updatePullRefresh(distance) {
   pullRefresh.setAttribute("aria-hidden", String(pullRefreshDistance <= 8));
 }
 function startPullRefresh(event) {
-  if (window.scrollY > 0 || event.touches.length !== 1) return;
+  if (
+    event.touches.length !== 1 ||
+    (dashboardScrollRegion && dashboardScrollRegion.scrollTop > 0)
+  )
+    return;
   const target = event.target;
   if (
     target instanceof Element &&
     target.closest("input,textarea,select,button,[contenteditable=true]")
   )
     return;
-  pullRefreshStart = event.touches[0].clientY;
+  const touch = event.touches[0];
+  const scrollRegionTop = dashboardScrollRegion?.getBoundingClientRect().top ?? 0;
+  if (touch.clientY > scrollRegionTop + pullRefreshActivationHeight) return;
+  pullRefreshStart = touch.clientY;
   pullRefreshDistance = 0;
 }
 function movePullRefresh(event) {
@@ -2819,7 +2242,7 @@ function endPullRefresh() {
   pullRefreshStart = null;
   updatePullRefresh(0);
   if (refresh) {
-    pullRefresh.textContent = "Dashboard vernieuwen…";
+    pullRefresh.textContent = t("refresh.refreshing");
     pullRefresh.classList.add("pull-refresh--visible");
     pullRefresh.setAttribute("aria-hidden", "false");
     window.location.reload();
@@ -2839,7 +2262,10 @@ function hideDashboardSplash() {
   }, 260);
 }
 setTimeout(hideDashboardSplash, 8e3);
-const PROMPT_HISTORY_PAGE_SIZE = 25;
+// Keep one predictable, scan-friendly history page: ten executions are shown
+// at once and the next set is reached through the paginator rather than an
+// inner vertical scrollbar.
+const PROMPT_HISTORY_PAGE_SIZE = 10;
 let promptHistoryEntries = [],
   promptHistoryPage = 1,
   promptHistorySort = { key: "executed_at", direction: "desc" };
@@ -2852,16 +2278,15 @@ function promptHistoryValue(entry, key) {
   return String(value || "");
 }
 function filteredPromptHistory() {
-  const needle = $("promptHistoryFilter")
-    .value.trim()
-    .toLocaleLowerCase("nl-NL");
+  const needle = locale.lower($("promptHistoryFilter").value.trim());
   return promptHistoryEntries
     .filter(
       (entry) =>
         !needle ||
-        Object.values(entry)
-          .join(" ")
-          .toLocaleLowerCase("nl-NL")
+        locale
+          .lower(
+            [...Object.values(entry), promptHistoryStatus(entry.status)].join(" "),
+          )
           .includes(needle),
     )
     .sort((left, right) => {
@@ -2870,16 +2295,12 @@ function filteredPromptHistory() {
         result =
           typeof first === "number" && typeof second === "number"
             ? first - second
-            : String(first).localeCompare(String(second), "nl");
+            : locale.compare(first, second);
       return promptHistorySort.direction === "asc" ? result : -result;
     });
 }
 function promptHistoryStatus(value) {
-  return (
-    { COMPLETE: "Voltooid", BLOCKED: "Geblokkeerd", FAILED: "Mislukt" }[
-      value
-    ] || "Onbekend"
-  );
+  return t("status." + String(value || "unknown").toLowerCase());
 }
 function updatePromptHistoryHeaders() {
   document
@@ -2904,7 +2325,16 @@ function updatePromptHistoryHeaders() {
         : "↕";
     });
 }
+function repairPromptHistoryHeader() {
+  // A dashboard can briefly retain its HTML shell while its script has already
+  // updated. Remove the retired commit column so that those mixed revisions
+  // cannot offset the prompt-history actions by one column.
+  document
+    .querySelectorAll('#promptHistory th[data-history-sort-key="git_commit"]')
+    .forEach((header) => header.remove());
+}
 function renderPromptHistory() {
+  repairPromptHistoryHeader();
   const rows = filteredPromptHistory(),
     body = $("promptHistoryRows"),
     navigation = $("promptHistoryPagination"),
@@ -2919,8 +2349,8 @@ function renderPromptHistory() {
     const row = document.createElement("tr"),
       cell = document.createElement("td");
     cell.className = "log-empty";
-    cell.colSpan = 6;
-    cell.textContent = "Geen prompts in de geschiedenis voor deze selectie.";
+    cell.colSpan = 8;
+    cell.textContent = t("history.no_prompts");
     row.append(cell);
     body.append(row);
   } else
@@ -2929,54 +2359,108 @@ function renderPromptHistory() {
         status = document.createElement("td"),
         title = document.createElement("td"),
         executed = document.createElement("td"),
-        commit = document.createElement("td"),
         report = document.createElement("td"),
+        analysis = document.createElement("td"),
+        chat = document.createElement("td"),
         action = document.createElement("td"),
+        details = document.createElement("td"),
         timestamp = Date.parse(String(entry.executed_at || ""));
+      row.className = "prompt-history-row";
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", t("history.open_details", { title: entry.title || entry.run_id }));
+      const openDetails = (event) => {
+        if (event?.target?.closest("button,a")) return;
+        openPromptHistoryDetail(entry);
+      };
+      row.addEventListener("click", openDetails);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDetails(event);
+        }
+      });
       action.className = "prompt-history-actions";
       status.className =
         "prompt-history-status prompt-history-status--" +
-        String(entry.status || "").toLocaleLowerCase("nl-NL");
+        locale.lower(String(entry.status || ""));
       status.textContent = promptHistoryStatus(entry.status);
       title.textContent = String(
-        entry.title || entry.run_id || "Prompttitel niet beschikbaar",
+        entry.title || entry.run_id || t("retry.unavailable_title"),
       );
       executed.textContent = Number.isFinite(timestamp)
-        ? formatTime.format(new Date(timestamp))
-        : String(entry.executed_at || "Tijdstip niet beschikbaar");
-      commit.textContent = entry.git_commit || "—";
+        ? locale.dateTime(new Date(timestamp))
+        : String(entry.executed_at || t("format.timestamp_unavailable"));
       if (entry.report_available && entry.run_id) {
-        const link = document.createElement("a");
-        link.className = "prompt-history-report";
-        link.href =
-          "/api/prompt-history/" + encodeURIComponent(entry.run_id) + "/report";
-        link.download = "engineering-report-" + entry.run_id + ".md";
-        link.title = "Download engineeringrapport";
-        link.setAttribute(
-          "aria-label",
-          "Download engineeringrapport voor " + title.textContent,
-        );
-        link.textContent = "⇩";
-        report.append(link);
+        const view = document.createElement("button");
+        view.className = "prompt-history-report";
+        view.type = "button";
+        view.title = t("history.view_report", { title: title.textContent });
+        view.setAttribute("aria-label", view.title);
+        view.textContent = "▤";
+        view.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPromptHistoryDocument(entry.run_id, title.textContent, "report");
+        });
+        report.append(view);
       } else report.textContent = "—";
+      if (entry.analysis_available && entry.run_id) {
+        const view = document.createElement("button");
+        view.className = "prompt-history-analysis";
+        view.type = "button";
+        view.title = t("history.view_analysis", { title: title.textContent });
+        view.setAttribute("aria-label", view.title);
+        view.textContent = "✦";
+        view.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPromptHistoryDocument(entry.run_id, title.textContent, "analysis");
+        });
+        analysis.append(view);
+      } else analysis.textContent = "—";
+      if (entry.run_id) {
+        const button = document.createElement("button");
+        button.className = "prompt-history-chat";
+        button.type = "button";
+        button.title = t("history.open_chat", { title: title.textContent });
+        button.setAttribute("aria-label", button.title);
+        button.textContent = "💬";
+        button.addEventListener("click", () => openPromptHistoryChat(entry));
+        chat.append(button);
+      } else chat.textContent = "—";
       if (entry.status === "BLOCKED" && entry.run_id) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "predecessor-retry execution-history-action";
-        retry.textContent = "Retry Execution";
+        retry.textContent = t("action.retry_execution");
         retry.addEventListener("click", () => submitExecutionRetry(entry));
         action.append(retry);
       }
-      if (["BLOCKED", "FAILED", "COMPLETE"].includes(entry.status) && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
+      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
         const dismiss = document.createElement("button");
         dismiss.type = "button";
         dismiss.className = "predecessor-retry execution-history-action";
-        dismiss.textContent = "Dismiss Execution";
+        dismiss.textContent = t("action.dismiss_execution");
         dismiss.addEventListener("click", () => dismissExecution(entry));
         action.append(dismiss);
       }
       if (!action.childElementCount) action.textContent = "—";
-      row.append(status, title, executed, commit, report, action);
+      if (entry.run_id) {
+        const button = document.createElement("button");
+        button.className = "prompt-history-details";
+        button.type = "button";
+        button.title = t("history.open_details", { title: title.textContent });
+        button.setAttribute("aria-label", button.title);
+        button.textContent = "i";
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPromptHistoryDetail(entry);
+        });
+        details.append(button);
+      } else details.textContent = "—";
+      row.append(status, title, executed, report, analysis, chat, action, details);
       body.append(row);
     }
   navigation.replaceChildren();
@@ -2985,17 +2469,11 @@ function renderPromptHistory() {
     next = document.createElement("button");
   summary.className = "log-pagination__summary";
   summary.textContent = rows.length
-    ? "Pagina " +
-      promptHistoryPage +
-      " van " +
-      pageCount +
-      " · " +
-      rows.length +
-      " prompts"
-    : "Geen prompts";
+    ? t("history.page", { page: promptHistoryPage, pages: pageCount, count: rows.length })
+    : t("history.no_results");
   previous.type = next.type = "button";
-  previous.textContent = "Vorige";
-  next.textContent = "Volgende";
+  previous.textContent = t("history.previous");
+  next.textContent = t("history.next");
   previous.disabled = promptHistoryPage <= 1;
   next.disabled = promptHistoryPage >= pageCount;
   previous.addEventListener("click", () => {
@@ -3009,17 +2487,54 @@ function renderPromptHistory() {
   navigation.append(summary, previous, next);
   updatePromptHistoryHeaders();
 }
-function refreshPromptHistory() {
-  return fetch("/api/prompt-history")
+let promptHistoryRefreshRetry = null;
+function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
+  return fetch("/api/prompt-history", { cache: "no-store" })
     .then((response) => (response.ok ? response.json() : Promise.reject()))
     .then((payload) => {
-      promptHistoryEntries = Array.isArray(payload?.runs) ? payload.runs : [];
+      if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
+      promptHistoryEntries = payload.runs;
       renderPromptHistory();
+      // The history index can be briefly unavailable while the watcher commits
+      // a terminal run. Retry one empty initial projection so a transient
+      // SQLite lock never leaves the visible history blank until a reload.
+      if (!promptHistoryEntries.length && retryEmptyOnce) {
+        clearTimeout(promptHistoryRefreshRetry);
+        promptHistoryRefreshRetry = setTimeout(() => {
+          void refreshPromptHistory({ retryEmptyOnce: false });
+        }, 1_000);
+      }
     })
     .catch(() => {
       promptHistoryEntries = [];
       renderPromptHistory();
+      if (retryEmptyOnce) {
+        clearTimeout(promptHistoryRefreshRetry);
+        promptHistoryRefreshRetry = setTimeout(() => {
+          void refreshPromptHistory({ retryEmptyOnce: false });
+        }, 1_000);
+      }
     });
+}
+async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
+  // The operator just received a successful acknowledgement. Reflect it in
+  // the visible history immediately, then reconcile from storage. This keeps
+  // a slow status snapshot from leaving a stale dismiss action on screen.
+  if (dismissedRunId) {
+    promptHistoryEntries = promptHistoryEntries.map((entry) =>
+      entry.run_id === dismissedRunId ? { ...entry, dismissed: true } : entry,
+    );
+    renderPromptHistory();
+  }
+  const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" })
+    .then((response) => (response.ok ? response.json() : null))
+    .catch(() => null);
+  if (snapshot && typeof snapshot.status === "object") {
+    dashboardStatusStore.update(snapshot.status, snapshot);
+    humanize();
+    checkBuild(snapshot.build_commit);
+  }
+  await refreshPromptHistory();
 }
 $("promptHistoryFilter").addEventListener("input", () => {
   promptHistoryPage = 1;
@@ -3046,63 +2561,6 @@ document
     });
   });
 refreshPromptHistory();
-const parseStructuredLogEntries = structuredLogEntries;
-structuredLogEntries = (text) => {
-  const normalized = String(text ?? "").trim();
-  return !normalized || normalized === "Nog geen applicatielog beschikbaar."
-    ? []
-    : parseStructuredLogEntries(normalized);
-};
-renderPaginatedComponentLogs = () => {
-  for (const component of ["inbox", "dashboard"]) {
-    const entries = componentLogEntries[component],
-      rows = filteredComponentLogEntries(component),
-      body = $(component + "ComponentLog"),
-      pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
-      page = Math.min(
-        Math.max(1, independentLogPageStates[component]),
-        pageCount,
-      ),
-      visible = rows.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
-    independentLogPageStates[component] = page;
-    body.replaceChildren();
-    if (!visible.length) {
-      const cell = document.createElement("td"),
-        row = document.createElement("tr");
-      cell.className = "log-empty";
-      cell.colSpan = 6;
-      cell.textContent = entries.length
-        ? "Geen logregels voor deze selectie."
-        : "Nog geen applicatielog beschikbaar.";
-      row.append(cell);
-      body.append(row);
-    } else
-      for (const entry of visible) {
-        const row = document.createElement("tr");
-        for (const [name, value] of [
-          ["log-line-number", entry.line],
-          ["", logTimestampText(entry.timestamp)],
-          [
-            "log-level log-level--" +
-              entry.level.toLocaleLowerCase("nl-NL").replaceAll(" ", "-"),
-            entry.level,
-          ],
-          ["", entry.event],
-          ["", entry.runId || "—"],
-          ["", entry.details || "—"],
-        ]) {
-          const cell = document.createElement("td");
-          cell.className = name;
-          cell.textContent = value;
-          row.append(cell);
-        }
-        body.append(row);
-      }
-    renderLogPagination(component, rows.length, pageCount);
-  }
-  updateIndependentLogSortHeaders();
-};
-renderComponentLogs();
 const DASHBOARD_CLIENT_STATE_KEY = "engineering-dashboard-client-state-v1",
   ALL_SECTIONS_STATE_KEY = "engineering-dashboard-all-sections-open-v1";
 function loadDashboardClientState() {
@@ -3116,6 +2574,93 @@ function loadDashboardClientState() {
   }
 }
 const dashboardClientState = loadDashboardClientState();
+const dashboardLocaleSelector = $("dashboardLocale");
+function applyDashboardLocale() {
+  document.documentElement.lang = dashboardLocale;
+  document.title = t("dashboard.title");
+  dashboardLocaleSelector.value = dashboardLocale;
+  localizeTemplateBindings();
+  const replacements = [
+    [".skip-link", "header.skip"],
+    [".theme-toggle__label", "header.theme"],
+    [".section-state-toggle__label", "header.expand"],
+    [".auto-refresh-toggle span", "header.auto_refresh"],
+    [".dashboard-locale span", "language.label"],
+    ["#dashboardTitle", "dashboard.title"],
+    ["#dashboardSplashTitle", "dashboard.title"],
+    ["#dashboardSplashLoading", "dashboard.loading"],
+    ["#platformVersionLabel", "footer.platform_version"],
+    ["#confirmationModalCancel", "action.cancel"],
+    ["#confirmationModalConfirm", "action.confirm"],
+    ["#predecessorRetry", "action.resume_queue"],
+    ["#queueItems > summary > strong", "section.inbox_queue"],
+    ["#promptHistory > summary > strong", "section.prompt_history"],
+    ["#currentRun > summary .label", "section.active_prompt"],
+    ["#rateLimits > summary > strong", "section.remaining_usage"],
+    ["#platformHealth > summary > strong", "section.platform_components"],
+    ["#componentLogs > summary > strong", "section.logs"],
+    ["#technicalDetails > summary > strong", "section.technical_details"],
+    ["#technicalPullRequestsTitle", "technical.pull_requests"],
+    ["#technicalImplementationLabel", "technical.implementation"],
+    ["#technicalFinalizationLabel", "technical.finalization"],
+    ["#technicalRepositoryTitle", "technical.repository"],
+    ["#technicalRepositoryStateLabel", "technical.repository_status"],
+    ["#technicalWorkspaceStateLabel", "technical.workspace_status"],
+    ["#technicalHostPreflightTitle", "technical.host_preflight"],
+    ["#technicalExecutionHostLabel", "technical.execution_host"],
+    ["#technicalExecutionHostVersionLabel", "technical.execution_host_version"],
+    ["#technicalRuntimeLabel", "technical.runtime"],
+    ["#technicalRuntimePromptTransportLabel", "technical.runtime_prompt_transport"],
+    ["#technicalHostStatusLabel", "technical.host_status"],
+    ["#technicalLastCheckLabel", "technical.last_check"],
+    ["#technicalWorkspacePreflightStatusLabel", "technical.workspace_status"],
+    ["#technicalLastWorkspaceCheckLabel", "technical.last_workspace_check"],
+    ["#technicalCapabilityStatusLabel", "technical.capability_status"],
+    ["#technicalRecoverabilityLabel", "technical.recoverability"],
+    ["#technicalFailureOriginLabel", "technical.failure_origin"],
+    ["#technicalRecommendationLabel", "technical.recommended_action"],
+    ["#technicalDiagnosticsTitle", "technical.diagnostics"],
+    ["#workspaceCard > summary > strong", "section.workspace"],
+    ["#promptHistoryAnalysisHeader", "table.analysis"],
+    ["#promptHistoryChatHeader", "table.chat"],
+  ];
+  replacements.forEach(([selector, key]) => {
+    const element = document.querySelector(selector);
+    if (element) element.textContent = t(key);
+  });
+  const workspaceKeys = [
+    "workspace.name", "ui.workspace_location", "detail.tracked_files",
+    "workspace.database", "workspace.database_size", "workspace.schema_version",
+  ];
+  document.querySelectorAll("#workspaceCard .field .label").forEach((label, index) => {
+    if (workspaceKeys[index]) label.textContent = t(workspaceKeys[index]);
+  });
+  document.querySelectorAll("#dashboardLocale option").forEach((option) => {
+    option.textContent = t("language." + option.value);
+  });
+  $("themeToggle").setAttribute("aria-label", t("header.enable_light"));
+  $("toggleAllSections").setAttribute("aria-label", t("header.open_all"));
+  $("dashboardSplashVersion").textContent = t("dashboard.platform_version", {
+    version: $("dashboardSplashVersion").dataset.platformVersion,
+  });
+  setUpdateMode(updateModeKey);
+  providerNeutralLabels();
+  localizeTechnicalDetails();
+  localizeLogControls();
+  localizePromptHistoryTable();
+  renderPromptHistory();
+  addCategoryIcons();
+  addCategoryDescriptions();
+  arrangeCurrentRunCategory();
+}
+dashboardLocaleSelector.addEventListener("change", () => {
+  dashboardLocale = normalizeLocale(dashboardLocaleSelector.value);
+  locale = createLocaleService(dashboardLocale);
+  dashboardClientState.locale = dashboardLocale;
+  saveDashboardClientState();
+  window.location.reload();
+});
+applyDashboardLocale();
 function loadAllSectionsIntent() {
   try {
     const stored = localStorage.getItem(ALL_SECTIONS_STATE_KEY);
@@ -3165,9 +2710,7 @@ const autoRefreshToggle = $("autoRefresh"),
     "currentRun",
     "rateLimits",
     "executionTelemetry",
-    "lastExecutionGroup",
     "platformHealth",
-    "codexChat",
     "technicalDetails",
     "componentLogs",
   ];
@@ -3192,9 +2735,9 @@ function updateAllSectionsToggle() {
   allSectionsToggle.setAttribute("aria-checked", String(allOpen));
   allSectionsToggle.setAttribute(
     "aria-label",
-    allOpen ? "Alle secties sluiten" : "Alle secties openen",
+    allOpen ? t("sections.close_all") : t("sections.open_all"),
   );
-  allSectionsToggle.title = allOpen ? "Alles sluiten" : "Alles openen";
+  allSectionsToggle.title = allOpen ? t("sections.close") : t("sections.open");
 }
 function setAllSections(open) {
   const details = { ...(dashboardClientState.details || {}) };
@@ -3214,9 +2757,7 @@ autoRefreshToggle.checked = dashboardClientState.autoRefresh !== false;
 autoRefreshToggle.addEventListener("change", () => {
   dashboardClientState.autoRefresh = autoRefreshToggle.checked;
   saveDashboardClientState();
-  $("updateMode").textContent = autoRefreshToggle.checked
-    ? "Serverpush: verbonden"
-    : "Automatisch vernieuwen is uit";
+  setUpdateMode(autoRefreshToggle.checked ? "refresh.connected" : "refresh.off");
 });
 document.addEventListener(
   "toggle",
@@ -3346,9 +2887,10 @@ function applyDashboardTheme(theme) {
   themeToggle.setAttribute("aria-checked", String(light));
   themeToggle.setAttribute(
     "aria-label",
-    light ? "Donkere modus inschakelen" : "Lichte modus inschakelen",
+    light ? t("theme.enable_dark") : t("theme.enable_light"),
   );
-  themeToggle.title = light ? "Donkere modus" : "Lichte modus";
+  themeToggle.title = light ? t("theme.dark") : t("theme.light");
+  applyThemeModeAttributes();
 }
 applyDashboardTheme(dashboardClientState.theme === "light" ? "light" : "dark");
 themeToggle.addEventListener("click", () => {
@@ -3367,11 +2909,6 @@ function applyThemeModeAttributes(root = document.body) {
     if (!["SCRIPT", "STYLE"].includes(element.tagName))
       element.dataset.themeMode = theme;
 }
-const applyDashboardThemeWithElementAttributes = applyDashboardTheme;
-applyDashboardTheme = (theme) => {
-  applyDashboardThemeWithElementAttributes(theme);
-  applyThemeModeAttributes();
-};
 applyThemeModeAttributes();
 new MutationObserver((records) => {
   for (const record of records)
@@ -3379,7 +2916,7 @@ new MutationObserver((records) => {
       if (node instanceof Element) applyThemeModeAttributes(node);
 }).observe(document.body, { childList: true, subtree: true });
 $("rateLimitProvider")?.previousElementSibling?.replaceChildren(
-  "Huidige AI-provider",
+  t("ui.current_ai_provider"),
 );
 let latestPlatformHealthPayload = null;
 const restartingPlatformComponents = new Set();
@@ -3397,7 +2934,7 @@ renderPlatformHealth = (payload) => {
                     ...component,
                     healthy: false,
                     state: "restarting",
-                    detail: "Herstart wordt uitgevoerd",
+                    detail: t("ui.component_restart_started"),
                   },
                 ]
               : [key, component],
@@ -3417,15 +2954,13 @@ async function confirmComponentRestart(component) {
       if (response.ok && payload?.components?.[component]?.healthy) {
         restartingPlatformComponents.delete(component);
         renderPlatformHealth(payload);
-        $("componentModalStatus").textContent =
-          "Component is opnieuw beschikbaar.";
+        $("componentModalStatus").textContent = t("ui.component_restart_available");
         return;
       }
       renderPlatformHealth(payload);
     } catch {}
   }
-  $("componentModalStatus").textContent =
-    "De component komt nog niet gezond terug; controle loopt door.";
+  $("componentModalStatus").textContent = t("ui.component_restart_waiting");
 }
 const formatComponentUptimeForMeasuredValues = formatComponentUptime;
 formatComponentUptime = (value) => {
@@ -3441,55 +2976,16 @@ function recordUserAction(action) {
     body: JSON.stringify({ action: action }),
   }).catch(() => undefined);
 }
-function downloadLegacyLastExecutedDocument(endpoint, filenamePrefix) {
-  if (!lastExecutedRun)
-    return Promise.reject(Error("Geen uitgevoerde prompt beschikbaar."));
-  const separator = endpoint.includes("?") ? "&" : "?";
-  return fetch(
-    endpoint +
-      separator +
-      "run_id=" +
-      encodeURIComponent(lastExecutedRun) +
-      "&audit=download",
-  )
-    .then((response) =>
-      response.ok
-        ? response.text()
-        : Promise.reject(Error("Download is niet beschikbaar.")),
-    )
-    .then((text) => {
-      if (!text) throw Error("Download is niet beschikbaar.");
-      const link = document.createElement("a"),
-        url = URL.createObjectURL(
-          new Blob([text], { type: "text/markdown;charset=utf-8" }),
-        ),
-        safeRun = String(lastExecutedRun).replace(/[^a-z0-9._-]+/gi, "-");
-      link.href = url;
-      link.download = filenamePrefix + "-" + safeRun + ".md";
-      link.hidden = true;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    });
-}
 $("downloadChat")?.addEventListener(
   "click",
   () => void recordUserAction("chat_downloaded"),
 );
-$("copyReport")?.addEventListener(
-  "click",
-  () => void recordUserAction("report_copied"),
-);
-$("copyReportAnalysis")?.addEventListener(
-  "click",
-  () => void recordUserAction("report_analysis_copied"),
-);
 let promptHistoryReportText = "",
-  promptHistoryReportRun = "";
+  promptHistoryReportRun = "",
+  promptHistoryDocumentKind = "report";
 function promptHistoryReportFilename() {
   return (
-    "engineering-report-" +
+    (promptHistoryDocumentKind === "analysis" ? "ai-analysis-" : "engineering-report-") +
     String(promptHistoryReportRun || "unknown").replace(
       /[^a-z0-9._-]+/gi,
       "-",
@@ -3516,44 +3012,269 @@ function downloadPromptHistoryReport() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
-  void recordUserAction("prompt_history_report_downloaded");
+  void recordUserAction(
+    promptHistoryDocumentKind === "analysis"
+      ? "prompt_history_analysis_downloaded"
+      : "prompt_history_report_downloaded",
+  );
 }
-function openPromptHistoryReport(runId, title) {
+function openPromptHistoryDocument(runId, title, kind = "report") {
   const modal = $("promptHistoryReportModal"),
     content = $("promptHistoryReportContent");
   promptHistoryReportRun = String(runId || "");
+  promptHistoryDocumentKind = kind === "analysis" ? "analysis" : "report";
   promptHistoryReportText = "";
   $("promptHistoryReportModalTitle").textContent =
-    title || "Engineeringrapport";
+    promptHistoryDocumentKind === "analysis"
+      ? t("history.analysis_title", { title })
+      : title || t("history.report_title");
   $("promptHistoryReportCopy").hidden = true;
   $("promptHistoryReportDownload").hidden = true;
   content.replaceChildren();
-  content.textContent = "Rapport laden…";
+  content.textContent = t(
+    promptHistoryDocumentKind === "analysis"
+      ? "history.analysis_loading"
+      : "history.report_loading",
+  );
   if (!modal.open) modal.showModal();
   modal.focus();
   fetch(
     "/api/prompt-history/" +
       encodeURIComponent(promptHistoryReportRun) +
-      "/report",
+      (promptHistoryDocumentKind === "analysis" ? "/analysis" : "/report"),
     { cache: "no-store" },
   )
     .then((response) =>
       response.ok
         ? response.text()
-        : Promise.reject(Error("Rapport is niet beschikbaar.")),
+        : Promise.reject(
+            Error(
+              t(
+                promptHistoryDocumentKind === "analysis"
+                  ? "history.analysis_unavailable"
+                  : "history.report_unavailable",
+              ),
+            ),
+          ),
     )
     .then((text) => {
-      if (!text) throw Error("Rapport is niet beschikbaar.");
+      if (!text)
+        throw Error(
+          t(
+            promptHistoryDocumentKind === "analysis"
+              ? "history.analysis_unavailable"
+              : "history.report_unavailable",
+          ),
+        );
       promptHistoryReportText = text;
       renderMarkdownDocument(content, text);
       $("promptHistoryReportCopy").hidden = false;
       $("promptHistoryReportDownload").hidden = false;
     })
     .catch(() => {
-      content.textContent =
-        "Engineeringrapport is niet beschikbaar voor deze prompt.";
+      content.textContent = t(
+        promptHistoryDocumentKind === "analysis"
+          ? "history.analysis_unavailable"
+          : "history.report_unavailable",
+      );
     });
 }
+function detailField(label, value, preformatted = false) {
+  const field = document.createElement("p"),
+    name = document.createElement("span"),
+    output = document.createElement(preformatted ? "pre" : "span");
+  field.className = "field";
+  name.className = "label";
+  name.textContent = label;
+  output.textContent = String(value ?? "—");
+  field.append(name, output);
+  return field;
+}
+function promptHistoryStatusTone(value) {
+  switch (String(value || "").toUpperCase()) {
+    case "COMPLETE": return "green";
+    case "BLOCKED": return "orange";
+    case "FAILED": return "red";
+    default: return "grey";
+  }
+}
+function promptDetailStatusField(value) {
+  const field = detailField(t("detail.prompt_status"), "");
+  const output = field.lastElementChild;
+  output.className = "prompt-detail-status";
+  const indicator = document.createElement("span");
+  indicator.className = "indicator indicator--small indicator--" + promptHistoryStatusTone(value);
+  indicator.setAttribute("aria-hidden", "true");
+  const text = document.createElement("span");
+  text.textContent = promptHistoryStatus(value);
+  output.replaceChildren(indicator, text);
+  return field;
+}
+function promptDetailCard(title, fields, wide = false) {
+  const card = document.createElement("section"), heading = document.createElement("h3");
+  card.className = "prompt-detail-card" + (wide ? " prompt-detail-card--wide" : "");
+  heading.textContent = title;
+  card.append(heading, ...fields);
+  return card;
+}
+function promptDetailSidebar(cards) {
+  const sidebar = document.createElement("div");
+  sidebar.className = "prompt-detail-sidebar";
+  sidebar.append(...cards.filter(Boolean));
+  return sidebar;
+}
+function promptDetailDuration(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? durationText(seconds) : "—";
+}
+function promptDetailExecutionSection(history) {
+  const timestamp = Date.parse(String(history.executed_at || ""));
+  return promptDetailCard(t("detail.execution"), [
+    promptDetailStatusField(history.status),
+    detailField(t("detail.prompt_title"), history.title),
+    detailField(t("detail.run_id"), history.run_id, true),
+    detailField(
+      t("detail.executed_at"),
+      Number.isFinite(timestamp)
+        ? locale.dateTime(new Date(timestamp))
+        : history.executed_at,
+    ),
+    detailField(t("detail.execution_mode"), history.execution_mode || t("detail.not_recorded")),
+    detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
+    detailField(t("detail.producer_type"), history.producer_type || t("detail.not_recorded")),
+    detailField(t("detail.producer_version"), history.producer_version || t("detail.not_recorded")),
+    detailField(t("detail.mission_id"), history.mission_id || t("detail.not_recorded")),
+    detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
+    detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),
+    detailField(t("detail.target_repository"), history.target_repository || t("detail.not_recorded")),
+    detailField(t("ui.active_branch"), history.target_branch || t("detail.not_recorded"), true),
+    detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true),
+    detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
+  ]);
+}
+function promptDetailDurationSection(execution) {
+  return promptDetailCard(t("detail.duration"), [
+    detailField(
+      t("detail.agent_duration"),
+      promptDetailDuration(execution.seconds),
+    ),
+    detailField(
+      t("detail.total_duration"),
+      promptDetailDuration(execution.total_seconds),
+    ),
+  ]);
+}
+function promptDetailRuntimeSection(runtime) {
+  const fields = [
+    [t("detail.runtime_provider"), runtime.runtime_provider],
+    [t("detail.model"), runtime.model],
+    [t("detail.reasoning_profile"), runtime.reasoning_profile],
+    [t("detail.configuration_profile"), runtime.configuration_profile],
+    [t("detail.codex_cli_version"), runtime.codex_cli_version],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => detailField(label, value));
+  return fields.length ? promptDetailCard(t("detail.runtime"), fields) : null;
+}
+function promptDetailUsageSection(usage) {
+  const labels = {
+    input_tokens: t("detail.input_tokens"),
+    output_tokens: t("detail.output_tokens"),
+    total_tokens: t("detail.total_tokens"),
+  };
+  const fields = Object.entries(usage).map(([key, value]) =>
+    detailField(labels[key] || key, value),
+  );
+  return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
+}
+function promptDetailCommitsSection(commits) {
+  if (!Object.keys(commits).length) return null;
+  const evidence = Object.entries(commits)
+    .map(([label, value]) => label + ": " + value)
+    .join("\n");
+  return promptDetailCard(t("detail.git_commit"), [
+    detailField(t("detail.recorded_evidence"), evidence, true),
+  ]);
+}
+function promptDetailEvidenceSection(evidence) {
+  if (!evidence.length) return null;
+  return promptDetailCard(
+    t("detail.execution_evidence"),
+    [detailField(t("detail.evidence"), evidence.join("\n"), true)],
+  );
+}
+function promptDetailReviewersSection(reviewers) {
+  if (!reviewers.length) return null;
+  const fields = reviewers.map((reviewer) =>
+    detailField(
+      String(reviewer.reviewer || t("detail.specialist_review")).replaceAll("_", " "),
+      t("detail.capability") + ": " +
+        String(reviewer.capability || "engineering") + " · " +
+        String(reviewer.status || t("detail.completed")) + " · " +
+        t("detail.accepted_recommendations") + ": " +
+        (Number(reviewer.accepted_recommendations) || 0) + "\n" +
+        t("detail.selected_because") + ": " +
+        String(reviewer.selected_because || t("detail.not_recorded")),
+      true,
+    ),
+  );
+  return promptDetailCard(t("detail.specialist_reviews"), fields, true);
+}
+function renderPromptHistoryDetail(payload) {
+  const content = $("promptHistoryDetailContent"),
+    history = payload?.history || {},
+    execution = payload?.execution || {},
+    runtime = payload?.runtime || {},
+    usage = payload?.usage || {},
+    commits = payload?.commits || {},
+    evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
+    reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [];
+  content.replaceChildren();
+  content.append(
+    ...[
+      promptDetailExecutionSection(history),
+      promptDetailSidebar([
+        promptDetailDurationSection(execution),
+        promptDetailRuntimeSection(runtime),
+        promptDetailCommitsSection(commits),
+        promptDetailEvidenceSection(evidence),
+      ]),
+      promptDetailUsageSection(usage),
+      promptDetailReviewersSection(reviewers),
+    ].filter(Boolean),
+  );
+}
+function closePromptHistoryDetail() {
+  const modal = $("promptHistoryDetailModal");
+  if (modal.open) modal.close();
+}
+function openPromptHistoryDetail(entry) {
+  if (!entry?.run_id) return;
+  const modal = $("promptHistoryDetailModal"), content = $("promptHistoryDetailContent");
+  $("promptHistoryDetailTitle").textContent = String(entry.title || entry.run_id);
+  $("promptHistoryDetailDescription").textContent = t("history.details_description");
+  content.textContent = t("history.details_loading");
+  if (!modal.open) modal.showModal();
+  modal.focus();
+  fetch("/api/prompt-history/" + encodeURIComponent(entry.run_id) + "/details", { cache: "no-store" })
+    .then((response) => response.ok ? response.json() : Promise.reject())
+    .then(renderPromptHistoryDetail)
+    .catch(() => { content.textContent = t("history.details_unavailable"); });
+}
+$("promptHistoryDetailClose").addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  closePromptHistoryDetail();
+});
+$("promptHistoryDetailModal").addEventListener("click", (event) => {
+  if (event.target.closest?.("#promptHistoryDetailClose")) {
+    event.preventDefault();
+    event.stopPropagation();
+    closePromptHistoryDetail();
+    return;
+  }
+  if (event.target === $("promptHistoryDetailModal")) closePromptHistoryDetail();
+});
 $("promptHistoryReportClose").addEventListener(
   "click",
   closePromptHistoryReport,
@@ -3565,43 +3286,17 @@ $("promptHistoryReportModal").addEventListener("click", (event) => {
 $("promptHistoryReportCopy").addEventListener("click", () => {
   if (promptHistoryReportText)
     copyText(promptHistoryReportText).then(
-      () => void recordUserAction("prompt_history_report_copied"),
+      () => void recordUserAction(
+        promptHistoryDocumentKind === "analysis"
+          ? "prompt_history_analysis_copied"
+          : "prompt_history_report_copied",
+      ),
     );
 });
 $("promptHistoryReportDownload").addEventListener(
   "click",
   downloadPromptHistoryReport,
 );
-const renderPromptHistoryWithReportView = renderPromptHistory;
-renderPromptHistory = () => {
-  renderPromptHistoryWithReportView();
-  document
-    .querySelectorAll("#promptHistoryRows a.prompt-history-report")
-    .forEach((link) => {
-      const button = document.createElement("button");
-      button.className = "prompt-history-report";
-      button.type = "button";
-      button.title = "Bekijk engineeringrapport";
-      button.setAttribute(
-        "aria-label",
-        "Bekijk engineeringrapport voor " +
-          (link.getAttribute("aria-label") || "deze prompt").replace(
-            "Download engineeringrapport voor ",
-            "",
-          ),
-      );
-      button.textContent = "▤";
-      button.addEventListener("click", () =>
-        openPromptHistoryReport(
-          link.href.split("/report")[0].split("/").pop(),
-          button
-            .getAttribute("aria-label")
-            .replace("Bekijk engineeringrapport voor ", ""),
-        ),
-      );
-      link.replaceWith(button);
-    });
-};
 function renderPredecessorRetry(x) {
   const blocked = Boolean(x && x.blocking_predecessor_run),
     button = $("predecessorRetry"),
@@ -3616,14 +3311,13 @@ function submitPredecessorRetry() {
     run = latestStatus?.blocking_predecessor_run;
   if (!run || button.disabled) return;
   confirmDashboardAction(
-    "Resume Queue",
-    "Deze queue recovery herstelt de wachtende Inbox-volgorde. De oorspronkelijke geblokkeerde uitvoering blijft onveranderd.",
-    "Resume Queue",
-    "#f0b66a",
+    t("queue_recovery.title"),
+    t("queue_recovery.details"),
+    t("action.resume_queue"),
   ).then((confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
-    status.textContent = "Queue recovery wordt klaargezet…";
+    status.textContent = t("queue_recovery.preparing");
     fetch("/api/queue-recovery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3636,14 +3330,14 @@ function submitPredecessorRetry() {
       .then((result) => {
         if (!result.ok)
           throw Error(
-            result.body.error || "Queue recovery kon niet worden gestart.",
+            result.body.error || t("queue_recovery.failed"),
           );
         status.textContent =
-          "Queue recovery staat klaar; de watcher hervat na de vervangende uitvoering.";
+          t("queue_recovery.ready");
       })
       .catch((error) => {
         status.textContent =
-          error.message || "Queue recovery kon niet worden gestart.";
+          error.message || t("queue_recovery.failed");
       })
       .finally(() => {
         button.disabled = false;
@@ -3652,14 +3346,13 @@ function submitPredecessorRetry() {
 }
 function submitExecutionRetry(entry) {
   if (!entry?.run_id) return;
-  const title = String(entry.title || "Prompttitel niet beschikbaar");
-  const repository = String(entry.repository || "repository context not recorded");
-  const mode = String(entry.execution_mode || "execution mode not recorded");
+  const title = String(entry.title || t("retry.unavailable_title"));
+  const repository = String(entry.repository || t("retry.unavailable_repository"));
+  const mode = String(entry.execution_mode || t("retry.unavailable_mode"));
   confirmDashboardAction(
-    "Retry Execution",
-    "Run ID: " + entry.run_id + "\nPrompt title: " + title + "\nRepository: " + repository + "\nExecution Mode: " + mode + "\n\nA new engineering execution will start using the current repository state. The original execution remains unchanged. A Retry relationship will be recorded.",
-    "Retry Execution",
-    "#f0b66a",
+    t("retry.title"),
+    t("retry.details", { run_id: entry.run_id, title, repository, mode }),
+    t("action.retry_execution"),
   ).then((confirmed) => {
     if (!confirmed) return;
     fetch("/api/execution-retry", {
@@ -3669,29 +3362,31 @@ function submitExecutionRetry(entry) {
     })
       .then(async (response) => ({ ok: response.ok, body: await response.json() }))
       .then((result) => {
-        if (!result.ok) throw Error(result.body.error || "Retry Execution kon niet worden gestart.");
-        return refreshPromptHistory();
+        if (!result.ok) throw Error(result.body.error || t("retry.failed"));
+        return refreshAfterOperatorAction();
       })
-      .catch((error) => window.alert(error.message || "Retry Execution kon niet worden gestart."));
+      .catch((error) => window.alert(error.message || t("retry.failed")));
   });
 }
 function dismissExecution(entry) {
   if (!entry?.run_id) return;
   confirmDashboardAction(
-    "Dismiss Execution",
-    "Run ID: " + entry.run_id + "\nPrompt title: " + String(entry.title || "Prompttitel niet beschikbaar") + "\nTerminal state: " + String(entry.status || "onbekend") + "\n\nExecution history, reports, telemetry and retry relationships are preserved. Only operational active state is cleared. No engineering work will restart.",
-    "Dismiss Execution",
-    "#8cb4ff",
+    t("dismiss.title"),
+    t("dismiss.details", { run_id: entry.run_id, title: String(entry.title || t("retry.unavailable_title")), state: t("status." + String(entry.status || "unknown").toLowerCase()) }),
+    t("action.dismiss_execution"),
   ).then((confirmed) => {
     if (!confirmed) return;
     fetch("/api/execution-dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: entry.run_id }) })
       .then(async (response) => ({ ok: response.ok, body: await response.json() }))
-      .then((result) => { if (!result.ok) throw Error(result.body.error || "Dismiss Execution kon niet worden uitgevoerd."); return refreshPromptHistory(); })
-      .catch((error) => window.alert(error.message || "Dismiss Execution kon niet worden uitgevoerd."));
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("dismiss.failed"));
+        return refreshAfterOperatorAction({ dismissedRunId: entry.run_id });
+      })
+      .catch((error) => window.alert(error.message || t("dismiss.failed")));
   });
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
-function confirmDashboardAction(title, text, confirmLabel, color = "#c7a6ff") {
+function confirmDashboardAction(title, text, confirmLabel) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),
     body = $("confirmationModalText"),
@@ -3700,7 +3395,7 @@ function confirmDashboardAction(title, text, confirmLabel, color = "#c7a6ff") {
   heading.textContent = title;
   body.textContent = text;
   confirm.textContent = confirmLabel;
-  modal.style.setProperty("--confirmation-color", color);
+  modal.style.setProperty("--confirmation-color", "#f0b66a");
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.close();
@@ -3731,11 +3426,10 @@ $("clearChat").addEventListener("click", () =>
     "Chat wissen",
     "Dit wist alleen de lokale chatweergave. Promptgeschiedenis en rapporten blijven behouden.",
     "Chat wissen",
-    "#d0a4ff",
   ).then((confirmed) => {
     if (!confirmed) return;
     chatHistory = [];
-    sessionStorage.removeItem(CHAT_HISTORY_KEY);
+    if (chatContextRun) sessionStorage.removeItem(chatHistoryStorageKey());
     renderChatHistory();
     updateChatActions();
   }),
@@ -3745,7 +3439,6 @@ updateChatDownloadAvailability = () => {
   updateChatDownloadWithClear();
   updateChatActions();
 };
-healthComponentLabels.inbox_watcher = "Engineering Execution Host";
 function showDashboardReloadSplash() {
   const splash = $("dashboardSplash");
   splash.hidden = false;
@@ -3755,10 +3448,9 @@ async function restartPlatformComponent(button) {
   const component = button.dataset.component;
   if (!component) return;
   const confirmed = await confirmDashboardAction(
-    "Component herstarten",
-    "Herstart " + (healthComponentLabels[component] || "dit onderdeel") + "?",
-    "Herstarten",
-    "#a3e635",
+    t("component.restart_title"),
+    t("component.restart_description", { component: healthComponentLabel(component) || t("component.no_component") }),
+    t("component.restart_title"),
   );
   if (!confirmed) return;
   button.disabled = true;
@@ -3776,15 +3468,15 @@ async function restartPlatformComponent(button) {
       throw Error(payload.error || "Herstarten is niet gelukt.");
     if (component === "dashboard") {
       $("componentModalStatus").textContent =
-        "Statusdashboard wordt opnieuw geladen…";
+        t("ui.component_restart_started");
       showDashboardReloadSplash();
       window.setTimeout(() => window.location.reload(), 750);
       return;
     }
-    $("componentModalStatus").textContent = "Herstartverzoek verzonden.";
+    $("componentModalStatus").textContent = t("ui.component_restart_started");
   } catch (error) {
     $("componentModalStatus").textContent =
-      error.message || "Herstarten is niet gelukt.";
+      error.message || t("ui.component_restart_failed");
   } finally {
     button.disabled = false;
   }
@@ -3794,7 +3486,7 @@ function legacyConfirmation() {
 }
 function legacyDashboardError() {
   const status = $("componentModalStatus");
-  if (status) status.textContent = "Componentinformatie is niet beschikbaar.";
+  if (status) status.textContent = t("ui.component_information_unavailable");
 }
 const dashboardActionHandlers = {
   rateLimitReset: (button) => consumeRateLimitReset(button),
@@ -3820,9 +3512,10 @@ Object.assign(window, {
   applyDashboardTheme,
   chatHistoryMarkdown,
   chatMessage,
+  capabilityRecommendation,
+  enumLabel,
   executionTelemetry,
-  lastExecutionTime,
-  lastRuntimeMetadata,
+  formatTimestamp,
   queueItems,
   r,
   rateLimits,
@@ -3831,11 +3524,15 @@ Object.assign(window, {
   renderComponentLogs,
   renderLogPagination,
   renderMarkdownAnswer,
+  renderPromptHistoryDetail,
   renderPlatformHealth,
   renderPromptHistory,
   showComponentModal,
   showCopyToast,
+  startPullRefresh,
   structuredLogEntries,
+  movePullRefresh,
+  endPullRefresh,
   updatePullRefresh,
 });
 for (const binding of [

@@ -14,11 +14,32 @@ from typing import Any
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
+from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
+from .telemetry import comparable_duration_estimate
 
 
 JsonReader = Callable[[Path], bytes]
 RunJsonReader = Callable[[Path, str | None], bytes]
+TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+
+
+def _terminal_checkpoint(root: Path, run_id: object) -> bool:
+    """Return whether a live-status run has already reached a terminal checkpoint.
+
+    ``current.json`` is written by the runner and can briefly outlive its terminal
+    checkpoint.  It must therefore never keep a completed execution visible as
+    an active dashboard prompt.
+    """
+    if not isinstance(run_id, str):
+        return False
+    try:
+        checkpoint = json.loads(
+            (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    return checkpoint.get("phase") in TERMINAL_PHASES
 
 
 def unavailable_status() -> bytes:
@@ -89,12 +110,18 @@ def status(root: Path) -> bytes:
                 "target_repository": live.get("target_repository"),
                 "checkout_path": live.get("checkout_path"),
                 "active_branch": live.get("active_branch"),
+                "reviewer_agents": live.get("reviewer_agents", []),
+                "runtime_metadata": live.get("runtime_metadata", {}),
             },
             separators=(",", ":"),
         ).encode()
     except (OSError, json.JSONDecodeError):
         live, projection = None, None
-    if live and live.get("phase") not in {"COMPLETE", "BLOCKED", "FAILED"}:
+    if (
+        live
+        and live.get("phase") not in TERMINAL_PHASES
+        and not _terminal_checkpoint(root, live.get("run_id"))
+    ):
         return projection
     try:
         if watcher and (watcher.get("run_id") or watcher.get("last_executed_run")):
@@ -154,6 +181,18 @@ def snapshot(
     except Exception:
         telemetry = []
     try:
+        duration_estimate = (
+            comparable_duration_estimate(
+                root,
+                prompt_characters=status_payload.get("prompt_characters"),
+                runtime_metadata=status_payload.get("runtime_metadata"),
+            )
+            if active
+            else {}
+        )
+    except Exception:
+        duration_estimate = {}
+    try:
         identity = execution_host_configuration(root).resolve_execution_host_identity()
         execution_host = {
             "name": identity.name,
@@ -163,6 +202,11 @@ def snapshot(
         }
     except PlatformConfigurationError:
         execution_host = {}
+    host_preflight = latest_host_preflight(root)
+    workspace_preflight = latest_workspace_preflight(root)
+    capability_preflight = latest_capability_preflight(root)
+    current_drift = next((item for preflight in (host_preflight, workspace_preflight, capability_preflight)
+                          for item in preflight.get("drift_evidence", []) if isinstance(item, dict)), None)
     return json.dumps(
         {
             "status": status_payload,
@@ -178,12 +222,15 @@ def snapshot(
             "last_executed_runtime_metadata": read_json(runtime_metadata_reader, root, run_id, fallback={}),
             "last_executed_report_analysis_available": report_analysis_available_reader(root, run_id),
             "telemetry": telemetry,
-            "process_metrics": read_json(process_metrics_reader, fallback={}) if active else {},
+            "duration_estimate": duration_estimate,
+            "process_metrics": read_json(process_metrics_reader, root, fallback={}) if active else {},
             "component_log_versions": component_log_versions_reader(root),
             "component_versions": {"dashboard": dashboard_version, "worker": worker_version},
-            "host_preflight": latest_host_preflight(root),
-            "workspace_preflight": latest_workspace_preflight(root),
-            "capability_preflight": latest_capability_preflight(root),
+            "host_preflight": host_preflight,
+            "workspace_preflight": workspace_preflight,
+            "capability_preflight": capability_preflight,
+            "current_drift": current_drift or {},
+            "resume_guidance": drift_guidance([current_drift] if current_drift else []),
             "execution_host": execution_host,
         },
         separators=(",", ":"),

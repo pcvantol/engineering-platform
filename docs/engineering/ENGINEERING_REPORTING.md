@@ -75,6 +75,16 @@ Managed execution normally uses the host repository as its target. Genesis
 execution normally uses a separate local target repository. The host is never
 described as the target merely because it generated the report.
 
+## Producer Contract projection
+
+Forge owns the canonical Producer Contract and all Producer semantics.
+Engineering Platform consumes only its declared, immutable audit metadata:
+Producer ID, Type, Version, Correlation ID, optional Mission ID and Engineering
+Action ID, plus Execution Constraint Version. Reports expose those values in a
+**Producer** section without exposing Forge implementation details. When a
+legacy prompt has no Producer metadata, the report records `HUMAN` and
+`legacy`. Producer metadata never changes execution behaviour.
+
 ## Execution Host and Workspace Preflight evidence
 
 Before an Inbox item is claimed, Execution Host Preflight Level 1 records local
@@ -136,15 +146,21 @@ stored locally per run under `.engineering/report-analysis/<run-id>.md`. It
 distils findings, issues, risks, next steps and advice for the Product
 Architect. Its output is advisory and redacted before persistence.
 
-The dashboard displays that analysis only within **Laatst uitgevoerd** and only
-when its run identifier matches the displayed terminal run. A failed or absent
-analysis never changes the terminal checkpoint, report, repository state,
-validation result or lifecycle outcome.
+The private Engineering Status dashboard exposes an **AI analysis** column in
+Prompt History next to the engineering report. View and download actions are
+available only when the analysis file belongs to that exact Run ID; analyses
+from another execution are never selected as a fallback.
 
-For the last completed execution, the dashboard also presents a compact
-read-only summary of the Execution Host, Target Repository, Target Commit and
-Evidence Bundle changed-file count. The complete Evidence Bundle remains in
-the Engineering Report, so the dashboard does not duplicate its detail.
+The dashboard exposes that analysis only from the matching Promptgeschiedenis
+row and only when its Run ID matches the selected terminal execution. A failed
+or absent analysis never changes the terminal checkpoint, report, repository
+state, validation result or lifecycle outcome.
+
+Promptgeschiedenis also opens a near-fullscreen operational-detail dialog for
+the selected Run ID. It contains the bounded execution status, timing, runtime
+provenance, provider usage, commits, Evidence Bundle summary and reviewer
+results. The complete report and advisory analysis remain separate evidence
+actions, so their Markdown is never duplicated in that detail dialog.
 
 ## Private dashboard evidence access
 
@@ -154,10 +170,21 @@ copy and download actions only when the matching artifact exists. Downloaded
 files contain the original local Markdown; rendering and copying do not alter
 the report, checkpoint or target repository.
 
-**Promptgeschiedenis** is a private SQLite-backed index of terminal runs. Its
-report action opens the selected report in the same read-only Markdown dialog,
-not in an editor. It is deliberately an evidence-navigation feature rather
-than an execution or repository-control surface.
+**Promptgeschiedenis** is a private SQLite-backed index of terminal runs.
+Selecting a row opens the run's near-fullscreen operational-detail dialog;
+that dialog is bound to the selected Run ID and contains no report or analysis
+body. Its separate report and AI-analysis actions open the matching read-only
+Markdown dialog, not in an editor. It is deliberately an evidence-navigation
+feature rather than an execution or repository-control surface.
+
+The dashboard detail projection is deliberately separate from its storage
+lookup. It reads the selected immutable history row and its bounded companion
+data first, then a small projector creates the response shape. That projector
+may derive only the displayed Evidence Bundle summary and target-repository
+provenance from the report for the same Run ID. It never writes SQLite,
+rewrites the report, or substitutes information from another run. An absent or
+non-readable report produces an empty evidence summary while retaining the
+stored history data.
 
 When no report or analysis was persisted for the selected terminal run, the
 dashboard must say so explicitly. It must not show an unavailable artifact as
@@ -179,8 +206,8 @@ it. The runner never infers or fabricates model, reasoning or configuration
 metadata. These fields describe the process that produced this specific report;
 they are not a claim about a currently configured provider or a later run.
 
-The matching **Laatst uitgevoerde prompt** dashboard card reads the provenance
-only from that terminal report. It therefore cannot display a model or profile
+The matching **Promptgeschiedenis** detail dialog reads provenance only from
+the selected terminal report. It therefore cannot display a model or profile
 from an unrelated current run.
 
 ## Retry executions

@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+from threading import Lock
 from typing import Callable, Mapping, Protocol
 import uuid
 import re
@@ -36,7 +37,7 @@ from .engineering_memory import (
     load_engineering_memory,
     retrieve_engineering_memory,
 )
-from .live_status import print_live_status, write_live_status
+from .live_status import print_live_status, write_live_status, write_runner_process
 from .platform_version import (
     EngineeringPlatformCompatibilityError,
     EngineeringPlatformManifest,
@@ -47,6 +48,7 @@ from .platform_version import (
 from .qualification import dashboard, execute_qualification, latest_qualification
 from .repository_handoff import publish as publish_repository_handoff
 from .report_analysis import analyze as analyze_terminal_report
+from .producer import parse_producer_metadata
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import migrate_legacy_workspace
@@ -54,6 +56,7 @@ from .providers import GitHubProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
+from .drift_diagnostics import summary as drift_summary
 
 
 class RunnerError(RuntimeError):
@@ -524,10 +527,22 @@ class CodexCliClient:
         self.last_execution_seconds: float | None = None
         self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
         self._activity_callback: Callable[[str], None] | None = None
+        self._process_callback: Callable[[dict[str, int] | None], None] | None = None
+        self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
 
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
         self._activity_callback = callback
+
+    def set_process_callback(self, callback: Callable[[dict[str, int] | None], None] | None) -> None:
+        """Set the owned foreground Codex-process sink for runtime metrics."""
+        self._process_callback = callback
+
+    def set_runtime_metadata_callback(
+        self, callback: Callable[[dict[str, str]], None] | None
+    ) -> None:
+        """Publish only explicitly reported runtime settings during a live run."""
+        self._runtime_metadata_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -716,18 +731,33 @@ class CodexCliClient:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-        lines: list[str] = []
-        assert process.stdout is not None
-        for line in process.stdout:
-            lines.append(line)
+        if self._process_callback is not None:
             try:
-                activity = project_codex_activity(json.loads(line))
-            except json.JSONDecodeError:
-                activity = None
-            if activity is not None:
-                self._activity_callback(activity)
-        return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
+                self._process_callback({"pid": process.pid, "process_group": os.getpgid(process.pid)})
+            except OSError:
+                self._process_callback(None)
+        lines: list[str] = []
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                lines.append(line)
+                observed_metadata = extract_codex_runtime_metadata(line)
+                if len(observed_metadata) > 1:
+                    self.last_runtime_metadata.update(observed_metadata)
+                    if self._runtime_metadata_callback is not None:
+                        self._runtime_metadata_callback(dict(self.last_runtime_metadata))
+                try:
+                    activity = project_codex_activity(json.loads(line))
+                except json.JSONDecodeError:
+                    activity = None
+                if activity is not None:
+                    self._activity_callback(activity)
+            return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
+        finally:
+            if self._process_callback is not None:
+                self._process_callback(None)
 
 
 def _redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
@@ -809,7 +839,34 @@ class EngineeringRunner:
         self.platform_manifest: EngineeringPlatformManifest | None = None
         self.detected_codex_cli: str | None = None
         self.reviewer_records: tuple[dict[str, object], ...] = ()
+        self.reviewer_runtime: list[dict[str, object]] = []
+        self._reviewer_runtime_lock = Lock()
         self.console_detail: str | None = None
+
+    def _publish_reviewer_progress(
+        self,
+        state: TransactionState,
+        selection: ReviewerSelection,
+        event: str,
+        result: ReviewerResult | None = None,
+    ) -> None:
+        """Publish bounded reviewer lifecycle status without granting reviewer authority."""
+        status_by_event = {"started": "running", "completed": "completed", "failed": "failed"}
+        status = status_by_event.get(event)
+        if status is None:
+            return
+        with self._reviewer_runtime_lock:
+            for reviewer in self.reviewer_runtime:
+                if reviewer.get("reviewer") != selection.reviewer:
+                    continue
+                reviewer["status"] = status
+                if event == "started":
+                    reviewer["started_at"] = datetime.now(timezone.utc).isoformat()
+                else:
+                    reviewer["finished_at"] = datetime.now(timezone.utc).isoformat()
+                    reviewer["failed"] = bool(result and result.failed)
+                break
+            write_live_status(self.root, state, "Capability review: " + selection.reviewer, self.reviewer_runtime)
 
     def _persist_agent_usage(self, run_id: str) -> None:
         usage = getattr(self.agent, "last_usage", None)
@@ -917,6 +974,16 @@ class EngineeringRunner:
             state.transaction_kind if state else "IMPLEMENTATION",
             load_engineering_memory(self.root),
         )
+        self.reviewer_runtime = [
+            {
+                "reviewer": item.reviewer,
+                "capability": item.capability,
+                "selected_because": item.selected_because,
+                "status": "selected",
+                "selected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for item in selections
+        ]
         write_live_status(
             self.root,
             state
@@ -928,9 +995,16 @@ class EngineeringRunner:
                 ", ".join(item.reviewer for item in selections)
                 or "No specialist reviewers required."
             ),
+            self.reviewer_runtime,
         )
         results = run_reviews(
-            self.root, selections, objective, self.agent if hasattr(self.agent, "review") else None
+            self.root,
+            selections,
+            objective,
+            self.agent if hasattr(self.agent, "review") else None,
+            progress=lambda selection, event, result: self._publish_reviewer_progress(
+                state, selection, event, result
+            ),
         )
         self.reviewer_records = records_for_storage(selections, results)
         recommendations = reconciled_recommendations(results)
@@ -953,6 +1027,16 @@ class EngineeringRunner:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
                     lambda activity: write_live_status(self.root, state, activity)
+                )
+            if hasattr(self.agent, "set_process_callback"):
+                self.agent.set_process_callback(
+                    lambda process: write_runner_process(self.root, state.run_id, process)
+                )
+            if hasattr(self.agent, "set_runtime_metadata_callback"):
+                self.agent.set_runtime_metadata_callback(
+                    lambda metadata: write_live_status(
+                        self.root, state, state.next_action, runtime_metadata=metadata
+                    )
                 )
             result = self.agent.invoke(
                 self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context
@@ -1806,12 +1890,26 @@ def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
 
 def corrected_terminal_report(state: TransactionState) -> str:
     """Generate a minimal replacement when richer report assembly is inconsistent."""
+    try:
+        producer_prompt = Path(state.prompt_path).read_text(encoding="utf-8")
+    except OSError:
+        producer_prompt = ""
+    producer = parse_producer_metadata(producer_prompt)
     return "\n".join(
         (
             "# Engineering Report",
             "",
             f"- Run ID: `{state.run_id}`",
             f"- Terminal state: `{state.phase}`",
+            "",
+            "## Producer",
+            f"- Producer ID: `{producer.producer_id}`",
+            f"- Producer Type: `{producer.producer_type}`",
+            f"- Producer Version: `{producer.producer_version or 'not supplied'}`",
+            f"- Correlation ID: `{producer.correlation_id or 'not supplied'}`",
+            f"- Mission ID: `{producer.mission_id or 'not supplied'}`",
+            f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
+            f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
             "## Execution Target Identity",
             f"- Execution Host Repository: `{state.repository}`",
@@ -1914,6 +2012,7 @@ def generate_terminal_report(
         objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
     except OSError:
         pass
+    producer = parse_producer_metadata(objective)
     manifest = manifest or EngineeringPlatformManifest.load(
         root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
     )
@@ -1985,6 +2084,11 @@ def generate_terminal_report(
     capability_preflight = latest_capability_preflight(root)
     if capability_preflight.get("run_id") not in {None, state.run_id}:
         capability_preflight = {}
+    drift_evidence = [
+        item for preflight in (preflight, workspace_preflight, capability_preflight)
+        for item in preflight.get("drift_evidence", [])
+        if isinstance(item, dict)
+    ]
     body = "\n".join(
         (
             "# Engineering Report",
@@ -1994,6 +2098,16 @@ def generate_terminal_report(
             f"- Prompt: `{state.prompt_path}`",
             f"- Terminal state: `{state.phase}`",
             f"- Objective: {objective}",
+            "",
+            "## Producer",
+            "Forge owns Producer Contract semantics. Engineering Platform consumes this metadata for auditability only.",
+            f"- Producer ID: `{producer.producer_id}`",
+            f"- Producer Type: `{producer.producer_type}`",
+            f"- Producer Version: `{producer.producer_version or 'not supplied'}`",
+            f"- Correlation ID: `{producer.correlation_id or 'not supplied'}`",
+            f"- Mission ID: `{producer.mission_id or 'not supplied'}`",
+            f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
+            f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
             "## Execution Target Identity",
             "- Execution Host: `Engineering Platform`",
@@ -2048,6 +2162,26 @@ def generate_terminal_report(
             f"- Recoverability: `{capability_preflight.get('recoverability', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}`",
             f"- Failure Origin: `{capability_preflight.get('failure_origin', 'none') if isinstance(capability_preflight, dict) else 'none'}`",
             f"- Recommendation: {capability_preflight.get('recommendation', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}",
+            "",
+            "## Development Host Drift Diagnostics",
+            "- Detected Drift: " + (str(len(drift_evidence)) if drift_evidence else "none"),
+            *(
+                line
+                for item in drift_evidence
+                for line in (
+                    f"- Drift ID: `{item.get('drift_id', 'unavailable')}`",
+                    f"  - Category: `{item.get('category', 'unavailable')}`; Severity: `{item.get('severity', 'unavailable')}`",
+                    f"  - Expected State: {item.get('expected_value', 'unavailable')}",
+                    f"  - Observed State: {item.get('observed_value', 'unavailable')}",
+                    f"  - Blocking Reason: {item.get('affected_component', 'unavailable')}",
+                    f"  - Recommended Resolution / Required Action: {item.get('resolution_recommendation', 'unavailable')}",
+                    f"  - Affected Component: `{item.get('affected_component', 'unavailable')}`; Affected Repository: `{item.get('affected_repository', 'unavailable')}`; Affected Runtime: `{item.get('affected_runtime', 'unavailable')}`",
+                )
+            ),
+            "- Resume Guidance: " + (
+                "Resolve the listed prerequisite, then retry; resume is not appropriate while drift remains."
+                if drift_evidence else "No current development-host drift is recorded."
+            ),
             "",
             "## Authorization",
             f"- Owner authorization: `{state.owner_authorized}`",
@@ -2127,7 +2261,7 @@ def generate_terminal_report(
             format_terminal_management_summary(state),
             "",
             "## Diagnostics",
-            state.diagnostic or "No terminal diagnostic.",
+            state.diagnostic or drift_summary(drift_evidence),
             f"Resume: `engineering-execution-host {state.prompt_path} --run-id {state.run_id} --resume`",
             "",
             "## Metrics",

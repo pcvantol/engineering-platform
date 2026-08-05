@@ -22,6 +22,7 @@ from .platform_version import (
     RunnerCompatibility,
     _semver,
 )
+from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
 
 RECOVERABILITY = frozenset(
     {
@@ -54,6 +55,8 @@ class CapabilityPreflightResult:
     recoverability: str
     failure_origin: str | None
     recommendation: str
+    drift_evidence: tuple[dict[str, str], ...] = ()
+    resume_guidance: dict[str, object] | None = None
 
     def payload(self, run_id: str | None = None) -> dict[str, object]:
         value = asdict(self)
@@ -217,6 +220,9 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
                 )
             )
     failed = any(check.outcome == "FAIL" for check in checks)
+    drift_evidence = persist_drift_evidence(root, evidence_for_checks(
+        checks, stage="Capability Preflight", repository=str(root.resolve())
+    ))
     result = CapabilityPreflightResult(
         "FAIL" if failed else "PASS",
         datetime.now(timezone.utc).isoformat(),
@@ -227,6 +233,8 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
         "Repair or upgrade the Execution Host before resubmitting."
         if failed
         else "Capability admission passed.",
+        drift_evidence,
+        guidance(drift_evidence),
     )
     _persist(root, result, run_id)
     return result
@@ -239,4 +247,9 @@ def latest(root: Path) -> dict[str, object]:
         )
     except (OSError, json.JSONDecodeError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    return {key: payload[key] for key in (
+        "outcome", "timestamp", "duration_ms", "checks", "recoverability",
+        "failure_origin", "recommendation", "drift_evidence", "resume_guidance", "run_id",
+    ) if key in payload}

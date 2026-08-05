@@ -17,6 +17,7 @@ import tempfile
 from time import monotonic
 
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, RepositoryAuthorization
+from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,8 @@ class WorkspacePreflightResult:
     canonical_target_path: str | None = None
     authorization_match: str | None = None
     authorization_policy: str | None = None
+    drift_evidence: tuple[dict[str, str], ...] = ()
+    resume_guidance: dict[str, object] | None = None
 
     def payload(self, run_id: str | None = None) -> dict[str, object]:
         value = asdict(self)
@@ -195,9 +198,13 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
             checks.append(_check("managed_synchronization", synchronized, "Managed target is synchronized with its upstream." if synchronized else "Managed target is not synchronized with its upstream.", "Synchronize the expected branch with its configured upstream."))
     workspace = configuration.workspace.name if configuration else "unavailable"
     outcome = "FAIL" if any(check.outcome == "FAIL" for check in checks) else "PASS"
+    drift_evidence = persist_drift_evidence(root, evidence_for_checks(
+        checks, stage="Workspace Preflight", repository=str((target or root).resolve())
+    ))
     result = WorkspacePreflightResult(
         outcome, workspace, target_display, branch, mode, timestamp, round((monotonic() - started) * 1000), tuple(checks),
         canonical_target, authorization.matched if authorization else None, authorization.scope if authorization else None,
+        drift_evidence, guidance(drift_evidence),
     )
     _persist(root, result, run_id)
     return result
@@ -211,4 +218,4 @@ def latest(root: Path) -> dict[str, object]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in ("outcome", "workspace", "target_repository", "canonical_target_path", "authorization_match", "authorization_policy", "branch", "execution_mode", "timestamp", "duration_ms", "checks", "run_id") if key in payload}
+    return {key: payload[key] for key in ("outcome", "workspace", "target_repository", "canonical_target_path", "authorization_match", "authorization_policy", "branch", "execution_mode", "timestamp", "duration_ms", "checks", "drift_evidence", "resume_guidance", "run_id") if key in payload}

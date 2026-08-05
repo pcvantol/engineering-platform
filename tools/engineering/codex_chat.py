@@ -11,6 +11,8 @@ import tempfile
 from threading import Lock
 from typing import Any
 
+from .prompt_history import prompt_history
+
 
 MAX_MESSAGE_CHARACTERS = 2_000
 MAX_HISTORY_ITEMS = 6
@@ -97,20 +99,35 @@ def _final_message(output: str) -> str:
     return ""
 
 
-def respond(root: Path, status: dict[str, object], message: object, history: object) -> str:
-    """Answer from only the bounded last-run context, without persistent chat state."""
+def respond(
+    root: Path,
+    status: dict[str, object],
+    message: object,
+    history: object,
+    run_id: object = None,
+) -> str:
+    """Answer from one bounded terminal-run context, without persistent state."""
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARACTERS:
         raise CodexChatError("Stel een vraag van maximaal 2.000 tekens.")
-    run_id = status.get("last_executed_run")
-    if not isinstance(run_id, str) or not run_id:
+    selected_run = run_id if isinstance(run_id, str) else status.get("last_executed_run")
+    if not isinstance(selected_run, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", selected_run):
         raise CodexChatError("Er is nog geen uitgevoerde prompt om als context te gebruiken.")
+    if run_id is None:
+        selected_entry = {"title": status.get("last_executed_title")}
+    else:
+        selected_entry = next(
+            (entry for entry in prompt_history(root) if entry.get("run_id") == selected_run),
+            None,
+        )
+        if selected_entry is None:
+            raise CodexChatError("Deze uitgevoerde prompt is niet beschikbaar als chatcontext.")
     previous = _history(history)
     context = {
         "repository": _repository_summary(root),
-        "last_run": run_id,
-        "last_prompt_title": status.get("last_executed_title") or "Niet beschikbaar.",
-        "last_prompt": _last_prompt(root, run_id),
-        "last_report": _report(root, run_id),
+        "last_run": selected_run,
+        "last_prompt_title": selected_entry.get("title") or "Niet beschikbaar.",
+        "last_prompt": _last_prompt(root, selected_run),
+        "last_report": _report(root, selected_run),
         "conversation": previous,
     }
     instruction = """Je bent de read-only Codex-gesprekspartner van Engineering Status.

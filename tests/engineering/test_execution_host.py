@@ -548,9 +548,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIsNone(project_codex_activity({"type": "item.completed", "item": {"type": "agent_message"}}))
         self.assertIsNone(project_codex_activity({"type": "item.started", "item": {"type": "unknown", "prompt": "secret"}}))
 
+    @patch("tools.engineering.execution_host.os.getpgid", return_value=4321)
     @patch("tools.engineering.execution_host.subprocess.Popen")
-    def test_codex_client_streams_only_safe_activity_labels(self, popen: object) -> None:
+    def test_codex_client_streams_only_safe_activity_labels(self, popen: object, _: object) -> None:
         class Process:
+            pid = 1234
             stdout = iter(
                 (
                     '{"type":"item.started","item":{"type":"reasoning","text":"secret reasoning"}}\n',
@@ -582,11 +584,16 @@ class LocalAgentRunnerTest(unittest.TestCase):
             execution_mode="GENESIS",
             genesis_repository_path=str(self.root),
         )
-        write_live_status(self.root, state, "invoke_agent")
+        reviewers = [{"reviewer": "validation", "capability": "engineering", "status": "running"}]
+        write_live_status(self.root, state, "invoke_agent", reviewers)
         payload = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(payload["execution_mode"], "GENESIS")
         self.assertEqual(payload["target_repository"], self.root.name)
         self.assertEqual(payload["checkout_path"], str(self.root))
+        self.assertEqual(payload["reviewer_agents"], reviewers)
+        write_live_status(self.root, state, "Codex voert een opdracht uit")
+        preserved = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
+        self.assertEqual(preserved["reviewer_agents"], reviewers)
 
     def test_genesis_mode_requires_an_explicit_execution_mode_declaration(self) -> None:
         self.assertEqual(execution_mode_for("Introduce Genesis Mode documentation."), "MANAGED")
@@ -1057,6 +1064,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
 
+    def test_terminal_report_projects_producer_contract_without_forge_implementation(self) -> None:
+        self.prompt.write_text(
+            "Producer ID: forge\nProducer Type: FORGE\nProducer Version: 2.0\n"
+            "Producer Correlation ID: corr-42\nMission ID: MISSION-0003\n"
+            "Engineering Action ID: EA-0042\nExecution Constraint Version: 1.0\n",
+            encoding="utf-8",
+        )
+        state = TransactionState("producer-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Producer", body)
+        self.assertIn("- Producer Type: `FORGE`", body)
+        self.assertIn("- Mission ID: `MISSION-0003`", body)
+        self.assertIn("- Engineering Action ID: `EA-0042`", body)
+
     def test_retry_report_records_immutable_execution_lineage(self) -> None:
         self.prompt.write_text(
             "Retry-Of: inbox-original\nOriginal-Run-ID: inbox-original\nRetry-Generation: 1\n"
@@ -1256,6 +1277,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("BLOCKED — no engineering changes were executed or delivered.", body)
         self.assertTrue(terminal_report_matches_state(body, state))
 
+    def test_blocked_report_projects_structured_development_host_drift(self) -> None:
+        status = self.root / ".engineering" / "status"
+        status.mkdir(parents=True, exist_ok=True)
+        (status / "host_preflight.json").write_text(json.dumps({
+            "run_id": None,
+            "drift_evidence": [{
+                "drift_id": "drift-report", "category": "Runtime Database", "severity": "BLOCKING",
+                "expected_value": "telemetry_storage: PASS", "observed_value": "Telemetry SQLite storage is unavailable.",
+                "resolution_recommendation": "Restore local SQLite evidence storage before accepting work.",
+                "affected_component": "telemetry_storage", "affected_repository": "/workspace",
+                "affected_runtime": "Engineering Platform",
+            }],
+        }), encoding="utf-8")
+        state = TransactionState("drift-report", "pcvantol/djconnect", str(self.prompt), "BLOCKED", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Development Host Drift Diagnostics", body)
+        self.assertIn("Expected State: telemetry_storage: PASS", body)
+        self.assertIn("Observed State: Telemetry SQLite storage is unavailable.", body)
+        self.assertIn("Recommended Resolution / Required Action", body)
+        self.assertIn("resume is not appropriate", body)
+
     def test_blocked_and_failed_reports_match_the_terminal_checkpoint(self) -> None:
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
         for phase, expected in (
@@ -1290,6 +1332,25 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
         records = records_for_storage(selections, results)
         self.assertEqual(records[0]["accepted_recommendations"], 1)
+
+    def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
+        selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})
+        progress: list[tuple[str, str, bool | None]] = []
+
+        results = run_reviews(
+            self.root,
+            selections,
+            "objective",
+            FakeReviewer(),
+            progress=lambda selection, event, result: progress.append(
+                (selection.reviewer, event, None if result is None else result.failed)
+            ),
+        )
+
+        self.assertEqual(len(results), len(selections))
+        for selection in selections:
+            self.assertIn((selection.reviewer, "started", None), progress)
+            self.assertIn((selection.reviewer, "completed", False), progress)
 
     def test_reviewer_failure_never_blocks_selection(self) -> None:
         selections = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})

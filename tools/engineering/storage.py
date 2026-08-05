@@ -11,12 +11,13 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 6
+ENGINEERING_STORAGE_SCHEMA_VERSION = 10
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -208,6 +209,118 @@ def _schema_v6(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _schema_v7(connection: sqlite3.Connection) -> None:
+    """Record the safe runtime signature needed for comparable duration estimates."""
+    for statement in (
+        "ALTER TABLE execution_runs ADD COLUMN prompt_characters INTEGER",
+        "ALTER TABLE execution_runs ADD COLUMN runtime_provider TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN runtime_model TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN reasoning_profile TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN configuration_profile TEXT",
+    ):
+        connection.execute(statement)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS execution_runs_duration_profile_lookup "
+        "ON execution_runs(terminal_state, runtime_provider, runtime_model, "
+        "reasoning_profile, configuration_profile)"
+    )
+    # Existing immutable reports already contain safe runtime provenance and
+    # the submitted objective.  Extract only the profile and its character
+    # count so the new estimate can learn from prior local evidence without
+    # copying prompt content into telemetry.
+    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    reports_root = database.parent / "reports"
+    rows = connection.execute(
+        """
+        SELECT runs.run_id, history.report_path
+        FROM execution_runs AS runs
+        JOIN prompt_execution_history AS history ON history.run_id = runs.run_id
+        WHERE history.report_path IS NOT NULL
+        """
+    ).fetchall()
+    labels = {
+        "runtime_provider": "Runtime Provider",
+        "runtime_model": "AI Model",
+        "reasoning_profile": "Reasoning Profile",
+        "configuration_profile": "Configuration Profile",
+    }
+    for run_id, relative_path in rows:
+        if not isinstance(run_id, str) or not isinstance(relative_path, str):
+            continue
+        try:
+            report = (reports_root / relative_path).resolve()
+            report.relative_to(reports_root.resolve())
+            text = report.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+        values: dict[str, str | None] = {}
+        for key, label in labels.items():
+            match = re.search(rf"^- {re.escape(label)}: `([^`\n]{{1,120}})`$", text, re.MULTILINE)
+            value = match.group(1).strip() if match else ""
+            values[key] = value if value and value.casefold() not in {"not reported", "unavailable"} else None
+        objective = re.search(
+            r"^- Objective: (.*?)(?=\n\n## Execution Target Identity)", text, re.MULTILINE | re.DOTALL
+        )
+        prompt_characters = len(objective.group(1)) if objective else None
+        connection.execute(
+            """
+            UPDATE execution_runs SET prompt_characters=?, runtime_provider=?, runtime_model=?,
+                reasoning_profile=?, configuration_profile=? WHERE run_id=?
+            """,
+            (
+                prompt_characters,
+                values["runtime_provider"],
+                values["runtime_model"],
+                values["reasoning_profile"],
+                values["configuration_profile"],
+                run_id,
+            ),
+        )
+
+
+def _schema_v8(connection: sqlite3.Connection) -> None:
+    """Preserve target-workspace facts with each terminal execution."""
+    for statement in (
+        "ALTER TABLE prompt_execution_history ADD COLUMN target_checkout_path TEXT",
+        "ALTER TABLE prompt_execution_history ADD COLUMN tracked_file_count INTEGER",
+    ):
+        connection.execute(statement)
+
+
+def _schema_v9(connection: sqlite3.Connection) -> None:
+    """Persist producer-neutral provenance and immutable execution receipts."""
+    for statement in (
+        "ALTER TABLE execution_runs ADD COLUMN producer_id TEXT NOT NULL DEFAULT 'legacy'",
+        "ALTER TABLE execution_runs ADD COLUMN producer_type TEXT NOT NULL DEFAULT 'HUMAN'",
+        "ALTER TABLE execution_runs ADD COLUMN producer_version TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN correlation_id TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN mission_id TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN engineering_action_id TEXT",
+        "ALTER TABLE execution_runs ADD COLUMN execution_constraint_version TEXT",
+        "CREATE INDEX IF NOT EXISTS execution_runs_producer_lookup ON execution_runs(producer_type, producer_id)",
+        """CREATE TABLE IF NOT EXISTS execution_receipts (
+            run_id TEXT PRIMARY KEY,
+            producer_id TEXT NOT NULL,
+            producer_type TEXT NOT NULL,
+            producer_version TEXT,
+            mission_id TEXT,
+            engineering_action_id TEXT,
+            correlation_id TEXT,
+            execution_constraint_version TEXT,
+            execution_host TEXT NOT NULL,
+            execution_host_version TEXT NOT NULL,
+            receipt_timestamp TEXT NOT NULL,
+            execution_outcome TEXT NOT NULL
+        )""",
+    ):
+        connection.execute(statement)
+
+
+def _schema_v10(connection: sqlite3.Connection) -> None:
+    """Preserve the target branch observed when terminal evidence is written."""
+    connection.execute("ALTER TABLE prompt_execution_history ADD COLUMN target_branch TEXT")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -215,6 +328,10 @@ MIGRATIONS: dict[int, Migration] = {
     4: _schema_v4,
     5: _schema_v5,
     6: _schema_v6,
+    7: _schema_v7,
+    8: _schema_v8,
+    9: _schema_v9,
+    10: _schema_v10,
 }
 
 

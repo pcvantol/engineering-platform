@@ -13,10 +13,12 @@ from tools.engineering.telemetry import (
     ExecutionTelemetry,
     daily_statistics,
     execution_timing,
+    comparable_duration_estimate,
     persist_execution,
     persist_execution_async,
     wait_for_pending_telemetry,
 )
+from tools.engineering.producer import ProducerMetadata
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
@@ -35,6 +37,11 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             workspace="djconnect",
             repository="pcvantol/djconnect",
             execution_host_version="1.5.0",
+            prompt_characters=1_000,
+            runtime_provider="codex_cli",
+            runtime_model="gpt-5.6-terra",
+            reasoning_profile="medium",
+            configuration_profile="workspace-write",
         )
 
     def test_persists_generic_execution_runs_and_daily_aggregates(self) -> None:
@@ -102,6 +109,87 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
 
             self.assertTrue(observed.is_set())
             self.assertEqual(str(errors[0]), "storage unavailable")
+
+    def test_persists_producer_metadata_and_an_immutable_execution_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            telemetry = ExecutionTelemetry(
+                **{
+                    **self._record("run-forge", "COMPLETE", datetime.now(timezone.utc)).__dict__,
+                    "producer": ProducerMetadata(
+                        producer_id="forge", producer_type="FORGE", producer_version="2.0",
+                        correlation_id="corr-42", mission_id="MISSION-0003",
+                        engineering_action_id="EA-0042", execution_constraint_version="1.0",
+                    ),
+                }
+            )
+            persist_execution(root, telemetry)
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT producer_id, producer_type, mission_id, engineering_action_id, correlation_id "
+                        "FROM execution_runs WHERE run_id='run-forge'"
+                    ).fetchone(),
+                    ("forge", "FORGE", "MISSION-0003", "EA-0042", "corr-42"),
+                )
+                receipt = connection.execute(
+                    "SELECT producer_id, producer_type, execution_host, execution_outcome "
+                    "FROM execution_receipts WHERE run_id='run-forge'"
+                ).fetchone()
+                self.assertEqual(receipt, ("forge", "FORGE", "Engineering Platform", "COMPLETE"))
+            persist_execution(
+                root,
+                ExecutionTelemetry(
+                    **{**telemetry.__dict__, "producer": ProducerMetadata(producer_id="changed", producer_type="EXTERNAL")}
+                ),
+            )
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT producer_id FROM execution_runs WHERE run_id='run-forge'").fetchone()[0],
+                    "forge",
+                )
+                self.assertEqual(
+                    connection.execute("SELECT producer_id FROM execution_receipts WHERE run_id='run-forge'").fetchone()[0],
+                    "forge",
+                )
+
+    def test_duration_estimate_uses_only_complete_runs_with_the_exact_runtime_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 1, 10, tzinfo=timezone.utc)
+            first = self._record("run-one", "COMPLETE", started)
+            second = self._record("run-two", "COMPLETE", started + timedelta(hours=1))
+            incompatible = self._record("run-three", "COMPLETE", started + timedelta(hours=2))
+            incompatible = ExecutionTelemetry(
+                **{**incompatible.__dict__, "runtime_model": "gpt-5.6-sol"}
+            )
+            persist_execution(root, first)
+            persist_execution(root, second)
+            persist_execution(root, incompatible)
+
+            estimate = comparable_duration_estimate(
+                root,
+                prompt_characters=2_000,
+                runtime_metadata={
+                    "runtime_provider": "codex_cli",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_profile": "medium",
+                    "configuration_profile": "workspace-write",
+                },
+            )
+
+            self.assertEqual(estimate["sample_count"], 2)
+            self.assertEqual(estimate["average_seconds"], 150.0)
+            self.assertEqual(estimate["lower_seconds"], 150.0)
+            self.assertEqual(estimate["upper_seconds"], 150.0)
+            self.assertEqual(
+                comparable_duration_estimate(
+                    root,
+                    prompt_characters=2_000,
+                    runtime_metadata={"runtime_provider": "codex_cli", "model": "not reported"},
+                ),
+                {},
+            )
 
     def test_async_telemetry_never_recreates_a_removed_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -8,17 +8,35 @@ from pathlib import Path
 import tempfile
 from threading import Thread
 import unittest
-from contextlib import nullcontext
-from unittest.mock import ANY, patch
+from contextlib import contextmanager, nullcontext
+from unittest.mock import ANY, MagicMock, patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
+from tools.engineering.prompt_history import record_prompt_execution
 from tools.engineering.storage import open_storage
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
+        root = Path(__file__).parents[2]
+        catalog = (root / "tools/engineering/assets/dashboard_locales.mjs").read_text(encoding="utf-8")
+        page = _dashboard_html("Engineering Status").decode("utf-8")
+
+        self.assertIn('id="dashboardLocale"', page)
+        self.assertIn('"/assets/dashboard_locales.mjs"', (root / "tools/engineering/dashboard.py").read_text(encoding="utf-8"))
+        for locale in ("en", "nl", "de", "fr", "es"):
+            self.assertIn(f"  {locale}: {{", catalog)
+            self.assertIn(f'"language.{locale}"', catalog)
+        self.assertIn('"retry.details"', catalog)
+        self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
+        dashboard_script = (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8")
+        self.assertIn("createLocaleService", dashboard_script)
+        self.assertNotIn('"nl-NL"', dashboard_script)
+        self.assertNotIn("localeCompare(", dashboard_script)
+
     def test_dashboard_run_logs_startup_and_graceful_shutdown_identity(self) -> None:
         class InterruptingServer:
             server_address = (LOOPBACK_ADDRESS, 8765)
@@ -114,13 +132,18 @@ class DashboardStatusTest(unittest.TestCase):
                 ],
             )
         self.assertEqual(dashboard._process_elapsed_seconds("2-01:02:03"), 176_523)
-        with patch("tools.engineering.dashboard.subprocess.run") as run:
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dashboard.subprocess.run") as run:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "current.json").write_text('{"run_id":"run-owned"}', encoding="utf-8")
+            (status / "runner_process.json").write_text('{"run_id":"run-owned","pid":3,"process_group":42}', encoding="utf-8")
             run.return_value = __import__("subprocess").CompletedProcess(
-                ("ps",), 0, "1 bad codex\n2 1.5 unrelated\n3 2.5 codex exec\n", ""
+                ("ps",), 0, "1 1 99.0 codex unrelated\n2 42 1.5 worker child\n3 42 2.5 codex exec\n", ""
             )
-            metrics = json.loads(dashboard._codex_process_metrics())
-        self.assertEqual(metrics["process_count"], 1)
-        self.assertEqual(metrics["cpu_percent"], 2.5)
+            metrics = json.loads(dashboard._codex_process_metrics(root))
+        self.assertEqual(metrics["process_count"], 2)
+        self.assertEqual(metrics["cpu_percent"], 4.0)
 
     def test_report_and_runtime_projections_reject_invalid_or_unavailable_input(self) -> None:
         root = Path("/missing")
@@ -169,6 +192,7 @@ class DashboardStatusTest(unittest.TestCase):
         root = Path("tools/engineering/assets")
         self.assertTrue((root / "dashboard.css").is_file())
         self.assertTrue((root / "dashboard.js").is_file())
+        self.assertTrue((root / "dashboard_locales.mjs").is_file())
         self.assertTrue((root / "dashboard_status_store.mjs").is_file())
         stylesheet = (root / "dashboard.css").read_text(encoding="utf-8")
         self.assertIn("--report-modal-surface", stylesheet)
@@ -177,6 +201,24 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("min-height:32px;min-width:0;padding:5px 9px", stylesheet)
         self.assertIn(".execution-history-action:hover:not(:disabled){background:#e7b876", stylesheet)
         self.assertIn(".prompt-history-actions{vertical-align:middle}", stylesheet)
+        self.assertIn("Dashboard UI component layer", stylesheet)
+        self.assertIn("--dashboard-section-gap:24px", stylesheet)
+        self.assertIn("gap:var(--dashboard-section-gap)", stylesheet)
+        self.assertIn("scrollbar-gutter:stable", stylesheet)
+        self.assertIn(".inbox-queue,.prompt-history", stylesheet)
+        self.assertIn("box-shadow:none", stylesheet)
+        self.assertIn(".reset-log-filters", stylesheet)
+        self.assertIn("--dashboard-control-label-gap:8px", stylesheet)
+        self.assertIn("row-gap:var(--dashboard-control-label-gap)", stylesheet)
+        script = (root / "dashboard.js").read_text(encoding="utf-8")
+        self.assertIn("resetLogFiltersButton", script)
+        self.assertNotIn("logRunFilter", script)
+        self.assertIn("function filteredComponentLogEntries", script)
+        self.assertIn("function renderComponentLogs", script)
+        self.assertNotIn("renderLegacyComponentLogs", script)
+        self.assertNotIn("renderSortedComponentLogs", script)
+        self.assertNotIn("renderPaginatedComponentLogs", script)
+        self.assertNotIn('id="logSort"', (Path(__file__).parents[2] / "tools/engineering/dashboard.py").read_text(encoding="utf-8"))
 
     def test_codex_usage_is_shown_only_for_the_displayed_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -191,6 +233,19 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(_codex_usage(root)), {"input_tokens": 123, "cost": 1.25}
             )
+            (status / "status.json").write_text(
+                '{"run_id":"inbox-active","last_executed_run":"inbox-visible"}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                json.loads(_codex_usage(root)), {},
+                "Usage from the prior run must never appear on an active run.",
+            )
+            (status / "codex_usage.json").write_text(
+                '{"run_id":"inbox-active","usage":{"input_tokens":456}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(json.loads(_codex_usage(root)), {"input_tokens": 456})
             (status / "codex_usage.json").write_text(
                 '{"run_id":"inbox-other","usage":{"input_tokens":123}}', encoding="utf-8"
             )
@@ -594,7 +649,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
         self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], "6")
+        self.assertEqual(details["schema_version"], "10")
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:
@@ -632,17 +687,21 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(_latest_codex_log(Path(temporary)), b"redacted diagnostic")
 
     @patch("tools.engineering.dashboard.subprocess.run")
-    def test_codex_process_metrics_sum_only_codex_cli_processes(self, run: object) -> None:
-        run.return_value = __import__("subprocess").CompletedProcess(
-            ("ps",),
-            0,
-            "101  12.4 /opt/homebrew/bin/codex exec task\n102  3.1 /usr/bin/python worker.py\n103  7.5 codex exec review\n",
-            "",
-        )
-        metrics = json.loads(_codex_process_metrics())
+    def test_codex_process_metrics_ignore_unowned_codex_processes(self, run: object) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "current.json").write_text('{"run_id":"run-owned"}', encoding="utf-8")
+            (status / "runner_process.json").write_text('{"run_id":"run-owned","pid":103,"process_group":303}', encoding="utf-8")
+            run.return_value = __import__("subprocess").CompletedProcess(
+                ("ps",), 0,
+                "101  101  12.4 /opt/homebrew/bin/codex exec unrelated\n102  102  3.1 /usr/bin/python worker.py\n103  303  7.5 codex exec owned\n104  303  2.5 child worker\n", "",
+            )
+            metrics = json.loads(_codex_process_metrics(root))
         self.assertEqual(metrics["process_count"], 2)
-        self.assertEqual(metrics["cpu_percent"], 19.9)
-        self.assertIn("Codex-verwerking draait extern", metrics["gpu_status"])
+        self.assertEqual(metrics["cpu_percent"], 10.0)
+        self.assertIn("Execution Host-verwerking", metrics["gpu_status"])
 
     def test_current_codex_log_never_falls_back_to_a_different_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -679,6 +738,27 @@ class DashboardStatusTest(unittest.TestCase):
             (reports / "two_inbox-last.md").write_text("last", encoding="utf-8")
             self.assertEqual(_report_for_run(root, "inbox-last"), b"last")
             self.assertEqual(_report_for_run(root, "inbox-missing"), b"")
+
+    def test_report_prefers_the_indexed_terminal_report_over_a_duplicate_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reports = root / ".engineering" / "reports"
+            reports.mkdir(parents=True)
+            actual = reports / "2026-08-03T19-40-44Z_inbox-last.md"
+            fallback = reports / "corrected_inbox-last.md"
+            actual.write_text("actual", encoding="utf-8")
+            fallback.write_text("fallback", encoding="utf-8")
+            from tools.engineering.prompt_history import record_prompt_execution
+            record_prompt_execution(
+                root,
+                run_id="inbox-last",
+                terminal_state="COMPLETE",
+                prompt_title="Indexed report",
+                executed_at="2026-08-03T19:40:44Z",
+                report=actual,
+            )
+
+            self.assertEqual(_report_for_run(root, "inbox-last"), b"actual")
 
     def test_reviewer_agents_are_derived_from_the_exact_terminal_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -743,6 +823,122 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(_report_analysis_for_run(root, "inbox-missing"), b"")
             self.assertTrue(_report_analysis_available_for_run(root, "inbox-last"))
             self.assertFalse(_report_analysis_available_for_run(root, "inbox-missing"))
+
+    def test_prompt_history_marks_only_the_matching_ai_analysis_as_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            analyses = root / ".engineering" / "report-analysis"
+            analyses.mkdir(parents=True)
+            (analyses / "inbox-one.md").write_text("analysis", encoding="utf-8")
+            record_prompt_execution(
+                root,
+                run_id="inbox-one",
+                terminal_state="COMPLETE",
+                prompt_title="One",
+                executed_at="2026-08-03T12:00:00Z",
+            )
+            record_prompt_execution(
+                root,
+                run_id="inbox-two",
+                terminal_state="COMPLETE",
+                prompt_title="Two",
+                executed_at="2026-08-03T11:00:00Z",
+            )
+            runs = json.loads(_prompt_history(root))["runs"]
+            self.assertTrue(runs[0]["analysis_available"])
+            self.assertFalse(runs[1]["analysis_available"])
+
+    def test_prompt_history_detail_is_scoped_to_its_exact_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root,
+                run_id="inbox-detail",
+                terminal_state="COMPLETE",
+                prompt_title="Detail prompt",
+                executed_at="2026-08-03T12:00:00Z",
+            )
+            payload = json.loads(_prompt_history_detail(root, "inbox-detail"))
+            self.assertEqual(payload["history"]["run_id"], "inbox-detail")
+            self.assertEqual(payload["history"]["title"], "Detail prompt")
+            self.assertEqual(payload["usage"], {})
+            self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
+
+    def test_prompt_history_detail_projector_owns_evidence_and_presentation(self) -> None:
+        entry = {"run_id": "inbox-projector", "target_repository": "stored/repository"}
+
+        payload = json.loads(
+            dashboard._project_prompt_history_detail(
+                entry,
+                execution={"state": "COMPLETE"},
+                runtime={"provider": "codex_cli"},
+                reviewers=[{"reviewer": "validation"}],
+                commits=["abc123"],
+                usage={"input_tokens": 10},
+                report="\n".join(
+                    (
+                        "- Execution Host: `Engineering Platform`",
+                        "- Target Repository: `forge`",
+                        "- Target Commit: `abc123`",
+                        "- Changed file: `one.py`",
+                    )
+                ),
+            )
+        )
+
+        self.assertEqual(entry["target_repository"], "stored/repository")
+        self.assertEqual(payload["history"]["target_repository"], "forge")
+        self.assertEqual(payload["execution"], {"state": "COMPLETE"})
+        self.assertEqual(payload["usage"], {"input_tokens": 10})
+        self.assertEqual(
+            payload["evidence"],
+            [
+                "Execution Host: Engineering Platform",
+                "Target repository: forge",
+                "Target commit: abc123",
+                "Evidence Bundle: 1 gewijzigde bestanden",
+            ],
+        )
+
+        without_report = json.loads(
+            dashboard._project_prompt_history_detail(
+                entry,
+                execution={},
+                runtime={},
+                reviewers=[],
+                commits=[],
+                usage={},
+                report=None,
+            )
+        )
+        self.assertEqual(without_report["history"], entry)
+        self.assertEqual(without_report["evidence"], [])
+
+    def test_dashboard_projects_producer_metadata_from_the_exact_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root) as connection:
+                connection.execute(
+                    """INSERT INTO execution_runs(
+                        run_id, execution_date, arrived_at, execution_started_at, execution_finished_at,
+                        queue_wait_seconds, terminal_state, execution_mode, workspace, repository,
+                        execution_host_version, producer_id, producer_type, producer_version,
+                        correlation_id, mission_id, engineering_action_id, execution_constraint_version
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("inbox-producer", "2026-08-04", "now", "now", "now", 0, "COMPLETE", "MANAGED",
+                     "djconnect", "pcvantol/djconnect", "1.5.0", "forge", "FORGE", "2.0", "corr-42",
+                     "MISSION-0003", "EA-0042", "1.0"),
+                )
+            record_prompt_execution(
+                root, run_id="inbox-producer", terminal_state="COMPLETE", prompt_title="Produced prompt",
+                executed_at="2026-08-04T12:00:00Z",
+            )
+            payload = json.loads(_prompt_history(root))
+            entry = payload["runs"][0]
+            self.assertEqual(entry["producer_type"], "FORGE")
+            self.assertEqual(entry["mission_id"], "MISSION-0003")
+            self.assertEqual(entry["engineering_action_id"], "EA-0042")
+
     def test_component_log_is_read_from_canonical_sqlite_storage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -835,13 +1031,129 @@ class DashboardStatusTest(unittest.TestCase):
             payload = json.loads(_prompt_history(root))
         self.assertEqual(payload, {"runs": []})
 
-    def test_http_dashboard_exposes_status_routes_and_bounded_read_only_chat(self) -> None:
+    def test_prompt_history_and_detail_fail_closed_when_evidence_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch("tools.engineering.dashboard.prompt_history", side_effect=OSError("unavailable")):
+                self.assertEqual(json.loads(_prompt_history(root)), {"runs": []})
+
+            record_prompt_execution(
+                root,
+                run_id="inbox-evidence",
+                terminal_state="COMPLETE",
+                prompt_title="Evidence",
+                executed_at="2026-08-04T12:00:00Z",
+            )
+            reports = root / ".engineering" / "reports"
+            reports.mkdir(parents=True)
+            report = reports / "2026-08-04_inbox-evidence.md"
+            report.write_text(
+                "\n".join(
+                    (
+                        "- Execution Host: `Engineering Platform`",
+                        "- Target Repository: `pcvantol/djconnect`",
+                        "- Target Commit: `abc123`",
+                        "- Changed file: `one.py`",
+                        "- Changed file: `two.py`",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            record_prompt_execution(
+                root,
+                run_id="inbox-evidence",
+                terminal_state="COMPLETE",
+                prompt_title="Evidence",
+                executed_at="2026-08-04T12:00:00Z",
+                report=report,
+                target_checkout_path="/Users/example/Documents/GitHub/forge",
+                tracked_file_count=1655,
+                target_branch="forge-phase-evidence",
+            )
+            connection = MagicMock()
+            connection.execute.return_value.fetchone.return_value = (10, 20, 30)
+            with patch("tools.engineering.dashboard.open_storage", return_value=connection):
+                detail = json.loads(_prompt_history_detail(root, "inbox-evidence"))
+            self.assertEqual(detail["usage"], {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30})
+            self.assertEqual(
+                detail["evidence"],
+                [
+                    "Execution Host: Engineering Platform",
+                    "Target repository: pcvantol/djconnect",
+                    "Target commit: abc123",
+                    "Evidence Bundle: 2 gewijzigde bestanden",
+                ],
+            )
+            self.assertEqual(detail["history"]["target_repository"], "pcvantol/djconnect")
+            self.assertEqual(
+                detail["history"]["target_checkout_path"],
+                "/Users/example/Documents/GitHub/forge",
+            )
+            self.assertEqual(detail["history"]["tracked_file_count"], 1655)
+            self.assertEqual(detail["history"]["target_branch"], "forge-phase-evidence")
+
+    def test_dashboard_file_projections_reject_malformed_or_missing_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text("not json", encoding="utf-8")
+            self.assertIn(b"huidige uitvoering", dashboard._current_codex_log(root))
+            self.assertIn(b"laatst uitgevoerde", dashboard._last_executed_codex_log(root))
+            self.assertEqual(dashboard._prompt_started(root), b"{}")
+            self.assertEqual(dashboard._tracked_file_count(root), "Niet beschikbaar")
+
+            (status / "status.json").write_text('{"run_id":"inbox-current"}', encoding="utf-8")
+            jobs = root / ".engineering" / "inbox-processing" / "one"
+            jobs.mkdir(parents=True)
+            (jobs / "job.json").write_text("not json", encoding="utf-8")
+            valid_job = root / ".engineering" / "inbox-processing" / "two"
+            valid_job.mkdir()
+            (valid_job / "job.json").write_text(
+                '{"run_id":"inbox-current","received_at":"2026-08-04T12:00:00Z"}', encoding="utf-8"
+            )
+            self.assertEqual(
+                json.loads(dashboard._prompt_started(root)), {"started_at": "2026-08-04T12:00:00Z"}
+            )
+
+    def test_dashboard_process_and_component_projections_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "current.json").write_text('{"run_id":"inbox-owned"}', encoding="utf-8")
+            (status / "runner_process.json").write_text(
+                '{"run_id":"inbox-owned","pid":9,"process_group":8}', encoding="utf-8"
+            )
+            with patch("tools.engineering.dashboard.subprocess.run") as run:
+                run.return_value = __import__("subprocess").CompletedProcess(
+                    ("ps",), 0, "malformed\n10 8 invalid worker\n", ""
+                )
+                self.assertEqual(json.loads(_codex_process_metrics(root))["process_count"], 0)
+            with patch("tools.engineering.dashboard._platform_health", return_value={"components": {"dashboard_relay": {}}}):
+                details = dashboard._component_details(root, "dashboard_relay")
+            self.assertEqual(details["launchd"]["label"], dashboard.RELAY_LABEL)
+            self.assertEqual(dashboard._process_elapsed_seconds("1:02"), 62)
+            with self.assertRaises(ValueError):
+                dashboard._process_elapsed_seconds("1:2:3:4")
+
+    @contextmanager
+    def _dashboard_http_connection(self):
         root = Path(__file__).parents[2]
         server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=2)
         try:
+            yield root, connection
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_http_dashboard_status_routes(self) -> None:
+        with self._dashboard_http_connection() as (_, connection):
             for route, content_type in (
                 ("/", "text/html"),
                 ("/assets/engineering-status-icon.svg", "image/svg+xml"),
@@ -855,18 +1167,13 @@ class DashboardStatusTest(unittest.TestCase):
                 ("/api/components/dashboard/details", "application/json"),
                 ("/api/process-metrics", "application/json"),
                 ("/api/usage", "application/json"),
-                ("/api/usage/last-executed?run_id=invalid", "application/json"),
                 ("/api/commits", "application/json"),
-                ("/api/commits/last-executed", "application/json"),
                 ("/api/prompt-started", "application/json"),
-                ("/api/prompt-history", "application/json"),
                 ("/api/log/latest", "text/plain"),
                 ("/api/logs/inbox", "text/plain"),
                 ("/api/logs/dashboard", "text/plain"),
                 ("/api/log/current", "text/plain"),
-                ("/api/log/last", "text/plain"),
                 ("/api/report/latest", "text/markdown"),
-                ("/api/report/last-executed?run_id=invalid", "text/markdown"),
             ):
                 connection.request("GET", route)
                 response = connection.getresponse()
@@ -891,282 +1198,163 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read())["health"], "ok")
-            for route, content_type in (
-                ("/api/report-analysis/last-executed?run_id=invalid", "text/markdown"),
-                ("/api/usage/last-executed?run_id=invalid", "application/json"),
+            connection.request("GET", "/missing")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 404)
+            response.read()
+
+    def test_http_dashboard_history_routes(self) -> None:
+        with self._dashboard_http_connection() as (_, connection):
+            connection.request("GET", "/api/prompt-history")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("application/json", response.getheader("Content-Type"))
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
+            response.read()
+            for route in (
+                "/api/report/last-executed?run_id=invalid",
+                "/api/report-analysis/last-executed?run_id=invalid",
+                "/api/usage/last-executed?run_id=invalid",
+                "/api/commits/last-executed",
+                "/api/log/last",
             ):
                 connection.request("GET", route)
                 response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertIn(content_type, response.getheader("Content-Type"))
+                self.assertEqual(response.status, 404)
                 response.read()
-            connection.request("GET", "/missing")
-            self.assertEqual(connection.getresponse().status, 404)
+
+    def test_http_dashboard_operator_routes(self) -> None:
+        with self._dashboard_http_connection() as (root, connection):
             with (
                 patch("tools.engineering.dashboard._clear_component_log") as clear_log,
                 patch("tools.engineering.dashboard.log_event"),
             ):
-                connection.request(
-                    "POST",
-                    "/api/logs/inbox",
-                    body="{}",
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read()), {"cleared": "inbox"})
                 clear_log.assert_called_once_with(root, "inbox")
-            connection.request(
-                "POST", "/api/logs/not-a-component", body="{}", headers={"Content-Type": "application/json"}
-            )
-            self.assertEqual(connection.getresponse().status, 400)
-            connection.request(
-                "POST", "/api/logs/inbox", body="[]", headers={"Content-Type": "application/json"}
-            )
-            self.assertEqual(connection.getresponse().status, 400)
+            for route, body in (("/api/logs/not-a-component", "{}"), ("/api/logs/inbox", "[]")):
+                connection.request("POST", route, body=body, headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                response.read()
             with (
                 patch("tools.engineering.dashboard.Timer") as timer,
                 patch("tools.engineering.dashboard.component_lifecycle_context", return_value={"git_commit": "abc"}),
                 patch("tools.engineering.dashboard.log_event") as log_event,
             ):
-                connection.request(
-                    "POST",
-                    "/api/components/inbox_watcher/restart",
-                    body="{}",
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/components/inbox_watcher/restart", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), {"restarting": "inbox_watcher"})
                 timer.assert_called_once()
                 timer.return_value.start.assert_called_once()
-                restart_event = next(
-                    call
-                    for call in log_event.call_args_list
-                    if call.args[2] == "component_restart_trigger_received"
-                )
+                restart_event = next(call for call in log_event.call_args_list if call.args[2] == "component_restart_trigger_received")
                 self.assertEqual(restart_event.kwargs["context"]["target_component"], "inbox_watcher")
-            connection.request(
-                "POST",
-                "/api/components/unknown_component/restart",
-                body="{}",
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(connection.getresponse().status, 400)
-            with (
-                patch("tools.engineering.dashboard.codex_chat_response", return_value="Veilig advies."),
-                patch("tools.engineering.dashboard.log_event") as chat_log_event,
-            ):
-                connection.request(
-                    "POST",
-                    "/api/codex-chat",
-                    body=json.dumps({"message": "Wat nu?", "history": []}),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(
-                    json.loads(response.read()),
-                    {"answer": "Veilig advies.", "model": "gpt-5.6-terra"},
-                )
-                chat_log_event.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "ai_chat_message_sent",
-                    diagnostic="[REDACTED]",
-                )
-            connection.request(
-                "POST", "/api/codex-chat", body="{}", headers={"Content-Type": "application/json"}
-            )
-            self.assertEqual(connection.getresponse().status, 400)
+            connection.request("POST", "/api/components/unknown_component/restart", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
             with (
                 patch("tools.engineering.dashboard._consume_codex_rate_limit_reset_credit", return_value="reset"),
                 patch("tools.engineering.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
                 patch("tools.engineering.dashboard.log_event") as reset_log_event,
             ):
-                connection.request(
-                    "POST",
-                    "/api/rate-limit-reset",
-                    body="{}",
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(
-                    json.loads(response.read()),
-                    {"outcome": "reset", "rate_limits": {"reset_credits": 1}},
-                )
-                reset_log_event.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "ai_usage_reset_completed",
-                )
+                self.assertEqual(json.loads(response.read()), {"outcome": "reset", "rate_limits": {"reset_credits": 1}})
+                reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_completed")
             with patch("tools.engineering.dashboard.log_event") as audit_log_event:
-                connection.request(
-                    "POST",
-                    "/api/audit/user-action",
-                    body='{"action":"chat_downloaded"}',
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/audit/user-action", body='{"action":"chat_downloaded"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read()), {"logged": True})
-                audit_log_event.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "chat_downloaded",
-                )
-            retry_outcome = {
-                "blocking_run_id": "inbox-blocked",
-                "retry_filename": "retry-inbox-blocked.md",
-                "retry_run_id": "inbox-retry",
-            }
+                audit_log_event.assert_any_call(ANY, logging.INFO, "chat_downloaded")
+            retry_outcome = {"blocking_run_id": "inbox-blocked", "retry_filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),
-                patch(
-                    "tools.engineering.dashboard.submit_predecessor_retry",
-                    return_value=retry_outcome,
-                ) as submit_retry,
+                patch("tools.engineering.dashboard.submit_predecessor_retry", return_value=retry_outcome) as submit_retry,
                 patch("tools.engineering.dashboard.log_event") as retry_log_event,
             ):
-                connection.request(
-                    "POST",
-                    "/api/predecessor-retry",
-                    body="{}",
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/predecessor-retry", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), retry_outcome)
                 submit_retry.assert_called_once_with(root, root)
-                retry_log_event.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "predecessor_retry_submission_triggered",
-                    run_id="inbox-blocked",
-                    diagnostic="retry_run_id=inbox-retry",
-                )
-            execution_retry_outcome = {
-                "retry_of": "inbox-blocked",
-                "original_run_id": "inbox-blocked",
-                "retry_generation": 1,
-                "retry_timestamp": "2026-08-03T12:00:00+00:00",
-                "filename": "retry-inbox-blocked.md",
-                "retry_run_id": "inbox-retry",
-            }
+                retry_log_event.assert_any_call(ANY, logging.INFO, "predecessor_retry_submission_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
+            execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),
-                patch(
-                    "tools.engineering.dashboard.submit_execution_retry",
-                    return_value=execution_retry_outcome,
-                ) as submit_execution_retry,
+                patch("tools.engineering.dashboard.submit_execution_retry", return_value=execution_retry_outcome) as submit_execution_retry,
                 patch("tools.engineering.dashboard.log_event") as execution_retry_log,
             ):
-                connection.request(
-                    "POST",
-                    "/api/execution-retry",
-                    body='{"run_id":"inbox-blocked"}',
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/execution-retry", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), execution_retry_outcome)
                 submit_execution_retry.assert_called_once_with(root, root, "inbox-blocked")
-                execution_retry_log.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "execution_retry_triggered",
-                    run_id="inbox-blocked",
-                    diagnostic="retry_run_id=inbox-retry",
-                )
-            connection.request(
-                "POST",
-                "/api/execution-retry",
-                body="{}",
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(connection.getresponse().status, 400)
-            dismissal = {
-                "run_id": "inbox-blocked",
-                "dismissed": True,
-                "dismissed_at": "2026-08-03T12:01:00+00:00",
-                "dismissed_by": "dashboard_operator",
-            }
+                execution_retry_log.assert_any_call(ANY, logging.INFO, "execution_retry_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
+            connection.request("POST", "/api/execution-retry", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            dismissal = {"run_id": "inbox-blocked", "dismissed": True, "dismissed_at": "2026-08-03T12:01:00+00:00", "dismissed_by": "dashboard_operator"}
             with (
                 patch("tools.engineering.dashboard.dismiss_execution", return_value=dismissal) as dismiss,
                 patch("tools.engineering.dashboard.log_event") as dismiss_log_event,
             ):
-                connection.request(
-                    "POST",
-                    "/api/execution-dismiss",
-                    body='{"run_id":"inbox-blocked"}',
-                    headers={"Content-Type": "application/json"},
-                )
+                connection.request("POST", "/api/execution-dismiss", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), dismissal)
                 dismiss.assert_called_once_with(root, "inbox-blocked")
-                dismiss_log_event.assert_any_call(
-                    ANY,
-                    logging.INFO,
-                    "execution_dismissed",
-                    run_id="inbox-blocked",
-                )
-            with patch(
-                "tools.engineering.dashboard.dismiss_execution",
-                side_effect=dashboard.RetrySubmissionError("De uitvoering is nog actief."),
-            ):
-                connection.request(
-                    "POST",
-                    "/api/execution-dismiss",
-                    body='{"run_id":"inbox-active"}',
-                    headers={"Content-Type": "application/json"},
-                )
+                dismiss_log_event.assert_any_call(ANY, logging.INFO, "execution_dismissed", run_id="inbox-blocked")
+            with patch("tools.engineering.dashboard.dismiss_execution", side_effect=dashboard.RetrySubmissionError("De uitvoering is nog actief.")):
+                connection.request("POST", "/api/execution-dismiss", body='{"run_id":"inbox-active"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 409)
                 self.assertEqual(json.loads(response.read()), {"error": "De uitvoering is nog actief."})
-            for body in ("{}", '[]', '{"run_id":1}', '{"run_id":"inbox-blocked","extra":true}'):
-                connection.request(
-                    "POST",
-                    "/api/execution-dismiss",
-                    body=body,
-                    headers={"Content-Type": "application/json"},
-                )
+            for body in ("{}", "[]", '{"run_id":1}', '{"run_id":"inbox-blocked","extra":true}'):
+                connection.request("POST", "/api/execution-dismiss", body=body, headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 400)
-                self.assertEqual(
-                    json.loads(response.read()),
-                    {"error": "De uitvoering kan nu niet veilig worden bevestigd."},
-                )
-            connection.request(
-                "POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"}
-            )
-            self.assertEqual(connection.getresponse().status, 400)
-            with patch(
-                "tools.engineering.dashboard._consume_codex_rate_limit_reset_credit",
-                side_effect=dashboard.RateLimitResetError("Reset niet beschikbaar."),
-            ):
-                connection.request(
-                    "POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"}
-                )
-                self.assertEqual(connection.getresponse().status, 503)
+                self.assertEqual(json.loads(response.read()), {"error": "De uitvoering kan nu niet veilig worden bevestigd."})
+            connection.request("POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            with patch("tools.engineering.dashboard._consume_codex_rate_limit_reset_credit", side_effect=dashboard.RateLimitResetError("Reset niet beschikbaar.")):
+                connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 503)
+                response.read()
             with patch("tools.engineering.dashboard._clear_component_log", side_effect=OSError("Niet beschikbaar.")):
-                connection.request(
-                    "POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"}
-                )
-                self.assertEqual(connection.getresponse().status, 503)
-            connection.request(
-                "POST",
-                "/api/codex-chat",
-                body=json.dumps({"message": "Wat nu?", "history": []}),
-                headers={"Content-Type": "application/json", "Origin": "https://example.invalid"},
-            )
-            self.assertEqual(connection.getresponse().status, 403)
-        finally:
-            connection.close()
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
+                connection.request("POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 503)
+                response.read()
+
+    def test_http_dashboard_chat_routes(self) -> None:
+        with self._dashboard_http_connection() as (_, connection):
+            with (
+                patch("tools.engineering.dashboard.codex_chat_response", return_value="Veilig advies."),
+                patch("tools.engineering.dashboard.log_event") as chat_log_event,
+            ):
+                connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?", "history": []}), headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra"})
+                chat_log_event.assert_any_call(ANY, logging.INFO, "ai_chat_message_sent", diagnostic="[REDACTED]")
+            connection.request("POST", "/api/codex-chat", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?", "history": []}), headers={"Content-Type": "application/json", "Origin": "https://example.invalid"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 403)
+            response.read()
 
     @patch(
         "tools.engineering.dashboard.build_relay",
@@ -1248,7 +1436,7 @@ class DashboardStatusTest(unittest.TestCase):
 
     @patch("tools.engineering.dashboard.subprocess.run", side_effect=OSError)
     def test_dashboard_process_metrics_fail_closed(self, _: object) -> None:
-        self.assertEqual(json.loads(_codex_process_metrics())["process_count"], 0)
+        self.assertEqual(json.loads(_codex_process_metrics(Path("/missing")))["process_count"], 0)
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_dashboard_build_identifier_handles_failed_git_query(self, run: object) -> None:
