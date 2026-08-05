@@ -92,10 +92,15 @@ It is not complete before qualification. Continuous improvement may address
 qualification, diagnostics, compatibility and maintenance; it must not
 continuously expand the feature set.
 
-The next bounded enhancement is **Execution Host Preflight Level 3 (Capability
-Preflight)**: let Forge capabilities contribute workspace-specific readiness
-checks without changing the generic Execution Host. It must not broaden Levels
-1 or 2 into mission or action validation.
+**Execution Host Preflight Level 3 (Capability Preflight)** is delivered by PR
+[#730](https://github.com/pcvantol/djconnect/pull/730), merged as
+`c540b704fffb933b418a24e8602874d1369ee786` and finalized by PR
+[#731](https://github.com/pcvantol/djconnect/pull/731). It lets declared
+capabilities contribute bounded readiness checks before an Inbox claim without
+changing the generic Execution Host or broadening Levels 1 and 2 into mission
+or action validation. No successor Engineering Platform capability is currently
+authorized; a future increment must be derived from current repository evidence
+and receive its own explicit architectural approval.
 
 Engineering Memory remains advisory and may improve recommendations only.
 Repository evidence remains authoritative and Memory never autonomously changes
