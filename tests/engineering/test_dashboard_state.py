@@ -15,7 +15,13 @@ class DashboardStateTest(unittest.TestCase):
             status = root / ".engineering" / "status"
             status.mkdir(parents=True)
             (status / "status.json").write_text(
-                json.dumps({"queue_items": [{"filename": "later.md"}]}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "platform_version": "1.5.0",
+                        "queue_items": [{"filename": "later.md"}],
+                    }
+                ),
+                encoding="utf-8",
             )
             (status / "current.json").write_text(
                 json.dumps({"run_id": "run-1", "phase": "EXECUTE_AGENT"}), encoding="utf-8"
@@ -24,6 +30,7 @@ class DashboardStateTest(unittest.TestCase):
             payload = json.loads(dashboard_state.status(root))
 
         self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(payload["platform_version"], "1.5.0")
         self.assertEqual(payload["run_id"], "run-1")
         self.assertEqual(payload["queue_items"], [{"filename": "later.md"}])
 

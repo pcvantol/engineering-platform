@@ -153,6 +153,7 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 /* Keep the download action compact and legible instead of relying on a font-dependent glyph. */
 .download.download--glyph::before{content:"↓";font:700 21px/1 system-ui}.download.download--glyph::after{content:none}.markdown-copy-wrap .download.download--glyph{align-items:center;justify-content:center;line-height:1}
 .footer .label{color:var(--house-style)}
+#action{font-style:italic}
 /* Product controls share the house style rather than individual category colours. */
 .theme-toggle[aria-checked="true"]::before,.section-state-toggle[aria-checked="true"]::before,.auto-refresh-toggle input:checked{background:var(--house-style)}.theme-toggle:focus-visible,.section-state-toggle:focus-visible{outline-color:var(--house-style);box-shadow:0 0 0 5px var(--house-style-focus)}.rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}.rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}html[data-theme="light"] .rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}html[data-theme="light"] .rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}
 /* Component cards use symmetric vertical padding; the info action belongs at the card centre. */

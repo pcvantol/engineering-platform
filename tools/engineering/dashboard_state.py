@@ -84,6 +84,7 @@ def status(root: Path) -> bytes:
         projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
+                "platform_version": watcher.get("platform_version"),
                 "current_phase": live.get("phase") or "INITIALIZE",
                 "current_action": live.get("current_action") or "Engineeringuitvoering is actief.",
                 "run_id": live.get("run_id"),
