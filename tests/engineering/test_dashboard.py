@@ -178,6 +178,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("<title>Engineering Status</title>", page)
         self.assertIn('href="/assets/dashboard.css"', page)
         self.assertIn('src="/assets/dashboard.js" type="module"', page)
+        self.assertIn('id="pageRefresh"', page)
         for identifier in (
             "dashboardSplash",
             "engineering-dashboard-content",
@@ -195,6 +196,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertTrue((root / "dashboard_locales.mjs").is_file())
         self.assertTrue((root / "dashboard_status_store.mjs").is_file())
         stylesheet = (root / "dashboard.css").read_text(encoding="utf-8")
+        self.assertIn("touch-action:manipulation", stylesheet)
+        self.assertIn("height:100lvh;min-height:100dvh", stylesheet)
+        self.assertIn(":is(input,select,textarea){font-size:16px}", stylesheet)
+        self.assertIn("body.dashboard-modal-open", stylesheet)
         self.assertIn("--report-modal-surface", stylesheet)
         self.assertIn("background:var(--report-modal-surface)", stylesheet)
         self.assertIn(".execution-history-action{background:#4f453c", stylesheet)

@@ -264,7 +264,7 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
         ).fetchall()
     finally:
         connection.close()
-    return [
+    records = [
         {
             "run_id": row[0],
             "status": row[1],
@@ -291,6 +291,21 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
         }
         for row in rows
     ]
+    # Lineage is a read-only projection of immutable parent references.  It
+    # never changes a terminal execution or treats a retry as a resume.
+    children = {record["retry_of"]: record for record in records if record.get("retry_of")}
+    for record in records:
+        child = children.get(record["run_id"])
+        record["retry_child_run_id"] = child.get("run_id") if child else None
+        record["retry_status"] = child.get("status") if child else None
+        chain = [record["run_id"]]
+        cursor = record
+        while cursor.get("retry_of") and cursor["retry_of"] not in chain:
+            chain.insert(0, cursor["retry_of"])
+            cursor = next((item for item in records if item["run_id"] == cursor["retry_of"]), {})
+        record["retry_chain"] = chain
+        record["current_active_run"] = child.get("run_id") if child else record["run_id"]
+    return records
 
 
 def report_for_prompt_history(root: Path, run_id: object) -> bytes | None:

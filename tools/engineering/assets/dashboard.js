@@ -43,6 +43,13 @@ function formatTimestamp(value, fallback = t("format.timestamp_unavailable")) {
   const timestamp = Date.parse(String(value || ""));
   return Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : fallback;
 }
+function formatPromptHistoryTimestamp(value, fallback = t("format.timestamp_unavailable")) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return fallback;
+  return new Intl.DateTimeFormat(dashboardLocale, {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).format(new Date(timestamp));
+}
 function capabilityRecommendation(value) {
   const key = {
     "Capability admission passed.": "capability.recommendation.admission_passed",
@@ -690,7 +697,10 @@ function fallbackCopy(value) {
   area.value = value;
   area.setAttribute("readonly", "");
   area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-  document.body.append(area);
+  // A modal dialog makes everything outside it inert. iOS Safari then refuses
+  // to focus a temporary body-level textarea, so keep the selection inside the
+  // active dialog when a copy action originates there.
+  (document.querySelector("dialog[open]") || document.body).append(area);
   area.focus();
   area.select();
   area.setSelectionRange(0, area.value.length);
@@ -1136,7 +1146,7 @@ function addCategoryIcons() {
     ["#platformHealth", "◈", "section.platform_components"],
     ["#rateLimits", "◔", "section.remaining_usage"],
     ["#executionTelemetry", "▥", "section.execution_host_telemetry"],
-    ["#technicalDetails", "⚙", "section.technical_details"],
+    ["#technicalDetails", "⌘", "section.technical_details"],
     ["#componentLogs", "≡", "section.logs"],
     ["#currentRun", "▤", "section.active_prompt"],
   ]) {
@@ -2154,6 +2164,7 @@ function clearComponentLog(component, button) {
     t("action.clear_logs"),
     t("logs.clear_description", { component: name }),
     t("action.clear_logs"),
+    { destructive: true },
   ).then(async (confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
@@ -2227,8 +2238,8 @@ document.querySelectorAll(".component-log-download").forEach((button) =>
   ),
 );
 document.querySelectorAll(".clear-component-log").forEach((button) => {
-  button.classList.add("clear-component-log--glyph");
-  button.textContent = "⌫";
+  button.classList.add("dashboard-action", "dashboard-action--destructive");
+  button.textContent = "⌧";
   button.title = t("action.clear_logs");
   button.setAttribute("aria-label", t("action.clear_logs"));
 });
@@ -2237,6 +2248,54 @@ let pullRefreshStart = null,
 const pullRefresh = $("pullRefresh");
 const dashboardScrollRegion = document.querySelector(".dashboard-scroll-region");
 const pullRefreshActivationHeight = 40;
+let modalBackgroundScrollTop = null;
+function syncModalBackgroundScroll() {
+  const hasOpenModal = Boolean(document.querySelector("dialog[open]"));
+  if (hasOpenModal && modalBackgroundScrollTop === null) {
+    modalBackgroundScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+    document.body.style.setProperty("--dashboard-modal-scroll-top", `-${modalBackgroundScrollTop}px`);
+    document.body.classList.add("dashboard-modal-open");
+    return;
+  }
+  if (!hasOpenModal && modalBackgroundScrollTop !== null) {
+    const scrollTop = modalBackgroundScrollTop;
+    modalBackgroundScrollTop = null;
+    document.body.classList.remove("dashboard-modal-open");
+    document.body.style.removeProperty("--dashboard-modal-scroll-top");
+    window.scrollTo({ top: scrollTop, behavior: "auto" });
+  }
+}
+new MutationObserver(syncModalBackgroundScroll).observe(document.body, {
+  attributes: true,
+  attributeFilter: ["open"],
+  subtree: true,
+});
+function dashboardScrollTop() {
+  if (window.matchMedia("(max-width:620px) and (orientation:portrait)").matches)
+    return window.scrollY || document.documentElement.scrollTop || 0;
+  return dashboardScrollRegion?.scrollTop || 0;
+}
+let inputFocusScrollTop = null;
+function restoreIPhoneInputScroll() {
+  if (inputFocusScrollTop === null) return;
+  const scrollTop = inputFocusScrollTop;
+  inputFocusScrollTop = null;
+  window.setTimeout(() => window.scrollTo({ top: scrollTop, behavior: "auto" }), 250);
+}
+document.addEventListener("focusin", (event) => {
+  if (
+    !window.matchMedia("(max-width:620px) and (orientation:portrait)").matches ||
+    !(event.target instanceof Element) ||
+    !event.target.matches("input,select,textarea,[contenteditable=true]")
+  ) return;
+  inputFocusScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+});
+document.addEventListener("focusout", (event) => {
+  if (
+    event.target instanceof Element &&
+    event.target.matches("input,select,textarea,[contenteditable=true]")
+  ) restoreIPhoneInputScroll();
+});
 function updatePullRefresh(distance) {
   pullRefreshDistance = Math.max(0, Math.min(distance, 112));
   const ready = pullRefreshDistance >= 72;
@@ -2252,7 +2311,7 @@ function updatePullRefresh(distance) {
 function startPullRefresh(event) {
   if (
     event.touches.length !== 1 ||
-    (dashboardScrollRegion && dashboardScrollRegion.scrollTop > 0)
+    dashboardScrollTop() > 0
   )
     return;
   const target = event.target;
@@ -2281,13 +2340,15 @@ function endPullRefresh() {
   const refresh = pullRefreshDistance >= 72;
   pullRefreshStart = null;
   updatePullRefresh(0);
-  if (refresh) {
-    pullRefresh.textContent = t("refresh.refreshing");
-    pullRefresh.classList.add("pull-refresh--visible");
-    pullRefresh.setAttribute("aria-hidden", "false");
-    window.location.reload();
-  }
+  if (refresh) refreshDashboard();
 }
+function refreshDashboard() {
+  pullRefresh.textContent = t("refresh.refreshing");
+  pullRefresh.classList.add("pull-refresh--visible");
+  pullRefresh.setAttribute("aria-hidden", "false");
+  window.location.reload();
+}
+$("pageRefresh")?.addEventListener("click", refreshDashboard);
 document.addEventListener("touchstart", startPullRefresh, { passive: true });
 document.addEventListener("touchmove", movePullRefresh, { passive: false });
 document.addEventListener("touchend", endPullRefresh, { passive: true });
@@ -2380,6 +2441,16 @@ function renderPromptHistory() {
     navigation = $("promptHistoryPagination"),
     pageCount = Math.max(1, Math.ceil(rows.length / PROMPT_HISTORY_PAGE_SIZE));
   promptHistoryPage = Math.min(Math.max(1, promptHistoryPage), pageCount);
+  const showRunSuffix = window.matchMedia("(min-width: 621px)").matches,
+    headerRow = document.querySelector("#promptHistory .log-table thead tr");
+  if (showRunSuffix && headerRow && !headerRow.querySelector("[data-run-suffix]")) {
+    const header = document.createElement("th");
+    header.dataset.runSuffix = "true";
+    header.dataset.i18n = "table.run_suffix";
+    header.scope = "col";
+    header.textContent = t("table.run_suffix");
+    headerRow.children[0]?.before(header);
+  }
   body.replaceChildren();
   const visible = rows.slice(
     (promptHistoryPage - 1) * PROMPT_HISTORY_PAGE_SIZE,
@@ -2389,14 +2460,17 @@ function renderPromptHistory() {
     const row = document.createElement("tr"),
       cell = document.createElement("td");
     cell.className = "log-empty";
-    cell.colSpan = 8;
+    cell.colSpan = 9;
     cell.textContent = t("history.no_prompts");
     row.append(cell);
     body.append(row);
   } else
+    {
+    const retriedParents = new Set(rows.map((entry) => entry.retry_of).filter(Boolean));
     for (const entry of visible) {
       const row = document.createElement("tr"),
         status = document.createElement("td"),
+        runSuffix = document.createElement("td"),
         title = document.createElement("td"),
         executed = document.createElement("td"),
         report = document.createElement("td"),
@@ -2425,12 +2499,11 @@ function renderPromptHistory() {
         "prompt-history-status prompt-history-status--" +
         locale.lower(String(entry.status || ""));
       status.textContent = promptHistoryStatus(entry.status);
+      runSuffix.textContent = String(entry.run_id || "—").slice(-5);
       title.textContent = String(
         entry.title || entry.run_id || t("retry.unavailable_title"),
       );
-      executed.textContent = Number.isFinite(timestamp)
-        ? locale.dateTime(new Date(timestamp))
-        : String(entry.executed_at || t("format.timestamp_unavailable"));
+      executed.textContent = formatPromptHistoryTimestamp(entry.executed_at);
       if (entry.report_available && entry.run_id) {
         const view = document.createElement("button");
         view.className = "prompt-history-report";
@@ -2465,11 +2538,11 @@ function renderPromptHistory() {
         button.type = "button";
         button.title = t("history.open_chat", { title: title.textContent });
         button.setAttribute("aria-label", button.title);
-        button.textContent = "💬";
+        button.textContent = "⋯";
         button.addEventListener("click", () => openPromptHistoryChat(entry));
         chat.append(button);
       } else chat.textContent = "—";
-      if (entry.status === "BLOCKED" && entry.run_id) {
+      if (entry.status === "BLOCKED" && entry.run_id && !retriedParents.has(entry.run_id)) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "predecessor-retry execution-history-action";
@@ -2480,7 +2553,7 @@ function renderPromptHistory() {
       if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
         const dismiss = document.createElement("button");
         dismiss.type = "button";
-        dismiss.className = "predecessor-retry execution-history-action";
+        dismiss.className = "predecessor-retry execution-history-action execution-dismiss";
         dismiss.textContent = t("action.dismiss_execution");
         dismiss.addEventListener("click", () => dismissExecution(entry));
         action.append(dismiss);
@@ -2500,8 +2573,11 @@ function renderPromptHistory() {
         });
         details.append(button);
       } else details.textContent = "—";
-      row.append(status, title, executed, report, analysis, chat, action, details);
+      if (showRunSuffix) row.append(runSuffix);
+      row.append(status);
+      row.append(title, executed, report, analysis, chat, action, details);
       body.append(row);
+    }
     }
   navigation.replaceChildren();
   const summary = document.createElement("span"),
@@ -3183,7 +3259,7 @@ function promptDetailExecutionSection(history) {
     ),
     detailField(t("detail.execution_mode"), history.execution_mode || t("detail.not_recorded")),
     detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
-    detailField(t("detail.producer_type"), history.producer_type || t("detail.not_recorded")),
+    detailField(t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : t("detail.not_recorded")),
     detailField(t("detail.producer_version"), history.producer_version || t("detail.not_recorded")),
     detailField(t("detail.mission_id"), history.mission_id || t("detail.not_recorded")),
     detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
@@ -3428,23 +3504,26 @@ function dismissExecution(entry) {
   });
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
-function confirmDashboardAction(title, text, confirmLabel) {
+function confirmDashboardAction(title, text, confirmLabel, { destructive = false } = {}) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),
     body = $("confirmationModalText"),
+    close = $("confirmationModalClose"),
     cancel = $("confirmationModalCancel"),
     confirm = $("confirmationModalConfirm");
   heading.textContent = title;
   body.textContent = text;
   confirm.textContent = confirmLabel;
-  modal.style.setProperty("--confirmation-color", "#f0b66a");
+  modal.classList.toggle("dashboard-modal-shell--destructive", destructive);
+  modal.style.setProperty("--modal-accent", destructive ? "#ff718f" : "#f0b66a");
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.close();
-      cancel.onclick = confirm.onclick = null;
+      modal.classList.remove("dashboard-modal-shell--destructive");
+      close.onclick = cancel.onclick = confirm.onclick = null;
       resolve(value);
     };
-    cancel.onclick = () => finish(false);
+    close.onclick = cancel.onclick = () => finish(false);
     confirm.onclick = () => finish(true);
     modal.addEventListener(
       "cancel",
@@ -3461,13 +3540,21 @@ function confirmDashboardAction(title, text, confirmLabel) {
 function updateChatActions() {
   const visible = chatHistory.length > 0;
   $("downloadChat").hidden = !visible;
+  $("copyChat").hidden = !visible;
   $("clearChat").hidden = !visible;
 }
+$("copyChat").addEventListener("click", () => {
+  if (!chatHistory.length) return;
+  copyText(chatHistoryMarkdown()).catch(() => {
+    $("chatStatus").textContent = t("copy.failed");
+  });
+});
 $("clearChat").addEventListener("click", () =>
   confirmDashboardAction(
     t("chat.clear_title"),
     t("chat.clear_description"),
     t("chat.clear_title"),
+    { destructive: true },
   ).then((confirmed) => {
     if (!confirmed) return;
     chatHistory = [];
@@ -3559,6 +3646,7 @@ Object.assign(window, {
   queueItems,
   r,
   rateLimits,
+  refreshDashboard,
   refreshOpenComponentDetails,
   renderChatHistory,
   renderComponentLogs,

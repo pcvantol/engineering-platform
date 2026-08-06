@@ -52,6 +52,31 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("renders repository and workspace state codes as readable labels", () => {
+    const labels = Object.fromEntries(SUPPORTED_LOCALES.map((locale) => {
+      const translate = createTranslator(locale);
+      return [locale, [
+        translate("state.MERGED_RECONCILED"),
+        translate("state.WORKSPACE_READY"),
+      ]];
+    }));
+    expect(labels).toEqual({
+      en: ["Merged and reconciled", "Workspace ready"],
+      nl: ["Samengevoegd en afgestemd", "Werkruimte gereed"],
+      de: ["Zusammengeführt und abgeglichen", "Arbeitsbereich bereit"],
+      fr: ["Fusionné et rapproché", "Espace de travail prêt"],
+      es: ["Fusionado y conciliado", "Espacio de trabajo listo"],
+    });
+  });
+
+  test("locks the iOS viewport scale to prevent input-focus zoom", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
+      "content",
+      "width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover",
+    );
+  });
+
   test("uses catalogued copy for every UI label in every supported language", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
@@ -178,7 +203,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↑", "i", "↺", "⌫", "▤", "✦", "💬", "—",
+      "", "⧉", "↑", "i", "↺", "⌧", "▤", "✦", "⋯", "—",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
 
@@ -207,10 +232,20 @@ test.describe("Engineering Status browser smoke", () => {
       await page.evaluate(() => {
         updatePullRefresh(80);
         document.querySelector("#promptHistoryChatModal").showModal();
+        document.querySelector("#copyChat").hidden = false;
         document.querySelector("#clearChat").hidden = false;
       });
       await expect(page.getByTestId("pull-refresh")).toHaveText(
         DASHBOARD_MESSAGES[language]["refresh.release_to_refresh"],
+      );
+      await expect(page.getByTestId("page-refresh")).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["refresh.page"],
+      );
+      await expect(page.getByTestId("page-refresh")).toHaveText("↻");
+      await expect(page.locator("#copyChat")).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["chat.copy_title"],
       );
       await expect(page.locator("#componentLogs .log-table").first()).toHaveAttribute(
         "aria-label",
@@ -230,6 +265,9 @@ test.describe("Engineering Status browser smoke", () => {
       await page.keyboard.press("Escape");
       await page.locator("#promptHistoryChatModal").evaluate((modal) => modal.close());
     }
+    expect(dashboardSource).toContain(
+      '$("pageRefresh")?.addEventListener("click", refreshDashboard)',
+    );
   });
 
   test("copies chat text synchronously for iOS Safari", async ({ page }) => {
@@ -239,7 +277,10 @@ test.describe("Engineering Status browser smoke", () => {
       window.__copyFallbackCalls = 0;
       window.__clipboardCalls = 0;
       document.execCommand = (command) => {
-        if (command === "copy") window.__copyFallbackCalls += 1;
+        if (command === "copy") {
+          window.__copyFallbackCalls += 1;
+          window.__copyHost = document.activeElement.closest("dialog")?.id;
+        }
         return command === "copy";
       };
       Object.defineProperty(navigator, "clipboard", {
@@ -266,7 +307,32 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => page.evaluate(() => ({
       fallback: window.__copyFallbackCalls,
       clipboard: window.__clipboardCalls,
-    }))).toEqual({ fallback: 1, clipboard: 0 });
+      host: window.__copyHost,
+    }))).toEqual({
+      fallback: 1,
+      clipboard: 0,
+      host: "promptHistoryChatModal",
+    });
+  });
+
+  test("copies the complete chat conversation", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      window.__copiedChat = "";
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: (value) => { window.__copiedChat = value; return Promise.resolve(); } },
+      });
+      chatHistory = [
+        { role: "user", text: "First question" },
+        { role: "assistant", text: "First answer" },
+      ];
+      renderChatHistory();
+      document.querySelector("#promptHistoryChatModal").showModal();
+    });
+    await page.locator("#copyChat").click();
+    await expect.poll(() => page.evaluate(() => window.__copiedChat)).toContain("First question");
+    await expect.poll(() => page.evaluate(() => window.__copiedChat)).toContain("First answer");
   });
 
   test("uses the Clipboard API before the legacy fallback in modern browsers", async ({ page }) => {
@@ -344,10 +410,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
-  test("uses the shared modal shell with contextual accents", async ({ page }) => {
+  test("uses the shared modal shell with contextual panels and neutral close controls", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
     for (const [selector, modifier, accent] of [
+      ["#componentModal", "dashboard-modal-shell--component", "rgb(163, 230, 53)"],
+      ["#confirmationModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
       ["#promptHistoryReportModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryDetailModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryChatModal", "dashboard-modal-shell--chat", "rgb(208, 164, 255)"],
@@ -356,7 +424,7 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(modal).toHaveClass(new RegExp(modifier));
       await modal.evaluate((element) => element.showModal());
       await expect(modal.locator(".dashboard-modal-shell__panel")).toHaveCSS("border-top-color", accent);
-      await expect(modal.locator(".dashboard-modal-shell__close")).toHaveCSS("border-top-color", accent);
+      await expect(modal.locator(".dashboard-modal-shell__close")).toHaveCSS("border-top-color", "rgb(146, 145, 155)");
       await modal.evaluate((element) => element.close());
     }
   });
@@ -627,12 +695,13 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("localizes prompt history column headings for every supported language", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 844 });
     const expectations = [
-      ["en", ["Status", "Prompt title", "Executed at", "Report", "AI analysis", "AI chat", "Action", "Details"]],
-      ["nl", ["Status", "Prompttitel", "Uitgevoerd op", "Rapport", "AI-analyse", "AI-gesprek", "Actie", "Details"]],
-      ["de", ["Status", "Prompttitel", "Ausgeführt am", "Bericht", "KI-Analyse", "KI-Chat", "Aktion", "Details"]],
-      ["fr", ["État", "Titre du prompt", "Exécuté le", "Rapport", "Analyse IA", "Chat IA", "Action", "Détails"]],
-      ["es", ["Estado", "Título del prompt", "Ejecutado el", "Informe", "Análisis de IA", "Chat de IA", "Acción", "Detalles"]],
+      ["en", ["Run ID", "Status", "Prompt title", "Executed at", "Report", "AI analysis", "AI chat", "Action", "Details"]],
+      ["nl", ["Run-ID", "Status", "Prompttitel", "Uitgevoerd op", "Rapport", "AI-analyse", "AI-gesprek", "Actie", "Details"]],
+      ["de", ["Run-ID", "Status", "Prompttitel", "Ausgeführt am", "Bericht", "KI-Analyse", "KI-Chat", "Aktion", "Details"]],
+      ["fr", ["ID exéc.", "État", "Titre du prompt", "Exécuté le", "Rapport", "Analyse IA", "Chat IA", "Action", "Détails"]],
+      ["es", ["ID ejec.", "Estado", "Título del prompt", "Ejecutado el", "Informe", "Análisis de IA", "Chat de IA", "Acción", "Detalles"]],
     ];
     for (const [language, headers] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -678,7 +747,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
     const layout = await page.locator("#promptHistory .log-table-wrap").evaluate((wrap) => {
       const table = wrap.querySelector("table");
-      const titleHeader = table.querySelector("th:nth-child(2)");
+      const titleHeader = table.querySelector("th:nth-child(3)");
       const statusHeader = table.querySelector("th:nth-child(1)");
       return {
         wrapWidth: Math.round(wrap.getBoundingClientRect().width),
@@ -690,6 +759,18 @@ test.describe("Engineering Status browser smoke", () => {
     expect(layout.tableWidth).toBeGreaterThanOrEqual(layout.wrapWidth - 2);
     expect(layout.tableWidth).toBeLessThanOrEqual(layout.wrapWidth + 2);
     expect(layout.titleWidth).toBeGreaterThan(layout.statusWidth * 2.5);
+  });
+
+  test("shows only the final five Run-ID characters on an iPad-sized history table", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{ run_id: "inbox-00557e6587394f67b8b4cbde0748bce7", title: "Retry lineage", status: "COMPLETE" }];
+      renderPromptHistory();
+    });
+    await expect(page.locator("#promptHistoryRows tr td").first()).toHaveText("8bce7");
   });
 
   test("keeps prompt history horizontally scrollable only on an iPhone-sized viewport", async ({ page }) => {
@@ -764,6 +845,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("keeps the status bar at the bottom while dashboard content scrolls", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 760 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#engineering-dashboard-content").evaluate((content) => {
       content.style.minHeight = "2000px";
@@ -786,6 +868,178 @@ test.describe("Engineering Status browser smoke", () => {
     expect(layout.footerBottom).toBeLessThanOrEqual(layout.viewportBottom);
   });
 
+  test("scrolls the title bar out of view on iPhone portrait", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const layout = await page.evaluate(() => {
+      const titleBar = document.querySelector(".dashboard-titlebar");
+      window.scrollTo(0, titleBar.offsetHeight + 20);
+      return {
+        position: getComputedStyle(titleBar).position,
+        titleBottom: titleBar.getBoundingClientRect().bottom,
+        viewportTop: 0,
+      };
+    });
+    expect(layout.position).toBe("static");
+    expect(layout.titleBottom).toBeLessThan(layout.viewportTop);
+  });
+
+  test("restores the iPhone page position after an input loses focus", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const scrollPosition = await page.evaluate(async () => {
+      document.querySelector("#engineering-dashboard-content").style.minHeight = "2400px";
+      document.querySelector("#promptHistory").open = true;
+      window.scrollTo(0, 180);
+      const initial = window.scrollY;
+      const input = document.querySelector("#promptHistoryFilter");
+      input.focus();
+      window.scrollTo(0, 420);
+      input.blur();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return { initial, restored: window.scrollY };
+    });
+    expect(scrollPosition.restored).toBe(scrollPosition.initial);
+  });
+
+  test("locks the iPhone background while a modal is open", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const position = await page.evaluate(async () => {
+      document.querySelector("#engineering-dashboard-content").style.minHeight = "2400px";
+      window.scrollTo(0, 180);
+      const initial = window.scrollY;
+      const modal = document.querySelector("#promptHistoryChatModal");
+      modal.showModal();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const locked = {
+        active: document.body.classList.contains("dashboard-modal-open"),
+        top: getComputedStyle(document.body).top,
+      };
+      window.scrollTo(0, 420);
+      modal.close();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return { initial, locked, restored: window.scrollY };
+    });
+    expect(position.locked).toEqual({ active: true, top: "-180px" });
+    expect(position.restored).toBe(position.initial);
+  });
+
+  test("extends the shared component-modal header rule beneath its close control", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const bounds = await page.locator("#componentModal").evaluate((modal) => {
+      modal.showModal();
+      const heading = modal.querySelector(".component-modal__header").getBoundingClientRect();
+      const close = modal.querySelector(".component-modal__close").getBoundingClientRect();
+      modal.close();
+      return { headingRight: heading.right, closeRight: close.right };
+    });
+    expect(bounds.headingRight).toBeGreaterThanOrEqual(bounds.closeRight);
+  });
+
+  test("does not reserve a duplicate safe-area gutter in iPhone landscape", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const layout = await page.locator(".dashboard-scroll-region").evaluate(
+      (region) => {
+        const style = getComputedStyle(region);
+        const bodyStyle = getComputedStyle(document.body);
+        return {
+          bodyPaddingLeft: bodyStyle.paddingLeft,
+          bodyPaddingRight: bodyStyle.paddingRight,
+          paddingLeft: style.paddingLeft,
+          paddingRight: style.paddingRight,
+          scrollbarGutter: style.scrollbarGutter,
+        };
+      },
+    );
+    expect(layout).toEqual({
+      bodyPaddingLeft: "8px",
+      bodyPaddingRight: "8px",
+      paddingLeft: "6px",
+      paddingRight: "6px",
+      scrollbarGutter: "auto",
+    });
+  });
+
+  test("keeps the status column readable beside a visible action on iPhone landscape", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-landscape-status",
+        title: "Landscape retry action",
+        status: "BLOCKED",
+      }];
+      renderPromptHistory();
+    });
+    const status = page.locator("#promptHistoryRows .prompt-history-status--blocked");
+    await expect(status).toHaveText("Geblokkeerd");
+    await expect(status).toBeVisible();
+    await expect(status).toHaveCSS("white-space", "nowrap");
+    expect((await status.boundingBox()).width).toBeGreaterThanOrEqual(120);
+    await expect(page.locator("#promptHistoryRows .execution-history-action")).toBeVisible();
+  });
+
+  test("keeps execution detail modal borders inside iPhone landscape safe areas", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryDetailModal");
+    await modal.evaluate((element) => element.showModal());
+    const box = await modal.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBe(12);
+    expect(box.width).toBe(820);
+
+    await modal.evaluate((element) => element.close());
+    const confirmation = page.locator("#confirmationModal");
+    await confirmation.evaluate((element) => element.showModal());
+    const confirmationBox = await confirmation.boundingBox();
+    expect(confirmationBox).not.toBeNull();
+    expect(confirmationBox.x).toBe(12);
+    expect(confirmationBox.width).toBe(820);
+    const confirmationPanelBox = await confirmation.locator(".confirmation-modal__panel").boundingBox();
+    expect(confirmationPanelBox).not.toBeNull();
+    expect(Math.round(confirmationPanelBox.x + confirmationPanelBox.width / 2)).toBe(422);
+
+    await confirmation.evaluate((element) => element.close());
+    for (const selector of ["#promptHistoryReportModal", "#promptHistoryChatModal"]) {
+      const dialog = page.locator(selector);
+      await dialog.evaluate((element) => element.showModal());
+      const dialogBox = await dialog.boundingBox();
+      expect(dialogBox).not.toBeNull();
+      expect(dialogBox.x).toBe(12);
+      expect(dialogBox.width).toBe(820);
+      await dialog.evaluate((element) => element.close());
+    }
+
+    const component = page.locator("#componentModal");
+    await component.evaluate((element) => element.showModal());
+    const panelBox = await component.locator(".component-modal__panel").boundingBox();
+    expect(panelBox).not.toBeNull();
+    expect(panelBox.x).toBeGreaterThanOrEqual(12);
+    expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(832);
+  });
+
+  test("uses a one-line AI chat composer on iPhone landscape", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => element.showModal());
+    const input = page.locator("#chatInput");
+    const send = page.locator("#chatSend");
+    await expect(input).toHaveCSS("height", "44px");
+    await expect(input).toHaveCSS("resize", "none");
+    await expect(send).toHaveCSS("position", "static");
+    expect((await input.boundingBox()).height).toBe(44);
+    expect((await send.boundingBox()).height).toBe(44);
+  });
+
   test("labels the splash screen as loading data", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/engineering-status-icon.svg");
@@ -796,7 +1050,9 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses the house-style orange for an active execution spinner", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#indicator").evaluate((element) => {
       element.className = "indicator indicator--running";
     });
@@ -912,7 +1168,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".platform-health__component").first()).toHaveAttribute("tabindex", "0");
   });
 
-  test("uses a green hover fill for component information actions", async ({ page }) => {
+  test("uses a green information glyph for component actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
@@ -923,9 +1179,8 @@ test.describe("Engineering Status browser smoke", () => {
 
     await expect(info).toHaveCSS("min-height", "32px");
     await expect(info).toHaveCSS("min-width", "32px");
-    await info.hover();
-    await expect(info).toHaveCSS("background-color", "rgb(163, 230, 53)");
-    await expect(info).toHaveCSS("color", "rgb(24, 35, 15)");
+    await expect(info).toHaveCSS("border-top-color", "rgb(163, 230, 53)");
+    await expect(info).toHaveCSS("color", "rgb(163, 230, 53)");
   });
 
   test("uses the execution host title for the core local component", async ({ page }) => {
@@ -1181,7 +1436,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModal")).toBeFocused();
     await expect(page.locator(".component-modal__panel")).toHaveCSS("background-color", "rgb(255, 255, 255)");
     await expect(page.locator(".component-modal__panel")).toHaveCSS("color", "rgb(24, 34, 48)");
-    await expect(page.locator("#componentModalTitle")).toHaveCSS("border-bottom-color", "rgb(163, 230, 53)");
+    await expect(page.locator(".component-modal__header")).toHaveCSS("border-bottom-color", "rgb(163, 230, 53)");
     await expect(page.locator("#componentModalClose")).toHaveCSS("font-size", "18px");
     await expect(page.locator("#componentModalClose")).toHaveCSS("min-height", "32px");
     await expect(page.locator("#componentModalClose")).toHaveCSS("min-width", "32px");
@@ -1210,7 +1465,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(Math.abs(geometry.leftGutter - geometry.rightGutter)).toBeLessThanOrEqual(1);
   });
 
-  test("uses a green hover fill for the component-detail close action", async ({ page }) => {
+  test("uses a neutral hover fill for the component-detail close action", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
       component: "inbox_watcher",
@@ -1221,7 +1476,7 @@ test.describe("Engineering Status browser smoke", () => {
     const close = page.locator("#componentModalClose");
 
     await close.hover();
-    await expect(close).toHaveCSS("background-color", "rgb(163, 230, 53)");
+    await expect(close).toHaveCSS("background-color", "rgb(74, 74, 85)");
   });
 
   test("uses a green hover fill for the component restart action", async ({ page }) => {
@@ -1358,10 +1613,10 @@ test.describe("Engineering Status browser smoke", () => {
         "<p><code>inline code</code></p><pre>code block</pre>";
     });
 
-    for (const selector of ["#promptHistoryReportDownload", "#promptHistoryReportCopy"]) {
-      await expect(page.locator(selector)).toHaveCSS("background-color", "rgb(247, 251, 255)");
-      await expect(page.locator(selector)).toHaveCSS("color", "rgb(28, 78, 104)");
-    }
+    await expect(page.locator("#promptHistoryReportDownload")).toHaveCSS("background-color", "rgb(255, 248, 239)");
+    await expect(page.locator("#promptHistoryReportDownload")).toHaveCSS("color", "rgb(100, 58, 19)");
+    await expect(page.locator("#promptHistoryReportCopy")).toHaveCSS("background-color", "rgb(255, 247, 255)");
+    await expect(page.locator("#promptHistoryReportCopy")).toHaveCSS("color", "rgb(104, 73, 138)");
     for (const selector of ["#promptHistoryReportContent code", "#promptHistoryReportContent pre"])
       await expect(page.locator(selector)).toHaveCSS("background-color", "rgb(238, 244, 251)");
   });
@@ -1375,8 +1630,8 @@ test.describe("Engineering Status browser smoke", () => {
     });
     const download = page.locator("#promptHistoryReportDownload");
 
-    for (const action of [download, page.locator("#promptHistoryReportCopy")])
-      await expect(action).toHaveCSS("color", "rgb(247, 243, 238)");
+    await expect(download).toHaveCSS("color", "rgb(255, 240, 220)");
+    await expect(page.locator("#promptHistoryReportCopy")).toHaveCSS("color", "rgb(234, 220, 255)");
   });
 
   test("renders log actions in the light category style", async ({ page }) => {
@@ -1386,14 +1641,16 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => renderLogPagination("inbox", 1, 1));
 
-    await expect(page.getByTestId("clear-inbox-log")).toHaveText("⌫");
-    await expect(page.getByTestId("clear-inbox-log")).toHaveCSS("background-color", "rgb(255, 248, 239)");
-    await expect(page.getByTestId("download-inbox-log")).toHaveCSS("background-color", "rgb(255, 250, 244)");
+    await expect(page.getByTestId("clear-inbox-log")).toHaveText("⌧");
+    await expect(page.getByTestId("clear-inbox-log")).toHaveCSS("background-color", "rgb(255, 241, 244)");
+    await expect(page.getByTestId("download-inbox-log")).toHaveCSS("background-color", "rgb(255, 248, 239)");
     await expect(page.locator("#inboxLogPagination button").first()).toHaveCSS("background-color", "rgb(255, 243, 226)");
   });
 
-  test("fills component-log actions orange on hover", async ({ page }) => {
+  test("keeps component-log download and destructive clear hover treatments distinct", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => renderLogPagination("inbox", 1, 1));
@@ -1401,12 +1658,15 @@ test.describe("Engineering Status browser smoke", () => {
     for (const action of [
       page.getByTestId("download-inbox-log"),
       page.getByTestId("download-dashboard-log"),
-      page.getByTestId("clear-inbox-log"),
-      page.getByTestId("clear-dashboard-log"),
     ]) {
       await action.hover();
       await expect(action).toHaveCSS("background-color", "rgb(240, 182, 106)");
       await expect(action).toHaveCSS("color", "rgb(32, 24, 18)");
+    }
+    for (const action of [page.getByTestId("clear-inbox-log"), page.getByTestId("clear-dashboard-log")]) {
+      await action.hover();
+      await expect(action).toHaveCSS("background-color", "rgb(255, 113, 143)");
+      await expect(action).toHaveCSS("color", "rgb(35, 19, 26)");
     }
   });
 
@@ -1415,6 +1675,7 @@ test.describe("Engineering Status browser smoke", () => {
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
@@ -1466,15 +1727,30 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("fills the prompt-scoped chat download glyph with its purple category on hover", async ({ page }) => {
+  test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
+      await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--download/);
+    }
+    for (const selector of ["#copyChat", "#promptHistoryReportCopy"]) {
+      await expect(page.locator(selector)).toHaveClass(/dashboard-action--copy/);
+    }
+    for (const selector of ["#clearChat", "#componentLogs .clear-component-log"]) {
+      await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--destructive/);
+    }
+  });
+
+  test("uses the generic orange download glyph in the prompt-scoped chat", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
     const download = page.locator("#downloadChat");
     await page.addStyleTag({ content: "#downloadChat[hidden]{display:flex!important}" });
 
+    await expect(download).toHaveCSS("background-color", "rgb(59, 40, 27)");
+    await expect(download).toHaveCSS("border-color", "rgb(240, 182, 106)");
     await download.hover();
-    await expect(download).toHaveCSS("background-color", "rgb(208, 164, 255)");
-    await expect(download).toHaveCSS("color", "rgb(23, 21, 26)");
+    await expect(download).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    await expect(download).toHaveCSS("color", "rgb(32, 24, 18)");
   });
 
   test("fills the prompt-scoped AI question send action with its purple category on hover", async ({ page }) => {
@@ -1491,7 +1767,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(send).toHaveCSS("color", "rgb(23, 21, 26)");
   });
 
-  test("uses a light resting surface for the prompt-scoped chat clear glyph in light mode", async ({ page }) => {
+  test("uses a destructive red surface for the prompt-scoped chat clear glyph", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.getByTestId("theme-toggle").click();
     await page.evaluate(() => {
@@ -1501,17 +1777,30 @@ test.describe("Engineering Status browser smoke", () => {
     const clear = page.locator("#clearChat");
 
     await expect(clear).toBeVisible();
-    await expect(clear).toHaveCSS("background-color", "rgb(255, 247, 255)");
-    await expect(clear).toHaveCSS("color", "rgb(104, 73, 138)");
+    await expect(clear).toHaveCSS("background-color", "rgb(255, 241, 244)");
+    await expect(clear).toHaveCSS("color", "rgb(179, 38, 73)");
     await clear.hover();
-    await expect(clear).toHaveCSS("background-color", "rgb(208, 164, 255)");
-    await expect(clear).toHaveCSS("color", "rgb(23, 21, 26)");
+    await expect(clear).toHaveCSS("background-color", "rgb(255, 113, 143)");
+    await expect(clear).toHaveCSS("color", "rgb(35, 19, 26)");
     await page.evaluate(() => {
       chatMessage("user", "Eigen bericht");
       chatMessage("assistant", "AI-antwoord");
     });
     await expect(page.locator(".chat-message--user .chat-message__copy")).toHaveCSS("color", "rgb(28, 78, 104)");
     await expect(page.locator(".chat-message--assistant .chat-message__copy")).toHaveCSS("color", "rgb(104, 73, 138)");
+  });
+
+  test("uses a destructive red surface for the component log clear glyph", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((details) => { details.open = true; });
+    const clear = page.locator("#componentLogs .clear-component-log").first();
+    await expect(clear).toHaveCSS("background-color", "rgb(58, 32, 40)");
+    await expect(clear).toHaveCSS("border-color", "rgb(255, 113, 143)");
+    await clear.hover();
+    await expect(clear).toHaveCSS("background-color", "rgb(255, 113, 143)");
+    await page.getByTestId("theme-toggle").click();
+    await expect(clear).toHaveCSS("background-color", "rgb(255, 241, 244)");
+    await expect(clear).toHaveCSS("color", "rgb(179, 38, 73)");
   });
 
   test("uses matching orange iOS-style toggles in the title bar", async ({ page }) => {
@@ -1692,7 +1981,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toBeVisible();
   });
 
-  test("uses light glyphs for all dark report-modal actions", async ({ page }) => {
+  test("keeps report-modal action colours semantically distinct in dark mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => {
       document.querySelector("#promptHistoryReportModal").showModal();
@@ -1702,11 +1991,9 @@ test.describe("Engineering Status browser smoke", () => {
     const download = page.locator("#promptHistoryReportDownload");
 
     await download.hover();
-    for (const action of [
-      download,
-      page.locator("#promptHistoryReportCopy"),
-      page.locator("#promptHistoryReportClose"),
-    ]) await expect(action).toHaveCSS("color", "rgb(247, 243, 238)");
+    await expect(download).toHaveCSS("color", "rgb(32, 24, 18)");
+    await expect(page.locator("#promptHistoryReportCopy")).toHaveCSS("color", "rgb(234, 220, 255)");
+    await expect(page.locator("#promptHistoryReportClose")).toHaveCSS("color", "rgb(247, 243, 238)");
     await expect(page.locator(".report-view-modal__header")).toHaveCSS("border-bottom-color", "rgb(141, 199, 255)");
     await expect(page.locator("#promptHistoryReportClose")).toHaveCSS("font-size", "18px");
   });
@@ -1775,6 +2062,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueItems > summary .category-icon")).toHaveText("☷");
     await expect(page.locator("#workspaceCard > summary .category-icon")).toHaveText("⌂");
     await expect(page.locator("#rateLimits > summary .category-icon")).toHaveText("◔");
+    await expect(page.locator("#technicalDetails > summary .category-icon")).toHaveText("⌘");
     await expect(page.locator("#componentLogs > summary .category-icon")).toHaveText("≡");
     for (const selector of ["#workspaceCard > summary", "#queueItems > summary", "#rateLimits > summary", "#componentLogs > summary"]) {
       expect(await page.locator(selector).evaluate((summary) => getComputedStyle(summary, "::before").right)).toBe("0px");
@@ -1856,6 +2144,17 @@ test.describe("Engineering Status browser smoke", () => {
     await dashboardLevel.click();
     await expect(dashboardLevel).toHaveAttribute("aria-sort", "ascending");
     await expect(inboxLevel).toHaveAttribute("aria-sort", "ascending");
+  });
+
+  test("uses the remaining component-log table width for Details", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    const detailsWidth = await page.locator("#componentLogs .log-table").first().evaluate((table) => {
+      const headers = table.querySelectorAll("th");
+      return headers[headers.length - 1].getBoundingClientRect().width;
+    });
+    expect(detailsWidth).toBeGreaterThan(300);
   });
 
   test("keeps each component-log table horizontally scrollable on iPhone", async ({ page }) => {
@@ -2053,7 +2352,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#promptHistoryReportClose").click();
     const chat = page.locator("#promptHistoryRows .prompt-history-chat");
     await expect(chat).toHaveCount(1);
-    await expect(chat).toHaveText("💬");
+    await expect(chat).toHaveText("⋯");
     await expect(chat).toHaveCSS("border-top-color", "rgb(208, 164, 255)");
     await expect(chat).toHaveCSS("color", "rgb(208, 164, 255)");
     await chat.click();
@@ -2145,10 +2444,11 @@ test.describe("Engineering Status browser smoke", () => {
     expect(bounds.input.right).toBeLessThan(bounds.chat.right);
     expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
     expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
-    expect(bounds.input.y - bounds.status.bottom).toBeGreaterThanOrEqual(12);
+    expect(bounds.status.y).toBeGreaterThanOrEqual(bounds.input.bottom);
+    expect(bounds.status.left).toBeGreaterThan(bounds.model.right);
   });
 
-  test("keeps the thinking status visible above the AI question box after it is resized", async ({ page }) => {
+  test("keeps the thinking status beside the model after the AI question box is resized", async ({ page }) => {
     await page.setViewportSize({ width: 2048, height: 1152 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const modal = page.locator("#promptHistoryChatModal");
@@ -2166,7 +2466,8 @@ test.describe("Engineering Status browser smoke", () => {
     });
     expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
     expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.panel.bottom);
-    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.input.y);
+    expect(bounds.status.y).toBeGreaterThanOrEqual(bounds.input.bottom);
+    expect(Math.abs(bounds.status.y - bounds.model.y)).toBeLessThanOrEqual(8);
   });
 
   test("reserves space for the chat model and thinking state in a short viewport", async ({ page }) => {
@@ -2186,7 +2487,7 @@ test.describe("Engineering Status browser smoke", () => {
       return { panel: rect(".prompt-chat-modal__panel"), input: rect("#chatInput"), model: rect("#chatModel"), status: rect("#chatStatus") };
     });
     expect(bounds.input.height).toBeLessThanOrEqual(128);
-    expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.input.y);
+    expect(bounds.status.y).toBeGreaterThanOrEqual(bounds.input.bottom);
     expect(bounds.input.bottom).toBeLessThanOrEqual(bounds.panel.bottom - 10);
     expect(bounds.model.bottom).toBeLessThanOrEqual(bounds.panel.bottom - 4);
   });
@@ -2227,7 +2528,7 @@ test.describe("Engineering Status browser smoke", () => {
       ["#confirmationModalTitle", "!"],
       ["#promptHistoryReportModalTitle", "▤"],
       ["#promptHistoryDetailTitle", "i"],
-      ["#promptHistoryChatTitle", "💬"],
+      ["#promptHistoryChatTitle", "⋯"],
     ]) {
       expect(await page.locator(selector).evaluate(
         (title) => getComputedStyle(title, "::before").content,
@@ -2274,7 +2575,10 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("searches prompt history by localized terminal status", async ({ page }) => {
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardLocale").selectOption("nl");
     await expect(page.locator("html")).toHaveAttribute("lang", "nl");
     await page.evaluate(() => {
@@ -2398,17 +2702,18 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("fills the reset action with a brighter green on hover", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
     await page.evaluate(() => rateLimits({ provider: "Codex CLI", provider_version: "0.146.0", windows: [], reset_credits: 1 }));
     const reset = page.locator("#rateLimitReset");
 
-    // The assertion is about the declared hover treatment.  At a narrow
-    // viewport another disclosure can overlap the button after auto-scroll,
-    // so force the pointer onto the target instead of making this style test
-    // depend on the surrounding disclosure geometry.
-    await reset.hover({ force: true });
+    // Keep the actual pointer over the target. This verifies the browser's
+    // hover treatment without racing the initial asynchronous dashboard load.
+    await reset.scrollIntoViewIfNeeded();
+    await reset.hover();
     await expect(reset).toHaveCSS("background-color", "rgb(81, 216, 138)");
     await expect(reset).toHaveCSS("color", "rgb(17, 42, 32)");
   });
@@ -2580,13 +2885,15 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#confirmationModal");
     await expect(modal).toBeVisible();
     await expect(modal).toBeFocused();
-    await expect(modal.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
-    await expect(page.locator("#confirmationModalTitle")).toHaveCSS("border-bottom-color", "rgb(240, 182, 106)");
+    await expect(modal.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
+    await expect(page.locator(".confirmation-modal__header")).toHaveCSS("border-bottom-color", "rgb(255, 113, 143)");
+    await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(255, 113, 143)");
+    expect(await page.locator("#confirmationModalTitle").evaluate((title) => getComputedStyle(title, "::before").color)).toBe("rgb(255, 113, 143)");
     expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(240, 182, 106)");
     for (const action of [page.locator("#confirmationModalCancel"), page.locator("#confirmationModalConfirm")]) {
       await action.hover();
-      await expect(action).toHaveCSS("background-color", "rgb(240, 182, 106)");
-      await expect(action).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+      await expect(action).toHaveCSS("background-color", "rgb(255, 113, 143)");
+      await expect(action).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
     }
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-size", "13px");
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-family", await page.locator("#rateLimitReset").evaluate((button) => getComputedStyle(button).fontFamily));
@@ -2607,7 +2914,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/codex-chat", async (route) => {
       await route.fulfill({ contentType: "application/json", body: '{"answer":"De uitvoering is gereed.","model":"Codex CLI"}' });
     });
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
@@ -2635,12 +2946,16 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#chatMessages")).toBeEmpty();
     await expect(page.locator("#clearChat")).toBeHidden();
     await expect(page.locator("#downloadChat")).toBeHidden();
+    await expect(page.locator("#copyChat")).toBeHidden();
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem("djconnect-engineering-chat-history"))).toBeNull();
   });
 
   test("refreshes status and prompt history immediately after dismissing an execution", async ({ page }) => {
     let historyReads = 0;
     let dismissed = false;
+    // Keep the terminal snapshot deterministic: a live server-push event can
+    // otherwise replace its last executed run while the operator acts on it.
+    await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", async (route) => {
       historyReads += 1;
       await route.fulfill({ json: { runs: dismissed ? [{
@@ -2659,8 +2974,19 @@ test.describe("Engineering Status browser smoke", () => {
       status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-dismiss", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    await historyLoaded;
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-dismiss", status: "BLOCKED",
+        title: "Dismissed prompt", executed_at: "2026-08-04T12:00:00Z",
+      }];
+      renderPromptHistory();
+    });
     const dismissButton = page.getByRole("button", { name: "Uitvoering afsluiten" });
     await expect(dismissButton).toBeVisible();
     await dismissButton.click();
@@ -2698,11 +3024,11 @@ test.describe("Engineering Status browser smoke", () => {
         return prevented;
       };
 
-      region.scrollTop = 80;
+      window.scrollTo(0, 80);
       startPullRefresh({ touches: [{ clientY: top + 12 }], target: content });
       const ignoredWhileScrolling = move(top + 100);
 
-      region.scrollTop = 0;
+      window.scrollTo(0, 0);
       startPullRefresh({ touches: [{ clientY: top + 72 }], target: content });
       const ignoredFromContent = move(top + 160);
 

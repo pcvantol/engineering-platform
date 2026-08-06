@@ -1,4 +1,5 @@
-html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* Prevent iOS/iPadOS double-tap zoom while preserving native pinch zoom. */
+html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manipulation}
 /* Shared product chrome: change the hue here to retheme controls, notices and status metadata. */
 :root{
   --house-style:#f0b66a;
@@ -51,9 +52,8 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 .telemetry{--category-color:#fb7185;background:#351f2a;border:1px solid var(--category-color);border-left-width:3px;border-radius:18px;box-shadow:0 5px 24px #0006;cursor:pointer;padding:14px}.telemetry>summary{border-bottom:1px solid var(--category-color);cursor:pointer;display:block;list-style:none;margin-bottom:12px;padding:2px 2px 13px}.telemetry>summary::-webkit-details-marker{display:none}.telemetry>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.telemetry[open]>summary::before{content:"▾ "}.telemetry>summary>strong{color:var(--category-color);font-size:17px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.telemetry .category-description{color:#d8c3ca;font-size:14px;line-height:1.4;margin:12px 0}.telemetry-table{border-collapse:collapse;font-size:13px;width:100%}.telemetry-table th,.telemetry-table td{border-bottom:1px solid #fb718555;padding:7px;text-align:left;white-space:nowrap}.telemetry-table th{color:var(--category-color)}.telemetry-scroll{overflow-x:auto}.telemetry-empty{color:#b9b6c0;margin:0}
 .platform-health{--category-color:#a3e635;background:#29331d;border:1px solid var(--category-color);border-left-width:3px;border-radius:18px;box-shadow:0 5px 24px #0006;cursor:pointer;padding:14px}.platform-health>summary{border-bottom:1px solid var(--category-color);cursor:pointer;display:block;list-style:none;margin-bottom:12px;padding:2px 2px 13px}.platform-health>summary::-webkit-details-marker{display:none}.platform-health>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.platform-health[open]>summary::before{content:"▾ "}.platform-health>summary>strong{color:var(--category-color);font-size:17px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.platform-health .category-description{color:#d4ddc7;font-size:14px;line-height:1.4;margin:12px 0}.platform-health__summary{color:#d4ddc7;font-size:12px;margin-left:8px}.platform-health__components{display:grid;gap:8px}.platform-health__component{align-items:center;background:#1e2518;border:1px solid color-mix(in srgb,var(--category-color) 64%,transparent);border-radius:9px;column-gap:10px;display:grid;grid-template-columns:auto 1fr;padding:9px 10px;row-gap:3px}.platform-health__component .indicator{grid-row:span 2}.platform-health__component-name{color:var(--category-color);font-weight:700}.platform-health__component-detail{color:#d4ddc7;font-size:12px;grid-column:2;line-height:1.35}.platform-health__empty{color:#d4ddc7;margin:0}.platform-health__component[data-health="false"]{--category-color:#ff8585;background:#351f24}
 #codexChat .chat-input,#codexChat .chat-send{border-color:#d0a4ff}
-.component-modal__panel{color:#f7f3ee}.component-modal__close:hover{background:#a3e63526}.component-modal__close:focus-visible{box-shadow:0 0 0 4px #a3e63540;outline:2px solid #a3e635;outline-offset:3px}
-#codexChat .codex-chat__details{position:relative}#codexChat .codex-chat__details>.estimate-meta{padding-right:52px}#downloadChat.download--glyph{align-items:center;background:#34283f;border:1px solid #d0a4ff;border-radius:50%;color:#eadcff;display:flex;float:none;font-size:0;height:34px;justify-content:center;min-height:34px;min-width:34px;padding:0;position:absolute;right:14px;top:0;width:34px;z-index:2}#downloadChat.download--glyph::before{content:"↓";font:700 21px/1 system-ui}#downloadChat.download--glyph::after{content:none}#downloadChat.download--glyph:hover{background:#4b3658}#downloadChat.download--glyph:focus-visible{box-shadow:0 0 0 4px #d0a4ff40;outline:2px solid #d0a4ff;outline-offset:2px}
-.component-info{align-items:center;background:transparent;border:1px solid var(--category-color);border-radius:50%;color:var(--category-color);cursor:pointer;display:grid;font:700 15px/1 system-ui;height:32px;justify-items:center;padding:0;width:32px}.component-info:hover{background:color-mix(in srgb,var(--category-color) 16%,transparent)}.platform-health__component{grid-template-columns:auto 1fr auto}.platform-health__component-detail{grid-column:2}.component-modal{background:#15151de8;border:0;height:100dvh;max-height:none;max-width:none;padding:18px;width:100vw}.component-modal[open]{display:grid;place-items:center}.component-modal__panel{background:#22242c;border:2px solid #a3e635;border-radius:16px;box-shadow:0 16px 52px #000c;box-sizing:border-box;max-height:min(700px,calc(100dvh - 36px));max-width:680px;overflow:auto;padding:20px;position:relative;width:min(680px,calc(100vw - 36px))}.component-modal__close{background:transparent;border:1px solid #a3e635;border-radius:50%;color:#d8f7a5;cursor:pointer;font:20px/1 system-ui;height:34px;position:absolute;right:14px;top:14px;width:34px}.component-modal h2{color:#a3e635;margin:0 44px 14px 0}.component-modal dl{display:grid;gap:10px;margin:0}.component-modal dt{color:#a3e635;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.component-modal dd{margin:3px 0 0;overflow-wrap:anywhere}.component-modal__restart{background:#253b17;border:1px solid #a3e635;border-radius:8px;color:#e6ffc0;cursor:pointer;font:14px system-ui;margin-top:18px;padding:9px 12px}.component-modal__restart:disabled{cursor:wait;opacity:.7}.component-modal__status{color:#d4ddc7;font-size:13px;margin:10px 0 0}
+#codexChat .codex-chat__details{position:relative}#codexChat .codex-chat__details>.estimate-meta{padding-right:52px}
+.component-info{align-items:center;background:transparent;border:1px solid var(--category-color);border-radius:50%;color:var(--category-color);cursor:pointer;display:grid;font:700 15px/1 system-ui;height:32px;justify-items:center;padding:0;width:32px}.component-info:hover{background:color-mix(in srgb,var(--category-color) 16%,transparent)}.platform-health__component{grid-template-columns:auto 1fr auto}.platform-health__component-detail{grid-column:2}.component-modal{background:#15151de8;border:0;height:100dvh;max-height:none;max-width:none;padding:18px;width:100vw}.component-modal[open]{display:grid;place-items:center}.component-modal__panel{border:2px solid var(--modal-accent);box-sizing:border-box;max-height:min(700px,calc(100dvh - 36px));max-width:680px;overflow:auto;padding:20px;position:relative;width:min(680px,calc(100vw - 36px))}.component-modal dl{display:grid;gap:10px;margin:0}.component-modal dt{color:var(--modal-accent);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.component-modal dd{margin:3px 0 0;overflow-wrap:anywhere}.component-modal__restart{background:#253b17;border:1px solid var(--modal-accent);border-radius:8px;color:#e6ffc0;cursor:pointer;font:14px system-ui;margin-top:18px;padding:9px 12px}.component-modal__restart:disabled{cursor:wait;opacity:.7}.component-modal__status{color:#d4ddc7;font-size:13px;margin:10px 0 0}
 #chatInput:focus-visible{outline:2px solid #d0a4ff;outline-offset:2px;box-shadow:0 0 0 4px #292336}
 :where(input,select,textarea):focus-visible{outline:2px solid var(--category-color);outline-offset:2px;box-shadow:0 0 0 4px color-mix(in srgb,var(--category-color) 24%,transparent)}
 #reportContent{max-height:50dvh;overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}.technical-details>summary>strong,.codex-chat>summary>strong,#rateLimits>summary>strong,.workspace-card>summary>strong{font-size:17px}
@@ -87,7 +87,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 .workspace-card>summary,#rateLimits>summary,#componentLogs>summary,#codexChat>summary,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary,.telemetry>summary,.platform-health>summary{box-sizing:border-box;margin-bottom:8px;min-height:35px;padding:0 0 10px}.workspace-card>summary>strong,#rateLimits>summary>strong,#componentLogs>summary>strong,#codexChat>summary>strong,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary>strong,.telemetry>summary>strong,.platform-health>summary>strong{font-size:17px;line-height:1.25}
 .workspace-card>summary::before,#rateLimits>summary::before,#componentLogs>summary::before,#codexChat>summary::before,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary::before,.telemetry>summary::before,.platform-health>summary::before{line-height:1;vertical-align:-2px}
 #currentRun{--category-color:#f472b6;background:#321d2d;border:1px solid var(--category-color);border-left-width:3px;cursor:pointer}#currentRun>summary{cursor:pointer;list-style:none}#currentRun>summary::-webkit-details-marker{display:none}#currentRun>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}#currentRun[open]>summary::before{content:"▾ "}#currentRun[open]>summary{border-bottom:1px solid var(--category-color);margin-bottom:12px;padding-bottom:14px}#currentRun .card{--category-color:#f472b6;background:#241b25;border:1px solid var(--category-color);border-left-width:1px}#currentRun .current-run__grid>.card{border-left:1px solid var(--category-color)!important}#currentRun .card strong,#currentRun .label,#currentRun .queue-item__title{color:var(--category-color)}#currentRun .queue-item{border-top-color:#6e385d}#currentRun .estimate-meta{color:#d6bdca}
-.log-card-header{align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:10px}.log-card-actions{align-items:center;display:flex;gap:8px}.log-card-actions .download.download--glyph,.clear-component-log--glyph{background:#3b281b;border-color:#f0b66a;color:#fff0dc;height:32px;min-height:32px;min-width:32px;position:static;width:32px}.log-card-actions .download.download--glyph:hover,.clear-component-log--glyph:hover{background:var(--category-color);color:#201812}.clear-component-log--glyph{border:1px solid var(--category-color);border-radius:50%;font:18px/1 system-ui;padding:0}.clear-component-log:disabled{cursor:wait;opacity:.7}
+.log-card-header{align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:10px}.log-card-actions{align-items:center;display:flex;gap:8px}.log-card-actions .dashboard-action{position:static}.clear-component-log:disabled{cursor:wait;opacity:.7}
 .copy.copy--glyph:hover,.download.download--glyph:hover,.prompt-history-report:hover,.prompt-history-analysis:hover,.report-view-modal__close:hover{background:var(--category-color);color:#17151a}
 button:not(.theme-toggle):not(.section-state-toggle):hover:not(:disabled){background:var(--category-color,var(--house-style));color:#17151a}
 .log-pagination{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin-top:10px;min-height:32px}.log-pagination__summary{color:#d6c5a8;font-size:12px;margin-right:auto}.log-pagination button{background:#33281d;border:1px solid var(--category-color);border-radius:7px;color:#fff0dc;font:12px system-ui;min-height:32px;padding:5px 9px}.log-pagination button:disabled{cursor:not-allowed;opacity:.45}
@@ -113,6 +113,16 @@ body{overflow-x:hidden}.dashboard-grid,.dashboard-grid>*{min-width:0}.telemetry,
   #promptHistory .log-table th:nth-child(2),#promptHistory .log-table td:nth-child(2){overflow-wrap:anywhere;white-space:normal;width:auto}
 }
 @media (max-width:620px){#promptHistory .log-table{min-width:1080px;table-layout:auto;width:max-content}}
+@media (min-width:621px) and (max-width:1024px){#promptHistory .log-table{min-width:1120px;table-layout:auto;width:max-content}#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){min-width:19rem;overflow-wrap:normal;white-space:normal}}
+/* A Run-ID column adds a ninth field.  Keep all operational columns at their
+   natural readable widths on laptops and use the existing table scroller
+   instead of compressing titles and timestamps into each other. */
+@media (min-width:621px){#promptHistory .log-table{min-width:1320px;table-layout:auto;width:max-content}#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){min-width:22rem}#promptHistory .log-table th:nth-child(4),#promptHistory .log-table td:nth-child(4){min-width:17rem}#promptHistory .log-table th:nth-child(8),#promptHistory .log-table td:nth-child(8){min-width:7rem}}
+@media (min-width:621px){#promptHistory .log-table th:nth-child(7),#promptHistory .log-table td:nth-child(7){min-width:4rem;width:4rem}#promptHistory .log-table th:nth-child(8),#promptHistory .log-table td:nth-child(8){min-width:14rem;width:auto}}
+@media (min-width:621px){#promptHistory .log-table:not(:has(.execution-history-action)) th:nth-child(8),#promptHistory .log-table:not(:has(.execution-history-action)) td:nth-child(8){min-width:4.5rem;width:4.5rem}}
+@media (min-width:621px){#promptHistory .log-table{width:max(100%,1320px)}#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){width:100%}}
+@media (min-width:621px){#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){max-width:30rem;overflow:hidden;text-overflow:ellipsis;width:auto}#promptHistory .log-table th:nth-child(4),#promptHistory .log-table td:nth-child(4){min-width:13rem;width:13rem}#promptHistory .log-table th:nth-child(9),#promptHistory .log-table td:nth-child(9){min-width:4rem;width:4rem}}
+@media (min-width:621px){#promptHistory .log-table th:nth-child(2),#promptHistory .log-table td:nth-child(2){min-width:7.5rem;overflow-wrap:normal;white-space:nowrap;width:7.5rem}}
 /* Keep disclosure arrows at the far edge of top-level dashboard categories. */
 :where(.workspace-card,#queueItems,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),#currentRun,.telemetry,.platform-health)>summary{padding-right:40px;position:relative}:where(.workspace-card,#queueItems,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),#currentRun,.telemetry,.platform-health)>summary::before{margin:0;padding-right:0;position:absolute;right:0;top:0}
 /* Uniform border hierarchy: main categories use 2px all around; nested cards use 1px all around. */
@@ -137,16 +147,9 @@ html[data-theme="light"] #currentRun #activeReviewerAgents .reviewer-agent__name
 html[data-theme="light"] .platform-health__component-detail,html[data-theme="light"] .platform-health__empty,html[data-theme="light"] .platform-health__summary{color:#182230}
 :is(.theme-toggle,.section-state-toggle)[aria-checked="true"]::before{background:var(--house-style)}.auto-refresh-toggle{font:12px system-ui;min-height:44px;min-width:44px}.auto-refresh-toggle input{appearance:none;background:#4a4a55;border:0;border-radius:999px;cursor:pointer;height:24px;margin:0;position:relative;transition:background .18s ease;width:42px}.auto-refresh-toggle input::after{background:#f7f3ee;border-radius:50%;box-shadow:0 1px 3px #0008;content:"";height:18px;left:3px;position:absolute;top:3px;transform:translateX(0);transition:transform .18s ease;width:18px}.auto-refresh-toggle input:checked{background:var(--house-style)}.auto-refresh-toggle input:checked::after{transform:translateX(18px)}.auto-refresh-toggle input:focus-visible{box-shadow:0 0 0 5px var(--house-style-focus);outline:3px solid var(--house-style);outline-offset:3px}html[data-theme="light"] .auto-refresh-toggle input{background:#4a4a55}html[data-theme="light"] .auto-refresh-toggle input:checked{background:var(--house-style)}
 html[data-theme="light"] .component-modal{background:#d8e1edb8}html[data-theme="light"] .component-modal__panel{background:#fff;color:#182230;box-shadow:0 16px 52px #26395540}html[data-theme="light"] .component-modal dd{color:#182230}html[data-theme="light"] .component-modal__close{background:#fff;color:#3c7411}html[data-theme="light"] .component-modal__close:hover{background:#effbdc}html[data-theme="light"] .component-modal__restart{background:#effbdc;color:#244b12}html[data-theme="light"] .component-modal__restart:hover:not(:disabled){background:#def5bd}html[data-theme="light"] .component-modal__status{color:#415168}
-html[data-theme="light"] #componentLogs .clear-component-log,html[data-theme="light"] #componentLogs .log-pagination button{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}html[data-theme="light"] #componentLogs .clear-component-log:hover:not(:disabled),html[data-theme="light"] #componentLogs .log-pagination button:hover:not(:disabled){background:var(--category-color)!important;color:#24170d!important}html[data-theme="light"] #componentLogs .clear-component-log:disabled,html[data-theme="light"] #componentLogs .log-pagination button:disabled{background:#fff3e2!important;border-color:#e0bd8f!important;color:#8f7457!important;opacity:1}
+html[data-theme="light"] #componentLogs .log-pagination button{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}html[data-theme="light"] #componentLogs .log-pagination button:hover:not(:disabled){background:var(--category-color)!important;color:#24170d!important}html[data-theme="light"] #componentLogs .log-pagination button:disabled{background:#fff3e2!important;border-color:#e0bd8f!important;color:#8f7457!important;opacity:1}
 /* Report panels are their own readable document surface in both themes. */
 html[data-theme="light"] #reportContent,html[data-theme="light"] #reportAnalysisContent{background:#fff;color:#182230;box-shadow:inset 0 0 0 1px #d8e5f3}html[data-theme="light"] #reportContent :is(p,li,pre,code),html[data-theme="light"] #reportAnalysisContent :is(p,li,pre,code){color:#182230}html[data-theme="light"] #reportContent :is(pre,code),html[data-theme="light"] #reportAnalysisContent :is(pre,code){background:#eef4fb}html[data-theme="light"] .markdown-copy-wrap .copy.copy--glyph,html[data-theme="light"] .markdown-copy-wrap .download.download--glyph{background:#f7fbff;border-color:var(--category-color);box-shadow:0 2px 8px #2639552e;color:#1c4e68}html[data-theme="light"] .markdown-copy-wrap .copy.copy--glyph:hover,html[data-theme="light"] .markdown-copy-wrap .download.download--glyph:hover{background:#e4f0ff}
-html[data-theme="light"] #downloadChat.download--glyph{background:#fff7ff;border-color:#b99ae5;box-shadow:0 2px 8px #6e548e2e;color:#68498a}html[data-theme="light"] #downloadChat.download--glyph:hover{background:#f1e4ff}
-
-/* Chat maintenance glyphs share the light conversation surface. */
-html[data-theme="light"] #clearChat.clear-chat{background:#fff7ff;border-color:#b99ae5;box-shadow:0 2px 8px #6e548e2e;color:#68498a}
-/* The destructive chat-maintenance glyph has the same affirmative hover cue as download. */
-#clearChat.clear-chat:hover{background:var(--category-color)!important;border-color:var(--category-color)!important;color:#17151a!important}
-
 /* Resting glyphs need dark category ink on the light dashboard surfaces. */
 html[data-theme="light"] .platform-health .component-info{color:#3c7411}html[data-theme="light"] .chat-message--user .chat-message__copy{color:#1c4e68}html[data-theme="light"] .chat-message--assistant .chat-message__copy{color:#68498a}
 html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182230}html[data-theme="light"] .report-view-modal__content{background:#fff;color:#182230}html[data-theme="light"] .report-view-modal__close{background:#fff;color:#1c4e68}
@@ -169,14 +172,8 @@ html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68
 .download.download--glyph{border-style:solid;border-width:1px;box-sizing:border-box}
 
 /* The Execution Host detail close action keeps its own green hover state. */
-.component-modal__close:hover{background:#a3e635!important;border-color:#a3e635!important;color:#18230f!important}
-
-/* Chat download follows the conversation category on hover, like the send action. */
-#downloadChat.download--glyph:hover{background:var(--category-color)!important;color:#17151a!important}
-html[data-theme="light"] #downloadChat.download--glyph:hover{background:var(--category-color)!important;color:#17151a!important}
 
 /* Component-log actions need their own light resting surface, not the dark log-card fill. */
-html[data-theme="light"] .log-card-actions .download.download--glyph,html[data-theme="light"] .log-card-actions .clear-component-log--glyph{background:#fffaf4;border-color:var(--category-color);box-shadow:0 2px 8px #8a57202e;color:#834d12}
 
 /* Shared action controls. */
 .dashboard-grid button:not(.component-modal__close):not(.report-view-modal__close):hover{background:var(--category-color,var(--button-fill,#8dc7ff));border-color:var(--category-color,var(--button-fill,#8dc7ff));color:var(--button-ink)}
@@ -184,17 +181,18 @@ html[data-theme="light"] .log-card-actions .download.download--glyph,html[data-t
 
 /* Advisory-chat controls. */
 .chat-actions{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin:0 0 18px;min-height:44px}
-.chat-actions #downloadChat.download--glyph{position:static}
-.chat-actions #downloadChat[hidden],.chat-actions #clearChat[hidden]{display:none}
+.chat-actions .dashboard-action{position:static}
+.chat-actions .dashboard-action[hidden]{display:none}
 .codex-chat__details>.chat-messages{margin-top:0}
-.clear-chat{align-items:center;background:#34283f;border:1px solid #d0a4ff;border-radius:50%;color:#eadcff;display:flex;height:34px;justify-content:center;min-height:34px;min-width:34px;padding:0;width:34px}
 
 /* The sticky title bar follows the same outer geometry as the main categories. */
 .dashboard-titlebar{border-radius:18px}
 
 /* The dashboard chrome remains visible while its workspace and categories scroll. */
-body{box-sizing:border-box;display:flex;flex-direction:column;height:100dvh;overflow:hidden}
-.dashboard-titlebar{flex:none;position:relative}
+body{box-sizing:border-box;display:flex;flex-direction:column;height:100vh;height:100lvh;min-height:100dvh;overflow:hidden}
+html:has(body.dashboard-modal-open){overflow:hidden}
+body.dashboard-modal-open{left:0;overflow:hidden!important;position:fixed;right:0;top:var(--dashboard-modal-scroll-top,0);width:100%}
+.dashboard-titlebar{flex:none;position:sticky}
 .dashboard-scroll-region{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 4px}
 .footer{background:#121217;flex:none;margin:14px 0 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));position:relative;z-index:15}
 html[data-theme="light"] .footer{background:#f4f7fb}
@@ -212,8 +210,8 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 /* Component details belong to Platform Health, so their information action fills green. */
 .platform-health .component-info:hover{background:#a3e635!important;border-color:#a3e635!important;color:#18230f!important}
 
-/* Redacted component logs are diagnostic evidence, so both glyph actions fill orange. */
-.log-card-actions :is(.download.download--glyph,.clear-component-log--glyph):hover{background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
+/* Downloads remain diagnostic-orange; clearing logs is destructive red. */
+.log-card-actions .download.download--glyph:hover{background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
 
 /* The skip-link target remains programmatically focusable without outlining every category. */
 #engineering-dashboard-content:focus,#engineering-dashboard-content:focus-visible{box-shadow:none;outline:none}
@@ -229,17 +227,11 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 :where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus,:where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus-visible{box-shadow:none;outline:none}
 .prompt-detail-modal:focus,.prompt-detail-modal:focus-visible,.prompt-chat-modal:focus,.prompt-chat-modal:focus-visible{box-shadow:none!important;outline:none!important}
 
-/* Keep all report-modal glyphs equally light in the dark report surface, including hover. */
-html[data-theme="dark"] .report-view-modal__actions :is(.copy,.download),html[data-theme="dark"] .report-view-modal__close{color:#f7f3ee!important}
-
 /* Fit long reports inside the actual small-viewport height, including browser chrome. */
 .report-view-modal,.report-view-modal__panel{box-sizing:border-box;max-height:min(90vh,calc(100dvh - 36px))}.report-view-modal{overflow:hidden}.report-view-modal__panel{overflow:auto}
 
 /* Reset consumption is available only intentionally; its hover state must remain unmistakable. */
 #rateLimitReset:hover:not(:disabled){background:#51d88a!important;border-color:#51d88a!important;color:#112a20!important}
-
-/* Dark report panels keep their copy and download glyphs light, including hover. */
-html[data-theme="dark"] .markdown-copy-wrap :is(.copy.copy--glyph,.download.download--glyph){color:#f7f3ee!important}
 
 /* Report disclosures use the same right-aligned affordance as the main categories. */
 
@@ -261,42 +253,21 @@ html[data-theme="light"] #promptHistory .execution-history-action{background:#ff
 #promptHistoryRows .prompt-history-actions{vertical-align:middle}#promptHistoryRows .execution-history-action{margin-top:0}
 
 /* The header owns a fixed row; only the document pane scrolls beneath it. */
-.report-view-modal__panel{--report-modal-surface:#24242d;display:grid;grid-template-rows:auto minmax(0,1fr);height:min(90vh,calc(100dvh - 36px));overflow:hidden}.report-view-modal__header{align-items:flex-start;background:var(--report-modal-surface);display:grid!important;gap:16px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:1}.report-view-modal__title{margin:0;min-width:0}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}.report-view-modal__content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}
-
-/* Modal titles have a consistent category-colored ruler; close glyphs stay compact. */
-.component-modal h2{border-bottom:1px solid #a3e635;padding-bottom:12px}.report-view-modal__header{border-bottom:1px solid var(--category-color)}.component-modal__close,.report-view-modal__close{font-size:18px}
+.report-view-modal__panel{--report-modal-surface:#24242d;display:grid;grid-template-rows:auto minmax(0,1fr);height:min(90vh,calc(100dvh - 36px));overflow:hidden}.report-view-modal__header{background:var(--report-modal-surface);z-index:1}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}.report-view-modal__content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}
 
 /* A small, decorative glyph gives each modal title a clear visual purpose. */
 :is(.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2)::before{display:inline-block;font-size:.84em;line-height:1;margin-right:.42em;vertical-align:-.06em}.component-modal h2::before{content:"⚙"}.confirmation-modal h2::before{content:"!"}.report-view-modal__title::before{content:"▤"}.prompt-detail-modal__header h2::before{content:"i";font-weight:700}.prompt-chat-modal__header h2::before{content:"💬"}
 
-/* Confirmation modal: one operational surface and one house-style action
-   treatment, regardless of the contextual accent that opened the dialog. */
-.confirmation-modal{--confirmation-color:#c7a6ff;background:transparent;border:0;color:var(--dashboard-modal-ink);padding:0}
-.confirmation-modal::backdrop{background:#000b}
-.confirmation-modal__panel{background:var(--dashboard-modal-surface);border:2px solid var(--confirmation-color);border-radius:16px;box-shadow:0 18px 48px #000a;max-width:30rem;padding:22px}
-.confirmation-modal h2{border-bottom:1px solid var(--confirmation-color);color:var(--house-style)!important;margin:0;padding-bottom:12px}
+/* Confirmation only supplies its compact geometry; the shell owns the header,
+   close control, accent and destructive state. */
+.confirmation-modal__panel{border:2px solid var(--modal-accent);max-width:30rem;padding:22px}
 .confirmation-modal__panel #confirmationModalText{line-height:1.55;white-space:pre-line}
-.confirmation-modal__actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
-.confirmation-modal button{border:1px solid var(--house-style)!important;border-radius:8px;font:13px system-ui;min-height:44px;padding:8px 14px}
-.confirmation-modal__actions button:first-child:not(:hover){background:var(--dashboard-modal-surface)!important;color:var(--dashboard-modal-ink)!important}
-.confirmation-modal__actions button:last-child:not(:hover){background:color-mix(in srgb,var(--house-style) 22%,#24242d)!important;border-color:var(--house-style)!important;color:#f7f3ee!important}
-.confirmation-modal__actions button:hover:not(:disabled){background:var(--house-style)!important;border-color:var(--house-style)!important;color:#201812!important}
-html[data-theme="light"] .confirmation-modal,.confirmation-modal[data-theme-mode="light"]{color:#182230}
-html[data-theme="light"] .confirmation-modal__panel,.confirmation-modal[data-theme-mode="light"] .confirmation-modal__panel{background:var(--dashboard-modal-document-surface)!important;box-shadow:0 18px 48px #26395540;color:#182230!important}
-html[data-theme="light"] .confirmation-modal :is(h2,p),.confirmation-modal[data-theme-mode="light"] :is(h2,p){color:#182230!important}
-html[data-theme="light"] .confirmation-modal h2,.confirmation-modal[data-theme-mode="light"] h2{color:var(--house-style)!important}
-html[data-theme="light"] .confirmation-modal button:not(:last-child),.confirmation-modal[data-theme-mode="light"] button:not(:last-child){background:#fff!important;border-color:var(--house-style)!important;color:#7a4912!important}
-html[data-theme="light"] .confirmation-modal__actions button:last-child:not(:hover),.confirmation-modal[data-theme-mode="light"] .confirmation-modal__actions button:last-child:not(:hover){background:color-mix(in srgb,var(--house-style) 16%,#fff)!important;border-color:var(--house-style)!important;color:#7a4912!important}
-html[data-theme="light"] .confirmation-modal button:hover:not(:disabled),.confirmation-modal[data-theme-mode="light"] button:hover:not(:disabled){background:var(--house-style)!important;border-color:var(--house-style)!important;color:#201812!important}
 
 /* Platform information glyphs use the same compact diameter as round download actions. */
 .component-info{min-height:32px;min-width:32px}
 
-/* Component-modal close action uses the same compact round control size as download glyphs. */
-.component-modal__close{min-height:32px;min-width:32px}
-
-/* Light report modals keep actions and markdown code on readable light surfaces. */
-html[data-theme="light"] .report-view-modal__actions :is(.copy,.download){background:#f7fbff;border-color:var(--category-color);box-shadow:0 2px 8px #2639552e;color:#1c4e68}html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#eef4fb;color:#182230}
+/* Light report modals keep markdown code on readable light surfaces. */
+html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#eef4fb;color:#182230}
 
 
 /* Engineering Platform is a generic platform label and uses the orange house style. */
@@ -321,6 +292,7 @@ html[data-theme="light"] .report-view-modal__actions :is(.copy,.download){backgr
 /* Header */
 .dashboard-titlebar__brand{align-items:center;display:flex;flex:1 1 260px;gap:10px;min-width:0}
 .dashboard-titlebar__actions{align-items:center;display:flex;flex:none;gap:12px}
+.page-refresh{align-items:center;background:transparent;border:1px solid var(--house-style);border-radius:50%;color:var(--house-style);cursor:pointer;display:inline-flex;font:22px/1 system-ui;height:34px;justify-content:center;min-height:34px;min-width:34px;padding:0;width:34px}.page-refresh:hover{background:var(--house-style);color:var(--button-ink)}.page-refresh:focus-visible{outline:3px solid var(--house-style);outline-offset:3px}
 .dashboard-locale{align-items:center;color:#b9b6c0;display:flex;font:12px system-ui;gap:6px;white-space:nowrap}
 .dashboard-locale select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}
 html[data-theme="light"] :is(body,.dashboard-titlebar,.footer){background:var(--dashboard-page-surface-light)}
@@ -337,7 +309,9 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
 #currentRun>.current-run__title{border-bottom-color:var(--category-color)}
 
 /* Scrolling and focus */
-.dashboard-scroll-region{padding-inline-start:var(--dashboard-scroll-gutter);padding-inline-end:calc(var(--dashboard-scroll-gutter) + max(8px,env(safe-area-inset-right)));scrollbar-gutter:stable}
+/* The body already owns the iOS safe area. Do not reserve it a second time
+   inside the scrolling region, especially in landscape where it is wide. */
+.dashboard-scroll-region{padding-inline:var(--dashboard-scroll-gutter);scrollbar-gutter:auto}
 .footer__item{align-items:baseline;display:inline-flex;gap:4px;min-width:0}
 .technical-grid>.card,.log-table-wrap{min-width:0}.log-table-wrap{box-sizing:border-box;width:100%}
 #promptHistory .log-table-wrap{
@@ -350,16 +324,25 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
 }
 :where(button,input,select,textarea,summary,[role="button"],[tabindex]):focus-visible{outline-width:var(--dashboard-focus-outline-width);outline-offset:var(--dashboard-focus-outline-offset);box-shadow:0 0 0 var(--dashboard-focus-ring-size) color-mix(in srgb,var(--category-color,#8dc7ff) 24%,transparent)}
 @media (max-width:620px) and (orientation:portrait){
-  body{padding-inline: max(12px,env(safe-area-inset-left)) max(12px,env(safe-area-inset-right))}
-  .dashboard-scroll-region{padding-inline:6px;scrollbar-gutter:stable both-edges}
+  /* iOS handles a document scroll more reliably than a nested flex scroller.
+     It also lets the title naturally leave the viewport with the content. */
+  .dashboard-titlebar{position:static}
+  body{display:block;height:auto;min-height:100dvh;overflow-x:hidden;overflow-y:auto;padding-inline:max(12px,env(safe-area-inset-left)) max(12px,env(safe-area-inset-right))}
+  .dashboard-scroll-region{min-height:auto;overflow:visible;padding-inline:6px;scrollbar-gutter:stable both-edges}
   .footer{box-sizing:border-box;display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;overflow:visible;padding-inline:6px;text-align:center;white-space:normal}
   .footer__item{justify-content:center}
   .footer__separator{display:none}
 }
+@media (max-height:600px) and (orientation:landscape){
+  /* On an iPhone the horizontal safe area already clears the notch/Dynamic
+     Island. Keep only a small content gap instead of adding desktop padding. */
+  body{padding-inline:max(8px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-right))}
+  .dashboard-scroll-region{padding-inline:6px}
+}
 
 /* Log controls */
 label:has(> :is(input,select,textarea)):not(.dashboard-locale):not(.auto-refresh-toggle),.log-controls label:has(> :is(input,select,textarea)){row-gap:var(--dashboard-control-label-gap)}
-.reset-log-filters{align-self:end;background:var(--dashboard-log-control-surface);border:1px solid #f0b66a;border-radius:50%;color:#fff0dc;font:20px/1 system-ui;height:38px;min-height:38px;min-width:38px;padding:0;width:38px}
+.reset-log-filters{align-self:end;background:var(--dashboard-log-control-surface);border:1px solid #f0b66a;border-radius:50%;color:#fff0dc;font:18px/1 system-ui;height:34px;min-height:34px;min-width:34px;margin-left:8px;padding:0;transform:translateX(4px);width:34px}
 .reset-log-filters:hover:not(:disabled){background:#f0b66a;color:#201812}
 html[data-theme="light"] .reset-log-filters{background:var(--dashboard-log-control-surface-light);border-color:#c17a1f;color:#7a4912}
 html[data-theme="light"] .reset-log-filters:hover:not(:disabled){background:#f0b66a;color:#201812}
@@ -376,15 +359,18 @@ html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;co
 
 /* Run-scoped AI conversation is opened from Prompt History, alongside evidence actions. */
 .prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}.prompt-chat-modal{background:transparent;border:0;height:min(94vh,1100px);max-width:min(1500px,96vw);padding:0;width:min(1500px,96vw)}.prompt-chat-modal::backdrop{background:#0d1018cc}.prompt-chat-modal__panel{--category-color:#d0a4ff;--prompt-chat-surface:var(--dashboard-surface-base,#24242d);background:var(--prompt-chat-surface);border:2px solid var(--category-color);border-radius:18px;box-sizing:border-box;color:#f7f3ee;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden;padding:24px}.prompt-chat-modal__header{align-items:start;background:var(--prompt-chat-surface);border-bottom:1px solid var(--category-color);display:grid;gap:18px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}.prompt-chat-modal__header h2{color:var(--category-color);font-size:24px;margin:0;min-width:0}.prompt-chat-modal__header .report-view-modal__close{grid-column:2;grid-row:1;justify-self:end;position:static}.prompt-chat-modal__description{color:#dacbe6;font-size:16px;line-height:1.5;margin:16px 0}.prompt-chat-modal #codexChat{align-self:stretch;background:transparent;border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}@media (max-width:620px){.prompt-chat-modal{height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);width:min(1000px,94vw)}.prompt-chat-modal__panel{border-radius:18px;padding:18px}.prompt-chat-modal__header h2{font-size:20px}}html[data-theme="light"] .prompt-chat-modal__panel{--prompt-chat-surface:var(--dashboard-surface-light,#fff);color:#182230}html[data-theme="light"] .prompt-chat-modal__description{color:#58677b}html[data-theme="light"] .prompt-chat-modal #codexChat{background:transparent}
+.prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
 .prompt-chat-modal{--prompt-chat-answer-surface:#3c2a4d}.prompt-chat-modal .chat-message--assistant{background:var(--prompt-chat-answer-surface);border-color:#bd8ee8}html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff}
 
 /* Keep the fixed close control above long detail content on every viewport. */
-.prompt-detail-modal__header .report-view-modal__close{pointer-events:auto;position:relative;z-index:3}
 
 /* The modal footer remains visible even after a visitor enlarges the question box. */
-.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{box-sizing:border-box;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-status{margin:6px 0 12px;min-height:1.25em;overflow-wrap:anywhere}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
+.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{box-sizing:border-box;grid-template-rows:auto minmax(0,1fr) auto auto auto;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-question-label{margin-bottom:6px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-meta{align-items:end;display:flex;gap:16px;justify-content:space-between;min-height:2.5rem}.prompt-chat-modal .chat-meta .chat-status{margin:0 0 2px;min-height:1.25em;overflow-wrap:anywhere;text-align:right}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
+/* iOS Safari zooms the document when a control uses text below 16px. Keep
+   every editable dashboard control at that threshold in every renderer. */
+:is(input,select,textarea){font-size:16px}
 
 /* A short message must keep its natural height; the scroll region owns spare space. */
 .chat-messages{align-content:start;align-items:start}.chat-message{align-self:start}
@@ -487,6 +473,29 @@ html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:var(--
    carry the purple conversation tint. */
 .prompt-chat-modal__panel{--prompt-chat-surface:var(--dashboard-modal-surface);padding:var(--dashboard-modal-panel-padding)}
 html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff}
+@media (max-height:600px) and (orientation:landscape){
+  /* One compact landscape contract for iPhone dialogs. Safe-area anchoring,
+     component sizing and the single-line chat composer stay together so a
+     late viewport override cannot silently undo one of the other rules. */
+  :is(.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal){
+    box-sizing:border-box;
+    inset-inline-start:max(12px,env(safe-area-inset-left));
+    inset-inline-end:max(12px,env(safe-area-inset-right));
+    margin-inline:0;
+    max-width:none;
+    width:auto;
+  }
+  .confirmation-modal[open]{display:grid;place-items:center}
+  .confirmation-modal__panel{box-sizing:border-box;margin-inline:auto;max-width:100%;width:min(30rem,100%)}
+  .component-modal__panel{
+    max-width:calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px);
+    width:min(680px,calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
+  }
+  .prompt-chat-modal .chat-actions{gap:6px;margin-bottom:10px;min-height:34px}
+  .prompt-chat-modal .chat-compose{align-items:center;display:flex;gap:8px}
+  .prompt-chat-modal .chat-compose .chat-input{flex:1;height:44px;max-height:44px;min-height:44px;padding:10px 12px;resize:none}
+  .prompt-chat-modal .chat-compose .chat-send{flex:none;height:44px;min-height:44px;position:static;width:44px}
+}
 
 /* Shared modal shell -------------------------------------------------------
    Report, execution detail and AI chat use the same structural contract.
@@ -497,11 +506,37 @@ html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff
 .dashboard-modal-shell--confirmation{--modal-accent:var(--house-style)}
 .dashboard-modal-shell--evidence{--modal-accent:#8dc7ff;--category-color:var(--modal-accent)}
 .dashboard-modal-shell--chat{--modal-accent:#d0a4ff;--category-color:var(--modal-accent)}
+.dashboard-modal-shell--destructive{--modal-accent:#ff718f}
 .dashboard-modal-shell::backdrop{background:var(--dashboard-modal-backdrop)}
 .dashboard-modal-shell__panel{background:var(--modal-surface);border-color:var(--modal-accent);box-shadow:var(--dashboard-modal-shadow);color:var(--dashboard-modal-ink)}
-.dashboard-modal-shell__header{border-bottom-color:var(--modal-accent)}
-.dashboard-modal-shell__header h2{color:var(--modal-accent)}
-.dashboard-modal-shell__close{background:var(--modal-surface);border-color:var(--modal-accent);color:var(--modal-accent)}
-.dashboard-modal-shell__close:hover{background:var(--modal-accent);border-color:var(--modal-accent);color:#17151a}
+.dashboard-modal-shell__header{align-items:start;border-bottom:1px solid var(--modal-accent);display:grid;gap:16px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}
+.dashboard-modal-shell__header h2{color:var(--modal-accent);margin:0;min-width:0}
+.dashboard-modal-shell__close{align-items:center;background:#24242d!important;border:1px solid #92919b!important;border-radius:50%;color:#f7f3ee!important;cursor:pointer;display:inline-flex;font:18px/1 system-ui;grid-column:2;grid-row:1;height:34px;justify-content:center;min-height:32px;min-width:32px;padding:0;position:static;width:34px}
+.dashboard-modal-shell__close:hover{background:#4a4a55!important;border-color:#b9b6c0!important;color:#fff!important}
+.dashboard-modal-shell__actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+.dashboard-modal-shell__action{background:var(--modal-surface)!important;border:1px solid var(--modal-accent)!important;border-radius:8px;color:var(--dashboard-modal-ink)!important;cursor:pointer;font:13px system-ui;min-height:44px;padding:8px 14px}
+.dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 22%,#24242d)!important;color:#f7f3ee!important}
+.dashboard-modal-shell__action:hover:not(:disabled){background:var(--modal-accent)!important;border-color:var(--modal-accent)!important;color:#201812!important}
 html[data-theme="light"] .dashboard-modal-shell{--modal-surface:var(--dashboard-modal-document-surface);color:#182230}
 html[data-theme="light"] .dashboard-modal-shell__panel{color:#182230}
+html[data-theme="light"] .dashboard-modal-shell__close{background:#fff!important;border-color:#728197!important;color:#415168!important}
+html[data-theme="light"] .dashboard-modal-shell__close:hover{background:#e9eef6!important;border-color:#58677b!important;color:#182230!important}
+html[data-theme="light"] .dashboard-modal-shell__action{background:#fff!important;color:#7a4912!important}
+html[data-theme="light"] .dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 16%,#fff)!important}
+.component-modal__restart::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
+.rate-limit-reset::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
+.predecessor-retry::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
+.execution-dismiss::before{content:"⊘"}
+#componentLogs .log-table{table-layout:auto;width:100%}#componentLogs .log-table th:last-child,#componentLogs .log-table td:last-child{width:100%}
+
+/* Shared semantic action variants prevent individual surfaces from drifting. */
+.dashboard-action{align-items:center;border:1px solid;border-radius:50%;box-sizing:border-box;display:inline-flex;font:18px/1 system-ui;height:34px;justify-content:center;min-height:34px;min-width:34px;padding:0;width:34px}
+.dashboard-action--download{background:#3b281b!important;border-color:#f0b66a!important;color:#fff0dc!important}
+.dashboard-action--download:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
+.dashboard-action--copy{background:#34283f!important;border-color:#d0a4ff!important;color:#eadcff!important}
+.dashboard-action--copy:hover:not(:disabled){background:#4b3658!important;border-color:#d0a4ff!important;color:#fff!important}
+.dashboard-action--destructive{background:#3a2028!important;border-color:#ff718f!important;color:#ffd9e1!important}
+.dashboard-action--destructive:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}
+html[data-theme="light"] .dashboard-action--download{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}
+html[data-theme="light"] .dashboard-action--copy{background:#fff7ff!important;border-color:#b99ae5!important;color:#68498a!important}
+html[data-theme="light"] .dashboard-action--destructive{background:#fff1f4!important;border-color:#ff718f!important;color:#b32649!important}

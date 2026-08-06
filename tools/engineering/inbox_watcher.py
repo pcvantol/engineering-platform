@@ -592,6 +592,11 @@ def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recover
         candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
         if any(content is not None and _retry_of(content) == run_id for _, content in candidates):
             raise RetrySubmissionError("Een uitvoering opnieuw proberen staat al in de wachtrij.")
+        # A completed or active child is immutable lineage evidence too; a
+        # historical blocked run must never mint a second retry execution.
+        from .prompt_history import prompt_history
+        if any(record.get("retry_of") == run_id for record in prompt_history(repo)):
+            raise RetrySubmissionError("Voor deze uitvoering bestaat al een Retry Execution.")
         archived = _archived_prompt_for_run(repo, run_id)
         if archived is None:
             raise RetrySubmissionError("De oorspronkelijke geblokkeerde prompt is lokaal niet beschikbaar.")

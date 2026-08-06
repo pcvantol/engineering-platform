@@ -57,6 +57,10 @@ class PromptHistoryTest(unittest.TestCase):
                         "mission_id": None,
                         "engineering_action_id": None,
                         "execution_constraint_version": None,
+                        "retry_child_run_id": None,
+                        "retry_status": None,
+                        "retry_chain": ["inbox-abc123"],
+                        "current_active_run": "inbox-abc123",
                     }
                 ],
             )
@@ -168,3 +172,15 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertEqual(entry["retry_of"], "inbox-original")
             self.assertEqual(entry["original_run_id"], "inbox-original")
             self.assertEqual(entry["retry_generation"], 1)
+            parent = record_prompt_execution(
+                root,
+                run_id="inbox-original",
+                terminal_state="BLOCKED",
+                prompt_title="Original prompt",
+                executed_at="2026-08-03T11:00:00Z",
+            )
+            self.assertIsNone(parent)
+            entries = {item["run_id"]: item for item in prompt_history(root)}
+            self.assertEqual(entries["inbox-original"]["retry_child_run_id"], "inbox-retry123")
+            self.assertEqual(entries["inbox-original"]["current_active_run"], "inbox-retry123")
+            self.assertEqual(entries["inbox-retry123"]["retry_chain"], ["inbox-original", "inbox-retry123"])

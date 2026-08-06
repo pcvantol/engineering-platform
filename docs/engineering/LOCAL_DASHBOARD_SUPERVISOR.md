@@ -89,13 +89,61 @@ The Engineering Status SVG and touch PNG are same-origin assets. They are
 served with `no-store` so an actively running local dashboard never needs to
 reuse an outdated visual asset after an upgrade.
 
+The title bar also contains a compact circular **Page refresh** glyph. It uses
+the same reload operation and visible refreshing feedback as pull-to-refresh;
+it is a browser-surface refresh only and never changes Engineering execution
+state, scheduling or evidence. Its accessible name is supplied by the
+five-language dashboard catalogue. On iPhone and iPad, `touch-action:
+manipulation` prevents accidental double-tap zoom; the dashboard viewport is
+also held at its initial scale while handling text input.
+
 Top-level dashboard categories are separated by a `24px` rhythm and do not
 use elevation shadows; their coloured borders and spacing provide hierarchy.
 The Dashboard UI component layer groups header, main-section, scrolling/focus,
 log-control and modal refinements, with shared spacing, focus and surface
-variables rather than late one-off overrides.
-The dedicated scroll region reserves a scrollbar gutter and has inline
-background padding, so overlay scrollbars never cover interactive content.
+variables rather than late one-off overrides. Its shared modal shell owns the
+header ruler, neutral close control and contextual accent; individual modal
+families provide only their geometry and content layout.
+The dedicated scroll region has a symmetric content gutter. The document body
+alone owns the iOS safe-area inset, so landscape rendering never reserves that
+right-hand space a second time for an overlay scrollbar. On short mobile
+landscape viewports the extra desktop inset is removed: the notch or Dynamic
+Island retains its system safe area plus an `8px` content gap only.
+Every dialog type uses those same left and right safe areas independently in
+landscape, so an asymmetric Dynamic Island can never cover a dialog border or
+its panel padding. One compact landscape contract also owns the component
+modal width and the AI chat's single-line composer and action-strip spacing;
+those responsive rules are not repeated as late per-modal overrides.
+The compact confirmation panel is centred within that safe width rather than
+being aligned to the left edge of its full-width dialog shell.
+The read-only AI chat composer uses a single-line input with an adjacent send
+button on short iPhone landscape viewports, preserving room for the
+conversation rather than reserving the portrait multi-line composer height.
+Prompt History keeps its terminal status column at a readable fixed width in
+iPhone landscape, including when a Retry or Dismiss action button is visible.
+Touch input controls use a `16px` text size and the iOS viewport is locked to
+its initial scale, so Safari cannot zoom the entire dashboard when the keyboard
+opens.
+The original scroll position is restored after an iPhone keyboard is dismissed,
+so focusing a field does not leave the dashboard stranded down the page.
+On iPhone portrait the dashboard uses native document scrolling, so the title
+bar scrolls out of view with the content instead of competing with a nested
+scroll region.
+When any dashboard modal is open, its scroll area remains usable while the
+background page is fixed in place and restored to its prior position on close.
+In the AI conversation modal, the new-question label sits directly above the
+composer, while the transient thinking status is right-aligned beside the
+used-model metadata beneath the send button.
+The chat action strip provides download, copy-to-clipboard and destructive
+clear actions; copying uses the same iOS-safe clipboard fallback as individual
+chat messages. These actions use the shared semantic `download`, `copy` and
+`destructive` variants, so reports, chat and component logs cannot drift into
+ID-specific presentation. Every download glyph uses the same generic orange
+transport colour, while destructive clear glyphs and their confirmation title,
+glyph and ruler use red. Modal close controls are intentionally neutral grey
+so they do not compete with an operational action. Repository and workspace
+state codes are rendered as readable labels through the five-language
+catalogue; the raw protocol values remain unchanged in Engineering data.
 At narrower widths the title-bar controls move to their own wrapping row
 before they can overlap the dashboard title. Labels above vertical input and
 select controls retain an `8px` gap before a focus outline. Component logs
@@ -190,12 +238,14 @@ item.
 
 ## Browser state and evidence views
 
-The title bar provides three browser-local controls: theme, section expansion
-and automatic refresh. Their values, open category state, table filters,
-sorting and pagination remain in the browser during a server-pushed status
-update. With automatic refresh disabled, the visible state remains static until
-the maintainer refreshes or re-enables it. These are presentation preferences;
-they never alter an Engineering run or its evidence.
+The title bar provides four browser-local controls: page refresh, theme,
+section expansion and automatic refresh. Page refresh is deliberately the
+same operation as pull-to-refresh, so both paths show the same feedback before
+reloading the current browser page. Their values, open category state, table
+filters, sorting and pagination remain in the browser during a server-pushed
+status update. With automatic refresh disabled, the visible state remains
+static until the maintainer refreshes or re-enables it. These are presentation
+preferences; they never alter an Engineering run or its evidence.
 
 **Promptgeschiedenis** is the sole entry point for terminal execution detail.
 Selecting a table row opens a near-fullscreen, read-only detail dialog with
@@ -212,7 +262,10 @@ run's bounded evidence and cannot start engineering work or alter repository
 state. Its browser-session history is isolated per Run ID.
 When an artifact does not exist, the dashboard states that explicitly and does
 not present its action. Copy confirmation is a local toast only; it does not
-send report content to another service.
+send report content to another service. On iPhone, a legacy clipboard fallback
+places its temporary selection inside the active dialog, because iOS marks the
+page behind a modal as inert; chat, report and detail copy actions therefore
+remain available without changing the evidence data.
 
 When an execution ends as `BLOCKED`, the **Actieve prompt** category remains
 visible and opens with that run's identity and recovery context; it is not
@@ -227,10 +280,13 @@ The bottom status bar contains the Engineering Platform version, the most
 recent refresh timestamp and the server-push connection state. The active
 prompt category contains no separate time card.
 
-The title bar and bottom status bar remain visible; all dashboard categories
-between them scroll in one dedicated content area. Workspace metadata remains
-a top-level, collapsible operational category immediately after **Technische
-details**, preserving its own independent status and evidence boundary.
+On desktop and iPad, the title bar and bottom status bar remain visible while
+dashboard categories scroll in one dedicated content area. On iPhone portrait,
+the title bar joins that content area and scrolls out of view to recover
+vertical reading space; the bottom status bar remains visible. Workspace
+metadata remains a top-level, collapsible operational category immediately after **Technische
+details**, preserving its own independent status and
+evidence boundary.
 The title-bar section switch persists the deliberate all-open or all-closed
 choice across a browser reload; a later status update cannot reverse it.
 
@@ -240,11 +296,14 @@ Every state-changing dashboard action uses the in-app confirmation dialog. The
 dialog is modal; a backdrop click does not dismiss it, while **Escape** has the
 same explicit negative result as **Annuleren**. It opens with focus on the
 dialog shell rather than on either action, so neither button is preselected.
-The primary action, its hover fill and the dialog ruler/border use the colour
-of the category that triggered it. This applies to reset-credit use, component
-restarts, log clearing, predecessor retry and clearing the AI conversation.
-Native browser confirmation and alert popups are not part of the supported
-interaction contract.
+For ordinary confirmations, the primary action and dialog ruler/border use the
+triggering category accent. A destructive confirmation switches the shared
+modal-shell accent to red, including its title glyph, ruler, border and action
+hover treatment. The header close control is the same negative result as
+**Annuleren**. This applies to reset-credit use, component restarts, log
+clearing, predecessor retry and clearing the AI conversation. Native browser
+confirmation and alert popups are not part of the supported interaction
+contract.
 
 The AI conversation's **Chat wissen** glyph clears only its browser-session
 view. It never changes Promptgeschiedenis, a delivered report or any Inbox
@@ -310,9 +369,9 @@ test against a locally started dashboard. It uses an iPhone-sized viewport and
 checks the private status surface, workspace category and collapsed completed
 prompt category. Its localization coverage switches through all five supported
 languages and verifies that visible interface copy, template and web-app-title
-bindings, dynamic dialogs, pull-to-refresh feedback, downloadable chat labels,
-accessibility names and rendered preflight enum labels change with the selected
-language. Run the same validation locally with:
+bindings, dynamic dialogs, pull-to-refresh and title-bar refresh feedback,
+downloadable chat labels, accessibility names and rendered preflight enum
+labels change with the selected language. Run the same validation locally with:
 
 ```sh
 npm ci
@@ -352,12 +411,12 @@ pagination, and its own download and confirmed-clear controls. Downloaded logs
 remain redacted NDJSON. A missing log is presented as an empty log, never as an
 invalid JSON record.
 
-All dashboard actions use the same interaction language: circular glyph
-controls retain a visible single-line category border at rest and fill with
-their parent category colour on hover. The log actions have a dedicated light
-resting surface in light mode so they do not inherit the dark log-card surface.
-This is presentation-only and has no effect on the download or clear endpoint
-contracts.
+All dashboard actions use the same interaction language: the shared semantic
+download, copy and destructive glyph variants retain their own readable
+resting surfaces and hover fills across chat, reports and component logs.
+The log actions therefore do not inherit the dark log-card surface in light
+mode. This is presentation-only and has no effect on the download or clear
+endpoint contracts.
 
 ## Codex resetcredit
 
