@@ -773,6 +773,27 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryRows tr td").first()).toHaveText("8bce7");
   });
 
+  test("uses the server retry projection for historical parent actions and lineage", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [
+        { run_id: "inbox-retryable", title: "Blocked without child", status: "BLOCKED", can_retry: true },
+        { run_id: "inbox-queued-parent", title: "Queued child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-child", retry_status: "QUEUED" },
+        { run_id: "inbox-active-parent", title: "Active child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-active-child", retry_status: "ACTIVE" },
+        { run_id: "inbox-complete-parent", title: "Completed child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-complete-child", retry_status: "COMPLETE" },
+      ];
+      renderPromptHistory();
+    });
+    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
+    await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Nieuwe uitvoering in wachtrij: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Huidige nieuwe uitvoering: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(3)).toContainText("Vervangen door: child");
+  });
+
   test("keeps prompt history horizontally scrollable only on an iPhone-sized viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -975,6 +996,7 @@ test.describe("Engineering Status browser smoke", () => {
         run_id: "inbox-landscape-status",
         title: "Landscape retry action",
         status: "BLOCKED",
+        can_retry: true,
       }];
       renderPromptHistory();
     });

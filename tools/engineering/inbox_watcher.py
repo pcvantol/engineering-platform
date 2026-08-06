@@ -479,6 +479,29 @@ def retry_metadata(content: str) -> dict[str, object]:
     }
 
 
+def queued_retry_children(root: Path) -> list[dict[str, object]]:
+    """Project queued retry lineage from persisted Inbox payloads only."""
+    children: list[dict[str, object]] = []
+    for path in discover(root, 0.0):
+        content = stable_prompt(path, 0.0)
+        if content is None:
+            continue
+        lineage = retry_metadata(content)
+        parent = lineage["retry_of"]
+        if not isinstance(parent, str):
+            continue
+        _, provisional_run_id, _ = _job_id(path, content)
+        children.append(
+            {
+                "retry_of": parent,
+                "run_id": provisional_run_id,
+                "status": "QUEUED",
+                "retry_timestamp": lineage["retry_timestamp"],
+            }
+        )
+    return children
+
+
 def _blocking_predecessor(root: Path) -> dict[str, str] | None:
     """Return terminal predecessor evidence that must fail closed for the queue."""
     prior = _previous_prompt_context(root)

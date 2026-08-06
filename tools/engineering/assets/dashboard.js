@@ -2466,7 +2466,6 @@ function renderPromptHistory() {
     body.append(row);
   } else
     {
-    const retriedParents = new Set(rows.map((entry) => entry.retry_of).filter(Boolean));
     for (const entry of visible) {
       const row = document.createElement("tr"),
         status = document.createElement("td"),
@@ -2500,9 +2499,34 @@ function renderPromptHistory() {
         locale.lower(String(entry.status || ""));
       status.textContent = promptHistoryStatus(entry.status);
       runSuffix.textContent = String(entry.run_id || "—").slice(-5);
-      title.textContent = String(
+      const titleText = document.createElement("span");
+      titleText.textContent = String(
         entry.title || entry.run_id || t("retry.unavailable_title"),
       );
+      title.append(titleText);
+      if (entry.retry_child_run_id) {
+        const lineage = document.createElement("span"),
+          childSuffix = String(entry.retry_child_run_id).slice(-5),
+          retryState = String(entry.retry_status || "").toLowerCase();
+        lineage.className = "prompt-history-lineage";
+        lineage.textContent = t(
+          retryState === "queued"
+            ? "retry.queued_by"
+            : retryState === "active"
+              ? "retry.current_execution"
+              : "retry.superseded_by",
+          { run_id: childSuffix },
+        );
+        if (entry.retry_timestamp) {
+          lineage.append(
+            " · ",
+            t("retry.started", {
+              timestamp: formatPromptHistoryTimestamp(entry.retry_timestamp),
+            }),
+          );
+        }
+        title.append(lineage);
+      }
       executed.textContent = formatPromptHistoryTimestamp(entry.executed_at);
       if (entry.report_available && entry.run_id) {
         const view = document.createElement("button");
@@ -2542,7 +2566,7 @@ function renderPromptHistory() {
         button.addEventListener("click", () => openPromptHistoryChat(entry));
         chat.append(button);
       } else chat.textContent = "—";
-      if (entry.status === "BLOCKED" && entry.run_id && !retriedParents.has(entry.run_id)) {
+      if (entry.can_retry === true && entry.run_id) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "predecessor-retry execution-history-action";
@@ -2550,7 +2574,7 @@ function renderPromptHistory() {
         retry.addEventListener("click", () => submitExecutionRetry(entry));
         action.append(retry);
       }
-      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
+      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && !entry.retry_child_run_id && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
         const dismiss = document.createElement("button");
         dismiss.type = "button";
         dismiss.className = "predecessor-retry execution-history-action execution-dismiss";

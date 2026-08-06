@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import re
 from pathlib import Path
 
@@ -25,6 +26,7 @@ ORIGINAL_RUN = re.compile(r"^- Original Run: `([a-z0-9][a-z0-9-]{0,63})`$", re.M
 RETRY_GENERATION = re.compile(r"^- Retry Generation: `(\d+)`$", re.MULTILINE)
 RETRY_TIMESTAMP = re.compile(r"^- Retry Timestamp: ([^\n]{1,80})$", re.MULTILINE)
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+RETRY_CHILD_STATES = frozenset({"QUEUED", "ACTIVE", *TERMINAL_STATES})
 
 
 def _safe_run_id(value: object) -> str | None:
@@ -240,7 +242,65 @@ def backfill_prompt_history(root: Path) -> None:
         )
 
 
-def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]:
+def _active_retry_children(root: Path) -> list[dict[str, object]]:
+    """Read active child lineage from watcher-persisted job records."""
+    try:
+        status = json.loads((root / ".engineering" / "status" / "status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    active_run_id = _safe_run_id(status.get("run_id")) if isinstance(status, dict) else None
+    if active_run_id is None:
+        return []
+    children: list[dict[str, object]] = []
+    for job in (root / ".engineering" / "inbox-processing").glob("*/job.json"):
+        try:
+            payload = json.loads(job.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("run_id") != active_run_id:
+            continue
+        retry = payload.get("retry")
+        parent = _safe_run_id(retry.get("retry_of")) if isinstance(retry, dict) else None
+        if parent is not None:
+            children.append(
+                {
+                    "retry_of": parent,
+                    "run_id": active_run_id,
+                    "status": "ACTIVE",
+                    "retry_timestamp": retry.get("retry_timestamp"),
+                }
+            )
+    return children
+
+
+def _valid_retry_children(children: object) -> list[dict[str, object]]:
+    """Accept bounded persisted child projections without creating lineage."""
+    if not isinstance(children, list):
+        return []
+    valid: list[dict[str, object]] = []
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        parent, run_id = _safe_run_id(child.get("retry_of")), _safe_run_id(child.get("run_id"))
+        state = child.get("status")
+        if parent is None or run_id is None or state not in RETRY_CHILD_STATES:
+            continue
+        valid.append(
+            {
+                "retry_of": parent,
+                "run_id": run_id,
+                "status": state,
+                "retry_timestamp": _safe_timestamp(child["retry_timestamp"])
+                if child.get("retry_timestamp")
+                else None,
+            }
+        )
+    return valid
+
+
+def prompt_history(
+    root: Path, *, limit: int = 1_000, queued_retry_children: list[dict[str, object]] | None = None
+) -> list[dict[str, object]]:
     """Return bounded, newest-first projections safe for the private dashboard."""
     bounded_limit = min(max(limit, 1), 1_000)
     backfill_prompt_history(root)
@@ -291,13 +351,26 @@ def prompt_history(root: Path, *, limit: int = 1_000) -> list[dict[str, object]]
         }
         for row in rows
     ]
-    # Lineage is a read-only projection of immutable parent references.  It
-    # never changes a terminal execution or treats a retry as a resume.
-    children = {record["retry_of"]: record for record in records if record.get("retry_of")}
+    # Lineage is a read-only projection of persisted child evidence. It never
+    # changes a terminal parent or treats retry as resume. A terminal child
+    # wins over active, which wins over an unclaimed Inbox child.
+    children: dict[str, dict[str, object]] = {}
+    for child in [
+        *_valid_retry_children(queued_retry_children),
+        *_active_retry_children(root),
+        *[record for record in records if record.get("retry_of")],
+    ]:
+        parent = child.get("retry_of")
+        if isinstance(parent, str):
+            children[parent] = child
     for record in records:
         child = children.get(record["run_id"])
         record["retry_child_run_id"] = child.get("run_id") if child else None
         record["retry_status"] = child.get("status") if child else None
+        record["retry_timestamp"] = child.get("retry_timestamp") if child else record["retry_timestamp"]
+        record["queued_retry_child"] = bool(child and child.get("status") == "QUEUED")
+        record["active_retry_child"] = bool(child and child.get("status") == "ACTIVE")
+        record["can_retry"] = record.get("status") == "BLOCKED" and child is None
         chain = [record["run_id"]]
         cursor = record
         while cursor.get("retry_of") and cursor["retry_of"] not in chain:

@@ -59,6 +59,9 @@ class PromptHistoryTest(unittest.TestCase):
                         "execution_constraint_version": None,
                         "retry_child_run_id": None,
                         "retry_status": None,
+                        "queued_retry_child": False,
+                        "active_retry_child": False,
+                        "can_retry": False,
                         "retry_chain": ["inbox-abc123"],
                         "current_active_run": "inbox-abc123",
                     }
@@ -184,3 +187,62 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertEqual(entries["inbox-original"]["retry_child_run_id"], "inbox-retry123")
             self.assertEqual(entries["inbox-original"]["current_active_run"], "inbox-retry123")
             self.assertEqual(entries["inbox-retry123"]["retry_chain"], ["inbox-original", "inbox-retry123"])
+
+    def test_retry_action_projection_uses_queued_active_and_terminal_child_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root,
+                run_id="inbox-parent",
+                terminal_state="BLOCKED",
+                prompt_title="Blocked parent",
+                executed_at="2026-08-06T12:00:00Z",
+            )
+            parent = prompt_history(root)[0]
+            self.assertTrue(parent["can_retry"])
+
+            queued = prompt_history(
+                root,
+                queued_retry_children=[
+                    {
+                        "retry_of": "inbox-parent",
+                        "run_id": "inbox-queued-child",
+                        "status": "QUEUED",
+                        "retry_timestamp": "2026-08-06T12:01:00Z",
+                    }
+                ],
+            )[0]
+            self.assertFalse(queued["can_retry"])
+            self.assertTrue(queued["queued_retry_child"])
+            self.assertEqual(queued["retry_child_run_id"], "inbox-queued-child")
+
+            job = root / ".engineering" / "inbox-processing" / "retry" / "job.json"
+            job.parent.mkdir(parents=True)
+            job.write_text(
+                '{"run_id":"inbox-active-child","retry":{"retry_of":"inbox-parent","retry_timestamp":"2026-08-06T12:01:00Z"}}',
+                encoding="utf-8",
+            )
+            status = root / ".engineering" / "status" / "status.json"
+            status.parent.mkdir(parents=True)
+            status.write_text('{"run_id":"inbox-active-child"}', encoding="utf-8")
+            active = prompt_history(root)[0]
+            self.assertFalse(active["can_retry"])
+            self.assertTrue(active["active_retry_child"])
+            self.assertEqual(active["retry_child_run_id"], "inbox-active-child")
+
+            record_prompt_execution(
+                root,
+                run_id="inbox-terminal-child",
+                terminal_state="COMPLETE",
+                prompt_title="Retry child",
+                executed_at="2026-08-06T12:02:00Z",
+                retry_of="inbox-parent",
+                original_run_id="inbox-parent",
+                retry_generation=1,
+                retry_timestamp="2026-08-06T12:01:00Z",
+            )
+            parent = {entry["run_id"]: entry for entry in prompt_history(root)}["inbox-parent"]
+            self.assertFalse(parent["can_retry"])
+            self.assertFalse(parent["queued_retry_child"])
+            self.assertFalse(parent["active_retry_child"])
+            self.assertEqual(parent["retry_child_run_id"], "inbox-terminal-child")

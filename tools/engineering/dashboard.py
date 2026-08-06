@@ -28,7 +28,7 @@ from .providers import TailscaleProvider
 from .providers import LaunchdProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, cloud_root, dismiss_execution, submit_execution_retry, submit_predecessor_retry
+from .inbox_watcher import RetrySubmissionError, cloud_root, dismiss_execution, queued_retry_children, submit_execution_retry, submit_predecessor_retry
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -139,7 +139,13 @@ def _sse_snapshot(root: Path) -> bytes:
 def _prompt_history(root: Path) -> bytes:
     """Return the bounded, private SQLite prompt history projection."""
     try:
-        runs = prompt_history(root)
+        try:
+            queued_children = queued_retry_children(cloud_root(repo=root))
+        except Exception:
+            # Terminal history remains authoritative when a local test or a
+            # temporarily unavailable transport cannot expose queued evidence.
+            queued_children = []
+        runs = prompt_history(root, queued_retry_children=queued_children)
         for run in runs:
             run["analysis_available"] = _report_analysis_available_for_run(
                 root, run.get("run_id")
