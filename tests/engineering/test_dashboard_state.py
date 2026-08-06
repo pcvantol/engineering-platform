@@ -18,6 +18,7 @@ class DashboardStateTest(unittest.TestCase):
                 json.dumps(
                     {
                         "platform_version": "1.5.0",
+                        "queue_depth": 1,
                         "queue_items": [{"filename": "later.md"}],
                     }
                 ),
@@ -32,6 +33,7 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_ACTIVE")
         self.assertEqual(payload["platform_version"], "1.5.0")
         self.assertEqual(payload["run_id"], "run-1")
+        self.assertEqual(payload["queue_depth"], 1)
         self.assertEqual(payload["queue_items"], [{"filename": "later.md"}])
 
     def test_status_ignores_a_terminal_live_projection_for_active_prompt(self) -> None:

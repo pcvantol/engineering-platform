@@ -88,7 +88,9 @@ def status(root: Path) -> bytes:
                 "current_phase": live.get("phase") or "INITIALIZE",
                 "current_action": live.get("current_action") or "Engineeringuitvoering is actief.",
                 "run_id": live.get("run_id"),
-                "queue_depth": 0,
+                # The watcher owns the queue. A live runner only adds current
+                # execution details, so it must not replace the queued count.
+                "queue_depth": watcher.get("queue_depth", len(watcher.get("queue_items", []))),
                 "queue_items": watcher.get("queue_items", []),
                 "implementation_pr": live.get("implementation_pr"),
                 "finalization_pr": live.get("finalization_pr"),
