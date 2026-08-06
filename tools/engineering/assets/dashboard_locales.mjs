@@ -403,7 +403,7 @@ export const DASHBOARD_MESSAGES = {
     "component.execution_host": "Engineering Execution Host",
     "logs.clear_description": "Clear the application logs for {component}? This cannot be undone.", "logs.clear_failed": "Logs could not be cleared.", "logs.download_unavailable": "Log download is unavailable.", "logs.unknown_component": "Unknown log component.",
     "chat.clear_title": "Clear chat", "chat.clear_description": "This clears only the local chat view. Prompt history and reports are retained.", "chat.copy_title": "Copy conversation", "chat.download_title": "AI conversation", "chat.download_model": "Model: {model}", "logs.inbox_entries": "Inbox watcher log entries", "logs.dashboard_entries": "Status dashboard log entries", "refresh.release_to_refresh": "Release to refresh", "table.sort_by": "Sort by {column}",
-    "workspace.database": "Engineering database", "workspace.database_size": "Database size", "workspace.name": "Name", "workspace.schema_version": "Schema version",
+    "workspace.database": "Engineering database", "workspace.database_size": "Database size", "workspace.free_disk_space": "Free disk space", "workspace.name": "Name", "workspace.schema_version": "Schema version",
   },
   nl: {
     "action.cancel": "Annuleren",
@@ -804,7 +804,7 @@ export const DASHBOARD_MESSAGES = {
     "component.execution_host": "Engineering Execution Host",
     "logs.clear_description": "De applicatielogs van {component} wissen? Dit kan niet ongedaan worden gemaakt.", "logs.clear_failed": "Logs wissen is niet gelukt.", "logs.download_unavailable": "Logdownload is niet beschikbaar.", "logs.unknown_component": "Onbekend logonderdeel.",
     "chat.clear_title": "Chat wissen", "chat.clear_description": "Dit wist alleen de lokale chatweergave. Promptgeschiedenis en rapporten blijven behouden.", "chat.copy_title": "Gesprek kopiëren", "chat.download_title": "AI-gesprek", "chat.download_model": "Model: {model}", "logs.inbox_entries": "Logregels van Inbox-watcher", "logs.dashboard_entries": "Logregels van Statusdashboard", "refresh.release_to_refresh": "Laat los om te vernieuwen", "table.sort_by": "Sorteren op {column}",
-    "workspace.database": "Engineering-database", "workspace.database_size": "Databasegrootte", "workspace.name": "Naam", "workspace.schema_version": "Schema-versie",
+    "workspace.database": "Engineering-database", "workspace.database_size": "Databasegrootte", "workspace.free_disk_space": "Vrije schijfruimte", "workspace.name": "Naam", "workspace.schema_version": "Schema-versie",
   },
   de: {
     "action.cancel": "Abbrechen",
@@ -1154,7 +1154,7 @@ export const DASHBOARD_MESSAGES = {
     "component.execution_host": "Engineering Execution Host",
     "logs.clear_description": "Die Anwendungsprotokolle für {component} löschen? Dies kann nicht rückgängig gemacht werden.", "logs.clear_failed": "Die Protokolle konnten nicht gelöscht werden.", "logs.download_unavailable": "Der Protokolldownload ist nicht verfügbar.", "logs.unknown_component": "Unbekannte Protokollkomponente.",
     "chat.clear_title": "Chat löschen", "chat.clear_description": "Dadurch wird nur die lokale Chatansicht gelöscht. Promptverlauf und Berichte bleiben erhalten.", "chat.copy_title": "Unterhaltung kopieren", "chat.download_title": "KI-Unterhaltung", "chat.download_model": "Modell: {model}", "logs.inbox_entries": "Protokolleinträge des Inbox-Watchers", "logs.dashboard_entries": "Protokolleinträge des Status-Dashboards", "refresh.release_to_refresh": "Zum Aktualisieren loslassen", "table.sort_by": "Nach {column} sortieren",
-    "workspace.database": "Engineering-Datenbank", "workspace.database_size": "Datenbankgröße", "workspace.name": "Name", "workspace.schema_version": "Schema-Version",
+    "workspace.database": "Engineering-Datenbank", "workspace.database_size": "Datenbankgröße", "workspace.free_disk_space": "Freier Speicherplatz", "workspace.name": "Name", "workspace.schema_version": "Schema-Version",
   },
   fr: {
     "action.cancel": "Annuler",
@@ -1504,7 +1504,7 @@ export const DASHBOARD_MESSAGES = {
     "component.execution_host": "Engineering Execution Host",
     "logs.clear_description": "Effacer les journaux de l’application pour {component} ? Cette action est irréversible.", "logs.clear_failed": "Les journaux n’ont pas pu être effacés.", "logs.download_unavailable": "Le téléchargement du journal est indisponible.", "logs.unknown_component": "Composant de journal inconnu.",
     "chat.clear_title": "Effacer la conversation", "chat.clear_description": "Cela efface uniquement la vue locale de la conversation. L’historique des prompts et les rapports sont conservés.", "chat.copy_title": "Copier la conversation", "chat.download_title": "Conversation IA", "chat.download_model": "Modèle : {model}", "logs.inbox_entries": "Entrées du journal du surveillant Inbox", "logs.dashboard_entries": "Entrées du journal du tableau de bord", "refresh.release_to_refresh": "Relâchez pour actualiser", "table.sort_by": "Trier par {column}",
-    "workspace.database": "Base de données d’ingénierie", "workspace.database_size": "Taille de la base de données", "workspace.name": "Nom", "workspace.schema_version": "Version du schéma",
+    "workspace.database": "Base de données d’ingénierie", "workspace.database_size": "Taille de la base de données", "workspace.free_disk_space": "Espace disque disponible", "workspace.name": "Nom", "workspace.schema_version": "Version du schéma",
   },
   es: {
     "action.cancel": "Cancelar",
@@ -1854,7 +1854,7 @@ export const DASHBOARD_MESSAGES = {
     "component.execution_host": "Engineering Execution Host",
     "logs.clear_description": "¿Borrar los registros de la aplicación de {component}? Esta acción no se puede deshacer.", "logs.clear_failed": "No se pudieron borrar los registros.", "logs.download_unavailable": "La descarga del registro no está disponible.", "logs.unknown_component": "Componente de registro desconocido.",
     "chat.clear_title": "Borrar chat", "chat.clear_description": "Esto borra solo la vista local del chat. Se conservan el historial de prompts y los informes.", "chat.copy_title": "Copiar conversación", "chat.download_title": "Conversación de IA", "chat.download_model": "Modelo: {model}", "logs.inbox_entries": "Entradas del registro del vigilante de Inbox", "logs.dashboard_entries": "Entradas del registro del panel de estado", "refresh.release_to_refresh": "Suelta para actualizar", "table.sort_by": "Ordenar por {column}",
-    "workspace.database": "Base de datos de ingeniería", "workspace.database_size": "Tamaño de la base de datos", "workspace.name": "Nombre", "workspace.schema_version": "Versión del esquema",
+    "workspace.database": "Base de datos de ingeniería", "workspace.database_size": "Tamaño de la base de datos", "workspace.free_disk_space": "Espacio libre en disco", "workspace.name": "Nombre", "workspace.schema_version": "Versión del esquema",
   },
 };
 

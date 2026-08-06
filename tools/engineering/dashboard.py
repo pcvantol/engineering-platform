@@ -1057,6 +1057,15 @@ def _tracked_file_count(root: Path) -> str:
     return str(sum(1 for path in observed.stdout.split(b"\0") if path))
 
 
+def _workspace_free_disk_space(root: Path) -> str:
+    """Return free space on the volume that contains the workspace."""
+    try:
+        free_gigabytes = shutil.disk_usage(root).free / (1024**3)
+    except OSError:
+        return "Niet beschikbaar"
+    return f"{free_gigabytes:.1f} GB"
+
+
 def _engineering_database_details(root: Path) -> dict[str, str]:
     """Return read-only local SQLite identity details without creating storage."""
     database = root.resolve() / ".engineering" / "engineering.db"
@@ -1087,6 +1096,7 @@ def _dashboard_html(
     build_commit: str = "onbekend",
     workspace_id: str = "onbekend",
     workspace_location: str = ".",
+    workspace_free_disk_space: str = "Niet beschikbaar",
     tracked_files: str = "Niet beschikbaar",
     engineering_database_path: str = "Niet beschikbaar",
     engineering_database_size: str = "Niet beschikbaar",
@@ -1145,7 +1155,7 @@ def _dashboard_html(
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p></details>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
@@ -1159,6 +1169,7 @@ def _dashboard_html(
         .replace("$CHAT_MODEL", escape(chat_model()))
         .replace("$WORKSPACE_ID", escape(workspace_id))
         .replace("$WORKSPACE_LOCATION", escape(workspace_location))
+        .replace("$WORKSPACE_FREE_DISK_SPACE", escape(workspace_free_disk_space))
         .replace("$TRACKED_FILES", escape(tracked_files))
         .replace("$ENGINEERING_DATABASE_PATH", escape(engineering_database_path))
         .replace("$ENGINEERING_DATABASE_SIZE", escape(engineering_database_size))
@@ -1556,12 +1567,14 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if self.path == "/":
                 engineering_database = _engineering_database_details(root)
+                workspace_free_disk_space = _workspace_free_disk_space(root)
                 return self._send(
                     _dashboard_html(
                         title,
                         _build_commit(root),
                         workspace_id,
                         workspace_location,
+                        workspace_free_disk_space,
                         tracked_files,
                         engineering_database["path"],
                         engineering_database["size"],

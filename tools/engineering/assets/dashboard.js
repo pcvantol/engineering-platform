@@ -2770,8 +2770,9 @@ function applyDashboardLocale() {
     if (element) element.textContent = t(key);
   });
   const workspaceKeys = [
-    "workspace.name", "ui.workspace_location", "detail.tracked_files",
-    "workspace.database", "workspace.database_size", "workspace.schema_version",
+    "workspace.name", "ui.workspace_location",
+    "workspace.free_disk_space", "detail.tracked_files", "workspace.database",
+    "workspace.database_size", "workspace.schema_version",
   ];
   document.querySelectorAll("#workspaceCard .field .label").forEach((label, index) => {
     if (workspaceKeys[index]) label.textContent = t(workspaceKeys[index]);

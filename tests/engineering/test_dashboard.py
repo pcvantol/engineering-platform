@@ -12,7 +12,7 @@ from contextlib import contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
@@ -20,6 +20,19 @@ from tools.engineering.storage import open_storage
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_workspace_card_shows_free_space_on_its_volume(self) -> None:
+        with patch(
+            "tools.engineering.dashboard.shutil.disk_usage",
+            return_value=MagicMock(free=12.34 * 1024**3),
+        ):
+            self.assertEqual(_workspace_free_disk_space(Path("/workspace")), "12.3 GB")
+
+        page = _dashboard_html(
+            "Engineering Status", workspace_free_disk_space="12.3 GB"
+        ).decode("utf-8")
+        self.assertIn('data-i18n="workspace.free_disk_space"', page)
+        self.assertIn("12.3 GB", page)
+
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]
         catalog = (root / "tools/engineering/assets/dashboard_locales.mjs").read_text(encoding="utf-8")
