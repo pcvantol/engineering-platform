@@ -3345,6 +3345,40 @@ function promptDetailEvidenceSection(evidence) {
     [detailField(t("detail.evidence"), evidence.join("\n"), true)],
   );
 }
+function promptDetailRecommendationHandoff(handoff) {
+  if (!handoff || typeof handoff !== "object") return null;
+  const recommendation = handoff.recommendation || {}, alternatives = Array.isArray(handoff.alternatives) ? handoff.alternatives : [];
+  const missing = Array.isArray(handoff.missing_fields) ? handoff.missing_fields : [];
+  const value = (item) => item || t("detail.not_recorded");
+  const fields = [
+    detailField(t("detail.recommendation_status"), value(recommendation.status)),
+    detailField(t("detail.recommended_next_mission"), value(recommendation.title)),
+    detailField(t("detail.mission_origin"), value(recommendation.mission_origin)),
+    detailField(t("detail.business_value"), value(recommendation.business_value)),
+    detailField(t("detail.confidence"), value(recommendation.confidence)),
+    detailField(t("detail.dependencies"), Array.isArray(recommendation.dependencies) && recommendation.dependencies.length ? recommendation.dependencies.join("\n") : t("detail.not_recorded"), true),
+    detailField(t("detail.evidence"), value(recommendation.summary), true),
+    detailField(t("detail.decision_evidence"), value(recommendation.decision_evidence), true),
+    detailField(t("detail.artefact_path"), value(handoff.artifact_path), true),
+    detailField(t("detail.business_decision_not_recorded"), "—"),
+    detailField(t("detail.mission_not_created"), "—"),
+  ];
+  if (handoff.projection_status === "INCOMPLETE")
+    fields.unshift(detailField(t("detail.projection_incomplete"), missing.join("\n") || t("detail.not_recorded"), true));
+  if (alternatives.length) {
+    const expansion = document.createElement("details"), summary = document.createElement("summary"), list = document.createElement("ol");
+    expansion.className = "recommendation-alternatives";
+    summary.textContent = t("detail.alternatives");
+    alternatives.forEach((alternative) => {
+      const item = document.createElement("li");
+      item.textContent = [alternative.rank, alternative.title, alternative.ordering_reason].filter(Boolean).join(" · ");
+      list.append(item);
+    });
+    expansion.append(summary, list);
+    fields.push(expansion);
+  }
+  return promptDetailCard(t("detail.recommendation_handoff"), fields, true);
+}
 function promptDetailReviewersSection(reviewers) {
   if (!reviewers.length) return null;
   const fields = reviewers.map((reviewer) =>
@@ -3370,7 +3404,8 @@ function renderPromptHistoryDetail(payload) {
     usage = payload?.usage || {},
     commits = payload?.commits || {},
     evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
-    reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [];
+    reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [],
+    recommendationHandoff = payload?.recommendation_handoff;
   content.replaceChildren();
   content.append(
     ...[
@@ -3382,6 +3417,7 @@ function renderPromptHistoryDetail(payload) {
         promptDetailEvidenceSection(evidence),
       ]),
       promptDetailUsageSection(usage),
+      promptDetailRecommendationHandoff(recommendationHandoff),
       promptDetailReviewersSection(reviewers),
     ].filter(Boolean),
   );

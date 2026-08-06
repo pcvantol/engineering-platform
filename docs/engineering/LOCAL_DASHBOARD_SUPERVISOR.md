@@ -121,6 +121,12 @@ button on short iPhone landscape viewports, preserving room for the
 conversation rather than reserving the portrait multi-line composer height.
 Prompt History keeps its terminal status column at a readable fixed width in
 iPhone landscape, including when a Retry or Dismiss action button is visible.
+When a terminal report contains a Forge Mission Recommendation Handoff, its
+Prompt History detail renders a compact read-only recommendation card. The
+card uses the five-language catalogue, has a textual status and confidence,
+wraps long artefact paths and dependencies, and exposes alternatives through a
+native keyboard-accessible disclosure. It contains no approval, Mission
+creation or Mission-start control.
 Touch input controls use a `16px` text size and the iOS viewport is locked to
 its initial scale, so Safari cannot zoom the entire dashboard when the keyboard
 opens.

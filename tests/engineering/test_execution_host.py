@@ -1078,6 +1078,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("- Mission ID: `MISSION-0003`", body)
         self.assertIn("- Engineering Action ID: `EA-0042`", body)
 
+    def test_terminal_report_projects_forge_recommendation_without_governance_mutation(self) -> None:
+        (self.root / "recommendation.json").write_text(
+            json.dumps({"recommendation": {"title": "Mission Aurora", "status": "RECOMMENDED", "mission_origin": "PORTFOLIO_INTELLIGENCE", "business_value": "High", "confidence": "0.91", "dependencies": ["DEC-7"], "decision_evidence_reference": "DEC-7"}, "alternatives": [{"title": "Mission Borealis", "rank": 2, "ordering_reason": "Lower value", "status": "PROPOSED"}]}),
+            encoding="utf-8",
+        )
+        self.prompt.write_text("Producer Type: FORGE\nForge Recommendation Artifact Path: recommendation.json\n", encoding="utf-8")
+        state = TransactionState("forge-handoff", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Forge Mission Recommendation Handoff", body)
+        self.assertIn("- Recommended Mission: Mission Aurora", body)
+        self.assertIn("- Business Decision: `NOT YET RECORDED`", body)
+        self.assertIn("- Mission Created: `NO`", body)
+        self.assertIn("- Rank 2: Mission Borealis — Lower value", body)
+
     def test_retry_report_records_immutable_execution_lineage(self) -> None:
         self.prompt.write_text(
             "Retry-Of: inbox-original\nOriginal-Run-ID: inbox-original\nRetry-Generation: 1\n"

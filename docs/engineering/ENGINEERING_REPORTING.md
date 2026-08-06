@@ -105,6 +105,29 @@ The report is execution evidence, not Forge Decision Evidence. It does not
 interpret, recreate or recommend Missions, Runtime Prompts, Runtime Instances
 or planning decisions.
 
+## Forge Mission Recommendation Handoff
+
+When a Forge Producer explicitly supplies a structured recommendation handoff,
+Engineering Platform projects it as an immutable, read-only advisory
+deliverable. The accepted sources are structured Producer metadata or a
+declared repository-relative Forge artefact; prompt wording, branches, commits
+and summaries are never used to infer a recommendation.
+
+The terminal report adds **Forge Mission Recommendation Handoff** and the
+Deliverable Projection identifies the requested recommendation, supplied
+artefact, recommended Mission and Decision Evidence reference. It keeps
+Execution Status, Recommendation Status, Business Decision and Mission Created
+as separate facts. `COMPLETE` execution never means approved, allocated or
+executable. Missing title or Decision Evidence is reported as
+`Recommendation Projection: INCOMPLETE`; values are never fabricated.
+
+The projection supports the Forge-supplied statuses `PROPOSED`, `RECOMMENDED`,
+`NOT_RECOMMENDED`, `SUPERSEDED` and `UNAVAILABLE`. Alternative candidates keep
+the supplied order, rank and ordering reason. A reported supersession remains
+on the historical run; it does not overwrite an earlier handoff. Forge remains
+the sole owner of ranking, Decision Evidence, the Business Workspace, approval
+and Mission lifecycle.
+
 ## Execution Host and Workspace Preflight evidence
 
 Before an Inbox item is claimed, Execution Host Preflight Level 1 records local
@@ -200,8 +223,9 @@ feature rather than an execution or repository-control surface.
 The dashboard detail projection is deliberately separate from its storage
 lookup. It reads the selected immutable history row and its bounded companion
 data first, then a small projector creates the response shape. That projector
-may derive only the displayed Evidence Bundle summary and target-repository
-provenance from the report for the same Run ID. It never writes SQLite,
+may derive only the displayed Evidence Bundle summary, target-repository
+provenance and report-bound Forge recommendation handoff from the report for
+the same Run ID. It never writes SQLite,
 rewrites the report, or substitutes information from another run. An absent or
 non-readable report produces an empty evidence summary while retaining the
 stored history data.

@@ -410,6 +410,29 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
+  test("renders a read-only Forge recommendation handoff with expandable alternatives", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    await page.route("**/api/prompt-history/inbox-handoff/details", (route) => route.fulfill({ json: {
+      history: { run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z" },
+      recommendation_handoff: {
+        artifact_path: "forge/recommendation.json", projection_status: "COMPLETE", missing_fields: [],
+        recommendation: { title: "Mission Aurora", status: "RECOMMENDED", mission_origin: "PORTFOLIO_INTELLIGENCE", business_value: "High", confidence: "0.91", dependencies: ["DEC-7"], summary: "Highest value", decision_evidence: "DEC-7" },
+        alternatives: [{ rank: 2, title: "Mission Borealis", ordering_reason: "Lower value" }],
+      },
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; promptHistoryEntries = [{ run_id: "inbox-handoff", status: "COMPLETE", title: "Forge handoff", executed_at: "2026-08-04T08:00:00Z" }]; renderPromptHistory(); });
+    await page.locator("#promptHistoryRows tr td").nth(1).click();
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Mission Aurora");
+    const alternatives = page.locator(".recommendation-alternatives");
+    await alternatives.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    await expect(alternatives).toHaveAttribute("open", "");
+    await expect(alternatives).toContainText("Mission Borealis");
+    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(0);
+  });
+
   test("uses the shared modal shell with contextual panels and neutral close controls", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 

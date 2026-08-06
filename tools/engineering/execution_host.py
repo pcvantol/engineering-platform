@@ -48,7 +48,8 @@ from .platform_version import (
 from .qualification import dashboard, execute_qualification, latest_qualification
 from .repository_handoff import publish as publish_repository_handoff
 from .report_analysis import analyze as analyze_terminal_report
-from .producer import parse_producer_metadata
+from .producer import ProducerMetadata, parse_producer_metadata
+from .recommendation_handoff import RecommendationHandoff, parse_forge_recommendation_handoff, report_lines as recommendation_handoff_report_lines
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import migrate_legacy_workspace
@@ -1777,14 +1778,19 @@ def _statistics_projection(state: TransactionState, bundle: TerminalEvidenceBund
     )
 
 
-def _deliverable_projection(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+def _deliverable_projection(
+    objective: str,
+    state: TransactionState,
+    bundle: TerminalEvidenceBundle,
+    handoff: RecommendationHandoff | None = None,
+) -> tuple[str, ...]:
     """Project requested outcomes and repository artefacts without claiming intent."""
     requested = _objective_requirements(objective)
     delivered = bundle.changed_files if state.phase == "COMPLETE" else ()
     documentation = tuple(path for path in delivered if path.endswith(".md"))
     validation = tuple(path for path in delivered if path.startswith("tests/"))
     runtime = tuple(path for path in delivered if path.startswith("tools/engineering/"))
-    return (
+    projection = (
         "### Requested Deliverables",
         *(f"- Requested: {item}" for item in requested),
         "### Delivered Artefacts",
@@ -1801,6 +1807,18 @@ def _deliverable_projection(objective: str, state: TransactionState, bundle: Ter
         *_evidence_lines("Documentation deliverable", documentation),
         "### Validation Deliverables",
         *_evidence_lines("Validation deliverable", validation),
+    )
+    if handoff is None:
+        return projection
+    return (
+        *projection,
+        "### Forge Advisory Deliverable",
+        "- Requested Deliverable: Next Business Mission Recommendation",
+        f"- Delivered Artefact: `{handoff.artifact_path or 'NOT SUPPLIED'}`",
+        f"- Recommended Mission: {handoff.recommendation.title or 'NOT SUPPLIED'}",
+        f"- Decision Evidence: {handoff.recommendation.decision_evidence or 'NOT SUPPLIED'}",
+        "- Business Approval: `NOT PERFORMED BY ENGINEERING PLATFORM`",
+        "- Mission Allocation: `NOT PERFORMED`",
     )
 
 
@@ -1831,8 +1849,8 @@ def _runtime_projection(
         f"- Runtime Instance: `{state.run_id}`",
         f"- Runtime Identity: provider `{runtime_provider}`; model `{reported_model}`",
         f"- Mission State: `{producer.mission_id or 'not recorded'}`",
-        f"- Dispatcher: `not recorded by the runner`",
-        f"- Queue: `not recorded by the runner`",
+        "- Dispatcher: `not recorded by the runner`",
+        "- Queue: `not recorded by the runner`",
         f"- Execution Receipt Reference: `{state.run_id}`",
         f"- Decision Evidence Reference: `{producer.correlation_id or producer.engineering_action_id or 'not recorded'}`",
     )
@@ -2131,6 +2149,9 @@ def generate_terminal_report(
     except OSError:
         pass
     producer = parse_producer_metadata(objective)
+    handoff = parse_forge_recommendation_handoff(
+        objective, root, producer_type=producer.producer_type
+    )
     manifest = manifest or EngineeringPlatformManifest.load(
         root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
     )
@@ -2333,8 +2354,9 @@ def generate_terminal_report(
             *_component_inventory_lines(bundle),
             "",
             "## Deliverable Projection",
-            *_deliverable_projection(objective, state, bundle),
+            *_deliverable_projection(objective, state, bundle, handoff),
             "",
+            *recommendation_handoff_report_lines(handoff, state.phase),
             "## Qualification Projection",
             *_qualification_projection(state, qualification_status, runtime_provider),
             "",

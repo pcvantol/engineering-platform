@@ -163,6 +163,10 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 .platform-health__component{align-items:start;cursor:pointer;grid-template-areas:"indicator name info" "indicator detail info";grid-template-columns:auto minmax(0,1fr) auto;padding:12px 10px;row-gap:8px}.platform-health__component .indicator{align-self:center;grid-area:indicator}.platform-health__component-name{grid-area:name}.platform-health__component-detail{grid-area:detail;margin:0}.component-info{align-self:center;grid-area:info}
 .chat-input{resize:vertical}
 
+/* Forge recommendation handoffs are advisory evidence: compact on desktop and
+   safely wrapping, keyboard-native details on narrower dashboard surfaces. */
+.prompt-detail-card .recommendation-alternatives{border-top:1px solid color-mix(in srgb,var(--category-color) 45%,transparent);margin-top:10px;padding-top:10px}.prompt-detail-card .recommendation-alternatives summary{cursor:pointer;font-weight:700;overflow-wrap:anywhere}.prompt-detail-card .recommendation-alternatives ol{margin:8px 0 0;padding-inline-start:24px}.prompt-detail-card .recommendation-alternatives li{overflow-wrap:anywhere;padding:3px 0}.prompt-detail-card--wide .field pre{max-width:100%;overflow-wrap:anywhere;white-space:pre-wrap}@media (max-width:620px){.prompt-detail-card .recommendation-alternatives{font-size:15px}.prompt-detail-card--wide{min-width:0}.prompt-detail-card--wide .field{min-width:0}}
+
 /* Make a blocked Inbox actionable without sending people to Technical details. */
 .queue-blocker{background:#4d2631;border:1px solid #ff9f43;border-radius:8px;color:#ffd8b1;font-size:14px;line-height:1.4;margin:12px 0;padding:10px}.queue-blocker:empty{display:none}
 html[data-theme="light"] .queue-blocker{background:#fff0df;color:#683e10}

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 from tools.engineering.producer import parse_producer_metadata
+from tools.engineering.recommendation_handoff import parse_forge_recommendation_handoff
 from tools.engineering.execution_host import execution_mode_for
 
 
@@ -34,3 +38,36 @@ class ProducerContractTest(unittest.TestCase):
         producer_prompt = "Producer Type: FORGE\nProducer ID: forge\n" + legacy
         self.assertEqual(parse_producer_metadata(producer_prompt).producer_type, "FORGE")
         self.assertEqual(execution_mode_for(producer_prompt), execution_mode_for(legacy))
+
+    def test_forge_recommendation_is_read_only_from_declared_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "forge-recommendation.json"
+            artifact.write_text(json.dumps({
+                "recommended_candidate": {
+                    "recommendation_id": "REC-1", "title": "Mission Aurora", "mission_origin": "PORTFOLIO_INTELLIGENCE",
+                    "rank": 1, "summary": "Highest validated value.", "business_value": "High", "confidence": "0.91",
+                    "dependencies": ["DEC-7"], "decision_evidence_reference": "DEC-7", "status": "RECOMMENDED",
+                },
+                "alternative_candidates": [{"title": "Mission Borealis", "rank": 2, "ordering_reason": "Lower confidence", "status": "PROPOSED"}],
+            }), encoding="utf-8")
+            handoff = parse_forge_recommendation_handoff(
+                "Forge Recommendation Artifact Path: forge-recommendation.json", root, producer_type="FORGE"
+            )
+        self.assertIsNotNone(handoff)
+        assert handoff is not None
+        self.assertEqual(handoff.recommendation.title, "Mission Aurora")
+        self.assertEqual(handoff.alternatives[0].rank, 2)
+        self.assertEqual(handoff.projection_status, "COMPLETE")
+
+    def test_missing_decision_evidence_is_explicitly_incomplete(self) -> None:
+        handoff = parse_forge_recommendation_handoff(
+            """Forge Recommendation Handoff JSON:
+```json
+{"recommendation": {"title": "Mission Aurora", "status": "RECOMMENDED"}}
+```""", Path.cwd(), producer_type="FORGE"
+        )
+        self.assertIsNotNone(handoff)
+        assert handoff is not None
+        self.assertEqual(handoff.projection_status, "INCOMPLETE")
+        self.assertEqual(handoff.missing_fields, ("Decision Evidence reference",))

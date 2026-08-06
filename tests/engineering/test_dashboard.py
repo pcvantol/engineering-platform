@@ -31,6 +31,12 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(f"  {locale}: {{", catalog)
             self.assertIn(f'"language.{locale}"', catalog)
         self.assertIn('"retry.details"', catalog)
+        for key in (
+            "detail.recommended_next_mission", "detail.recommendation_status", "detail.mission_origin",
+            "detail.business_value", "detail.confidence", "detail.dependencies", "detail.alternatives",
+            "detail.decision_evidence", "detail.projection_incomplete",
+        ):
+            self.assertEqual(catalog.count(f'"{key}"'), 5)
         self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
         dashboard_script = (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8")
         self.assertIn("createLocaleService", dashboard_script)
@@ -943,6 +949,17 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(entry["producer_type"], "FORGE")
             self.assertEqual(entry["mission_id"], "MISSION-0003")
             self.assertEqual(entry["engineering_action_id"], "EA-0042")
+
+    def test_prompt_history_projects_report_bound_recommendation_handoff(self) -> None:
+        report = """## Forge Mission Recommendation Handoff
+```json
+{"artifact_path":"forge/recommendation.json","projection_status":"COMPLETE","missing_fields":[],"recommendation":{"title":"Mission Aurora","status":"RECOMMENDED"},"alternatives":[]}
+```
+"""
+        payload = json.loads(dashboard._project_prompt_history_detail(
+            {"run_id": "inbox-handoff"}, execution={}, runtime={}, reviewers=[], commits={}, usage={}, report=report
+        ))
+        self.assertEqual(payload["recommendation_handoff"]["recommendation"]["title"], "Mission Aurora")
 
     def test_component_log_is_read_from_canonical_sqlite_storage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

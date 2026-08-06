@@ -45,6 +45,7 @@ from .component_lock import DuplicateComponentInstanceError, single_instance
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
 from .telemetry import daily_statistics, execution_timing
 from .prompt_history import prompt_history, report_for_prompt_history
+from .recommendation_handoff import handoff_from_report
 from .storage import open_storage
 from .platform_version import EngineeringPlatformManifest
 from . import dashboard_state
@@ -202,6 +203,7 @@ def _project_prompt_history_detail(
     """
     history = dict(entry)
     evidence = _project_history_evidence(history, report) if report is not None else []
+    handoff = handoff_from_report(report) if report is not None else None
     return json.dumps(
         {
             "history": history,
@@ -211,6 +213,7 @@ def _project_prompt_history_detail(
             "commits": commits,
             "usage": usage,
             "evidence": evidence,
+            "recommendation_handoff": handoff,
         },
         ensure_ascii=False,
         separators=(",", ":"),
