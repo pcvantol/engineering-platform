@@ -1017,6 +1017,28 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(github.calls, 2)
         self.assertEqual(result.phase, "COMPLETE")
 
+    def test_agent_cannot_reuse_main_or_an_unbranched_pr_as_transaction_evidence(self) -> None:
+        state = TransactionState(
+            "invalid-pr-evidence",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="main",
+            pull_request=791,
+            owner_authorized=True,
+        )
+        result = EngineeringRunner(
+            self.root,
+            self.store,
+            FakeRepository(),
+            FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE", "main", 791)),
+            lambda _: None,
+        )._poll(state, AgentResult("COMPLETE", "main", 791))
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertEqual(result.next_action, "invalid_pull_request_evidence")
+        self.assertIn("current main branch", result.diagnostic or "")
+
     def test_owner_authorization_merges_green_finalization_pr(self) -> None:
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
         github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])

@@ -637,6 +637,13 @@ class EngineeringRunner:
             return self._save_terminal(
                 state, result.terminal_state, "external_action_required", result.diagnostic
             )
+        if result and result.pull_request and result.branch in {None, "main"}:
+            return self._save_terminal(
+                state,
+                "BLOCKED",
+                "invalid_pull_request_evidence",
+                "Agent result referenced a pull request without a transaction branch; the current main branch cannot be reused as execution evidence.",
+            )
         if not state.pull_request:
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
