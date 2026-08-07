@@ -34,7 +34,8 @@ changes execution semantics.
 - Strict sequential Inbox safety: a `BLOCKED` or `FAILED` predecessor holds
   later submissions at `WAITING_FOR_PREDECESSOR` until **Resume Queue** creates
   a corrective `Retry-Of` replacement. **Retry Execution** remains separately
-  available for every terminal `BLOCKED` run and records immutable lineage.
+  available for every terminal `BLOCKED` or `FAILED` run and records immutable
+  lineage.
   This is the safe default until a future
   Engineering Intent dependency model can express finer-grained ordering.
 - Execution Host Preflight Levels 1 and 2 run before every Inbox claim. Level 1 validates

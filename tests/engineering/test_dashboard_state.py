@@ -96,6 +96,27 @@ class DashboardStateTest(unittest.TestCase):
 
         self.assertEqual(payload, watcher)
 
+    def test_status_ignores_a_stale_nonterminal_live_projection_after_watcher_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {
+                "watcher_state": "JOB_FAILED",
+                "run_id": None,
+                "last_executed_run": "inbox-failed",
+                "last_executed_phase": "FAILED",
+            }
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-failed", "phase": "WAIT_FOR_TERMINAL_EVIDENCE"}),
+                encoding="utf-8",
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload, watcher)
+
     def test_snapshot_isolated_from_optional_telemetry_failure(self) -> None:
         root = Path("/workspace")
 

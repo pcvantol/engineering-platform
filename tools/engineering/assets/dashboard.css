@@ -189,8 +189,9 @@ html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68
 .chat-actions .dashboard-action[hidden]{display:none}
 .codex-chat__details>.chat-messages{margin-top:0}
 
-/* The sticky title bar follows the same outer geometry as the main categories. */
-.dashboard-titlebar{border-radius:18px}
+/* The title bar covers scrolling content. Rounded corners leave small gaps at
+   the sticky edges, through which the active content can show. */
+.dashboard-titlebar{border-radius:0}
 
 /* The dashboard chrome remains visible while its workspace and categories scroll. */
 body{box-sizing:border-box;display:flex;flex-direction:column;height:100vh;height:100lvh;min-height:100dvh;overflow:hidden}

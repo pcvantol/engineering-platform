@@ -203,6 +203,11 @@ The dashboard reads only canonical local Engineering Platform state. It does
 not need iCloud Drive to render a current or completed run:
 
 - `.engineering/status/status.json` supplies bounded watcher status;
+- `.engineering/status/current.json` adds live execution detail only while its
+  Run ID has no terminal watcher result or terminal checkpoint. A terminal
+  watcher result for the same Run ID always wins, so a stale live checkpoint
+  cannot leave a completed, blocked or failed run visible as **Actieve
+  prompt**;
 - `.engineering/status/host_preflight.json` supplies the compact Execution Host
   Preflight outcome and latest timestamp; it never exposes check internals;
 - `.engineering/status/workspace_preflight.json` supplies the compact Workspace
@@ -273,11 +278,11 @@ places its temporary selection inside the active dialog, because iOS marks the
 page behind a modal as inert; chat, report and detail copy actions therefore
 remain available without changing the evidence data.
 
-When an execution ends as `BLOCKED`, the **Actieve prompt** category remains
-visible and opens with that run's identity and recovery context; it is not
-hidden merely because no Codex process is active. When an Inbox predecessor
-also blocks a later queued prompt, this category additionally shows the
-predecessor recovery action and retry control.
+The **Actieve prompt** category represents only a live, non-terminal
+execution. Terminal evidence belongs in **Promptgeschiedenis**. When an Inbox
+predecessor blocks later queued work, the category remains available for that
+queue-recovery context and shows the predecessor recovery action and retry
+control.
 
 The **Actieve prompt** category is always the first dashboard category, ahead
 of the Inbox queue and Prompt history.

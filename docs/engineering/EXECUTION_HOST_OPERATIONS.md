@@ -35,8 +35,8 @@ receives its path or any dashboard, launchd or local-storage detail.
 
 ## Operator actions
 
-- **Retry Execution** creates a new execution from a terminal `BLOCKED` run
-  and records immutable retry lineage.
+- **Retry Execution** creates a new execution from a terminal `BLOCKED` or
+  `FAILED` run and records immutable retry lineage.
 - **Queue Recovery** is a separate explicit retry for a blocked predecessor
   when dependent Inbox work is waiting. It does not bypass queue ordering.
 - **Dismiss Execution** is a confirmed acknowledgement of the current terminal

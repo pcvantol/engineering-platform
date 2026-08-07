@@ -370,7 +370,7 @@ def prompt_history(
         record["retry_timestamp"] = child.get("retry_timestamp") if child else record["retry_timestamp"]
         record["queued_retry_child"] = bool(child and child.get("status") == "QUEUED")
         record["active_retry_child"] = bool(child and child.get("status") == "ACTIVE")
-        record["can_retry"] = record.get("status") == "BLOCKED" and child is None
+        record["can_retry"] = record.get("status") in {"BLOCKED", "FAILED"} and child is None
         chain = [record["run_id"]]
         cursor = record
         while cursor.get("retry_of") and cursor["retry_of"] not in chain:

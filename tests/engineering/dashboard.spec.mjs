@@ -58,14 +58,15 @@ test.describe("Engineering Status browser smoke", () => {
       return [locale, [
         translate("state.MERGED_RECONCILED"),
         translate("state.WORKSPACE_READY"),
+        translate("state.WAIT_FOR_TERMINAL_EVIDENCE"),
       ]];
     }));
     expect(labels).toEqual({
-      en: ["Merged and reconciled", "Workspace ready"],
-      nl: ["Samengevoegd en afgestemd", "Werkruimte gereed"],
-      de: ["Zusammengeführt und abgeglichen", "Arbeitsbereich bereit"],
-      fr: ["Fusionné et rapproché", "Espace de travail prêt"],
-      es: ["Fusionado y conciliado", "Espacio de trabajo listo"],
+      en: ["Merged and reconciled", "Workspace ready", "Waiting for final evidence"],
+      nl: ["Samengevoegd en afgestemd", "Werkruimte gereed", "Wacht op afrondend bewijs"],
+      de: ["Zusammengeführt und abgeglichen", "Arbeitsbereich bereit", "Warten auf abschließenden Nachweis"],
+      fr: ["Fusionné et rapproché", "Espace de travail prêt", "En attente d’une preuve finale"],
+      es: ["Fusionado y conciliado", "Espacio de trabajo listo", "Esperando evidencia final"],
     });
   });
 
@@ -804,17 +805,19 @@ test.describe("Engineering Status browser smoke", () => {
       document.querySelector("#promptHistory").open = true;
       promptHistoryEntries = [
         { run_id: "inbox-retryable", title: "Blocked without child", status: "BLOCKED", can_retry: true },
+        { run_id: "inbox-failed-retryable", title: "Failed without child", status: "FAILED", can_retry: true },
         { run_id: "inbox-queued-parent", title: "Queued child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-child", retry_status: "QUEUED" },
         { run_id: "inbox-active-parent", title: "Active child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-active-child", retry_status: "ACTIVE" },
         { run_id: "inbox-complete-parent", title: "Completed child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-complete-child", retry_status: "COMPLETE" },
       ];
       renderPromptHistory();
     });
-    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(2);
     await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
-    await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Nieuwe uitvoering in wachtrij: child");
-    await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Huidige nieuwe uitvoering: child");
-    await expect(page.locator("#promptHistoryRows tr").nth(3)).toContainText("Vervangen door: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Uitvoering opnieuw proberen");
+    await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Nieuwe uitvoering in wachtrij: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(3)).toContainText("Huidige nieuwe uitvoering: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(4)).toContainText("Vervangen door: child");
   });
 
   test("keeps prompt history horizontally scrollable only on an iPhone-sized viewport", async ({ page }) => {
@@ -1437,6 +1440,25 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueItems")).toBeVisible();
   });
 
+  test("keeps a watcher-failed stale live run out of Active Prompt", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "JOB_FAILED",
+      run_id: "inbox-failed",
+      current_phase: "WAIT_FOR_TERMINAL_EVIDENCE",
+      current_action: "poll_required_checks",
+      last_executed_run: "inbox-failed",
+      last_executed_phase: "FAILED",
+    }, {}));
+
+    await expect(page.locator("#currentRun")).toBeHidden();
+  });
+
   test("allows the AI question field to grow only vertically", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#promptHistoryChatModal").evaluate((element) => element.showModal());
@@ -1922,13 +1944,13 @@ test.describe("Engineering Status browser smoke", () => {
     expect(box.y + box.height).toBeLessThanOrEqual(844);
   });
 
-  test("pads title bar content evenly from both horizontal edges", async ({ page }) => {
+  test("keeps the sticky title bar square while padding content evenly", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const padding = await page.locator(".dashboard-titlebar").evaluate((element) => {
       const style = getComputedStyle(element);
       return [style.paddingLeft, style.paddingRight, style.borderTopLeftRadius];
     });
-    expect(padding).toEqual(["16px", "16px", "18px"]);
+    expect(padding).toEqual(["16px", "16px", "0px"]);
   });
 
   test("never renders a white focus ring on visible interactive elements", async ({ page }) => {

@@ -246,3 +246,17 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertFalse(parent["queued_retry_child"])
             self.assertFalse(parent["active_retry_child"])
             self.assertEqual(parent["retry_child_run_id"], "inbox-terminal-child")
+
+    def test_failed_terminal_run_without_child_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root,
+                run_id="inbox-failed-parent",
+                terminal_state="FAILED",
+                prompt_title="Failed parent",
+                executed_at="2026-08-06T12:00:00Z",
+            )
+            entry = prompt_history(root)[0]
+            self.assertTrue(entry["can_retry"])
+            self.assertIsNone(entry["retry_child_run_id"])

@@ -42,6 +42,16 @@ def _terminal_checkpoint(root: Path, run_id: object) -> bool:
     return checkpoint.get("phase") in TERMINAL_PHASES
 
 
+def _watcher_has_terminal_run(watcher: object, run_id: object) -> bool:
+    """Return whether the watcher has already closed the live run."""
+    return (
+        isinstance(watcher, dict)
+        and isinstance(run_id, str)
+        and watcher.get("last_executed_run") == run_id
+        and watcher.get("last_executed_phase") in TERMINAL_PHASES
+    )
+
+
 def unavailable_status() -> bytes:
     """Return the complete, safe status shape when no projection exists yet."""
     return json.dumps(
@@ -128,6 +138,7 @@ def status(root: Path) -> bytes:
         live
         and live.get("phase") not in TERMINAL_PHASES
         and not _terminal_checkpoint(root, live.get("run_id"))
+        and not _watcher_has_terminal_run(watcher, live.get("run_id"))
     ):
         return projection
     try:

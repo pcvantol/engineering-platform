@@ -651,7 +651,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(archived.read_text(encoding="utf-8"), original)
         self.assertNotEqual(outcome["retry_run_id"], run_id)
 
-    def test_execution_retry_refuses_non_blocked_or_duplicate_execution(self) -> None:
+    def test_execution_retry_supports_failed_and_refuses_non_retryable_or_duplicate_execution(self) -> None:
         original = "# Failed prompt"
         archived = inbox_watcher.local_folders(self.repo)["Failed"] / "failed__failed.txt"
         archived.write_text(original, encoding="utf-8")
@@ -659,10 +659,12 @@ class InboxWatcherTest(unittest.TestCase):
         checkpoint = self.repo / ".engineering" / "engineering-runs"
         checkpoint.mkdir(parents=True)
         (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "FAILED"}), encoding="utf-8")
-        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Alleen een terminal"):
+        outcome = inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
+        self.assertTrue((self.inbox / str(outcome["filename"])).is_file())
+        (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "geblokkeerde of mislukte"):
             inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
         (checkpoint / f"{run_id}.json").write_text(json.dumps({"phase": "BLOCKED"}), encoding="utf-8")
-        (self.inbox / "pending.md").write_text(f"Retry-Of: {run_id}\n# Pending", encoding="utf-8")
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
 

@@ -605,24 +605,24 @@ def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard
 
 
 def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recovery: bool = False) -> dict[str, object]:
-    """Create one explicitly requested new execution for a terminal BLOCKED run."""
+    """Create one explicitly requested new execution for a retryable terminal run."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
         raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
     with _lock(repo):
         terminal_phase = _terminal_phase_for_run(repo, run_id)
-        if terminal_phase != "BLOCKED" and not (queue_recovery and terminal_phase in BLOCKING_PREDECESSOR_PHASES):
-            raise RetrySubmissionError("Alleen een terminal geblokkeerde uitvoering kan opnieuw worden uitgevoerd.")
+        if terminal_phase not in BLOCKING_PREDECESSOR_PHASES:
+            raise RetrySubmissionError("Alleen een terminal geblokkeerde of mislukte uitvoering kan opnieuw worden uitgevoerd.")
         candidates = [(path, stable_prompt(path, 0.0)) for path in discover(root, 0.0)]
         if any(content is not None and _retry_of(content) == run_id for _, content in candidates):
             raise RetrySubmissionError("Een uitvoering opnieuw proberen staat al in de wachtrij.")
         # A completed or active child is immutable lineage evidence too; a
-        # historical blocked run must never mint a second retry execution.
+        # historical terminal run must never mint a second retry execution.
         from .prompt_history import prompt_history
         if any(record.get("retry_of") == run_id for record in prompt_history(repo)):
             raise RetrySubmissionError("Voor deze uitvoering bestaat al een Retry Execution.")
         archived = _archived_prompt_for_run(repo, run_id)
         if archived is None:
-            raise RetrySubmissionError("De oorspronkelijke geblokkeerde prompt is lokaal niet beschikbaar.")
+            raise RetrySubmissionError("De oorspronkelijke terminale prompt is lokaal niet beschikbaar.")
         source, content = archived
         prior = retry_metadata(content)
         original = str(prior["original_run_id"] or run_id)

@@ -100,7 +100,7 @@ The Inbox is fail-closed across a sequence. When a run ends `BLOCKED` or
 `WAITING_FOR_PREDECESSOR` with the blocking run, prompt and recovery action.
 **Resume Queue** is the queue-recovery action and appears only while dependent
 Inbox work is held at `WAITING_FOR_PREDECESSOR`. **Retry Execution** is a
-separate engineering action available for every terminal `BLOCKED` run,
+separate engineering action available for every terminal `BLOCKED` or `FAILED` run,
 whether or not later Inbox work is waiting. It always creates a new immutable
 engineering execution using current repository state; it never changes the
 original run.
