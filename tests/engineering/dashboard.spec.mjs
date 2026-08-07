@@ -1195,9 +1195,10 @@ test.describe("Engineering Status browser smoke", () => {
       element.className = "indicator indicator--running";
     });
     await expect(page.locator("#indicator")).toHaveCSS("animation-name", "github-activity-ring");
-    await expect(page.locator("#indicator")).toHaveCSS("animation-duration", "0.82s");
+    await expect(page.locator("#indicator")).toHaveCSS("animation-duration", "1.1s");
     await expect(page.locator("#indicator")).toHaveCSS("animation-iteration-count", "infinite");
-    await expect(page.locator("#indicator")).toHaveCSS("background-image", /conic-gradient/);
+    await expect(page.locator("#indicator")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    await expect(page.locator("#indicator")).toHaveCSS("will-change", "transform");
   });
 
   test("loads the initial status before serverpush connects", async ({ page }) => {
