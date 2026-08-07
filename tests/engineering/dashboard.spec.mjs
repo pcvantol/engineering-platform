@@ -1976,6 +1976,18 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("keeps title-bar switch housings free from the generic mobile glass layer", () => {
+    const styles = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      "utf8",
+    );
+    expect(styles).toContain(
+      ".dashboard-titlebar :is(.theme-toggle,.section-state-toggle){",
+    );
+    expect(styles).toContain("background-image:none;");
+    expect(styles).toContain("backdrop-filter:none;");
+  });
+
   test("keeps the platform version labels orange in both themes", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const platformLabel = page.locator(".footer .label").first();

@@ -640,4 +640,16 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
     box-shadow:0 10px 20px rgb(15 23 42 / .34),0 3px 6px rgb(15 23 42 / .22),inset 0 1px 0 rgb(255 255 255 / .58);
   }
   .reset-log-filters:not(:disabled):active{transform:translateX(4px) translateY(-1px) scale(1.045)}
+  /* The title-bar switches already draw their own compact tracks. Applying
+     the generic glass layer to their button housings creates square plates. */
+  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle){
+    -webkit-backdrop-filter:none;
+    backdrop-filter:none;
+    background-image:none;
+    box-shadow:none;
+    will-change:auto;
+  }
+  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle):active{
+    box-shadow:none;
+  }
 }
