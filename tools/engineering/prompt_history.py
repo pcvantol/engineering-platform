@@ -305,7 +305,6 @@ def prompt_history(
 ) -> list[dict[str, object]]:
     """Return bounded, newest-first projections safe for the private dashboard."""
     bounded_limit = min(max(limit, 1), 1_000)
-    backfill_prompt_history(root)
     connection = open_storage(root)
     try:
         rows = connection.execute(

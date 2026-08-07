@@ -17,6 +17,7 @@ from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 from .telemetry import comparable_duration_estimate
+from .storage import EngineeringStorageError, import_legacy_projection_once, load_projection, open_storage
 
 
 JsonReader = Callable[[Path], bytes]
@@ -34,12 +35,26 @@ def _terminal_checkpoint(root: Path, run_id: object) -> bool:
     if not isinstance(run_id, str):
         return False
     try:
+        connection = open_storage(root)
+        try:
+            row = connection.execute(
+                "SELECT phase FROM engineering_transactions WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except EngineeringStorageError:
+        return False
+    if row:
+        return row[0] in TERMINAL_PHASES
+    # Narrow compatibility window for a terminal pre-v12 runner that did not
+    # contain enough fields to be promoted during the one-time migration.
+    try:
         checkpoint = json.loads(
             (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         return False
-    return checkpoint.get("phase") in TERMINAL_PHASES
+    return isinstance(checkpoint, dict) and checkpoint.get("phase") in TERMINAL_PHASES
 
 
 def _watcher_has_terminal_run(watcher: object, run_id: object) -> bool:
@@ -86,11 +101,26 @@ def unavailable_status() -> bytes:
 def status(root: Path) -> bytes:
     """Project watcher and live-run state into the stable dashboard contract."""
     try:
-        watcher = json.loads((root / ".engineering" / "status" / "status.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        watcher = load_projection(root, "watcher_status")
+        live = load_projection(root, "live_status")
+        # One explicit compatibility migration supports upgraded hosts where
+        # status files predate the canonical store. It is not a normal read
+        # path once the row has been imported.
+        if watcher is None:
+            watcher = import_legacy_projection_once(
+                root, "watcher_status", root / ".engineering" / "status" / "status.json"
+            )
+        if live is None:
+            live = import_legacy_projection_once(
+                root, "live_status", root / ".engineering" / "status" / "current.json"
+            )
+        watcher = watcher or {}
+    except EngineeringStorageError:
         watcher = {}
+        live = None
     try:
-        live = json.loads((root / ".engineering" / "status" / "current.json").read_text(encoding="utf-8"))
+        if live is None:
+            raise ValueError("No canonical live status")
         projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
@@ -132,7 +162,7 @@ def status(root: Path) -> bytes:
             },
             separators=(",", ":"),
         ).encode()
-    except (OSError, json.JSONDecodeError):
+    except (ValueError, TypeError):
         live, projection = None, None
     if (
         live
@@ -141,12 +171,9 @@ def status(root: Path) -> bytes:
         and not _watcher_has_terminal_run(watcher, live.get("run_id"))
     ):
         return projection
-    try:
-        if watcher and (watcher.get("run_id") or watcher.get("last_executed_run")):
-            return json.dumps(watcher, separators=(",", ":")).encode()
-        return (root / ".engineering" / "status" / "status.json").read_bytes()
-    except OSError:
-        return projection or unavailable_status()
+    if watcher:
+        return json.dumps(watcher, separators=(",", ":")).encode()
+    return projection or unavailable_status()
 
 
 def sse_status(root: Path) -> bytes:

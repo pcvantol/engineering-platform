@@ -429,7 +429,7 @@ class ClientContractTest(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertEqual(module.print_live_status(root), 0)
             path.write_text("not json", encoding="utf-8")
-            self.assertEqual(module.print_live_status(root), 2)
+            self.assertEqual(module.print_live_status(root), 0)
 
     def test_engineering_memory_is_bounded_advisory_metadata(self) -> None:
         module = __import__("tools.engineering.dj_engineer", fromlist=["capture_engineering_memory"])

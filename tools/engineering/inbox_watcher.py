@@ -43,6 +43,7 @@ from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import parse_producer_metadata
 from .drift_diagnostics import summary as drift_summary
+from .storage import EngineeringStorageError, load_projection, open_storage, record_artifact, record_submission
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -364,8 +365,8 @@ def _previous_prompt_context(repo: Path) -> dict[str, object]:
         "predecessor_recovery_action",
     )
     try:
-        prior = json.loads((repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        prior = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
         return {}
     return {key: prior[key] for key in keys if prior.get(key) is not None}
 
@@ -411,10 +412,9 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
     is executing.  That observation is read-only: it must retain the runner's
     run identity and phase rather than publish a competing watcher state.
     """
-    status_path = repo / ".engineering" / "status" / "status.json"
     try:
-        existing = json.loads(status_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        existing = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
         existing = {}
     manifest = EngineeringPlatformManifest.load(
         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
@@ -427,7 +427,7 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
             "queue_items": _queue_items(candidates),
         },
     )
-    publish(status_path.parent, payload)
+    publish(repo / ".engineering" / "status", payload)
 
 
 def _job_id(source: Path, content: str) -> tuple[str, str, str]:
@@ -672,10 +672,9 @@ def _move(source: Path, destination: Path) -> None:
 
 
 def _active_transaction(repo: Path) -> bool:
-    current = repo / ".engineering" / "status" / "current.json"
     try:
-        payload = json.loads(current.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = load_projection(repo, "live_status") or {}
+    except EngineeringStorageError:
         payload = {}
     phase = payload.get("phase")
     if phase in TERMINAL_PHASES:
@@ -689,10 +688,8 @@ def _active_transaction(repo: Path) -> bool:
         # before replacing current.json. The watcher result is authoritative
         # for that same Run ID, so it must not hold later Inbox work hostage.
         try:
-            watcher = json.loads(
-                (repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError):
+            watcher = load_projection(repo, "watcher_status") or {}
+        except EngineeringStorageError:
             watcher = {}
         if (
             watcher.get("last_executed_run") == run_id
@@ -703,10 +700,8 @@ def _active_transaction(repo: Path) -> bool:
     # The detached runner is admitted before it has written current.json.
     # Status is therefore the authoritative short-lived admission record.
     try:
-        watcher = json.loads(
-            (repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
+        watcher = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
         return False
     watcher_run_id = watcher.get("run_id")
     if watcher.get("watcher_state") not in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING"}:
@@ -748,12 +743,31 @@ def _lock(repo: Path):
 
 
 def _runner_result(repo: Path, run_id: str) -> tuple[str | None, str | None]:
-    checkpoint = repo / ".engineering" / "engineering-runs" / f"{run_id}.json"
     try:
-        state = json.loads(checkpoint.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        connection = open_storage(repo)
+        try:
+            row = connection.execute(
+                "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except EngineeringStorageError:
         return None, None
-    return state.get("phase"), state.get("diagnostic")
+    if not row:
+        # Compatibility import for a pre-datastore runner that completed
+        # between watcher releases. New runners always create the row first.
+        try:
+            legacy = json.loads(
+                (repo / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return None, None
+        return legacy.get("phase"), legacy.get("diagnostic") if isinstance(legacy, dict) else None
+    try:
+        payload = json.loads(row[1])
+    except (TypeError, json.JSONDecodeError):
+        return None, None
+    return row[0], payload.get("diagnostic") if isinstance(payload, dict) else None
 
 
 def _report(repo: Path, run_id: str) -> Path | None:
@@ -1014,6 +1028,27 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source), job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
+        producer = parse_producer_metadata(content)
+        try:
+            record_submission(
+                repo,
+                submission_id=job_id,
+                producer_id=producer.producer_id,
+                producer_type=producer.producer_type,
+                producer_version=producer.producer_version,
+                contract_version=producer.execution_constraint_version,
+                prompt_content=content,
+                prompt_metadata={"filename": source.name, "digest": digest, "title": title},
+                target_identity={"repository": repo.name, "path": str(repo.resolve())},
+                original_envelope={"transport": "inbox", "filename": source.name, "content": content},
+                correlation_id=producer.correlation_id,
+                mission_id=producer.mission_id,
+                received_at=arrived_at.isoformat(),
+            )
+        except EngineeringStorageError as error:
+            status(repo, "JOB_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.")
+            log_event(logger, logging.ERROR, "submission_persist_failed", run_id=run_id, diagnostic=str(error))
+            return 1
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
         _move(source, claimed)
         local = repo / ".engineering" / "inbox-processing" / job_id
@@ -1119,6 +1154,17 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 tracked_file_count=tracked_file_count,
                 target_branch=target_branch,
                 **retry_metadata(content),
+            )
+            record_artifact(
+                repo,
+                delivered,
+                artifact_id=f"report:{run_id}",
+                artifact_type="TERMINAL_REPORT",
+                content_type="text/markdown",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                run_id=run_id,
+                mission_id=parse_producer_metadata(content).mission_id,
+                producer_id=parse_producer_metadata(content).producer_id,
             )
         except Exception as error:
             log_event(

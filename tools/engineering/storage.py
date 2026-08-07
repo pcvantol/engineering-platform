@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
@@ -17,7 +18,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 10
+ENGINEERING_STORAGE_SCHEMA_VERSION = 13
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -321,6 +322,169 @@ def _schema_v10(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE prompt_execution_history ADD COLUMN target_branch TEXT")
 
 
+def _schema_v11(connection: sqlite3.Connection) -> None:
+    """Add the canonical host records; files retain payloads and projections only."""
+    for statement in """
+        CREATE TABLE execution_submissions (
+            submission_id TEXT PRIMARY KEY,
+            producer_id TEXT NOT NULL,
+            producer_type TEXT NOT NULL,
+            producer_version TEXT,
+            contract_version TEXT,
+            prompt_content TEXT NOT NULL,
+            prompt_metadata TEXT NOT NULL,
+            target_identity TEXT NOT NULL,
+            original_envelope TEXT NOT NULL,
+            correlation_id TEXT,
+            mission_id TEXT,
+            execution_run_id TEXT REFERENCES execution_runs(run_id),
+            received_at TEXT NOT NULL,
+            UNIQUE(producer_id, correlation_id)
+        );
+        CREATE TABLE execution_lifecycle_events (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES engineering_transactions(run_id) ON DELETE CASCADE,
+            phase TEXT NOT NULL,
+            checkpoint TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            UNIQUE(run_id, phase, checkpoint)
+        );
+        CREATE INDEX execution_lifecycle_events_run_lookup
+            ON execution_lifecycle_events(run_id, id DESC);
+        CREATE TABLE execution_artifact_records (
+            artifact_id TEXT PRIMARY KEY,
+            artifact_type TEXT NOT NULL,
+            digest_algorithm TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            run_id TEXT REFERENCES execution_runs(run_id),
+            submission_id TEXT REFERENCES execution_submissions(submission_id),
+            mission_id TEXT,
+            execution_id TEXT,
+            producer_id TEXT,
+            created_at TEXT NOT NULL,
+            integrity_status TEXT NOT NULL,
+            storage_location TEXT NOT NULL,
+            projection_status TEXT NOT NULL,
+            UNIQUE(storage_location),
+            UNIQUE(digest_algorithm, digest, storage_location)
+        );
+        CREATE TABLE execution_projections (
+            projection_name TEXT PRIMARY KEY,
+            classification TEXT NOT NULL CHECK(classification IN ('PROJECTION','ARTIFACT_PAYLOAD','CONFIGURATION','OBSERVABILITY','RECOVERY_EXPORT')),
+            payload TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE execution_migration_provenance (
+            source_location TEXT PRIMARY KEY,
+            source_digest TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            record_kind TEXT NOT NULL
+        );
+        """.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
+def _legacy_payload(path: Path) -> tuple[dict[str, object], str] | None:
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return (payload, hashlib.sha256(raw).hexdigest()) if isinstance(payload, dict) else None
+
+
+def _schema_v12(connection: sqlite3.Connection) -> None:
+    """Import legacy state once, preserving it as verified migration provenance.
+
+    The migration is deliberately one-way.  Once a record is present, normal
+    runtime reads never rebuild authority from filesystem projections.
+    """
+    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    root = database.parent.parent
+    now = datetime.now(timezone.utc).isoformat()
+    candidates: list[tuple[Path, str, str]] = [
+        (root / ".engineering" / "status" / "status.json", "watcher_status", "PROJECTION"),
+        (root / ".engineering" / "status" / "current.json", "live_status", "PROJECTION"),
+    ]
+    candidates.extend((path, f"transaction:{path.stem}", "CHECKPOINT") for path in (root / ".engineering" / "engineering-runs").glob("*.json"))
+    for path, name, kind in candidates:
+        legacy = _legacy_payload(path)
+        if legacy is None:
+            continue
+        payload, digest = legacy
+        prior = connection.execute(
+            "SELECT source_digest FROM execution_migration_provenance WHERE source_location=?", (str(path),)
+        ).fetchone()
+        if prior and prior[0] != digest:
+            raise EngineeringStorageError("Legacy projection changed during canonical datastore migration.")
+        if prior:
+            continue
+        if kind == "CHECKPOINT":
+            run_id = payload.get("run_id")
+            phase = payload.get("phase")
+            if not isinstance(run_id, str) or not isinstance(phase, str):
+                # Keep malformed compatibility files for operator diagnosis;
+                # they are never promoted into canonical authority.
+                continue
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            existing = connection.execute("SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)).fetchone()
+            if existing and existing[0] != encoded:
+                raise EngineeringStorageError("Legacy checkpoint conflicts with canonical transaction state.")
+            connection.execute("INSERT OR IGNORE INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", (run_id, encoded, phase, now))
+            connection.execute("INSERT OR IGNORE INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,?)", (run_id, phase, encoded, now))
+        else:
+            store_projection(connection, name, payload, classification="PROJECTION", updated_at=now)
+        connection.execute("INSERT INTO execution_migration_provenance(source_location,source_digest,imported_at,record_kind) VALUES(?,?,?,?)", (str(path), digest, now, kind))
+
+
+def _schema_v13(connection: sqlite3.Connection) -> None:
+    """Import immutable terminal-report metadata once, never during dashboard reads."""
+    from .prompt_history import _report_record, _safe_timestamp
+
+    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    root = database.parent.parent
+    reports = root / ".engineering" / "reports"
+    if not reports.is_dir():
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for report in reports.glob("*.md"):
+        try:
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        record = _report_record(root, report)
+        if record is None:
+            continue
+        source_location = str(report)
+        prior = connection.execute(
+            "SELECT source_digest FROM execution_migration_provenance WHERE source_location=?", (source_location,)
+        ).fetchone()
+        if prior and prior[0] != digest:
+            raise EngineeringStorageError("Legacy report changed during canonical datastore migration.")
+        if prior:
+            continue
+        run_id = record["run_id"]
+        connection.execute(
+            "INSERT OR IGNORE INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,retry_of,original_run_id,retry_generation,retry_timestamp,target_branch,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, record["terminal_state"], record["prompt_title"], _safe_timestamp(record["executed_at"]), record["git_commit"],
+             str(report.resolve().relative_to(reports.resolve())), record["retry_of"], record["original_run_id"],
+             record["retry_generation"], record["retry_timestamp"], record["target_branch"], now),
+        )
+        run_exists = connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone()
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_artifact_records(artifact_id,artifact_type,digest_algorithm,digest,content_type,run_id,created_at,integrity_status,storage_location,projection_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (f"legacy-report:{run_id}", "TERMINAL_REPORT", "sha256", digest, "text/markdown", run_id if run_exists else None,
+             now, "VERIFIED", str(report.resolve().relative_to((root / ".engineering").resolve())), "AVAILABLE"),
+        )
+        connection.execute(
+            "INSERT INTO execution_migration_provenance(source_location,source_digest,imported_at,record_kind) VALUES(?,?,?,?)",
+            (source_location, digest, now, "ARTIFACT_PAYLOAD"),
+        )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -332,7 +496,187 @@ MIGRATIONS: dict[int, Migration] = {
     8: _schema_v8,
     9: _schema_v9,
     10: _schema_v10,
+    11: _schema_v11,
+    12: _schema_v12,
+    13: _schema_v13,
 }
+
+
+def _encoded_payload(payload: dict[str, object]) -> str:
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def store_projection(connection: sqlite3.Connection, name: str, payload: dict[str, object], *, classification: str = "PROJECTION", updated_at: str | None = None) -> None:
+    """Persist a bounded projection record before its optional filesystem copy."""
+    if classification not in {"PROJECTION", "ARTIFACT_PAYLOAD", "CONFIGURATION", "OBSERVABILITY", "RECOVERY_EXPORT"}:
+        raise EngineeringStorageError("Unknown execution projection classification.")
+    encoded = _encoded_payload(payload)
+    connection.execute(
+        "INSERT INTO execution_projections(projection_name,classification,payload,source_digest,updated_at) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(projection_name) DO UPDATE SET classification=excluded.classification,payload=excluded.payload,source_digest=excluded.source_digest,updated_at=excluded.updated_at",
+        (name, classification, encoded, hashlib.sha256(encoded.encode()).hexdigest(), updated_at or datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def load_projection(root: Path, name: str) -> dict[str, object] | None:
+    """Load a canonical projection without consulting its compatibility file."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute("SELECT payload FROM execution_projections WHERE projection_name=?", (name,)).fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Canonical execution projection is corrupt.") from error
+    if not isinstance(payload, dict):
+        raise EngineeringStorageError("Canonical execution projection is invalid.")
+    return payload
+
+
+def record_submission(
+    root: Path,
+    *,
+    submission_id: str,
+    producer_id: str,
+    producer_type: str,
+    prompt_content: str,
+    prompt_metadata: dict[str, object],
+    target_identity: dict[str, object],
+    original_envelope: dict[str, object],
+    received_at: str,
+    producer_version: str | None = None,
+    contract_version: str | None = None,
+    correlation_id: str | None = None,
+    mission_id: str | None = None,
+    execution_run_id: str | None = None,
+) -> None:
+    """Persist the complete producer envelope before an Inbox file is consumed."""
+    if not all(isinstance(value, str) and value for value in (submission_id, producer_id, producer_type, prompt_content, received_at)):
+        raise EngineeringStorageError("Execution submission identity is invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(submission_id) DO NOTHING",
+            (submission_id, producer_id, producer_type, producer_version, contract_version, prompt_content,
+             _encoded_payload(prompt_metadata), _encoded_payload(target_identity), _encoded_payload(original_envelope),
+             correlation_id, mission_id, execution_run_id, received_at),
+        )
+    finally:
+        connection.close()
+
+
+def record_artifact(
+    root: Path,
+    path: Path,
+    *,
+    artifact_id: str,
+    artifact_type: str,
+    content_type: str,
+    created_at: str,
+    run_id: str | None = None,
+    submission_id: str | None = None,
+    mission_id: str | None = None,
+    execution_id: str | None = None,
+    producer_id: str | None = None,
+    projection_status: str = "AVAILABLE",
+) -> None:
+    """Register immutable filesystem payload metadata in the canonical store."""
+    try:
+        location = str(path.resolve().relative_to((root / ".engineering").resolve()))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except (OSError, ValueError) as error:
+        raise EngineeringStorageError("Artifact payload cannot be recorded safely.") from error
+    connection = open_storage(root)
+    try:
+        if run_id and not connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone():
+            run_id = None
+        if submission_id and not connection.execute("SELECT 1 FROM execution_submissions WHERE submission_id=?", (submission_id,)).fetchone():
+            submission_id = None
+        connection.execute(
+            "INSERT INTO execution_artifact_records(artifact_id,artifact_type,digest_algorithm,digest,content_type,run_id,submission_id,mission_id,execution_id,producer_id,created_at,integrity_status,storage_location,projection_status) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(artifact_id) DO UPDATE SET digest=excluded.digest,integrity_status=excluded.integrity_status,projection_status=excluded.projection_status",
+            (artifact_id, artifact_type, "sha256", digest, content_type, run_id, submission_id, mission_id,
+             execution_id, producer_id, created_at, "VERIFIED", location, projection_status),
+        )
+    finally:
+        connection.close()
+
+
+def verify_artifact_integrity(root: Path, artifact_id: str) -> bool:
+    """Verify a registered payload without making the file itself authoritative."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT digest_algorithm,digest,storage_location FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,)
+        ).fetchone()
+        if not row:
+            return False
+        algorithm, expected, location = row
+        if algorithm != "sha256" or not isinstance(location, str):
+            return False
+        try:
+            payload = ((root / ".engineering") / location).resolve()
+            payload.relative_to((root / ".engineering").resolve())
+            actual = hashlib.sha256(payload.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            actual = ""
+        connection.execute(
+            "UPDATE execution_artifact_records SET integrity_status=? WHERE artifact_id=?",
+            ("VERIFIED" if actual == expected else "MISMATCH", artifact_id),
+        )
+        return actual == expected
+    finally:
+        connection.close()
+
+
+def regenerate_status_projections(root: Path) -> None:
+    """Regenerate compatibility JSON copies from canonical state deterministically."""
+    status_directory = root / ".engineering" / "status"
+    status_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name, filename in (("watcher_status", "status.json"), ("live_status", "current.json")):
+        payload = load_projection(root, name)
+        if payload is None:
+            continue
+        temporary = status_directory / f".{filename}.tmp"
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(status_directory / filename)
+
+
+def import_legacy_projection_once(root: Path, name: str, path: Path) -> dict[str, object] | None:
+    """Explicit, idempotent compatibility migration for a pre-v12 projection.
+
+    It is only used when the canonical row is absent. Subsequent reads remain
+    database-only, and a changed source fails closed rather than overwriting
+    the imported operational record.
+    """
+    existing = load_projection(root, name)
+    if existing is not None:
+        return existing
+    legacy = _legacy_payload(path)
+    if legacy is None:
+        return None
+    payload, digest = legacy
+    connection = open_storage(root)
+    try:
+        prior = connection.execute(
+            "SELECT source_digest FROM execution_migration_provenance WHERE source_location=?", (str(path),)
+        ).fetchone()
+        if prior and prior[0] != digest:
+            raise EngineeringStorageError("Legacy projection conflicts with completed canonical migration.")
+        store_projection(connection, name, payload, classification="PROJECTION")
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_migration_provenance(source_location,source_digest,imported_at,record_kind) VALUES(?,?,?,?)",
+            (str(path), digest, datetime.now(timezone.utc).isoformat(), "PROJECTION"),
+        )
+    finally:
+        connection.close()
+    return payload
 
 
 def database_path(root: Path) -> Path:
@@ -375,12 +719,15 @@ def open_storage(
     # Best-effort consumers (telemetry) open in read/write-existing mode.  This
     # prevents a delayed worker from recreating a database while a workspace is
     # being removed.
-    connection = sqlite3.connect(
-        path if create else f"file:{path}?mode=rw",
-        timeout=10,
-        isolation_level=None,
-        uri=not create,
-    )
+    try:
+        connection = sqlite3.connect(
+            path if create else f"file:{path}?mode=rw",
+            timeout=10,
+            isolation_level=None,
+            uri=not create,
+        )
+    except sqlite3.DatabaseError as error:
+        raise EngineeringStorageError("Engineering storage could not be opened safely.") from error
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")

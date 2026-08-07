@@ -11,6 +11,7 @@ import tempfile
 from typing import Mapping
 
 from .agent_state import TransactionState, redact_diagnostic
+from .storage import EngineeringStorageError, load_projection, open_storage, store_projection
 
 
 def write_live_status(
@@ -45,19 +46,21 @@ def write_live_status(
     previous_reviewers: list[dict[str, object]] = []
     previous_runtime: dict[str, str] = {}
     try:
-        previous = json.loads(path.read_text(encoding="utf-8"))
-        if previous.get("run_id") == state.run_id:
-            if reviewer_agents is None and isinstance(previous.get("reviewer_agents"), list):
-                previous_reviewers = [item for item in previous["reviewer_agents"] if isinstance(item, dict)]
-            if runtime_metadata is None and isinstance(previous.get("runtime_metadata"), dict):
-                previous_runtime = {
-                    key: value[:120]
-                    for key, value in previous["runtime_metadata"].items()
-                    if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
-                    and isinstance(value, str)
-                }
-    except (OSError, json.JSONDecodeError):
-        pass
+        previous = load_projection(root, "live_status") or {}
+    except EngineeringStorageError:
+        # A live operation must not publish a filesystem-only state if the
+        # canonical store is unavailable.
+        raise
+    if previous.get("run_id") == state.run_id:
+        if reviewer_agents is None and isinstance(previous.get("reviewer_agents"), list):
+            previous_reviewers = [item for item in previous["reviewer_agents"] if isinstance(item, dict)]
+        if runtime_metadata is None and isinstance(previous.get("runtime_metadata"), dict):
+            previous_runtime = {
+                key: value[:120]
+                for key, value in previous["runtime_metadata"].items()
+                if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
+                and isinstance(value, str)
+            }
     safe_runtime = previous_runtime if runtime_metadata is None else {
         key: value[:120]
         for key, value in runtime_metadata.items()
@@ -86,6 +89,11 @@ def write_live_status(
         "reviewer_agents": reviewer_agents if reviewer_agents is not None else previous_reviewers,
         "runtime_metadata": safe_runtime,
     }
+    connection = open_storage(root)
+    try:
+        store_projection(connection, "live_status", payload)
+    finally:
+        connection.close()
     descriptor, temporary = tempfile.mkstemp(prefix=".current.", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -100,15 +108,14 @@ def write_live_status(
 
 
 def print_live_status(root: Path) -> int:
-    path = root / ".engineering" / "status" / "current.json"
-    if not path.is_file():
-        print("No active engineering status is available.")
-        return 1
     try:
-        current = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        current = load_projection(root, "live_status")
+    except EngineeringStorageError:
         print("Current engineering status is unavailable.")
         return 2
+    if current is None:
+        print("No active engineering status is available.")
+        return 1
     print(
         f"Run:\n{current['run_id']}\n\nCurrent Phase:\n{current['phase']}\n\nImplementation PR:\n{current['implementation_pr']}\n\nRepair Iteration:\n{current['repair_iteration']}\n\nCurrent Action:\n{current['current_action']}\n\nElapsed:\n{current['elapsed_seconds']}s"
     )

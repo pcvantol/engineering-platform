@@ -16,7 +16,7 @@ from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _cl
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
-from tools.engineering.storage import open_storage
+from tools.engineering.storage import open_storage, store_projection
 
 
 class DashboardStatusTest(unittest.TestCase):
@@ -257,10 +257,12 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(_codex_usage(root)), {"input_tokens": 123, "cost": 1.25}
             )
-            (status / "status.json").write_text(
-                '{"run_id":"inbox-active","last_executed_run":"inbox-visible"}',
-                encoding="utf-8",
-            )
+            with open_storage(root) as connection:
+                store_projection(
+                    connection,
+                    "watcher_status",
+                    {"run_id": "inbox-active", "last_executed_run": "inbox-visible"},
+                )
             self.assertEqual(
                 json.loads(_codex_usage(root)), {},
                 "Usage from the prior run must never appear on an active run.",
@@ -673,7 +675,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
         self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], "10")
+        self.assertEqual(details["schema_version"], "13")
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:

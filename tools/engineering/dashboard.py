@@ -46,7 +46,7 @@ from .codex_chat import CodexChatError, chat_model, respond as codex_chat_respon
 from .telemetry import daily_statistics, execution_timing
 from .prompt_history import prompt_history, report_for_prompt_history
 from .recommendation_handoff import handoff_from_report
-from .storage import open_storage
+from .storage import EngineeringStorageError, open_storage
 from .platform_version import EngineeringPlatformManifest
 from . import dashboard_state
 
@@ -95,6 +95,33 @@ class DashboardHTTPServer(ThreadingHTTPServer):
 def _unavailable_status() -> bytes:
     """Compatibility façade for the dashboard state module."""
     return dashboard_state.unavailable_status()
+
+
+def _canonical_checkpoint(root: Path, run_id: str | None) -> dict[str, object]:
+    """Read one lifecycle checkpoint from SQLite, never from its JSON copy."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return {}
+    try:
+        connection = open_storage(root)
+        try:
+            row = connection.execute(
+                "SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        payload = json.loads(row[0]) if row else {}
+    except (EngineeringStorageError, TypeError, json.JSONDecodeError):
+        return {}
+    if isinstance(payload, dict) and payload:
+        return payload
+    # Compatibility-only reader for an already-terminal legacy checkpoint.
+    try:
+        legacy = json.loads(
+            (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return legacy if isinstance(legacy, dict) else {}
 
 
 def _status(root: Path) -> bytes:
@@ -916,7 +943,7 @@ def _completion_commits(root: Path) -> bytes:
         run_id = status.get("run_id")
         if not isinstance(run_id, str):
             return b"{}"
-        checkpoint = json.loads((root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+        checkpoint = _canonical_checkpoint(root, run_id)
     except (OSError, json.JSONDecodeError):
         return b"{}"
     labels = {
@@ -932,13 +959,8 @@ def _commits_for_run(root: Path, run_id: str | None) -> dict[str, str]:
     """Return commit evidence owned by one exact terminal execution."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
         return {}
-    try:
-        checkpoint = json.loads(
-            (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, json.JSONDecodeError):
+    checkpoint = _canonical_checkpoint(root, run_id)
+    if not checkpoint:
         return {}
     labels = {
         "genesis_commit_sha": "Genesis-commit",
@@ -965,15 +987,8 @@ def _last_executed_agent_execution(root: Path, run_id: str | None) -> bytes:
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
         return b"{}"
     result: dict[str, float] = {}
-    try:
-        checkpoint = json.loads(
-            (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        seconds = checkpoint.get("agent_execution_seconds")
-    except (OSError, json.JSONDecodeError):
-        seconds = None
+    checkpoint = _canonical_checkpoint(root, run_id)
+    seconds = checkpoint.get("agent_execution_seconds")
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and 0 <= seconds <= 86_400:
         result["seconds"] = float(seconds)
     try:

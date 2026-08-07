@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import tempfile
 
+from .storage import EngineeringStorageError, open_storage
+
 
 SCHEMA_VERSION = 1
 PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
@@ -155,7 +157,11 @@ class TransactionState:
 
 
 class StateStore:
-    """Stores advisory state below an ignored, repository-local directory."""
+    """Stores canonical transaction state in SQLite and emits JSON projections.
+
+    The run JSON files are intentionally retained for recovery tooling and
+    operator inspection, but are never consulted for normal lifecycle reads.
+    """
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
@@ -165,19 +171,56 @@ class StateStore:
             raise StateError("run_id must use lowercase letters, digits, and hyphens")
         return self.directory / f"{run_id}.json"
 
+    @property
+    def root(self) -> Path:
+        # StateStore is constructed with ``<root>/.engineering/engineering-runs``.
+        return self.directory.parent.parent
+
     def load(self, run_id: str) -> TransactionState:
         path = self.path_for(run_id)
-        if not path.is_file():
+        try:
+            connection = open_storage(self.root, create=False)
+            try:
+                row = connection.execute(
+                    "SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+                ).fetchone()
+            finally:
+                connection.close()
+        except EngineeringStorageError as error:
+            raise StateError("canonical engineering storage is unavailable") from error
+        if not row:
             raise StateError(f"no checkpoint exists for run_id {run_id}")
         try:
-            return TransactionState.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError) as error:
-            raise StateError(f"checkpoint cannot be read: {path}") from error
+            return TransactionState.from_dict(json.loads(row[0]))
+        except (TypeError, json.JSONDecodeError) as error:
+            raise StateError("canonical checkpoint is corrupt") from error
 
     def save(self, state: TransactionState) -> Path:
         path = self.path_for(state.run_id)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         encoded = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
+        try:
+            connection = open_storage(self.root)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,phase=excluded.phase,updated_at=excluded.updated_at",
+                    (state.run_id, canonical, state.phase),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO execution_lifecycle_events(run_id,phase,checkpoint,recorded_at) VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                    (state.run_id, state.phase, canonical),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+            finally:
+                connection.close()
+        except (EngineeringStorageError, OSError) as error:
+            raise StateError("canonical engineering storage could not save checkpoint") from error
         descriptor, temporary = tempfile.mkstemp(prefix=f".{state.run_id}.", suffix=".tmp", dir=self.directory)
         try:
             os.fchmod(descriptor, 0o600)
@@ -199,17 +242,28 @@ class StateStore:
 
     def remove(self, run_id: str) -> None:
         path = self.path_for(run_id)
+        try:
+            connection = open_storage(self.root, create=False)
+            try:
+                connection.execute("DELETE FROM engineering_transactions WHERE run_id=?", (run_id,))
+            finally:
+                connection.close()
+        except EngineeringStorageError as error:
+            raise StateError("canonical engineering storage is unavailable") from error
         if path.exists():
             path.unlink()
 
     def _prune_completed_history(self) -> None:
-        completed: list[Path] = []
-        for candidate in self.directory.glob("*.json"):
+        try:
+            connection = open_storage(self.root, create=False)
             try:
-                if TransactionState.from_dict(json.loads(candidate.read_text(encoding="utf-8"))).phase == "COMPLETE":
-                    completed.append(candidate)
-            except (OSError, json.JSONDecodeError, StateError):
-                # Unknown local content is preserved for fail-closed diagnosis.
-                continue
-        for candidate in sorted(completed, key=lambda item: item.stat().st_mtime, reverse=True)[10:]:
-            candidate.unlink()
+                rows = connection.execute(
+                    "SELECT run_id FROM engineering_transactions WHERE phase='COMPLETE' ORDER BY updated_at DESC, run_id DESC LIMIT -1 OFFSET 10"
+                ).fetchall()
+            finally:
+                connection.close()
+        except EngineeringStorageError:
+            return
+        # Removing a compatibility projection must never erase canonical state.
+        for (run_id,) in rows:
+            self.path_for(str(run_id)).unlink(missing_ok=True)
