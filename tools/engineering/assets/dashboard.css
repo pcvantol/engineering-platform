@@ -265,6 +265,7 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 #promptHistory .execution-history-action{background:#4f453c;border-color:#e7b876;border-radius:7px;color:#f6f3ef;font:12px system-ui;min-height:32px;min-width:0;padding:5px 9px}#promptHistory .execution-history-action:hover:not(:disabled){background:#e7b876;border-color:#e7b876;color:#17151a}
 html[data-theme="light"] #promptHistory .execution-history-action{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] #promptHistory .execution-history-action:hover:not(:disabled){background:#e7b876;border-color:#e7b876;color:#17151a}
 #promptHistoryRows .prompt-history-actions{vertical-align:middle}#promptHistoryRows .execution-history-action{margin-top:0}
+#promptHistoryRows .prompt-history-actions{align-items:center;display:flex;flex-wrap:wrap;gap:6px}
 
 /* The header owns a fixed row; only the document pane scrolls beneath it. */
 .report-view-modal__panel{--report-modal-surface:#24242d;display:grid;grid-template-rows:auto minmax(0,1fr);height:min(90vh,calc(100dvh - 36px));overflow:hidden}.report-view-modal__header{background:var(--report-modal-surface);z-index:1}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}.report-view-modal__content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}

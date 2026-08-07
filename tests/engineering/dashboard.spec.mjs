@@ -881,6 +881,8 @@ test.describe("Engineering Status browser smoke", () => {
       renderPromptHistory();
     });
     await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(2);
+    await expect(page.locator("#promptHistoryRows .prompt-history-actions").first()).toHaveCSS("gap", "6px");
+    await expect(page.locator("#promptHistoryRows .prompt-history-actions").first()).toHaveCSS("display", "flex");
     await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
     await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Uitvoering opnieuw proberen");
     await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Nieuwe uitvoering in wachtrij");
