@@ -115,6 +115,13 @@ class GitProvider(LocalProcessProvider):
     def execute(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return super().execute(root, args)
 
+    def command(self, root: Path, *args: str) -> str:
+        """Run Git and expose its bounded text result to repository orchestration."""
+        completed = self.execute(root, *args)
+        if completed.returncode:
+            raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "git command failed")
+        return completed.stdout.strip()
+
 
 class GitHubProvider:
     def status(self, root: Path) -> ProviderStatus:

@@ -79,9 +79,15 @@ class ProviderContractTest(unittest.TestCase):
             GitProvider().execute(root, "git", "status").stdout.strip(),
             "git@github.com:pcvantol/djconnect.git",
         )
+        self.assertEqual(
+            GitProvider().command(root, "git", "status"),
+            "git@github.com:pcvantol/djconnect.git",
+        )
         self.assertEqual(provider.github("pr", "view"), "git@github.com:pcvantol/djconnect.git")
         run.return_value = __import__("subprocess").CompletedProcess(("git",), 1, "", "failed")
         self.assertEqual(GitProvider().execute(root, "git", "status").returncode, 1)
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            GitProvider().command(root, "git", "status")
         with self.assertRaisesRegex(RuntimeError, "failed"):
             provider.github("pr", "view")
 
