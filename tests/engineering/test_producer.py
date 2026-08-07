@@ -7,12 +7,49 @@ import json
 import tempfile
 from pathlib import Path
 
-from tools.engineering.producer import parse_producer_metadata
+from tools.engineering.producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from tools.engineering.recommendation_handoff import parse_forge_recommendation_handoff
 from tools.engineering.execution_host import execution_mode_for
 
 
 class ProducerContractTest(unittest.TestCase):
+    def test_valid_envelope_preserves_forward_fields_and_context_without_prompt_parsing(self) -> None:
+        raw = json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0", "future": True},
+            "submission": {"id": "submission-42", "metadata": {"future": "kept"}},
+            "producer": {"id": "forge", "type": "FORGE", "mission_id": "MISSION-42"},
+            "prompt": {"text": "Execution Mode: Genesis", "metadata": {"future": "kept"}},
+            "execution_context": {"context_version": "2.0", "mission_title": "Aurora", "future": {"kept": True}},
+            "future_top_level": ["kept"],
+        })
+        submission = parse_producer_submission(raw)
+        self.assertFalse(submission.is_legacy)
+        self.assertEqual(submission.submission_id, "submission-42")
+        self.assertEqual(submission.producer.mission_id, "MISSION-42")
+        self.assertEqual(submission.execution_context, {"context_version": "2.0", "mission_title": "Aurora", "future": {"kept": True}})
+        self.assertEqual(submission.envelope["future_top_level"], ["kept"])
+
+    def test_envelope_without_execution_context_is_valid(self) -> None:
+        submission = parse_producer_submission(json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "submission-1"},
+            "producer": {"id": "producer-1", "type": "EXTERNAL"},
+            "prompt": {"text": "A bounded action"},
+        }))
+        self.assertIsNone(submission.execution_context)
+
+    def test_invalid_json_like_envelope_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ProducerSubmissionError, "valid JSON"):
+            parse_producer_submission('{"contract":')
+        with self.assertRaisesRegex(ProducerSubmissionError, "context_version"):
+            parse_producer_submission(json.dumps({
+                "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+                "submission": {"id": "submission-1"},
+                "producer": {"id": "producer-1", "type": "FORGE"},
+                "prompt": {"text": "A bounded action"},
+                "execution_context": {},
+            }))
+
     def test_legacy_prompt_defaults_to_a_human_producer(self) -> None:
         self.assertEqual(parse_producer_metadata("# Existing prompt").producer_id, "legacy")
         self.assertEqual(parse_producer_metadata("# Existing prompt").producer_type, "HUMAN")

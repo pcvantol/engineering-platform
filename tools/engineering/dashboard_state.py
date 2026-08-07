@@ -17,7 +17,7 @@ from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 from .telemetry import comparable_duration_estimate
-from .storage import EngineeringStorageError, import_legacy_projection_once, load_projection, load_readiness_evaluation, open_storage
+from .storage import EngineeringStorageError, import_legacy_projection_once, load_execution_context_snapshot, load_projection, load_readiness_evaluation, open_storage
 from .execution_lease import liveness as lease_liveness
 
 
@@ -159,10 +159,10 @@ def status(root: Path) -> bytes:
                 "runtime_metadata": live.get("runtime_metadata", {}),
                 "execution_liveness": live_liveness,
                 "readiness": load_readiness_evaluation(root, live.get("run_id")),
-                # Forge supplies this immutable, read-only projection. The
-                # dashboard transports and presents it without deriving or
-                # changing Mission semantics.
-                "execution_context": live.get("execution_context") if isinstance(live.get("execution_context"), dict) else None,
+                # The dashboard consumes only the immutable context snapshot
+                # linked to this run; legacy/current prompt projections never
+                # become an Execution Context source.
+                "execution_context": load_execution_context_snapshot(root, str(live.get("run_id"))),
             },
             separators=(",", ":"),
         ).encode()

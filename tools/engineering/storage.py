@@ -18,7 +18,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 15
+ENGINEERING_STORAGE_SCHEMA_VERSION = 17
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -540,6 +540,22 @@ def _schema_v15(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v16(connection: sqlite3.Connection) -> None:
+    """Persist immutable Producer Envelope context snapshots and run linkage."""
+    for statement in (
+        "ALTER TABLE execution_submissions ADD COLUMN execution_context_snapshot TEXT",
+        "ALTER TABLE execution_submissions ADD COLUMN execution_context_version TEXT",
+        "CREATE TABLE execution_submission_links (submission_id TEXT PRIMARY KEY REFERENCES execution_submissions(submission_id),run_id TEXT NOT NULL,linked_at TEXT NOT NULL)",
+        "CREATE UNIQUE INDEX execution_submission_links_run_lookup ON execution_submission_links(run_id)",
+    ):
+        connection.execute(statement)
+
+
+def _schema_v17(connection: sqlite3.Connection) -> None:
+    """Retain the declared Engineering Action provenance with the submission."""
+    connection.execute("ALTER TABLE execution_submissions ADD COLUMN engineering_action_id TEXT")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -556,6 +572,8 @@ MIGRATIONS: dict[int, Migration] = {
     13: _schema_v13,
     14: _schema_v14,
     15: _schema_v15,
+    16: _schema_v16,
+    17: _schema_v17,
 }
 
 
@@ -602,29 +620,94 @@ def record_submission(
     prompt_content: str,
     prompt_metadata: dict[str, object],
     target_identity: dict[str, object],
-    original_envelope: dict[str, object],
+    original_envelope: dict[str, object] | str,
     received_at: str,
     producer_version: str | None = None,
     contract_version: str | None = None,
     correlation_id: str | None = None,
     mission_id: str | None = None,
+    engineering_action_id: str | None = None,
     execution_run_id: str | None = None,
+    link_run_id: str | None = None,
+    execution_context: dict[str, object] | None = None,
 ) -> None:
     """Persist the complete producer envelope before an Inbox file is consumed."""
     if not all(isinstance(value, str) and value for value in (submission_id, producer_id, producer_type, prompt_content, received_at)):
         raise EngineeringStorageError("Execution submission identity is invalid.")
     connection = open_storage(root)
     try:
+        encoded_envelope = original_envelope if isinstance(original_envelope, str) else _encoded_payload(original_envelope)
+        encoded_context = _encoded_payload(execution_context) if execution_context is not None else None
+        context_version = execution_context.get("context_version") if isinstance(execution_context, dict) else None
+        if context_version is not None and not isinstance(context_version, str):
+            raise EngineeringStorageError("Execution Context snapshot version is invalid.")
         connection.execute(
-            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at,execution_context_snapshot,execution_context_version,engineering_action_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(submission_id) DO NOTHING",
             (submission_id, producer_id, producer_type, producer_version, contract_version, prompt_content,
-             _encoded_payload(prompt_metadata), _encoded_payload(target_identity), _encoded_payload(original_envelope),
-             correlation_id, mission_id, execution_run_id, received_at),
+             _encoded_payload(prompt_metadata), _encoded_payload(target_identity), encoded_envelope,
+             correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id),
         )
+        if link_run_id:
+            connection.execute(
+                "INSERT INTO execution_submission_links(submission_id,run_id,linked_at) VALUES(?,?,?) ON CONFLICT(submission_id) DO NOTHING",
+                (submission_id, link_run_id, received_at),
+            )
     finally:
         connection.close()
+
+
+def load_execution_context_snapshot(root: Path, run_id: str) -> dict[str, object] | None:
+    """Read only the persisted immutable context snapshot linked to one run."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT submission.execution_context_snapshot FROM execution_submissions AS submission "
+            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "WHERE link.run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not row or row[0] is None:
+        return None
+    try:
+        snapshot = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Persisted Execution Context snapshot is corrupt.") from error
+    if not isinstance(snapshot, dict):
+        raise EngineeringStorageError("Persisted Execution Context snapshot is invalid.")
+    return snapshot
+
+
+def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None:
+    """Load immutable Producer provenance for one linked execution without prompt inspection."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
+            "submission.producer_version,submission.contract_version,submission.correlation_id,"
+            "submission.mission_id,submission.engineering_action_id,submission.execution_context_version,submission.execution_context_snapshot "
+            "FROM execution_submissions AS submission JOIN execution_submission_links AS link "
+            "ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    snapshot = None
+    if row[9] is not None:
+        try:
+            snapshot = json.loads(row[9])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise EngineeringStorageError("Persisted Execution Context snapshot is corrupt.") from error
+        if not isinstance(snapshot, dict):
+            raise EngineeringStorageError("Persisted Execution Context snapshot is invalid.")
+    return {
+        "submission_id": row[0], "producer_id": row[1], "producer_type": row[2],
+        "producer_version": row[3], "contract_version": row[4], "correlation_id": row[5],
+        "mission_id": row[6], "engineering_action_id": row[7], "execution_context_version": row[8], "execution_context": snapshot,
+    }
 
 
 def record_artifact(

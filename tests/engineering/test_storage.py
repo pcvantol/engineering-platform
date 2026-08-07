@@ -14,6 +14,7 @@ from tools.engineering.storage import (
     WORKSPACE_DIRECTORY,
     database_path,
     load_projection,
+    load_execution_context_snapshot,
     open_storage,
     record_artifact,
     record_submission,
@@ -27,6 +28,32 @@ from tools.engineering.agent_state import StateStore, TransactionState
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_submission_persists_an_immutable_execution_context_snapshot_and_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            snapshot = {"context_version": "1.0", "mission_title": "Aurora", "future": {"value": True}}
+            record_submission(
+                root, submission_id="submission-42", producer_id="forge", producer_type="FORGE",
+                prompt_content="bounded prompt", prompt_metadata={}, target_identity={},
+                original_envelope='{"original":"unchanged"}', received_at="2026-08-07T08:00:00+00:00",
+                link_run_id="inbox-42", execution_context=snapshot,
+            )
+            snapshot["mission_title"] = "changed after persistence"
+            self.assertEqual(load_execution_context_snapshot(root, "inbox-42"), {
+                "context_version": "1.0", "mission_title": "Aurora", "future": {"value": True},
+            })
+            record_submission(
+                root, submission_id="submission-42", producer_id="forge", producer_type="FORGE",
+                prompt_content="different", prompt_metadata={}, target_identity={},
+                original_envelope='{"different":true}', received_at="2026-08-07T08:01:00+00:00",
+                link_run_id="inbox-other", execution_context={"context_version": "2.0"},
+            )
+            self.assertEqual(load_execution_context_snapshot(root, "inbox-42")["context_version"], "1.0")
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT original_envelope FROM execution_submissions WHERE submission_id='submission-42'").fetchone()[0],
+                    '{"original":"unchanged"}',
+                )
     def test_persists_run_correlated_readiness_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

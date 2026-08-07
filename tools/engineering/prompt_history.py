@@ -313,11 +313,19 @@ def prompt_history(
                 history.git_commit, history.report_path, history.retry_of, history.original_run_id,
                 history.retry_generation, history.retry_timestamp, history.target_checkout_path,
                 history.tracked_file_count, history.target_branch, runs.execution_mode, runs.repository,
-                runs.producer_id, runs.producer_type, runs.producer_version,
-                runs.correlation_id, runs.mission_id, runs.engineering_action_id,
-                runs.execution_constraint_version
+                COALESCE(submission.producer_id, runs.producer_id),
+                COALESCE(submission.producer_type, runs.producer_type),
+                COALESCE(submission.producer_version, runs.producer_version),
+                COALESCE(submission.correlation_id, runs.correlation_id),
+                COALESCE(submission.mission_id, runs.mission_id),
+                COALESCE(submission.engineering_action_id, runs.engineering_action_id),
+                runs.execution_constraint_version, submission.submission_id,
+                submission.contract_version, submission.execution_context_version,
+                submission.execution_context_snapshot
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
+            LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
+            LEFT JOIN execution_submissions AS submission ON submission.submission_id = submission_link.submission_id
             ORDER BY history.executed_at DESC, history.run_id DESC
             LIMIT ?
             """,
@@ -349,6 +357,10 @@ def prompt_history(
             "mission_id": row[19],
             "engineering_action_id": row[20],
             "execution_constraint_version": row[21],
+            "submission_id": row[22],
+            "producer_submission_contract_version": row[23],
+            "execution_context_version": row[24],
+            "execution_context": json.loads(row[25]) if isinstance(row[25], str) else None,
         }
         for row in rows
     ]

@@ -890,9 +890,16 @@ function executionContextField(label, value, badge = false) {
 function renderExecutionContext(context) {
   const card = $("executionContext");
   if (!card) return;
-  card.hidden = !context || typeof context !== "object";
-  if (card.hidden) return;
+  card.hidden = false;
   card.classList.add("execution-context--primary");
+  if (!context || typeof context !== "object") {
+    card.replaceChildren(
+      Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
+      Object.assign(document.createElement("p"), { textContent: t("execution_context.not_supplied") }),
+    );
+    $("currentRun")?.querySelector(".current-run__grid")?.prepend(card);
+    return;
+  }
   const fields = [
     [t("detail.mission_id"), context.mission_id],
     [t("execution_context.mission_title"), context.mission_title],
@@ -3502,7 +3509,8 @@ function promptDetailExecutionSection(history) {
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
-  ] : [];
+    detailField(t("execution_context.snapshot"), JSON.stringify(context)),
+  ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   return promptDetailCard(t("detail.execution"), [
     promptDetailStatusField(history.status),
     detailField(t("detail.prompt_title"), history.title),
@@ -3517,6 +3525,9 @@ function promptDetailExecutionSection(history) {
     detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
     detailField(t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : t("detail.not_recorded")),
     detailField(t("detail.producer_version"), history.producer_version || t("detail.not_recorded")),
+    detailField(t("detail.producer_submission_contract"), history.producer_submission_contract_version || t("execution_context.not_supplied")),
+    detailField(t("detail.submission_id"), history.submission_id || t("execution_context.not_supplied"), true),
+    detailField(t("execution_context.version"), history.execution_context_version || t("execution_context.not_supplied")),
     detailField(t("detail.mission_id"), history.mission_id || t("detail.not_recorded")),
     detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
     detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),

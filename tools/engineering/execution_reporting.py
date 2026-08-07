@@ -50,7 +50,7 @@ from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import RecommendationHandoff, parse_forge_recommendation_handoff, report_lines as recommendation_handoff_report_lines
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
-from .storage import load_readiness_evaluation
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
 
 RETRY_REPORT_HEADERS = {
     "retry_of": re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
@@ -155,6 +155,40 @@ def _next_action_message(action: str) -> str:
 
 def _format_terminal_report(state: TransactionState) -> str:
     return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"
+
+
+def _persisted_producer_submission(root: Path, state: TransactionState, fallback_prompt: str) -> tuple[ProducerMetadata, dict[str, object] | None]:
+    """Use immutable Producer submission evidence before legacy prompt compatibility."""
+    try:
+        submission = load_submission_for_run(root, state.run_id)
+    except EngineeringStorageError:
+        submission = None
+    if submission is None:
+        return parse_producer_metadata(fallback_prompt), None
+    return ProducerMetadata(
+        producer_id=str(submission["producer_id"]), producer_type=str(submission["producer_type"]),
+        producer_version=submission.get("producer_version") if isinstance(submission.get("producer_version"), str) else None,
+        correlation_id=submission.get("correlation_id") if isinstance(submission.get("correlation_id"), str) else None,
+        mission_id=submission.get("mission_id") if isinstance(submission.get("mission_id"), str) else None,
+        engineering_action_id=submission.get("engineering_action_id") if isinstance(submission.get("engineering_action_id"), str) else None,
+    ), submission
+
+
+def _producer_submission_contract_lines(submission: dict[str, object] | None, state: TransactionState) -> tuple[str, ...]:
+    context = submission.get("execution_context") if isinstance(submission, dict) else None
+    return (
+        "## Producer Submission Contract",
+        f"- Submission ID: `{submission.get('submission_id') if submission else 'legacy'}`",
+        f"- Contract Version: `{submission.get('contract_version') if submission else 'legacy prompt'}`",
+        "- Submission Status: `PERSISTED_IMMUTABLY`",
+        "",
+        "## Execution Context Contract",
+        f"- Execution Context Status: `{'SUPPLIED' if isinstance(context, dict) else 'NOT_SUPPLIED_BY_PRODUCER'}`",
+        f"- Execution Context Version: `{submission.get('execution_context_version') if isinstance(context, dict) else 'not supplied'}`",
+        "- Snapshot: " + (json.dumps(context, sort_keys=True) if isinstance(context, dict) else "Not supplied by Producer."),
+        f"- Execution Status: `{state.phase}`",
+        "",
+    )
 
 
 def _repository_summary(evidence: RepositoryEvidence) -> str:
@@ -663,6 +697,7 @@ def corrected_terminal_report(state: TransactionState) -> str:
     except OSError:
         producer_prompt = ""
     producer = parse_producer_metadata(producer_prompt)
+    submission = None
     return "\n".join(
         (
             "# Engineering Report",
@@ -679,6 +714,7 @@ def corrected_terminal_report(state: TransactionState) -> str:
             f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
+            *_producer_submission_contract_lines(submission, state),
             "## Execution Target Identity",
             f"- Execution Host Repository: `{state.repository}`",
             f"- Execution Mode: `{state.execution_mode}`",
@@ -780,7 +816,7 @@ def generate_terminal_report(
         objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
     except OSError:
         pass
-    producer = parse_producer_metadata(objective)
+    producer, submission = _persisted_producer_submission(root, state, objective)
     handoff = parse_forge_recommendation_handoff(
         objective, root, producer_type=producer.producer_type
     )
@@ -891,6 +927,7 @@ def generate_terminal_report(
             f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
+            *_producer_submission_contract_lines(submission, state),
             "## Execution Target Identity",
             "- Execution Host: `Engineering Platform`",
             f"- Execution Host Repository: `{state.repository}`",

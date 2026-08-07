@@ -8,6 +8,7 @@ import unittest
 from tools.engineering import dashboard_state
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire
+from tools.engineering.storage import record_submission
 
 
 class DashboardStateTest(unittest.TestCase):
@@ -42,7 +43,7 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["queue_depth"], 1)
         self.assertEqual(payload["queue_items"], [{"filename": "later.md"}])
 
-    def test_status_projects_forge_execution_context_without_deriving_it(self) -> None:
+    def test_status_projects_only_the_persisted_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             status = root / ".engineering" / "status"
@@ -53,9 +54,12 @@ class DashboardStateTest(unittest.TestCase):
                 "planning_confidence": {"value": "0.91"},
             }
             (status / "status.json").write_text(json.dumps({}), encoding="utf-8")
-            (status / "current.json").write_text(
-                json.dumps({"run_id": "run-42", "phase": "EXECUTE_AGENT", "execution_context": context}),
-                encoding="utf-8",
+            (status / "current.json").write_text(json.dumps({"run_id": "run-42", "phase": "EXECUTE_AGENT"}), encoding="utf-8")
+            record_submission(
+                root, submission_id="submission-42", producer_id="forge", producer_type="FORGE",
+                prompt_content="prompt", prompt_metadata={}, target_identity={}, original_envelope="{}",
+                received_at="2026-08-07T08:00:00Z", link_run_id="run-42",
+                execution_context=context,
             )
 
             payload = json.loads(dashboard_state.status(root))

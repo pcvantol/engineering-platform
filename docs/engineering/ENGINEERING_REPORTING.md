@@ -105,6 +105,16 @@ The report is execution evidence, not Forge Decision Evidence. It does not
 interpret, recreate or recommend Missions, Runtime Prompts, Runtime Instances
 or planning decisions.
 
+## Producer Submission and Execution Context contracts
+
+Reports keep four independent facts: **Producer Submission Contract**,
+**Execution Context Contract**, **Execution Status** and **Execution Context
+Status**. The first two identify the persisted envelope/submission and optional
+immutable snapshot; the latter two describe only the Engineering Platform run.
+An absent Execution Context is reported as `Not supplied by Producer` and does
+not change execution status. Reports never parse prompt text, inspect Forge
+Runtime or derive Mission semantics to fill these fields.
+
 ## Forge Mission Recommendation Handoff
 
 When a Forge Producer explicitly supplies a structured recommendation handoff,

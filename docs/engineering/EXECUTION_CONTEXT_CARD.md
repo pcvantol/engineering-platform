@@ -1,8 +1,9 @@
 # Execution Context Card
 
-The Engineering Status dashboard presents a Producer-supplied, canonical
-Execution Context as the primary operator view whenever the live status
-projection contains a validated snapshot.
+The Engineering Status dashboard presents only the immutable, Producer-supplied
+Execution Context snapshot linked to the active execution. When no snapshot
+was supplied, the card explicitly shows `Not supplied by Producer` and the
+execution continues normally.
 
 Forge remains the sole owner of Execution Context generation, Mission
 semantics, planning and reasoning. Engineering Platform only transports and
@@ -16,7 +17,8 @@ execution phase is text-labelled as well as visually badged. Missing values are
 shown as not supplied by the Producer; no value is calculated or inferred.
 
 The engineering prompt remains available in the existing expandable execution
-details. Historical detail views render an Execution Context only when it is
-provided with the immutable history entry. The Producer Submission Envelope
-ingress and immutable snapshot persistence are a separate continuation; this
-card does not read Forge, prompt text or Forge Runtime state.
+details. Prompt History renders Producer, Submission ID, contract/context
+versions and the immutable snapshot. Engineering Reports separately expose
+Producer Submission Contract, Execution Context Contract, Execution Status and
+Execution Context Status. The card does not read Forge, prompt text or Forge
+Runtime state.

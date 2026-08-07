@@ -41,7 +41,7 @@ from .prompt_history import record_prompt_execution
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
-from .producer import parse_producer_metadata
+from .producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
 from .storage import EngineeringStorageError, load_projection, open_storage, record_artifact, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
@@ -122,7 +122,7 @@ def stable_prompt(path: Path, interval: float = 1.0) -> str | None:
         return None
     if not value.strip() or "\0" in value:
         return None
-    if path.suffix.lower() in {".txt", ".md", ".markdown"} or _looks_like_markdown(value):
+    if path.suffix.lower() in {".txt", ".md", ".markdown", ".json"} or _looks_like_markdown(value):
         return value
     return None
 
@@ -1104,8 +1104,20 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         )
         if admission.source is None or admission.content is None:
             return admission.exit_code
-        source, content = admission.source, admission.content
-        job_id, legacy_run_id, digest = _job_id(source, content)
+        source, raw_submission = admission.source, admission.content
+        try:
+            submission = parse_producer_submission(raw_submission)
+        except ProducerSubmissionError as error:
+            status(
+                repo, "INVALID_PRODUCER_SUBMISSION", queued_jobs=len(candidates),
+                queue_items=_queue_items(candidates), run_id=None,
+                current_action="Producer Submission Envelope kon niet veilig worden geclaimd.",
+                diagnostic="Producer Submission Envelope is ongeldig.",
+            )
+            log_event(logger, logging.ERROR, "producer_submission_invalid", diagnostic=str(error))
+            return 1
+        content = submission.prompt
+        job_id, legacy_run_id, digest = _job_id(source, raw_submission)
         preflight = execute_host_preflight(repo, run_id=None)
         if preflight.outcome == "FAIL":
             status(
@@ -1180,21 +1192,27 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source), job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
-        producer = parse_producer_metadata(content)
+        producer = submission.producer
         try:
             record_submission(
                 repo,
-                submission_id=job_id,
+                submission_id=submission.submission_id or job_id,
                 producer_id=producer.producer_id,
                 producer_type=producer.producer_type,
                 producer_version=producer.producer_version,
-                contract_version=producer.execution_constraint_version,
+                contract_version=submission.contract_version or producer.execution_constraint_version,
                 prompt_content=content,
                 prompt_metadata={"filename": source.name, "digest": digest, "title": title},
                 target_identity={"repository": repo.name, "path": str(repo.resolve())},
-                original_envelope={"transport": "inbox", "filename": source.name, "content": content},
+                original_envelope=(
+                    raw_submission if not submission.is_legacy
+                    else {"transport": "inbox", "filename": source.name, "content": raw_submission}
+                ),
                 correlation_id=producer.correlation_id,
                 mission_id=producer.mission_id,
+                engineering_action_id=producer.engineering_action_id,
+                link_run_id=run_id,
+                execution_context=submission.execution_context,
                 received_at=arrived_at.isoformat(),
             )
         except EngineeringStorageError as error:

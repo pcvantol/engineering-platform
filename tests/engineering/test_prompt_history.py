@@ -11,9 +11,29 @@ from tools.engineering.prompt_history import (
     record_prompt_execution,
     report_for_prompt_history,
 )
+from tools.engineering.storage import record_submission
 
 
 class PromptHistoryTest(unittest.TestCase):
+    def test_projects_persisted_submission_and_execution_context_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_submission(
+                root, submission_id="submission-history", producer_id="forge", producer_type="FORGE",
+                producer_version="1.0", contract_version="1.0", prompt_content="prompt",
+                prompt_metadata={}, target_identity={}, original_envelope="{}",
+                received_at="2026-08-07T08:00:00Z", link_run_id="inbox-history",
+                execution_context={"context_version": "1.0", "mission_title": "Aurora"},
+            )
+            record_prompt_execution(
+                root, run_id="inbox-history", terminal_state="COMPLETE", prompt_title="History projection",
+                executed_at="2026-08-07T09:00:00Z",
+            )
+            entry = prompt_history(root)[0]
+            self.assertEqual(entry["submission_id"], "submission-history")
+            self.assertEqual(entry["producer_submission_contract_version"], "1.0")
+            self.assertEqual(entry["execution_context_version"], "1.0")
+            self.assertEqual(entry["execution_context"], {"context_version": "1.0", "mission_title": "Aurora"})
     def test_records_terminal_run_and_serves_only_its_local_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -57,6 +77,10 @@ class PromptHistoryTest(unittest.TestCase):
                         "mission_id": None,
                         "engineering_action_id": None,
                         "execution_constraint_version": None,
+                        "submission_id": None,
+                        "producer_submission_contract_version": None,
+                        "execution_context_version": None,
+                        "execution_context": None,
                         "retry_child_run_id": None,
                         "retry_status": None,
                         "queued_retry_child": False,

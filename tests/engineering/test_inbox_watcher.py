@@ -130,6 +130,18 @@ class InboxWatcherTest(unittest.TestCase):
         (self.inbox / "legacy.txt").write_text("plain prompt text", encoding="utf-8")
         self.assertEqual([path.name for path in inbox_watcher.discover(self.root, 0)], ["legacy.txt"])
 
+    def test_invalid_json_envelope_fails_closed_before_an_inbox_claim(self) -> None:
+        source = self.inbox / "producer.json"
+        source.write_text('{"contract":', encoding="utf-8")
+        with patch.dict(os.environ, {
+            inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT: "",
+            inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT: "",
+        }):
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
+        self.assertTrue(source.exists())
+        self.assertEqual(json_status(self.repo)["watcher_state"], "INVALID_PRODUCER_SUBMISSION")
+        self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
+
     def test_queue_scan_and_admission_keep_the_oldest_prompt_together(self) -> None:
         oldest = self.inbox / "first.md"
         newest = self.inbox / "second.md"

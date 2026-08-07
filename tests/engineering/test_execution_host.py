@@ -913,6 +913,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
             result = client.invoke(self.root, "test")
 
         self.assertIn("--json", captured)
+        self.assertEqual(
+            captured[captured.index("--sandbox") + 1],
+            "danger-full-access",
+        )
         self.assertEqual(result.terminal_state, "COMPLETE")
         self.assertEqual(
             client.last_usage,

@@ -769,6 +769,10 @@ test.describe("Engineering Status browser smoke", () => {
       // Do not inject the localized runtime projection before the initial
       // snapshot response has completed; it could otherwise overwrite usage.
       await statusLoaded;
+      // This test owns the injected runtime projection for all five locales.
+      // Disable periodic refreshes so an unrelated later snapshot cannot
+      // replace its usage payload halfway through the assertion loop.
+      await page.locator("#autoRefresh").uncheck();
       await page.locator("#dashboardLocale").selectOption(language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await page.waitForFunction(() => typeof window.r === "function");
@@ -3246,6 +3250,9 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("formats displayed log timestamps as dd-MM-yyyy HH:mm:ss", async ({ page }) => {
+    // Keep the entries injected below stable: a later server-push snapshot can
+    // legitimately replace the component log with its empty-state projection.
+    await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
     }));
