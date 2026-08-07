@@ -10,6 +10,7 @@ from tools.engineering import platform_bootstrap
 from tools.engineering.platform_api import PlatformConfigurationError
 from tools.engineering.providers import (
     CodexCliProvider,
+    GitProvider,
     GitHubProvider,
     ICloudInboxProvider,
     LaunchdProvider,
@@ -74,11 +75,13 @@ class ProviderContractTest(unittest.TestCase):
         run.return_value = __import__("subprocess").CompletedProcess(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", "")
         provider = GitHubProvider()
         self.assertTrue(provider.status(root).qualified)
-        self.assertEqual(provider.command(root, "git", "status"), "git@github.com:pcvantol/djconnect.git")
+        self.assertEqual(
+            GitProvider().execute(root, "git", "status").stdout.strip(),
+            "git@github.com:pcvantol/djconnect.git",
+        )
         self.assertEqual(provider.github("pr", "view"), "git@github.com:pcvantol/djconnect.git")
         run.return_value = __import__("subprocess").CompletedProcess(("git",), 1, "", "failed")
-        with self.assertRaisesRegex(RuntimeError, "failed"):
-            provider.command(root, "git", "status")
+        self.assertEqual(GitProvider().execute(root, "git", "status").returncode, 1)
         with self.assertRaisesRegex(RuntimeError, "failed"):
             provider.github("pr", "view")
 

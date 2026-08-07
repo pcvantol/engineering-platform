@@ -12,12 +12,12 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 from time import monotonic
 
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, RepositoryAuthorization
 from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
+from .providers import GitProvider
 
 
 @dataclass(frozen=True)
@@ -55,8 +55,8 @@ def _check(identifier: str, passed: bool, reason: str, recovery: str) -> Workspa
     return WorkspacePreflightCheck(identifier, "PASS" if passed else "FAIL", reason, recovery)
 
 
-def _git(target: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(("git", "-C", str(target), *arguments), text=True, capture_output=True, check=False, timeout=3)
+def _git(target: Path, *arguments: str):
+    return GitProvider().execute(target, "git", *arguments)
 
 
 def _prompt_value(prompt: str, field: str) -> str | None:

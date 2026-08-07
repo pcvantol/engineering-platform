@@ -33,7 +33,7 @@ class HostPreflightTest(unittest.TestCase):
 
     def _execute(self):
         with patch("tools.engineering.host_preflight.shutil.which", return_value="/usr/bin/codex"), patch(
-            "tools.engineering.host_preflight.subprocess.run",
+        "tools.engineering.providers.subprocess.run",
             return_value=subprocess.CompletedProcess(("codex", "--version"), 0, "codex 1.0", ""),
         ):
             return host_preflight.execute(self.root, run_id="inbox-preflight")

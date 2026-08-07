@@ -11,11 +11,11 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
-import subprocess
 from collections.abc import Iterator, Mapping
 
 from .agent_state import redact_diagnostic
 from .storage import EngineeringStorageError, open_storage
+from .providers import GitProvider
 
 LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
 DEFAULT_LOG_LEVEL = "INFO"
@@ -238,15 +238,9 @@ def component_lifecycle_context(
 ) -> dict[str, str]:
     """Return bounded, non-secret identity data for a component lifecycle event."""
     try:
-        result = subprocess.run(
-            ("git", "-C", str(root.resolve()), "rev-parse", "--short=12", "HEAD"),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=2,
-        )
+        result = GitProvider().execute(root.resolve(), "git", "rev-parse", "--short=12", "HEAD")
         commit = result.stdout.strip() if result.returncode == 0 else "onbekend"
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         commit = "onbekend"
     return {
         "application_version": version,

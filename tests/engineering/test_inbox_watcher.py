@@ -16,6 +16,7 @@ from tools.engineering import inbox_watcher
 from tools.engineering.host_preflight import HostPreflightResult
 from tools.engineering.workspace_preflight import WorkspacePreflightResult
 from tools.engineering.capability_preflight import CapabilityPreflightResult
+from tools.engineering.storage import open_storage, store_projection
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
 
@@ -203,6 +204,48 @@ class InboxWatcherTest(unittest.TestCase):
         )
 
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_dead_detached_runner_does_not_hold_the_inbox(self) -> None:
+        run_id = "inbox-abandoned"
+        inbox_watcher.status(
+            self.repo,
+            "RUNNER_STARTING",
+            run_id=run_id,
+            runner_pid=12345,
+        )
+        connection = open_storage(self.repo)
+        try:
+            store_projection(
+                connection,
+                "live_status",
+                {"run_id": run_id, "phase": "INITIALIZE"},
+            )
+        finally:
+            connection.close()
+
+        with patch("tools.engineering.inbox_watcher.os.kill", side_effect=ProcessLookupError):
+            self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_stale_canonical_transaction_does_not_hold_the_inbox(self) -> None:
+        run_id = "inbox-stale-lease"
+        inbox_watcher.status(self.repo, "ENGINEERING_RUN_ACTIVE", run_id=run_id)
+        connection = open_storage(self.repo)
+        try:
+            store_projection(connection, "live_status", {"run_id": run_id, "phase": "EXECUTE_AGENT"})
+            connection.execute(
+                "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
+                (run_id, "{}", "EXECUTE_AGENT", "2026-01-01T00:00:00+00:00"),
+            )
+        finally:
+            connection.close()
+        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_expired_legacy_runner_start_does_not_hold_the_inbox(self) -> None:
+        self.assertFalse(
+            inbox_watcher._detached_runner_is_alive(
+                {"last_update": "2020-01-01T00:00:00+00:00"}
+            )
+        )
 
     def test_terminal_workspace_snapshot_uses_the_genesis_checkout_and_git_index(self) -> None:
         target = self.repo.parent / "forge"

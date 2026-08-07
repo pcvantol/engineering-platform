@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 from time import monotonic
 
@@ -22,6 +21,7 @@ from .platform_api import PlatformConfiguration, PlatformConfigurationError
 from .platform_version import EngineeringPlatformManifest
 from .storage import open_storage
 from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
+from .providers import LocalProcessProvider
 
 
 DEFAULT_MINIMUM_FREE_BYTES = 1_073_741_824
@@ -150,9 +150,9 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
     checks.append(_check("runtime_executable", bool(executable), "Configured runtime executable is available." if executable else "Configured runtime executable is unavailable.", "Install or expose the Codex CLI on the Execution Host PATH."))
     if executable:
         try:
-            invoked = subprocess.run((executable, "--version"), text=True, capture_output=True, check=False, timeout=3)
+            invoked = LocalProcessProvider().execute(root, (executable, "--version"))
             available = invoked.returncode == 0
-        except (OSError, subprocess.SubprocessError):
+        except OSError:
             available = False
         checks.append(_check("runtime_invocation", available, "Configured runtime executable is invokable." if available else "Configured runtime executable cannot be invoked.", "Repair the Codex CLI installation before accepting work."))
 

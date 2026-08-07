@@ -17,7 +17,8 @@ from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 from .telemetry import comparable_duration_estimate
-from .storage import EngineeringStorageError, import_legacy_projection_once, load_projection, open_storage
+from .storage import EngineeringStorageError, import_legacy_projection_once, load_projection, load_readiness_evaluation, open_storage
+from .execution_lease import liveness as lease_liveness
 
 
 JsonReader = Callable[[Path], bytes]
@@ -121,6 +122,7 @@ def status(root: Path) -> bytes:
     try:
         if live is None:
             raise ValueError("No canonical live status")
+        live_liveness = lease_liveness(root, live.get("run_id"))
         projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
@@ -155,6 +157,8 @@ def status(root: Path) -> bytes:
                 "active_branch": live.get("active_branch"),
                 "reviewer_agents": live.get("reviewer_agents", []),
                 "runtime_metadata": live.get("runtime_metadata", {}),
+                "execution_liveness": live_liveness,
+                "readiness": load_readiness_evaluation(root, live.get("run_id")),
                 # Forge supplies this immutable, read-only projection. The
                 # dashboard transports and presents it without deriving or
                 # changing Mission semantics.
@@ -167,8 +171,48 @@ def status(root: Path) -> bytes:
     if (
         live
         and live.get("phase") not in TERMINAL_PHASES
+        and live_liveness.get("state") != "LIVE"
+        and (
+            not watcher
+            or (
+                watcher.get("run_id") == live.get("run_id")
+                and watcher.get("watcher_state") in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING", "ENGINEERING_RUN_ACTIVE"}
+            )
+        )
+    ):
+        # Lifecycle is intentionally retained for auditability, but a stale
+        # lease must never be presented as an actively running execution.
+        stale_projection = json.loads(projection or b"{}")
+        reconciliation = live_liveness.get("reconciliation_outcome")
+        recovery = (
+            "RESUME_AVAILABLE"
+            if reconciliation == "RECOVERABLE"
+            else "TERMINAL_EVIDENCE_RECONCILIATION"
+            if reconciliation == "TERMINAL_EVIDENCE_PRESENT"
+            else "OPERATOR_INTERVENTION_REQUIRED"
+        )
+        stale_projection.update(
+            {
+                "watcher_state": "ENGINEERING_RUN_STALE",
+                "current_action": "Execution Host ownership is stale; no execution is currently running.",
+                "recovery_action": recovery,
+            }
+        )
+        return json.dumps(stale_projection, separators=(",", ":")).encode()
+    if (
+        live
+        and live.get("phase") not in TERMINAL_PHASES
+        and live_liveness.get("state") == "LIVE"
         and not _terminal_checkpoint(root, live.get("run_id"))
         and not _watcher_has_terminal_run(watcher, live.get("run_id"))
+        and (
+            not watcher
+            or not watcher.get("watcher_state")
+            or (
+                watcher.get("run_id") == live.get("run_id")
+                and watcher.get("watcher_state") in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING"}
+            )
+        )
     ):
         return projection
     if watcher:
@@ -218,8 +262,12 @@ def snapshot(
     if not isinstance(status_payload, dict):
         status_payload = read_json(unavailable_reader, fallback={})
     run_id = status_payload.get("last_executed_run")
-    active = status_payload.get("watcher_state") == "ENGINEERING_RUN_ACTIVE" and isinstance(
-        status_payload.get("run_id"), str
+    active_run_id = status_payload.get("run_id")
+    active_liveness = lease_liveness(root, active_run_id)
+    active = (
+        status_payload.get("watcher_state") == "ENGINEERING_RUN_ACTIVE"
+        and isinstance(active_run_id, str)
+        and active_liveness.get("state") == "LIVE"
     )
     try:
         telemetry = telemetry_reader(root)

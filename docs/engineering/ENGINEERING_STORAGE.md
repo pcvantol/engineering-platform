@@ -14,7 +14,7 @@ iCloud Drive remains transport only. It is not an Engineering evidence store.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `9`**. The required version is declared as `storage_schema` in
+schema `15`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -59,6 +59,21 @@ Forge owns Producer Contract semantics; Engineering Platform owns these local
 execution receipts. This metadata supports operations and analytics only and
 never affects scheduling or execution. It does not become Forge Decision
 Evidence, Mission planning state or Runtime planning state.
+
+Schema `14` adds the canonical active-run lease. A lease binds one Run ID to a
+stable Execution Host identity and a unique host-instance ID; a process ID is
+only optional diagnostic evidence. The Execution Host obtains the lease before
+publishing operational activity, renews it at a bounded interval shorter than
+its expiry, and releases it at a terminal checkpoint. Heartbeats do not create
+unbounded event rows. Only acquisition, expiry, stale detection/reconciliation
+and release are recorded. Startup reconciliation treats expired or pre-lease
+active transactions as recoverable/operator-visible datastore facts; it never
+invents terminal evidence and never automatically reruns work.
+
+Schema `15` stores one typed readiness evaluation for each admitted Run ID:
+profile identity and version, execution mode, observed bounded facts, PASS or
+BLOCKED result, failed requirements and a redacted diagnostic. It is local
+datastore evidence; status files and the dashboard only project it.
 
 ## Component logging
 

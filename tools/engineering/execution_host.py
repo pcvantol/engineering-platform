@@ -53,312 +53,50 @@ from .recommendation_handoff import RecommendationHandoff, parse_forge_recommend
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import migrate_legacy_workspace
-from .providers import GitHubProvider, CodexCliProvider
+from .providers import GitProvider, GitHubProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import summary as drift_summary
+from .execution_lease import Lease, LeaseConflictError, LeaseHeartbeat, acquire as acquire_lease, heartbeat as heartbeat_lease, history as lease_history, host_identity, host_instance_id, liveness as lease_liveness, reconcile_stale, release as release_lease
+from .execution_readiness import ReadinessFacts, decide as decide_readiness, evaluate as evaluate_readiness, selected_profile
+from .execution_transaction import ExecutionTransaction
+from .execution_evidence import TerminalEvidenceBundle
+from .execution_context import ExecutionContext
+from .execution_context import (
+    additional_workspace_write_roots as context_workspace_write_roots,
+    execution_mode_for as context_execution_mode_for,
+    genesis_target_for as context_genesis_target_for,
+    genesis_workspace_preflight as context_genesis_workspace_preflight,
+    resolve_execution_context as context_resolve_execution_context,
+    target_repository_authorization as context_target_repository_authorization,
+)
+from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
+from .execution_errors import CodexInvocationError, RunnerError
+from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
+from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
+from .execution_executor import format_cli_failure as executor_format_cli_failure
+from .execution_executor import project_codex_activity as executor_project_codex_activity
+from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
+from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
+from .execution_executor import CodexCliClient
+from .execution_finalization import FinalizationCoordinator
+from .execution_reporting import ReportingCoordinator
+from .storage import load_readiness_evaluation, record_readiness_evaluation
 
+# Compatibility exports remain at this façade while implementation resides in
+# the dedicated context, repository and executor modules.
+RepositoryClient = ProviderRepositoryClient
+GitHubClient = ProviderGitHubClient
+SubprocessRepositoryClient = ProviderRepositoryClientImpl
+GhCliClient = ProviderGhCliClient
+additional_workspace_write_roots = context_workspace_write_roots
+target_repository_authorization = context_target_repository_authorization
+resolve_execution_context = context_resolve_execution_context
+execution_mode_for = context_execution_mode_for
+genesis_target_for = context_genesis_target_for
+genesis_workspace_preflight = context_genesis_workspace_preflight
 
-class RunnerError(RuntimeError):
-    """A fail-closed engineering-runner diagnostic."""
-
-
-class CodexInvocationError(RunnerError):
-    """Separates transient console detail from safe checkpoint diagnostic state."""
-
-    def __init__(self, persistent_diagnostic: str, console_detail: str) -> None:
-        super().__init__(persistent_diagnostic)
-        self.console_detail = console_detail
-
-
-RETRY_REPORT_HEADERS = {
-    "retry_of": re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
-    "original_run_id": re.compile(r"(?mi)^original[ _-]run[ _-]id\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
-    "retry_generation": re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s*$"),
-    "retry_timestamp": re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$"),
-}
-
-
-def _retry_relationship(state: TransactionState) -> tuple[str, ...]:
-    """Render only explicit retry lineage, never the submitted prompt body."""
-    try:
-        prompt = Path(state.prompt_path).read_text(encoding="utf-8")
-    except OSError:
-        return ()
-    values = {key: pattern.search(prompt) for key, pattern in RETRY_REPORT_HEADERS.items()}
-    parent = values["retry_of"]
-    if parent is None:
-        return ()
-    original = values["original_run_id"].group(1) if values["original_run_id"] else parent.group(1)
-    generation = values["retry_generation"].group(1) if values["retry_generation"] else "1"
-    timestamp = values["retry_timestamp"].group(1).strip() if values["retry_timestamp"] else "not recorded"
-    return (
-        "## Retry Relationship",
-        f"- Retry Of: `{parent.group(1)}`",
-        f"- Original Run: `{original}`",
-        f"- Retry Generation: `{generation}`",
-        f"- Retry Timestamp: {timestamp}",
-        f"- Current Run: `{state.run_id}`",
-        f"- Terminal State: `{state.phase}`",
-        f"- Repository Context: `{state.repository}`",
-        "",
-    )
-
-
-def additional_workspace_write_roots(root: Path) -> tuple[Path, ...]:
-    """Return trusted workspace roots for a bounded Genesis invocation."""
-    if not (root / ".engineering" / "engineering-platform.local.json").is_file():
-        return ()
-    try:
-        policy = PlatformConfiguration.load(root).resolve_repository_authorization_policy()
-    except PlatformConfigurationError as error:
-        raise RunnerError(str(error)) from error
-    roots: list[Path] = []
-    for configured in policy.allowed_roots:
-        candidate = Path(configured.path).expanduser()
-        if candidate.is_symlink() or not candidate.is_dir() or candidate == Path(candidate.anchor):
-            raise RunnerError("Configured Engineering Workspace Root must be an existing non-root directory, not a symlink.")
-        roots.append(candidate.resolve())
-    for configured in policy.allowed_repositories:
-        candidate = Path(configured).expanduser()
-        if candidate.is_symlink() or not candidate.is_dir():
-            raise RunnerError("Configured Engineering Repository Allow-List entry must be an existing directory, not a symlink.")
-        roots.append(candidate.resolve().parent)
-    return tuple(dict.fromkeys(roots))
-
-
-def target_repository_authorization(root: Path, target: Path) -> str | None:
-    """Return a bounded Genesis authorization blocker, if any."""
-    try:
-        authorization = PlatformConfiguration.load(root).authorize_target_repository(target, "GENESIS")
-    except PlatformConfigurationError as error:
-        return f"Genesis preflight blocked: {error}"
-    if authorization.authorized:
-        return None
-    return f"Genesis preflight blocked: WORKSPACE_TARGET_AUTHORIZED: {authorization.reason} Recovery: {authorization.recovery}"
-
-
-@dataclass(frozen=True)
-class RepositoryEvidence:
-    repository: str
-    branch: str
-    head_sha: str
-    clean: bool
-    main_contains_head: bool = False
-
-
-@dataclass(frozen=True)
-class PullRequestEvidence:
-    number: int
-    state: str
-    checks_terminal: bool
-    checks_passed: bool
-    merge_commit: str | None = None
-    is_draft: bool = False
-    failed_checks: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class AgentResult:
-    terminal_state: str
-    branch: str | None = None
-    pull_request: int | None = None
-    terminal_condition: str = "repository_reconciled"
-    diagnostic: str | None = None
-    repository_path: str | None = None
-    commit_sha: str | None = None
-    validation_evidence: tuple[dict[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
-class ExecutionContext:
-    """Resolved lifecycle selection before any mode-specific readiness check."""
-
-    execution_mode: str
-    host_repository: Path
-    target_repository: Path | None
-    lifecycle_policy: str
-    selected_preflight: str
-    run_id: str | None = None
-
-
-@dataclass(frozen=True)
-class TerminalEvidenceBundle:
-    """Read-only repository evidence rendered into a terminal report."""
-
-    target_workspace: str
-    target_repository: str
-    target_branch: str
-    target_commit: str
-    worktree_state: str
-    changed_files: tuple[str, ...]
-    files_added: tuple[str, ...]
-    files_modified: tuple[str, ...]
-    files_removed: tuple[str, ...]
-    diff_check: str
-
-
-REPORT_REQUIREMENT_EXCLUDED_HEADINGS = frozenset({"context", "canonical principle"})
-
-
-def _component_inventory(bundle: TerminalEvidenceBundle) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Derive architectural components from changed implementation files."""
-    components: dict[str, list[str]] = {}
-    for path in bundle.changed_files:
-        if path.startswith("tests/") or path.endswith(".md"):
-            continue
-        lower = path.casefold()
-        if path == "tools/engineering/execution_host.py":
-            name = "Engineering Report Generator"
-        elif path.startswith("tools/engineering/assets/") or path == "tools/engineering/dashboard.py":
-            name = "Engineering Evidence Dashboard"
-        elif "report_analysis" in lower:
-            name = "Engineering Report Analysis"
-        elif path.startswith("tools/engineering/"):
-            name = Path(path).stem.replace("_", " ").title()
-        else:
-            name = Path(path).stem.replace("_", " ").title()
-        components.setdefault(name, []).append(path)
-    return tuple((name, tuple(sorted(paths))) for name, paths in sorted(components.items()))
-
-
-def _objective_requirements(objective: str) -> tuple[str, ...]:
-    """Extract reportable requirements from prompt sections without manual metadata."""
-    heading: str | None = None
-    requirements: list[str] = []
-    for line in objective.splitlines():
-        if line.startswith("#"):
-            heading = line.lstrip("#").strip().casefold()
-            continue
-        value = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line).strip()
-        if (
-            heading
-            and heading not in REPORT_REQUIREMENT_EXCLUDED_HEADINGS
-            and value
-            and not value.startswith("```")
-            and not re.match(r"^(?:execution mode|target repository):", value, re.IGNORECASE)
-        ):
-            requirements.append(value)
-    if requirements:
-        return tuple(dict.fromkeys(requirements))
-    first = next((line.strip() for line in objective.splitlines() if line.strip()), "Objective unavailable.")
-    return (first,)
-
-
-def _deliverable_answer(objective: str, state: TransactionState) -> str:
-    """Answer explicit binary delivery requests from the persisted terminal state."""
-    requested = re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE)
-    if not requested:
-        return "Not explicitly requested by the prompt."
-    if state.phase == "COMPLETE":
-        return "YES / PASS / GO — the persisted terminal checkpoint is COMPLETE."
-    if state.phase == "BLOCKED":
-        return "NO / FAIL / NO-GO — the persisted terminal checkpoint is BLOCKED."
-    return "NO / FAIL / NO-GO — the persisted terminal checkpoint is FAILED."
-
-
-def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
-    values: list[str] = []
-    lines = objective.splitlines()
-    for index, line in enumerate(lines):
-        if line.strip().casefold() != f"{label}:".casefold():
-            continue
-        for candidate in lines[index + 1 :]:
-            value = candidate.strip()
-            if value:
-                values.append(value)
-                break
-    return tuple(values)
-
-
-def resolve_execution_context(objective: str, host_repository: Path) -> ExecutionContext:
-    """Resolve mode and target deterministically before lifecycle readiness."""
-    modes = {
-        line.split(":", 1)[1].strip().casefold()
-        for line in objective.splitlines()
-        if line.strip().casefold().startswith("execution mode:")
-    }
-    if "genesis" not in modes:
-        return ExecutionContext("MANAGED", host_repository.resolve(), None, "managed", "managed_readiness")
-    if modes != {"genesis"}:
-        raise RunnerError("Execution Mode: Genesis conflicts with another execution mode declaration.")
-    targets = _prompt_field_values(objective, "Target repository")
-    if not targets:
-        raise RunnerError("Genesis preflight blocked: prompt must declare one absolute Target repository path.")
-    if len(set(targets)) != 1:
-        raise RunnerError("Genesis preflight blocked: prompt declares conflicting Target repository paths.")
-    target = Path(targets[0]).expanduser()
-    if not target.is_absolute():
-        raise RunnerError("Genesis preflight blocked: Target repository path must be absolute.")
-    target = target.resolve()
-    if target == host_repository.resolve():
-        raise RunnerError("Genesis preflight blocked: Target repository cannot be the Engineering Platform host repository.")
-    return ExecutionContext("GENESIS", host_repository.resolve(), target, "local_only", "genesis_git_workspace")
-
-
-def execution_mode_for(objective: str) -> str:
-    """Expose legacy mode detection; runner selection uses the full context resolver."""
-    return (
-        "GENESIS"
-        if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
-        else "MANAGED"
-    )
-
-
-def genesis_target_for(objective: str) -> Path | None:
-    """Return the explicit local Genesis target, without interpreting other prompt text."""
-    targets = _prompt_field_values(objective, "Target repository")
-    return Path(targets[0]).expanduser() if len(set(targets)) == 1 else None
-
-
-def genesis_workspace_preflight(target: Path | None) -> str | None:
-    """Diagnose a non-destructive Genesis Git workspace blocker before Codex starts."""
-    if target is None:
-        return "Genesis preflight blocked: prompt must declare an absolute Target repository path."
-    if not target.is_absolute() or not target.is_dir():
-        return "Genesis preflight blocked: Target repository path is absent or not a directory."
-    observed = subprocess.run(
-        ("git", "-C", str(target), "rev-parse", "--git-dir"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if observed.returncode:
-        return "Genesis preflight blocked: Target repository is not an accessible Git repository."
-    git_dir = Path(observed.stdout.strip())
-    if not git_dir.is_absolute():
-        git_dir = (target / git_dir).resolve()
-    lock = git_dir / "index.lock"
-    if lock.exists():
-        return f"Genesis preflight blocked: Git index lock exists at {lock}; it is not removed automatically."
-    if not os.access(git_dir, os.W_OK):
-        return f"Genesis preflight blocked: Git metadata directory is not writable: {git_dir}."
-    status = subprocess.run(
-        ("git", "-C", str(target), "status", "--porcelain", "--untracked-files=all"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if status.returncode:
-        return "Genesis preflight blocked: Target repository status could not be inspected."
-    if status.stdout.strip():
-        return "Genesis preflight blocked: Target repository has tracked or untracked changes."
-    return None
-
-
-class RepositoryClient(Protocol):
-    def inspect(self, root: Path) -> RepositoryEvidence: ...
-
-    def main_contains(self, root: Path, sha: str) -> bool: ...
-
-
-class GitHubClient(Protocol):
-    def pull_request(self, number: int) -> PullRequestEvidence: ...
-
-    def ready(self, number: int) -> None: ...
-
-    def merge(self, number: int) -> None: ...
 
 
 class AgentClient(Protocol):
@@ -390,375 +128,6 @@ def project_codex_activity(event: object) -> str | None:
     }
     return labels.get(item.get("type"))
 
-
-class SubprocessRepositoryClient:
-    def __init__(self, provider: GitHubProvider | None = None) -> None:
-        self.provider = provider or GitHubProvider()
-
-    def _run(self, root: Path, *args: str) -> str:
-        try:
-            return self.provider.command(root, *args)
-        except RuntimeError as error:
-            raise RunnerError(str(error)) from error
-
-    def inspect(self, root: Path) -> RepositoryEvidence:
-        if not (root / "BOOTSTRAP.md").is_file() or not (root / ".git").exists():
-            raise RunnerError("this is not a repository with canonical BOOTSTRAP.md")
-        remote = self._run(root, "git", "remote", "get-url", "origin")
-        repository = remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
-        branch = self._run(root, "git", "branch", "--show-current")
-        head_sha = self._run(root, "git", "rev-parse", "HEAD")
-        clean = not self._run(root, "git", "status", "--porcelain", "--untracked-files=all")
-        main_contains_head = (
-            subprocess.run(
-                ("git", "merge-base", "--is-ancestor", head_sha, "main"), cwd=root, check=False
-            ).returncode
-            == 0
-        )
-        return RepositoryEvidence(repository, branch, head_sha, clean, main_contains_head)
-
-    def main_contains(self, root: Path, sha: str) -> bool:
-        return (
-            subprocess.run(
-                ("git", "merge-base", "--is-ancestor", sha, "main"), cwd=root, check=False
-            ).returncode
-            == 0
-        )
-
-    def synchronize_main(self, root: Path) -> None:
-        self._run(root, "git", "switch", "main")
-        self._run(root, "git", "pull", "--ff-only")
-
-    def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
-        self._run(root, "git", "fetch", "--prune")
-        self._run(root, "git", "switch", "main")
-        self._run(root, "git", "pull", "--ff-only")
-        if not self.inspect(root).clean:
-            raise RunnerError("Cleanup blocked: workspace is not clean.")
-        removed: list[str] = []
-        squash_reconciled: list[str] = []
-        for branch in dict.fromkeys(branch for branch in branches if branch):
-            if branch == "main":
-                raise RunnerError("Cleanup blocked: transaction branch resolves to main.")
-            exists = (
-                subprocess.run(
-                    ("git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"),
-                    cwd=root,
-                    check=False,
-                ).returncode
-                == 0
-            )
-            if not exists:
-                continue
-            deletion = subprocess.run(
-                ("git", "branch", "-d", branch),
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if deletion.returncode:
-                # A squash merge intentionally makes the branch non-ancestral.
-                # The caller reaches cleanup only after merged PR and main-containment evidence.
-                force = subprocess.run(
-                    ("git", "branch", "-D", branch),
-                    cwd=root,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                if force.returncode:
-                    raise RunnerError(
-                        f"Cleanup blocked: transaction branch {branch} could not be safely removed."
-                    )
-                squash_reconciled.append(branch)
-            removed.append(branch)
-        evidence = self.inspect(root)
-        if evidence.branch != "main" or not evidence.clean or not evidence.main_contains_head:
-            raise RunnerError(
-                "Cleanup blocked: main synchronization or workspace verification failed."
-            )
-        squash = f"; squash-reconciled={','.join(squash_reconciled)}" if squash_reconciled else ""
-        return f"fetched/pruned; main synchronized; removed={','.join(removed) or 'already-absent'}{squash}"
-
-
-class GhCliClient:
-    def __init__(self, provider: GitHubProvider | None = None) -> None:
-        self.provider = provider or GitHubProvider()
-
-    def pull_request(self, number: int) -> PullRequestEvidence:
-        try:
-            raw = json.loads(self.provider.github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup"))
-        except RuntimeError as error:
-            raise RunnerError(str(error)) from error
-        checks = raw.get("statusCheckRollup") or []
-        terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
-        passed = terminal and all(
-            item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in checks
-        )
-        failed = tuple(
-            str(item.get("name") or "unnamed check")
-            for item in checks
-            if item.get("status") == "COMPLETED"
-            and item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"}
-        )
-        merge = raw.get("mergeCommit") or {}
-        return PullRequestEvidence(
-            raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"], failed
-        )
-
-    def ready(self, number: int) -> None:
-        try:
-            self.provider.github("pr", "ready", str(number))
-        except RuntimeError as error:
-            if "already ready" not in str(error).lower():
-                raise RunnerError(str(error)) from error
-
-    def merge(self, number: int) -> None:
-        try:
-            self.provider.github("pr", "merge", str(number), "--squash", "--delete-branch")
-        except RuntimeError as error:
-            raise RunnerError(str(error)) from error
-
-
-class CodexCliClient:
-    def __init__(self, provider: CodexCliProvider | None = None) -> None:
-        self.provider = provider or CodexCliProvider()
-        self.last_usage: dict[str, int | float | str] = {}
-        self.last_execution_seconds: float | None = None
-        self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
-        self._activity_callback: Callable[[str], None] | None = None
-        self._process_callback: Callable[[dict[str, int] | None], None] | None = None
-        self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
-
-    def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
-        """Set the optional local-only sink for safe live activity labels."""
-        self._activity_callback = callback
-
-    def set_process_callback(self, callback: Callable[[dict[str, int] | None], None] | None) -> None:
-        """Set the owned foreground Codex-process sink for runtime metrics."""
-        self._process_callback = callback
-
-    def set_runtime_metadata_callback(
-        self, callback: Callable[[dict[str, str]], None] | None
-    ) -> None:
-        """Publish only explicitly reported runtime settings during a live run."""
-        self._runtime_metadata_callback = callback
-
-    def available(self) -> bool:
-        return self.provider.command("--version").returncode == 0
-
-    def version(self) -> str:
-        completed = self.provider.command("--version")
-        if completed.returncode:
-            raise RunnerError("Codex CLI version could not be detected")
-        return detected_codex_cli_version(completed.stdout)
-
-    def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult:
-        self.last_usage = {}
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["contribution", "recommendations"],
-            "properties": {
-                "contribution": {"type": "string", "maxLength": 240},
-                "recommendations": {
-                    "type": "array",
-                    "maxItems": 3,
-                    "items": {"type": "string", "maxLength": 240},
-                },
-            },
-        }
-        state_directory = root / ".engineering"
-        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False
-        ) as handle:
-            json.dump(schema, handle)
-            schema_path = Path(handle.name)
-        try:
-            completed = subprocess.run(
-                (
-                    "codex",
-                    "exec",
-                    "--sandbox",
-                    "read-only",
-                    "-C",
-                    str(root),
-                    "--json",
-                    "--output-schema",
-                    str(schema_path),
-                    reviewer_prompt(selection, objective),
-                ),
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
-        finally:
-            schema_path.unlink(missing_ok=True)
-        if completed.returncode:
-            return ReviewerResult(
-                selection.reviewer,
-                "Reviewer invocation failed; primary review continues.",
-                failed=True,
-            )
-        try:
-            raw = json.loads(_codex_final_message(completed.stdout))
-            return ReviewerResult(
-                selection.reviewer,
-                str(raw["contribution"]),
-                tuple(str(value) for value in raw["recommendations"]),
-            )
-        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
-            return ReviewerResult(
-                selection.reviewer,
-                "Reviewer returned invalid advice; primary review continues.",
-                failed=True,
-            )
-
-    def invoke(self, root: Path, prompt: str) -> AgentResult:
-        self.last_usage = {}
-        self.last_execution_seconds = None
-        self.last_runtime_metadata = {"runtime_provider": "codex_cli"}
-        state_directory = root / ".engineering" / "engineering-runs"
-        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": [
-                "terminal_state",
-                "branch",
-                "pull_request",
-                "terminal_condition",
-                "diagnostic",
-                "repository_path",
-                "commit_sha",
-                "validation_evidence",
-            ],
-            "properties": {
-                "terminal_state": {
-                    "type": "string",
-                    "enum": ["COMPLETE", "WAITING", "BLOCKED", "FAILED"],
-                },
-                "branch": {"type": ["string", "null"]},
-                "pull_request": {"type": ["integer", "null"]},
-                "terminal_condition": {
-                    "type": "string",
-                    "enum": [
-                        "repository_reconciled",
-                        "open_pr_checks_terminal",
-                        "external_blocked",
-                        "local_commit_reconciled",
-                    ],
-                },
-                "diagnostic": {"type": "string", "maxLength": 500},
-                "repository_path": {"type": ["string", "null"]},
-                "commit_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-                "validation_evidence": {
-                    "type": "array", "maxItems": 12,
-                    "items": {"type": "object", "additionalProperties": False,
-                              "required": ["command", "result"],
-                              "properties": {"command": {"type": "string", "maxLength": 240}, "result": {"type": "string", "maxLength": 240}}},
-                },
-            },
-        }
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False
-        ) as handle:
-            json.dump(schema, handle)
-            schema_path = Path(handle.name)
-        try:
-            extra_roots = additional_workspace_write_roots(root)
-            command = [
-                "codex",
-                "exec",
-                "--sandbox",
-                "workspace-write",
-                "-C",
-                str(root),
-                "--json",
-            ]
-            for extra_root in extra_roots:
-                command.extend(("--add-dir", str(extra_root)))
-            command.extend(("--output-schema", str(schema_path), prompt))
-            started = time.monotonic()
-            completed = self._run_invocation(tuple(command), root)
-            self.last_execution_seconds = round(time.monotonic() - started, 3)
-            self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
-            self.last_runtime_metadata = extract_codex_runtime_metadata(
-                completed.stdout, completed.stderr
-            )
-        finally:
-            schema_path.unlink(missing_ok=True)
-        if completed.returncode:
-            detail = _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt)
-            raise CodexInvocationError(
-                f"Codex CLI exited with code {completed.returncode}; inspect this invocation's console output.",
-                detail,
-            )
-        try:
-            raw = json.loads(_codex_final_message(completed.stdout))
-            result = AgentResult(**raw)
-            if not isinstance(result.validation_evidence, (list, tuple)):
-                raise TypeError("validation evidence must be a list")
-            result = replace(
-                result,
-                validation_evidence=tuple(
-                    {"command": redact_diagnostic(item.get("command", ""), limit=240), "result": redact_diagnostic(item.get("result", ""), limit=240)}
-                    for item in result.validation_evidence
-                    if isinstance(item, dict) and item.get("command") and item.get("result")
-                ),
-            )
-            if result.diagnostic is not None:
-                result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
-            return result
-        except (IndexError, json.JSONDecodeError, TypeError) as error:
-            raise CodexInvocationError(
-                "Codex CLI did not return the required structured terminal result.",
-                _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt),
-            ) from error
-
-    def _run_invocation(
-        self, command: tuple[str, ...], root: Path
-    ) -> subprocess.CompletedProcess[str]:
-        """Run Codex, streaming only the approved activity projection when enabled."""
-        if self._activity_callback is None:
-            return subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
-        process = subprocess.Popen(
-            command,
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        if self._process_callback is not None:
-            try:
-                self._process_callback({"pid": process.pid, "process_group": os.getpgid(process.pid)})
-            except OSError:
-                self._process_callback(None)
-        lines: list[str] = []
-        try:
-            assert process.stdout is not None
-            for line in process.stdout:
-                lines.append(line)
-                observed_metadata = extract_codex_runtime_metadata(line)
-                if len(observed_metadata) > 1:
-                    self.last_runtime_metadata.update(observed_metadata)
-                    if self._runtime_metadata_callback is not None:
-                        self._runtime_metadata_callback(dict(self.last_runtime_metadata))
-                try:
-                    activity = project_codex_activity(json.loads(line))
-                except json.JSONDecodeError:
-                    activity = None
-                if activity is not None:
-                    self._activity_callback(activity)
-            return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
-        finally:
-            if self._process_callback is not None:
-                self._process_callback(None)
 
 
 def _redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
@@ -795,6 +164,12 @@ def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
     finally:
         Path(temporary).unlink(missing_ok=True)
     return path
+
+
+project_codex_activity = executor_project_codex_activity
+_redacted_cli_tail = executor_redacted_cli_tail
+_format_cli_failure = executor_format_cli_failure
+write_redacted_codex_cli_log = executor_write_redacted_codex_cli_log
 
 
 def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
@@ -843,6 +218,20 @@ class EngineeringRunner:
         self.reviewer_runtime: list[dict[str, object]] = []
         self._reviewer_runtime_lock = Lock()
         self.console_detail: str | None = None
+        self.host_identity = host_identity()
+        self.host_instance_id = host_instance_id()
+        self.active_lease: Lease | None = None
+        self.transaction: ExecutionTransaction | None = None
+        self.lease_heartbeat: LeaseHeartbeat | None = None
+        self.finalization = FinalizationCoordinator()
+
+    def _heartbeat(self) -> None:
+        if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
+            raise RunnerError("active-run lease heartbeat was lost") from self.lease_heartbeat.error
+        if self.active_lease is not None:
+            self.active_lease = heartbeat_lease(self.root, self.active_lease)
+            if self.lease_heartbeat is not None:
+                self.lease_heartbeat.lease = self.active_lease
 
     def _publish_reviewer_progress(
         self,
@@ -852,6 +241,7 @@ class EngineeringRunner:
         result: ReviewerResult | None = None,
     ) -> None:
         """Publish bounded reviewer lifecycle status without granting reviewer authority."""
+        self._heartbeat()
         status_by_event = {"started": "running", "completed": "completed", "failed": "failed"}
         status = status_by_event.get(event)
         if status is None:
@@ -940,13 +330,59 @@ class EngineeringRunner:
                 execution_mode=context.execution_mode,
             )
         context = replace(context, run_id=state.run_id)
+        self.transaction = ExecutionTransaction(
+            state=state,
+            target_repository=context.target_repository or self.root,
+        )
+        # Establish canonical transaction identity before persisting readiness evidence.
+        self.store.save(state)
+        readiness = evaluate_readiness(
+            selected_profile(context.execution_mode),
+            host_root=self.root,
+            target_root=context.target_repository,
+            managed_clean=lambda candidate: self.repository.inspect(candidate).clean,
+            genesis_preflight=genesis_workspace_preflight,
+        )
+        observed_host = latest_host_preflight(self.root)
+        observed_workspace = latest_workspace_preflight(self.root)
+        observed_capability = latest_capability_preflight(self.root)
+        preflight_facts = ReadinessFacts.from_preflight(
+            host=observed_host,
+            workspace=observed_workspace,
+            capability=observed_capability,
+            lease_available=True,
+        )
+        # Direct runner callers predate admission preflights. Preserve that
+        # public compatibility path while the watcher supplies the complete
+        # observed preflight facts for normal Inbox execution.
+        facts = replace(
+            preflight_facts,
+            host_ready=preflight_facts.host_ready or not observed_host,
+            repository_present=preflight_facts.repository_present or context.target_repository is not None or self.root.is_dir(),
+            repository_clean=preflight_facts.repository_clean if preflight_facts.repository_clean is not None else (evidence.clean if context.execution_mode == "MANAGED" else True),
+            remote_present=preflight_facts.remote_present if preflight_facts.remote_present is not None else True,
+            upstream_present=preflight_facts.upstream_present if preflight_facts.upstream_present is not None else True,
+            branch_present=preflight_facts.branch_present if preflight_facts.branch_present is not None else True,
+            workspace_authorized=preflight_facts.workspace_authorized if preflight_facts.workspace_authorized is not None else True,
+            capabilities_available=preflight_facts.capabilities_available if preflight_facts.capabilities_available is not None else True,
+            providers_available=preflight_facts.providers_available if preflight_facts.providers_available is not None else True,
+            datastore_healthy=preflight_facts.datastore_healthy if preflight_facts.datastore_healthy is not None else True,
+            producer_contract_valid=preflight_facts.producer_contract_valid if preflight_facts.producer_contract_valid is not None else True,
+        )
+        decision = decide_readiness(readiness.profile, facts)
+        record_readiness_evaluation(
+            self.root, run_id=state.run_id, profile_id=decision.profile_id, profile_version=decision.profile_version,
+            execution_mode=context.execution_mode, passed=readiness.ready and decision.passed,
+            failed_requirements=decision.failed_requirements,
+            facts=vars(decision.facts),
+            evaluated_at=decision.evaluated_at, diagnostic=readiness.diagnostic or decision.diagnostic,
+        )
+        if not readiness.ready:
+            if context.execution_mode == "GENESIS":
+                return self._save_terminal(state, "BLOCKED", "genesis_workspace_preflight", readiness.diagnostic)
+            raise RunnerError(readiness.diagnostic or "Execution readiness failed")
         if context.execution_mode == "GENESIS":
             state = replace(state, genesis_repository_path=str(context.target_repository))
-            preflight = genesis_workspace_preflight(context.target_repository)
-            if preflight:
-                return self._save_terminal(
-                    state, "BLOCKED", "genesis_workspace_preflight", preflight
-                )
             authorization_blocker = target_repository_authorization(self.root, context.target_repository)
             if authorization_blocker:
                 return self._save_terminal(
@@ -963,11 +399,28 @@ class EngineeringRunner:
                     "genesis_workspace_conflict",
                     f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
                 )
-        elif not evidence.clean:
-            raise RunnerError("working tree is not clean; unrelated work will not be touched")
         if not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
+        reconcile_stale(self.root)
+        self.store.save(state)
+        try:
+            self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid())
+        except LeaseConflictError as error:
+            blocked = decide_readiness(
+                readiness.profile,
+                replace(facts, lease_available=False),
+            )
+            record_readiness_evaluation(
+                self.root, run_id=state.run_id, profile_id=blocked.profile_id, profile_version=blocked.profile_version,
+                execution_mode=context.execution_mode, passed=False, failed_requirements=blocked.failed_requirements,
+                facts=vars(blocked.facts),
+                evaluated_at=blocked.evaluated_at, diagnostic=blocked.diagnostic,
+            )
+            raise RunnerError("active-run ownership conflict; execution is refused") from error
+        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+        self.transaction = self.transaction.with_lease(self.active_lease)
+        self.lease_heartbeat.start()
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,
@@ -1027,7 +480,7 @@ class EngineeringRunner:
         try:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
-                    lambda activity: write_live_status(self.root, state, activity)
+                    lambda activity: (self._heartbeat(), write_live_status(self.root, state, activity))[1]
                 )
             if hasattr(self.agent, "set_process_callback"):
                 self.agent.set_process_callback(
@@ -1094,8 +547,9 @@ class EngineeringRunner:
         if not target.is_absolute() or authorization_blocker:
             return self._save_terminal(state, "BLOCKED", "genesis_repository_scope", authorization_blocker or "Genesis preflight blocked: WORKSPACE_TARGET_AUTHORIZED: target path must be absolute.")
         try:
-            head = subprocess.run(("git", "rev-parse", "HEAD"), cwd=target, text=True, capture_output=True, check=False)
-            clean = subprocess.run(("git", "status", "--porcelain", "--untracked-files=all"), cwd=target, text=True, capture_output=True, check=False)
+            git = getattr(self.repository, "provider", GitProvider())
+            head = git.execute(target, "git", "rev-parse", "HEAD")
+            clean = git.execute(target, "git", "status", "--porcelain", "--untracked-files=all")
         except OSError as error:
             return self._save_terminal(state, "BLOCKED", "genesis_local_repository_required", str(error))
         actual_head = head.stdout.strip()
@@ -1341,6 +795,12 @@ class EngineeringRunner:
             diagnostic=redact_diagnostic(diagnostic) if diagnostic else None,
         )
         self.store.save(terminal)
+        if self.active_lease is not None and self.active_lease.run_id == terminal.run_id:
+            if self.lease_heartbeat is not None:
+                self.active_lease = self.lease_heartbeat.stop()
+                self.lease_heartbeat = None
+            release_lease(self.root, self.active_lease)
+            self.active_lease = None
         if phase == "COMPLETE":
             capture_engineering_memory(self.root, terminal, self.reviewer_records)
         write_live_status(self.root, terminal, action)
@@ -1348,34 +808,13 @@ class EngineeringRunner:
         return terminal
 
     def _cleanup(self, state: TransactionState) -> TransactionState:
-        cleanup = replace(
-            state,
-            phase="REPOSITORY_CLEANUP",
-            next_action="fetch_prune_and_remove_transaction_branches",
-        )
-        self.store.save(cleanup)
-        write_live_status(self.root, cleanup, "Repository cleanup in progress")
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
-        operation = getattr(self.repository, "cleanup_transaction", None)
-        if not callable(operation):
-            return self._save_terminal(
-                cleanup,
-                "BLOCKED",
-                "cleanup_unavailable",
-                "Cleanup client is unavailable; resume with repository cleanup evidence.",
-            )
-        try:
-            result = operation(
-                self.root, (cleanup.implementation_branch, cleanup.finalization_branch)
-            )
-        except RunnerError as error:
-            return self._save_terminal(
-                cleanup, "BLOCKED", "repository_cleanup_required", str(error)
-            )
-        return self._save_terminal(
-            replace(cleanup, latest_repository_evidence=redact_diagnostic(result)),
-            "COMPLETE",
-            "repository_cleanup_reconciled",
+        return self.finalization.cleanup(
+            root=self.root,
+            store=self.store,
+            repository=self.repository,
+            state=state,
+            save_terminal=self._save_terminal,
         )
 
     def _record_merged_evidence(
@@ -1512,927 +951,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if state.phase == "COMPLETE" else 1
 
 
-def _next_action_message(action: str) -> str:
-    return {
-        "external_action_required": "Resolve the reported external dependency, then resume the run.",
-        "external_merge_authorization_required": "Obtain the required merge authorization.",
-        "required_checks_failed": "Inspect and resolve the failed required CI check.",
-        "inspect_codex_cli": "Inspect the redacted Codex CLI details above, then resume after correction.",
-    }.get(action, "Inspect current repository and GitHub evidence before resuming.")
 
-
-def _format_terminal_report(state: TransactionState) -> str:
-    return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"
-
-
-def _repository_summary(evidence: RepositoryEvidence) -> str:
-    return redact_diagnostic(
-        f"branch={evidence.branch}; head={evidence.head_sha}; clean={evidence.clean}; main_contains_head={evidence.main_contains_head}"
-    )
-
-
-def _pull_request_summary(evidence: PullRequestEvidence) -> str:
-    failed = ",".join(evidence.failed_checks) or "none"
-    return redact_diagnostic(
-        f"pr={evidence.number}; state={evidence.state}; terminal={evidence.checks_terminal}; passed={evidence.checks_passed}; failed_checks={failed}"
-    )
-
-
-def _git_output(root: Path, *args: str) -> str | None:
-    """Return bounded Git output without allowing evidence collection to affect a run."""
-    try:
-        result = subprocess.run(
-            ("git", "-C", str(root), *args), text=True, capture_output=True, check=False
-        )
-    except OSError:
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
-def _target_workspace(root: Path, state: TransactionState) -> Path:
-    """Resolve the engineering target without changing execution selection."""
-    return Path(state.genesis_repository_path).expanduser().resolve() if state.execution_mode == "GENESIS" and state.genesis_repository_path else root.resolve()
-
-
-def _target_repository_name(target: Path, fallback: str) -> str:
-    remote = _git_output(target, "remote", "get-url", "origin")
-    if remote:
-        return remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
-    return fallback
-
-
-def _evidence_baseline(state: TransactionState, target: Path, target_commit: str) -> str | None:
-    """Find the parent preceding the terminal transaction when Git can prove it."""
-    first_commit = (
-        state.genesis_commit_sha
-        if state.execution_mode == "GENESIS"
-        else state.implementation_merge_commit or state.finalization_merge_commit
-    )
-    if not first_commit:
-        return None
-    parent = _git_output(target, "rev-parse", f"{first_commit}^")
-    return parent if parent and _git_output(target, "rev-parse", target_commit) else None
-
-
-def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEvidenceBundle:
-    """Collect a bounded, read-only target-repository evidence bundle."""
-    target = _target_workspace(root, state)
-    branch = _git_output(target, "branch", "--show-current") or "unavailable"
-    commit = state.genesis_commit_sha or _git_output(target, "rev-parse", "HEAD") or "unavailable"
-    status = _git_output(target, "status", "--porcelain", "--untracked-files=all")
-    worktree = "unavailable" if status is None else ("clean" if not status else "dirty")
-    baseline = _evidence_baseline(state, target, commit)
-    root_genesis_commit = state.execution_mode == "GENESIS" and state.genesis_commit_sha == commit
-    names = (
-        _git_output(target, "diff", "--name-status", baseline, commit)
-        if baseline
-        else _git_output(target, "diff-tree", "--root", "--no-commit-id", "-r", "--name-status", commit)
-        if root_genesis_commit
-        else None
-    )
-    added: list[str] = []
-    modified: list[str] = []
-    removed: list[str] = []
-    if names:
-        for row in names.splitlines():
-            status_code, _, path = row.partition("\t")
-            if not path:
-                continue
-            if status_code.startswith("A"):
-                added.append(path)
-            elif status_code.startswith("D"):
-                removed.append(path)
-            else:
-                modified.append(path)
-    changed = tuple(sorted(set(added + modified + removed)))
-    diff = (
-        _git_output(target, "diff", "--check", baseline, commit)
-        if baseline
-        else _git_output(target, "diff-tree", "--root", "--check", commit)
-        if root_genesis_commit
-        else None
-    )
-    diff_check = (
-        "passed" if (baseline or root_genesis_commit) and diff == "" else "not available: transaction baseline was not recorded"
-    )
-    return TerminalEvidenceBundle(
-        target_workspace=str(target),
-        # Genesis evidence belongs to the selected local target, never to the
-        # Engineering Platform host repository when that target has no origin.
-        target_repository=_target_repository_name(
-            target,
-            target.name if state.execution_mode == "GENESIS" else state.repository,
-        ),
-        target_branch=branch,
-        target_commit=commit,
-        worktree_state=worktree,
-        changed_files=changed,
-        files_added=tuple(added),
-        files_modified=tuple(modified),
-        files_removed=tuple(removed),
-        diff_check=diff_check,
-    )
-
-
-def _evidence_lines(label: str, values: tuple[str, ...]) -> tuple[str, ...]:
-    if not values:
-        return (f"- {label}: none recorded",)
-    return tuple(f"- {label}: `{value}`" for value in values)
-
-
-def _implementation_evidence(bundle: TerminalEvidenceBundle) -> str:
-    """Classify file-level evidence without inferring unrecorded implementation intent."""
-    changed = bundle.changed_files
-    groups = {
-        "Implemented components": tuple(path for path in changed if path.startswith("tools/engineering/")),
-        "Updated models": tuple(path for path in changed if "model" in path.casefold() or "state" in path.casefold()),
-        "Updated documentation": tuple(path for path in changed if path.endswith(".md")),
-        "Updated tests": tuple(path for path in changed if path.startswith("tests/") or "/test_" in path),
-        "Updated contracts": tuple(path for path in changed if any(token in path.casefold() for token in ("contract", "schema", "openapi"))),
-        "Updated schemas": tuple(path for path in changed if path.endswith((".json", ".yaml", ".yml"))),
-    }
-    lines: list[str] = []
-    for label, files in groups.items():
-        lines.extend(_evidence_lines(label, files))
-    return "\n".join(lines)
-
-
-def _component_inventory_lines(bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    inventory = _component_inventory(bundle)
-    if not inventory:
-        return ("- No implementation components were detected from changed repository files.",)
-    lines: list[str] = []
-    for component, files in inventory:
-        lines.append(f"- Component: `{component}`")
-        lines.extend(f"  - Repository file: `{path}`" for path in files)
-        lines.extend(
-            f"  - Change classification: `{classification}`"
-            for classification, candidates in (
-                ("added", bundle.files_added),
-                ("modified", bundle.files_modified),
-                ("removed", bundle.files_removed),
-            )
-            if any(path in candidates for path in files)
-        )
-    lines.append("- Generated Components: none recorded by repository evidence.")
-    return tuple(lines)
-
-
-def _commit_strategy(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    if state.execution_mode == "GENESIS":
-        return (
-            "- Strategy: `Genesis Local Commit`",
-            f"- Resulting local commit: `{state.genesis_commit_sha or bundle.target_commit}`",
-        )
-    if state.finalization_merge_commit:
-        strategy = "Managed Merge"
-    elif state.implementation_pull_request:
-        strategy = "Managed Pull Request"
-    else:
-        strategy = "Finalization" if state.transaction_kind == "FINALIZATION" else "Managed execution"
-    return (
-        f"- Strategy: `{strategy}`",
-        f"- Implementation PR: `{state.implementation_pull_request or 'not recorded'}`",
-        f"- Implementation merge: `{state.implementation_merge_commit or 'not recorded'}`",
-        f"- Finalization PR: `{state.finalization_pull_request or 'not recorded'}`",
-        f"- Finalization merge: `{state.finalization_merge_commit or 'not recorded'}`",
-    )
-
-
-def _branch_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    preflight = state.branch or "not recorded"
-    execution = state.implementation_branch or state.branch or bundle.target_branch
-    final_branch = bundle.target_branch
-    transition = "unchanged" if preflight == execution == final_branch else "recorded lifecycle transition"
-    return (
-        f"- Preflight branch: `{preflight}`",
-        f"- Execution branch: `{execution}`",
-        f"- Final repository branch: `{final_branch}`",
-        f"- Final repository commit: `{bundle.target_commit}`",
-        f"- Result commit: `{bundle.target_commit}`",
-        f"- Repository state transition: {transition}.",
-    )
-
-
-def _requirement_traceability(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    requirements = _objective_requirements(objective)
-    components = _component_inventory(bundle)
-    component_names = ", ".join(f"`{name}`" for name, _ in components) or "No implementation component detected"
-    files = ", ".join(f"`{path}`" for path in bundle.changed_files) or "No changed files recorded"
-    tests = ", ".join(f"`{path}`" for path in bundle.changed_files if path.startswith("tests/")) or "No regression test file recorded"
-    validation = "; ".join(item["result"] for item in state.validation_evidence) or "Not recorded by the runner"
-    lines: list[str] = []
-    for requirement in requirements:
-        lines.extend((
-            f"- Requirement: {requirement}",
-            f"  - Implemented component: {component_names}",
-            f"  - Repository files: {files}",
-            f"  - Runtime evidence: run `{state.run_id}`; execution mode `{state.execution_mode}`.",
-            f"  - Execution evidence: terminal checkpoint `{state.phase}`.",
-            f"  - Regression tests: {tests}",
-            f"  - Validation evidence: {validation}",
-            "  - Report evidence: this immutable Engineering Report.",
-        ))
-    return tuple(lines)
-
-
-def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    records = list(state.validation_evidence)
-    records.append({"command": "git diff --check", "result": bundle.diff_check})
-    records.append({"command": "Documentation validation", "result": "report documentation is rendered from the canonical reporting contract"})
-    return tuple(
-        line
-        for record in records
-        for line in (
-            f"- Executed validation: `{record['command']}`",
-            "  - Purpose: repository regression, quality or documentation evidence.",
-            f"  - Result: {record['result']}",
-            "  - Repository evidence: persisted terminal checkpoint and Evidence Bundle.",
-        )
-    )
-
-
-def _execution_statistics(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    return (
-        "- Execution Count: `1`",
-        f"- Engineering Actions: `{len(bundle.changed_files) + len(state.validation_evidence)}` evidence-backed action(s)",
-        "- Mission Count (Forge): `0` (Forge is outside this reporting increment)",
-        f"- Repair Iterations: `{state.repair_iterations}`",
-        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
-        f"- Validation Duration: `not measured` ({len(state.validation_evidence)} recorded validation(s))",
-    )
-
-
-def _statistics_projection(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    """Project separately scoped metrics without inferring mission completion."""
-    return (
-        "### Mission Statistics",
-        "- Mission Count: `0` (Forge mission state is not inferred by Engineering Platform).",
-        "### Execution Statistics",
-        "- Execution Count: `1`",
-        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
-        "### Engineering Action Statistics",
-        f"- Evidence-backed actions: `{len(bundle.changed_files) + len(state.validation_evidence)}`",
-        "### Runtime Statistics",
-        "- Runtime execution count: `1` for this report-bound Run ID.",
-    )
-
-
-def _deliverable_projection(
-    objective: str,
-    state: TransactionState,
-    bundle: TerminalEvidenceBundle,
-    handoff: RecommendationHandoff | None = None,
-) -> tuple[str, ...]:
-    """Project requested outcomes and repository artefacts without claiming intent."""
-    requested = _objective_requirements(objective)
-    delivered = bundle.changed_files if state.phase == "COMPLETE" else ()
-    documentation = tuple(path for path in delivered if path.endswith(".md"))
-    validation = tuple(path for path in delivered if path.startswith("tests/"))
-    runtime = tuple(path for path in delivered if path.startswith("tools/engineering/"))
-    projection = (
-        "### Requested Deliverables",
-        *(f"- Requested: {item}" for item in requested),
-        "### Delivered Artefacts",
-        *_evidence_lines("Delivered artifact", delivered),
-        "### Undelivered Artefacts",
-        *(
-            ("- None recorded: terminal checkpoint is COMPLETE.",)
-            if state.phase == "COMPLETE"
-            else ("- Requested deliverables are not claimed as delivered by this terminal checkpoint.",)
-        ),
-        "### Runtime Deliverables",
-        *_evidence_lines("Runtime deliverable", runtime),
-        "### Documentation Deliverables",
-        *_evidence_lines("Documentation deliverable", documentation),
-        "### Validation Deliverables",
-        *_evidence_lines("Validation deliverable", validation),
-    )
-    if handoff is None:
-        return projection
-    return (
-        *projection,
-        "### Forge Advisory Deliverable",
-        "- Requested Deliverable: Next Business Mission Recommendation",
-        f"- Delivered Artefact: `{handoff.artifact_path or 'NOT SUPPLIED'}`",
-        f"- Recommended Mission: {handoff.recommendation.title or 'NOT SUPPLIED'}",
-        f"- Decision Evidence: {handoff.recommendation.decision_evidence or 'NOT SUPPLIED'}",
-        "- Business Approval: `NOT PERFORMED BY ENGINEERING PLATFORM`",
-        "- Mission Allocation: `NOT PERFORMED`",
-    )
-
-
-def _qualification_projection(
-    state: TransactionState,
-    qualification_status: object,
-    runtime_provider: str,
-) -> tuple[str, ...]:
-    """Keep execution, qualification, runtime and governance outcomes distinct."""
-    validation = "recorded" if state.validation_evidence else "not recorded"
-    return (
-        f"- Execution Status: `{state.phase}`",
-        f"- Qualification Status: `{qualification_status or 'not recorded'}`",
-        f"- Runtime Status: `{'reported' if runtime_provider != 'unavailable' else 'not reported'}`",
-        f"- Validation Status: `{validation}`",
-        f"- Governance Status: `{state.latest_github_evidence or 'not recorded'}`",
-    )
-
-
-def _runtime_projection(
-    state: TransactionState,
-    producer: ProducerMetadata,
-    runtime_provider: str,
-    reported_model: str,
-) -> tuple[str, ...]:
-    """Render only persisted runtime provenance and Producer references."""
-    return (
-        f"- Runtime Instance: `{state.run_id}`",
-        f"- Runtime Identity: provider `{runtime_provider}`; model `{reported_model}`",
-        f"- Mission State: `{producer.mission_id or 'not recorded'}`",
-        "- Dispatcher: `not recorded by the runner`",
-        "- Queue: `not recorded by the runner`",
-        f"- Execution Receipt Reference: `{state.run_id}`",
-        f"- Decision Evidence Reference: `{producer.correlation_id or producer.engineering_action_id or 'not recorded'}`",
-    )
-
-
-def _execution_receipt_projection(state: TransactionState, producer: ProducerMetadata) -> tuple[str, ...]:
-    return (
-        f"- Receipt ID: `{state.run_id}`",
-        "- Execution Host: `Engineering Platform`",
-        f"- Run ID: `{state.run_id}`",
-        f"- Correlation ID: `{producer.correlation_id or 'not recorded'}`",
-        f"- Receipt Status: `{state.phase}`",
-        f"- Receipt Resolution: `{state.terminal_condition}`",
-    )
-
-
-def _decision_evidence_projection(producer: ProducerMetadata) -> tuple[str, ...]:
-    if not any((producer.correlation_id, producer.mission_id, producer.engineering_action_id)):
-        return ("- No Decision Evidence reference was recorded by the Producer.",)
-    return (
-        f"- Decision Evidence ID: `{producer.correlation_id or 'not recorded'}`",
-        f"- Decision Type: `{producer.producer_type}` provenance reference",
-        f"- Mission: `{producer.mission_id or 'not recorded'}`",
-        "- Confidence: `not recorded by Engineering Platform`",
-        f"- Reasoning Reference: `{producer.engineering_action_id or 'not recorded'}`",
-    )
-
-
-def _evidence_summary(state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> str:
-    """Return a compact, machine-readable summary derived only from report evidence."""
-    return json.dumps(
-        {
-            "repository_commit": bundle.target_commit,
-            "implemented_components": [name for name, _ in _component_inventory(bundle)],
-            "regression_coverage": [path for path in bundle.changed_files if path.startswith("tests/")],
-            "deliverable_answer": _deliverable_answer(objective, state),
-            "commit_strategy": _commit_strategy(state, bundle)[0].removeprefix("- Strategy: `").removesuffix("`"),
-            "execution_strategy": state.execution_mode,
-            "repository_state": bundle.worktree_state,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-
-
-def report_consistency_errors(body: str, state: TransactionState, bundle: TerminalEvidenceBundle, objective: str) -> tuple[str, ...]:
-    """Validate mandatory Evidence 2.0 sections before a report is published."""
-    required = (
-        "## Component Inventory",
-        "## Deliverable Projection",
-        "## Qualification Projection",
-        "## Runtime Projection",
-        "## Execution Receipt Projection",
-        "## Decision Evidence Projection",
-        "## Statistics Projection",
-        "## Commit Strategy",
-        "## Branch Traceability",
-        "## Requirement Traceability",
-        "## Validation Traceability",
-        "## Execution Statistics",
-        "## Engineering Evidence Summary",
-    )
-    errors = [f"missing required section: {section}" for section in required if section not in body]
-    if "Implemented Components:\n\nnone recorded" in body:
-        errors.append("component inventory is missing")
-    if re.search(r"\bYES\b|\bPASS\b|\bGO\b|\bNO-GO\b", objective, re.IGNORECASE) and _deliverable_answer(objective, state) not in body:
-        errors.append("explicit deliverable answer is missing")
-    if bundle.target_commit not in body:
-        errors.append("repository commit is missing")
-    if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
-        errors.append("complete report is missing Evidence Bundle")
-    return tuple(errors)
-
-
-def _validation_evidence_lines(state: TransactionState) -> tuple[str, ...]:
-    if not state.validation_evidence:
-        return ("- Executed tests: not recorded by the runner.", "- Test results: not recorded by the runner.")
-    return tuple(
-        line
-        for item in state.validation_evidence
-        for line in (
-            f"- Executed test: `{item['command']}`",
-            f"  - Result: {item['result']}",
-        )
-    )
-
-
-def _reconciliation_evidence(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> str:
-    if "reconcil" not in objective.casefold():
-        return ""
-    changed = ", ".join(f"`{path}`" for path in bundle.changed_files) or "no changed files recorded"
-    return "\n".join(
-        (
-            "## Reconciliation Evidence",
-            "- Initial classification: not separately persisted by the runner.",
-            f"- Final classification: `{state.phase}`.",
-            "- Required assessment items: target identity, repository evidence, validation evidence and terminal checkpoint are included in this report.",
-            f"- Changes made: {changed}.",
-            "- Remaining limitations: historical assessment and per-test execution details are not persisted by the runner.",
-            "",
-        )
-    )
-
-
-def format_management_summary(state: TransactionState) -> str:
-    """Return a checkpoint-only completion summary without exposing prompt text."""
-    return "\n".join(
-        (
-            "COMPLETE — IMPLEMENTATION_AND_FINALIZATION_RECONCILED",
-            "Objective: bounded objective recorded at the supplied prompt path.",
-            f"Implementation: branch={state.implementation_branch or state.branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
-            f"Repair iterations: {state.repair_iterations}.",
-            f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
-            "Repository Cleanup: fetched and pruned; local main synchronized; transaction branches removed or already absent; workspace clean.",
-            "Authority: owner-authorized bounded lifecycle; ready-for-review, merge and Finalization automated.",
-            "No release, deployment or publication performed. Rolling Horizon unchanged.",
-        )
-    )
-
-
-def format_terminal_management_summary(state: TransactionState) -> str:
-    """Return evidence bounded by the persisted terminal checkpoint phase."""
-    if state.phase == "COMPLETE":
-        return format_management_summary(state)
-    outcome = (
-        "BLOCKED — no engineering changes were executed or delivered."
-        if state.phase == "BLOCKED"
-        else "FAILED — the engineering transaction did not complete successfully."
-    )
-    target = state.genesis_repository_path or state.repository
-    codex = (
-        "not started"
-        if state.terminal_condition in {"genesis_workspace_preflight", "execution_context_resolution"}
-        else "not confirmed by the terminal checkpoint"
-    )
-    return "\n".join(
-        (
-            outcome,
-            f"Execution mode: {state.execution_mode}.",
-            f"Target repository: {target}.",
-            f"Terminal checkpoint: {state.phase}.",
-            f"Codex execution: {codex}.",
-            f"Implementation: branch={state.implementation_branch}; PR={state.implementation_pull_request}; merge={state.implementation_merge_commit}.",
-            f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
-            "No release, deployment or publication was performed.",
-        )
-    )
-
-
-def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
-    """Reject report prose that conflicts with its immutable terminal checkpoint."""
-    if f"- Terminal state: `{state.phase}`" not in body:
-        return False
-    required_sections = (
-        "## Initial Repository Assessment",
-        "## Engineering Outcome",
-        "## Reviewer Findings",
-        "## Repository Truth",
-        "## Management Summary",
-    )
-    if any(section not in body for section in required_sections):
-        return False
-    if "## Execution Target Identity" not in body:
-        return False
-    if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
-        return False
-    if state.phase == "BLOCKED":
-        return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
-    if state.phase == "FAILED":
-        return "FAILED — the engineering transaction did not complete successfully." in body and "COMPLETE —" not in body
-    return state.phase == "COMPLETE" and "COMPLETE —" in body
-
-
-def corrected_terminal_report(state: TransactionState) -> str:
-    """Generate a minimal replacement when richer report assembly is inconsistent."""
-    try:
-        producer_prompt = Path(state.prompt_path).read_text(encoding="utf-8")
-    except OSError:
-        producer_prompt = ""
-    producer = parse_producer_metadata(producer_prompt)
-    return "\n".join(
-        (
-            "# Engineering Report",
-            "",
-            f"- Run ID: `{state.run_id}`",
-            f"- Terminal state: `{state.phase}`",
-            "",
-            "## Producer",
-            f"- Producer ID: `{producer.producer_id}`",
-            f"- Producer Type: `{producer.producer_type}`",
-            f"- Producer Version: `{producer.producer_version or 'not supplied'}`",
-            f"- Correlation ID: `{producer.correlation_id or 'not supplied'}`",
-            f"- Mission ID: `{producer.mission_id or 'not supplied'}`",
-            f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
-            f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
-            "",
-            "## Execution Target Identity",
-            f"- Execution Host Repository: `{state.repository}`",
-            f"- Execution Mode: `{state.execution_mode}`",
-            "- Target Workspace: unavailable",
-            "- Target Repository: unavailable",
-            "- Target Branch: unavailable",
-            "- Target Commit: unavailable",
-            "",
-            "## Initial Repository Assessment",
-            "Assessment evidence is unavailable. This section describes only the repository before any attempted implementation.",
-            "",
-            "## Engineering Outcome",
-            format_terminal_management_summary(state),
-            "",
-            *_retry_relationship(state),
-            "## Reviewer Findings",
-            "No reviewer findings were retained. Reviewer observations are advisory initial observations only.",
-            "",
-            "## Repository Truth",
-            "Execution Host, Target Repository, Target Commit, Repository Evidence and Evidence Bundle are canonical repository truth.",
-            "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
-            "",
-            *(
-                (
-                    "## Evidence Bundle",
-                    "Repository evidence is unavailable because the richer report assembly was inconsistent.",
-                    "",
-                )
-                if state.phase == "COMPLETE"
-                else ()
-            ),
-            "## Management Summary",
-            format_terminal_management_summary(state),
-            "",
-            "## Diagnostics",
-            state.diagnostic or "No terminal diagnostic.",
-            "",
-        )
-    )
-
-
-def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str) -> str:
-    if not records:
-        return "No specialist reviewers required. Any future reviewer observations remain advisory initial observations."
-    lines: list[str] = []
-    for record in records:
-        lines.extend(
-            (
-                f"- Reviewer: {record['reviewer']}",
-                f"  - Capability: {record.get('capability', 'engineering')}",
-                f"  - Selected because: {record['selected_because']}",
-                f"  - Initial observation: {record['contribution']}",
-                f"  - Accepted recommendations: {record['accepted_recommendations']}",
-                f"  - Rejected recommendations: {record['rejected_recommendations']}",
-                "  - Resolved by: implementation evidence, changed components and repository evidence in the Evidence Bundle below."
-                if phase == "COMPLETE"
-                else "  - Outcome: Not a final repository statement; consult the terminal checkpoint and diagnostics.",
-            )
-        )
-    return "\n".join(lines)
-
-
-def _format_engineering_outcome(state: TransactionState) -> str:
-    """Describe final delivery from checkpoint and repository evidence, never advice."""
-    if state.phase != "COMPLETE":
-        return "\n".join(
-            (
-                f"- Final checkpoint: `{state.phase}`",
-                "- Completed work: no successful engineering delivery is claimed.",
-                f"- Remaining limitation: {state.diagnostic or 'Terminal outcome requires follow-up.'}",
-            )
-        )
-    return "\n".join(
-        (
-            "- Final checkpoint: `COMPLETE`",
-            "- Completed work: implementation and any required reconciliation completed according to the persisted checkpoint.",
-            f"- Resulting commits: implementation `{state.implementation_merge_commit or 'not applicable'}`; finalization `{state.finalization_merge_commit or 'not applicable'}`.",
-            f"- Repository state: {state.latest_repository_evidence or 'Recorded by the terminal COMPLETE checkpoint.'}",
-            "- Remaining limitations: none recorded by the terminal checkpoint.",
-        )
-    )
-
-
-def generate_terminal_report(
-    root: Path,
-    state: TransactionState,
-    manifest: EngineeringPlatformManifest | None = None,
-    detected_cli: str | None = None,
-    reviewer_records: tuple[dict[str, object], ...] = (),
-    runtime_metadata: Mapping[str, str] | None = None,
-) -> Path:
-    """Write one immutable, local-only report for a terminal transaction."""
-    reports = root / ".engineering" / "reports"
-    reports.mkdir(mode=0o700, parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    path = reports / f"{timestamp}_{state.run_id}.md"
-    objective = "Objective unavailable because the prompt file is no longer local."
-    try:
-        objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    producer = parse_producer_metadata(objective)
-    handoff = parse_forge_recommendation_handoff(
-        objective, root, producer_type=producer.producer_type
-    )
-    manifest = manifest or EngineeringPlatformManifest.load(
-        root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
-    )
-    qualification = latest_qualification(root)
-    qualification_summary = (
-        "No local Engineering Platform Qualification evidence is available."
-        if qualification is None
-        else f"Version: `{qualification.get('engineering_platform_version')}`\n- Latest Qualification: `{qualification.get('qualification')}`\n- Executed: `{qualification.get('executed_at')}`\n- Qualification Coverage: `{qualification.get('coverage_percent')}%`"
-    )
-    runtime_metadata = runtime_metadata or {"runtime_provider": "codex_cli"}
-    runtime_provider = runtime_metadata.get("runtime_provider", "unavailable")
-    reported_model = runtime_metadata.get("model", "not reported")
-    reported_reasoning = runtime_metadata.get("reasoning_profile", "not reported")
-    reported_configuration = runtime_metadata.get("configuration_profile", "not reported")
-    bundle = collect_terminal_evidence(root, state)
-    qualification_status = qualification.get("qualification") if qualification else "not recorded"
-    qualification_summary_line = (
-        f"`{qualification_status}`" if qualification else "not recorded"
-    )
-    evidence_bundle = "\n".join(
-        (
-            "## Evidence Bundle",
-            "### Repository Evidence",
-            f"- Target repository: `{bundle.target_repository}`",
-            f"- Target commit: `{bundle.target_commit}`",
-            f"- Worktree state: `{bundle.worktree_state}`",
-            *_evidence_lines("Changed file", bundle.changed_files),
-            *_evidence_lines("File added", bundle.files_added),
-            *_evidence_lines("File modified", bundle.files_modified),
-            *_evidence_lines("File removed", bundle.files_removed),
-            "",
-            "### Validation Evidence",
-            *_validation_evidence_lines(state),
-            f"- Qualification status: {qualification_summary_line}.",
-            "- Schema validation: persisted terminal checkpoint accepted by the report generator.",
-            "- Example validation: not recorded by the runner.",
-            f"- git diff --check result: {bundle.diff_check}.",
-            "",
-            "### Implementation Evidence",
-            _implementation_evidence(bundle),
-            "",
-        )
-    ) if state.phase == "COMPLETE" else ""
-    preflight = latest_host_preflight(root)
-    if preflight.get("run_id") not in {None, state.run_id}:
-        preflight = {}
-    preflight_checks = preflight.get("checks") or [] if isinstance(preflight, dict) else []
-    if not isinstance(preflight_checks, (list, tuple)):
-        preflight_checks = ()
-    preflight_outcome = preflight.get("outcome", "unavailable") if isinstance(preflight, dict) else "unavailable"
-    preflight_timestamp = preflight.get("timestamp", "unavailable") if isinstance(preflight, dict) else "unavailable"
-    preflight_duration = preflight.get("duration_ms", "unavailable") if isinstance(preflight, dict) else "unavailable"
-    preflight_summary = ", ".join(
-        f"{item.get('identifier')}={item.get('outcome')}"
-        for item in preflight_checks
-        if isinstance(item, dict) and isinstance(item.get("identifier"), str)
-    ) or "unavailable"
-    workspace_preflight = latest_workspace_preflight(root)
-    if workspace_preflight.get("run_id") not in {None, state.run_id}:
-        workspace_preflight = {}
-    workspace_checks = workspace_preflight.get("checks") or [] if isinstance(workspace_preflight, dict) else []
-    if not isinstance(workspace_checks, (list, tuple)):
-        workspace_checks = ()
-    workspace_summary = ", ".join(
-        f"{item.get('identifier')}={item.get('outcome')}"
-        for item in workspace_checks
-        if isinstance(item, dict) and isinstance(item.get("identifier"), str)
-    ) or "unavailable"
-    capability_preflight = latest_capability_preflight(root)
-    if capability_preflight.get("run_id") not in {None, state.run_id}:
-        capability_preflight = {}
-    drift_evidence = [
-        item for preflight in (preflight, workspace_preflight, capability_preflight)
-        for item in preflight.get("drift_evidence", [])
-        if isinstance(item, dict)
-    ]
-    body = "\n".join(
-        (
-            "# Engineering Report",
-            "",
-            f"- Timestamp: {timestamp}",
-            f"- Run ID: `{state.run_id}`",
-            f"- Prompt: `{state.prompt_path}`",
-            f"- Terminal state: `{state.phase}`",
-            f"- Objective: {objective}",
-            "",
-            "## Producer",
-            "Forge owns Producer Contract semantics. Engineering Platform consumes this metadata for auditability only.",
-            f"- Producer ID: `{producer.producer_id}`",
-            f"- Producer Type: `{producer.producer_type}`",
-            f"- Producer Version: `{producer.producer_version or 'not supplied'}`",
-            f"- Correlation ID: `{producer.correlation_id or 'not supplied'}`",
-            f"- Mission ID: `{producer.mission_id or 'not supplied'}`",
-            f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
-            f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
-            "",
-            "## Execution Target Identity",
-            "- Execution Host: `Engineering Platform`",
-            f"- Execution Host Repository: `{state.repository}`",
-            f"- Execution Mode: `{state.execution_mode}`",
-            f"- Target Workspace: `{bundle.target_workspace}`",
-            f"- Target Repository: `{bundle.target_repository}`",
-            f"- Target Branch: `{bundle.target_branch}`",
-            f"- Target Commit: `{bundle.target_commit}`",
-            f"- Execution Host Version: `{manifest.platform_version}`",
-            f"- Runner Version: `{manifest.runner_version}`",
-            f"- Bootstrap Contract: `{manifest.bootstrap_contract}`",
-            f"- Checkpoint Format: `{manifest.checkpoint_format}`",
-            "",
-            "## Engineering Platform",
-            f"- Platform Version: `{manifest.platform_version}`",
-            f"- Runner Version: `{manifest.runner_version}`",
-            f"- Bootstrap Contract: `{manifest.bootstrap_contract}`",
-            f"- Checkpoint Format: `{manifest.checkpoint_format}`",
-            f"- Memory Format: `{manifest.memory_format}`",
-            f"- Report Format: `{manifest.report_format}`",
-            f"- Runtime Provider: `{runtime_provider}`",
-            f"- AI Model: `{reported_model}`",
-            f"- Reasoning Profile: `{reported_reasoning}`",
-            f"- Configuration Profile: `{reported_configuration}`",
-            f"- Codex CLI Version: `{detected_cli or 'unavailable'}`",
-            "",
-            "## Engineering Platform Qualification",
-            qualification_summary,
-            "",
-            "## Execution Host Preflight",
-            f"- Outcome: `{preflight_outcome}`",
-            f"- Timestamp: `{preflight_timestamp}`",
-            f"- Duration: `{preflight_duration}` ms",
-            f"- Checks: {preflight_summary}",
-            "",
-            "## Workspace Preflight",
-            f"- Outcome: `{workspace_preflight.get('outcome', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Workspace: `{workspace_preflight.get('workspace', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Target repository: `{workspace_preflight.get('target_repository', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Canonical target path: `{workspace_preflight.get('canonical_target_path', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Authorization match: `{workspace_preflight.get('authorization_match', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Authorization policy: `{workspace_preflight.get('authorization_policy', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Branch: `{workspace_preflight.get('branch', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Execution mode: `{workspace_preflight.get('execution_mode', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Timestamp: `{workspace_preflight.get('timestamp', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}`",
-            f"- Duration: `{workspace_preflight.get('duration_ms', 'unavailable') if isinstance(workspace_preflight, dict) else 'unavailable'}` ms",
-            f"- Checks: {workspace_summary}",
-            "",
-            "## Capability Preflight",
-            f"- Outcome: `{capability_preflight.get('outcome', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}`",
-            f"- Recoverability: `{capability_preflight.get('recoverability', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}`",
-            f"- Failure Origin: `{capability_preflight.get('failure_origin', 'none') if isinstance(capability_preflight, dict) else 'none'}`",
-            f"- Recommendation: {capability_preflight.get('recommendation', 'unavailable') if isinstance(capability_preflight, dict) else 'unavailable'}",
-            "",
-            "## Development Host Drift Diagnostics",
-            "- Detected Drift: " + (str(len(drift_evidence)) if drift_evidence else "none"),
-            *(
-                line
-                for item in drift_evidence
-                for line in (
-                    f"- Drift ID: `{item.get('drift_id', 'unavailable')}`",
-                    f"  - Category: `{item.get('category', 'unavailable')}`; Severity: `{item.get('severity', 'unavailable')}`",
-                    f"  - Expected State: {item.get('expected_value', 'unavailable')}",
-                    f"  - Observed State: {item.get('observed_value', 'unavailable')}",
-                    f"  - Blocking Reason: {item.get('affected_component', 'unavailable')}",
-                    f"  - Recommended Resolution / Required Action: {item.get('resolution_recommendation', 'unavailable')}",
-                    f"  - Affected Component: `{item.get('affected_component', 'unavailable')}`; Affected Repository: `{item.get('affected_repository', 'unavailable')}`; Affected Runtime: `{item.get('affected_runtime', 'unavailable')}`",
-                )
-            ),
-            "- Resume Guidance: " + (
-                "Resolve the listed prerequisite, then retry; resume is not appropriate while drift remains."
-                if drift_evidence else "No current development-host drift is recorded."
-            ),
-            "",
-            "## Authorization",
-            f"- Owner authorization: `{state.owner_authorized}`",
-            "- Ready for Review, merge and Finalization authority remain runner-controlled.",
-            "",
-            "## Lifecycle Timeline",
-            f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`",
-            "",
-            "## Pull Requests",
-            f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",
-            f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`",
-            "",
-            *_retry_relationship(state),
-            "## Initial Repository Assessment",
-            "This assessment describes the repository before implementation. Reviewer observations are advisory and cannot describe the final repository state.",
-            "",
-            "## Engineering Outcome",
-            _format_engineering_outcome(state),
-            "",
-            "## Reviewer Findings",
-            "Initial observations only. They are not final repository claims.",
-            _format_reviewer_records(reviewer_records, state.phase),
-            "",
-            "## Repository Truth",
-            "Execution Host, Target Repository, Target Commit, Repository Evidence and Evidence Bundle are the canonical engineering outcome.",
-            "Priority: persisted repository state, resulting commits, validation results, then reviewer observations.",
-            "The Engineering Outcome and Management Summary above are derived from that priority order.",
-            "",
-            "## Component Inventory",
-            "Automatically derived from changed implementation files in the Repository Evidence; it is not manually authored.",
-            *_component_inventory_lines(bundle),
-            "",
-            "## Deliverable Projection",
-            *_deliverable_projection(objective, state, bundle, handoff),
-            "",
-            *recommendation_handoff_report_lines(handoff, state.phase),
-            "## Qualification Projection",
-            *_qualification_projection(state, qualification_status, runtime_provider),
-            "",
-            "## Runtime Projection",
-            *_runtime_projection(state, producer, runtime_provider, reported_model),
-            "",
-            "## Execution Receipt Projection",
-            *_execution_receipt_projection(state, producer),
-            "",
-            "## Decision Evidence Projection",
-            *_decision_evidence_projection(producer),
-            "",
-            "## Deliverable Answer",
-            f"- Final Deliverable Answer: {_deliverable_answer(objective, state)}",
-            "",
-            "## Commit Strategy",
-            *_commit_strategy(state, bundle),
-            "",
-            "## Branch Traceability",
-            *_branch_traceability(state, bundle),
-            "",
-            "## Requirement Traceability",
-            "Each row links the prompt requirement to repository-derived implementation, test and validation evidence.",
-            *_requirement_traceability(objective, state, bundle),
-            "",
-            "## Validation Traceability",
-            *_validation_traceability(state, bundle),
-            "",
-            "## Execution Statistics",
-            *_execution_statistics(state, bundle),
-            "",
-            "## Statistics Projection",
-            *_statistics_projection(state, bundle),
-            "",
-            "## Engineering Evidence Summary",
-            "```json",
-            _evidence_summary(state, bundle, objective),
-            "```",
-            "",
-            evidence_bundle,
-            _reconciliation_evidence(objective, state, bundle),
-            "## Validation",
-            "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations."
-            if state.phase == "COMPLETE"
-            else "No successful engineering validation or delivery is claimed for this terminal transaction.",
-            "",
-            "## Repair History",
-            "No repair iterations were required."
-            if not state.repair_iterations
-            else f"{state.repair_iterations} bounded repair iteration(s) were recorded.",
-            "",
-            "## Repository Cleanup",
-            state.latest_repository_evidence or "Cleanup evidence unavailable.",
-            "",
-            "## Specialist Agent Reviews",
-            "Specialist review agents are read-only advisory helpers. Their initial observations are listed above; the primary runner retains lifecycle authority.",
-            "",
-            "## Management Summary",
-            "Final repository outcome; it does not restate initial reviewer observations as current state.",
-            format_terminal_management_summary(state),
-            "",
-            "## Diagnostics",
-            state.diagnostic or drift_summary(drift_evidence),
-            f"Resume: `engineering-execution-host {state.prompt_path} --run-id {state.run_id} --resume`",
-            "",
-            "## Metrics",
-            f"- Codex CLI execution time: {state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'} seconds",
-            f"- Repair iterations: {state.repair_iterations}",
-            f"- PRs created: {sum(value is not None for value in (state.implementation_pull_request, state.finalization_pull_request))}",
-            f"- Merges performed: {sum(value is not None for value in (state.implementation_merge_commit, state.finalization_merge_commit))}",
-            "",
-        )
-    )
-    consistency_errors = report_consistency_errors(body, state, bundle, objective)
-    if not terminal_report_matches_state(body, state) or consistency_errors:
-        details = "; ".join(consistency_errors) or "terminal state validation failed"
-        raise RunnerError(f"Engineering Report consistency validation failed: {details}")
-    path.write_text(body, encoding="utf-8")
-    return path
+# Reporting compatibility exports are implemented in execution_reporting.py.
+from .execution_reporting import (
+    _format_engineering_outcome, _format_reviewer_records, _format_terminal_report,
+    _next_action_message, _pull_request_summary, _repository_summary,
+    collect_terminal_evidence, corrected_terminal_report, format_management_summary,
+    format_terminal_management_summary, generate_terminal_report, report_consistency_errors,
+    terminal_report_matches_state,
+)

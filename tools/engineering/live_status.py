@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 from typing import Mapping
 
 from .agent_state import TransactionState, redact_diagnostic
 from .storage import EngineeringStorageError, load_projection, open_storage, store_projection
+from .providers import GitProvider
 
 
 def write_live_status(
@@ -31,12 +31,7 @@ def write_live_status(
         else root
     )
     try:
-        observed_branch = subprocess.run(
-            ("git", "-C", str(checkout), "branch", "--show-current"),
-            text=True,
-            capture_output=True,
-            check=False,
-        ).stdout.strip()
+        observed_branch = GitProvider().execute(checkout, "git", "branch", "--show-current").stdout.strip()
     except OSError:
         observed_branch = ""
     try:

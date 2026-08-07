@@ -37,8 +37,9 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertFalse((root / ".engineering" / "logs" / "inbox.log").exists())
 
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
+        from tools.engineering import providers
         with tempfile.TemporaryDirectory() as temporary, patch.object(
-            component_logging.subprocess,
+            providers.subprocess,
             "run",
             return_value=__import__("subprocess").CompletedProcess((), 0, "abc123def456\n", ""),
         ):

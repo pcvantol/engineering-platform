@@ -24,7 +24,7 @@ from .platform_version import EngineeringPlatformManifest
 from .agent_state import redact_diagnostic
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, execution_host_configuration
 from .platform_bootstrap import provision_workspace
-from .providers import LaunchdProvider
+from .providers import GitProvider, LaunchdProvider, LocalProcessProvider
 from .status_model import build, publish
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
@@ -44,6 +44,7 @@ from .capability_preflight import execute as execute_capability_preflight
 from .producer import parse_producer_metadata
 from .drift_diagnostics import summary as drift_summary
 from .storage import EngineeringStorageError, load_projection, open_storage, record_artifact, record_submission
+from .execution_lease import liveness as lease_liveness, reconcile_stale
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -57,6 +58,7 @@ ORIGINAL_RUN_ID_PATTERN = re.compile(r"(?mi)^original[ _-]run[ _-]id\s*:\s*(inbo
 RETRY_GENERATION_PATTERN = re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s*$")
 RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$")
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+RUNNER_START_GRACE_SECONDS = 90
 
 
 class RetrySubmissionError(ValueError):
@@ -251,21 +253,13 @@ def _terminal_workspace_snapshot(repo: Path, run_id: str) -> tuple[str | None, i
             return None, None, None
         checkout = Path(candidate).expanduser()
     try:
-        observed = subprocess.run(
-            ("git", "-C", str(checkout), "ls-files", "-z"),
-            capture_output=True,
-            check=False,
-        )
-        branch = subprocess.run(
-            ("git", "-C", str(checkout), "branch", "--show-current"),
-            capture_output=True,
-            check=False,
-            text=True,
-        )
+        observed = GitProvider().execute(checkout, "git", "ls-files", "-z")
+        branch = GitProvider().execute(checkout, "git", "branch", "--show-current")
     except OSError:
         return str(checkout.resolve()), None, None
+    separators = b"\0" if isinstance(observed.stdout, bytes) else "\0"
     count = (
-        sum(1 for item in observed.stdout.split(b"\0") if item)
+        sum(1 for item in observed.stdout.split(separators) if item)
         if observed.returncode == 0
         else None
     )
@@ -390,6 +384,7 @@ def status(repo: Path, state: str, **details: object) -> None:
         watcher_state=state,
         job_id=details.get("job_id"),
         run_id=details.get("run_id"),
+        runner_pid=details.get("runner_pid"),
         queue_depth=details.get("queued_jobs", 0),
         queue_items=details.get("queue_items", []),
         current_phase=details.get("runner_phase"),
@@ -672,6 +667,12 @@ def _move(source: Path, destination: Path) -> None:
 
 
 def _active_transaction(repo: Path) -> bool:
+    """Return whether an admitted runner is still demonstrably alive.
+
+    A detached child may be terminated between its admission projection and its
+    first checkpoint.  That must not leave the watcher in ``RUNNER_STARTING``
+    indefinitely and block every later Inbox item.
+    """
     try:
         payload = load_projection(repo, "live_status") or {}
     except EngineeringStorageError:
@@ -684,6 +685,12 @@ def _active_transaction(repo: Path) -> bool:
         checkpoint_phase, _ = _runner_result(repo, run_id)
         if checkpoint_phase in TERMINAL_PHASES:
             return False
+        # A transaction lifecycle checkpoint is not liveness evidence. Once
+        # the Execution Host has persisted the transaction, only its canonical
+        # lease may keep later Inbox work gated. This prevents a crashed host
+        # with an old ACTIVE checkpoint from blocking the queue indefinitely.
+        if checkpoint_phase is not None:
+            return lease_liveness(repo, run_id).get("state") == "LIVE"
         # The runner can stop after publishing its terminal watcher result but
         # before replacing current.json. The watcher result is authoritative
         # for that same Run ID, so it must not hold later Inbox work hostage.
@@ -696,6 +703,12 @@ def _active_transaction(repo: Path) -> bool:
             and watcher.get("last_executed_phase") in TERMINAL_PHASES
         ):
             return False
+        if (
+            checkpoint_phase is None
+            and watcher.get("watcher_state") == "RUNNER_STARTING"
+            and watcher.get("run_id") == run_id
+        ):
+            return _detached_runner_is_alive(watcher)
         return True
     # The detached runner is admitted before it has written current.json.
     # Status is therefore the authoritative short-lived admission record.
@@ -709,7 +722,30 @@ def _active_transaction(repo: Path) -> bool:
     if not isinstance(watcher_run_id, str):
         return False
     checkpoint_phase, _ = _runner_result(repo, watcher_run_id)
-    return checkpoint_phase not in TERMINAL_PHASES
+    if checkpoint_phase in TERMINAL_PHASES:
+        return False
+    return _detached_runner_is_alive(watcher)
+
+
+def _detached_runner_is_alive(watcher: dict[str, object]) -> bool:
+    """Confirm a detached runner PID, with a bounded legacy-start grace period."""
+    pid = watcher.get("runner_pid")
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    observed = watcher.get("last_update")
+    if not isinstance(observed, str):
+        return False
+    try:
+        started = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        return False
+    return (datetime.now(timezone.utc) - started).total_seconds() <= RUNNER_START_GRACE_SECONDS
 
 
 @contextmanager
@@ -890,7 +926,8 @@ def _detach_runner(
     environment[BACKGROUND_RUN_ID_ENVIRONMENT] = run_id
     environment[BACKGROUND_JOB_ID_ENVIRONMENT] = job_id
     try:
-        subprocess.Popen(
+        process = LocalProcessProvider().spawn_detached(
+            repo,
             [
                 sys.executable,
                 "-m",
@@ -901,11 +938,7 @@ def _detach_runner(
                 "--icloud-root",
                 str(root),
             ],
-            cwd=repo,
-            env=environment,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            environment,
         )
     except OSError as error:
         status(
@@ -918,6 +951,19 @@ def _detach_runner(
             diagnostic=f"De los gestarte Engineering-runner kon niet starten: {error}",
         )
         return 1
+    runner_pid = getattr(process, "pid", None)
+    status(
+        repo,
+        "RUNNER_STARTING",
+        queued_jobs=len(candidates) - 1,
+        queue_items=_queue_items(candidates, source),
+        job_id=job_id,
+        run_id=run_id,
+        runner_pid=runner_pid if isinstance(runner_pid, int) and runner_pid > 0 else None,
+        submitted_filename=source.name,
+        prompt_title=_prompt_title(content, source.name),
+        current_action="De Engineering-runner is los gestart; de watcher blijft de Inbox volgen.",
+    )
     log_event(logger, logging.INFO, "runner_detached", run_id=run_id)
     return 0
 
@@ -940,7 +986,7 @@ def _execute_runner_command(
     if phase and phase not in TERMINAL_PHASES:
         arguments.append("--resume")
     execution_started_at = datetime.now(timezone.utc)
-    completed = subprocess.run(arguments, cwd=repo, text=True, capture_output=True, check=False)
+    completed = LocalProcessProvider().execute(repo, arguments)
     return execution_started_at, completed
 
 
@@ -949,6 +995,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     logger = component_logger(repo, "inbox")
     areas = local_folders(repo)
     with _lock(repo):
+        reconciled = reconcile_stale(repo)
+        if reconciled:
+            log_event(logger, logging.WARNING, "active_run_lease_reconciled", diagnostic=f"reconciled_runs={len(reconciled)}")
         candidates = _scan_queue(root, interval)
         log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         child_run_id = os.environ.get(BACKGROUND_RUN_ID_ENVIRONMENT)
@@ -1072,7 +1121,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         )
         status(
             repo, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
-            submitted_filename=source.name, prompt_title=title,
+            runner_pid=os.getpid(), submitted_filename=source.name, prompt_title=title,
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
         execution_started_at, completed = _execute_runner_command(repo, prompt, run_id)

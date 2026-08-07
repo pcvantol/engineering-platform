@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 
 from .agent_state import redact_diagnostic
+from .providers import CodexCliProvider
 
 
 MAX_ANALYSIS_LENGTH = 8_000
@@ -123,15 +123,12 @@ def analyze(root: Path, run_id: str, report: Path) -> Path:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False) as handle:
             json.dump(_schema(), handle)
             schema_path = Path(handle.name)
-        completed = subprocess.run(
+        completed = CodexCliProvider().invoke(
+            root,
             (
                 "codex", "exec", "--sandbox", "read-only", "-C", str(root), "--json",
                 "--output-schema", str(schema_path), prompt,
             ),
-            cwd=root,
-            text=True,
-            capture_output=True,
-            check=False,
         )
         if completed.returncode:
             return _write(root, run_id, _markdown({"summary": "Codex-analyse kon niet worden uitgevoerd. De Engineering-uitkomst blijft ongewijzigd."}))

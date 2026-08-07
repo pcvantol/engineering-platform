@@ -55,7 +55,7 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("near-fullscreen operational-detail dialog", reporting)
         self.assertIn("complete report and advisory analysis remain separate evidence\nactions", reporting)
         storage = (ROOT / "docs" / "engineering" / "ENGINEERING_STORAGE.md").read_text(encoding="utf-8")
-        self.assertIn("schema `9`", storage)
+        self.assertIn("Schema `9`", storage)
         self.assertIn("execution_receipts", storage)
         self.assertIn("engineering_schema_migrations", storage)
         self.assertIn("prompt_execution_history", storage)

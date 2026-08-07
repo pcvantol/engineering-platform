@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import subprocess
 import time
 
 from .platform_version import EngineeringPlatformManifest
 from .platform_api import PlatformConfiguration
+from .providers import CodexCliProvider, GitProvider
 
 
 @dataclass(frozen=True)
@@ -188,17 +188,13 @@ def _write_report(root: Path, report: dict[str, object]) -> None:
 
 
 def _repository_version(root: Path) -> str:
-    completed = subprocess.run(
-        ("git", "rev-parse", "HEAD"), cwd=root, text=True, capture_output=True, check=False
-    )
+    completed = GitProvider().execute(root, "git", "rev-parse", "HEAD")
     return completed.stdout.strip() if completed.returncode == 0 else "unavailable"
 
 
 def _codex_version() -> str:
     try:
-        completed = subprocess.run(
-            ("codex", "--version"), text=True, capture_output=True, check=False
-        )
+        completed = CodexCliProvider().command("--version")
     except OSError:
         return "unavailable"
     return completed.stdout.strip() if completed.returncode == 0 else "unavailable"

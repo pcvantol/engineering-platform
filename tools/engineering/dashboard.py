@@ -16,7 +16,7 @@ import shlex
 import shutil
 import sqlite3
 import socket
-import subprocess
+import subprocess  # Compatibility mock target; process execution is provider-owned.
 import sys
 from threading import Lock, Timer
 import time
@@ -24,8 +24,7 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_workspace
-from .providers import TailscaleProvider
-from .providers import LaunchdProvider
+from .providers import CodexCliProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, cloud_root, dismiss_execution, queued_retry_children, submit_execution_retry, submit_predecessor_retry
@@ -355,14 +354,8 @@ def _codex_provider_identity() -> dict[str, str]:
     executable = shutil.which("codex")
     if executable:
         try:
-            completed = subprocess.run(
-                (executable, "--version"),
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=3,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+            completed = LocalProcessProvider().execute(Path.cwd(), (executable, "--version"))
+        except OSError:
             completed = None
         if completed and completed.returncode == 0:
             match = re.search(
@@ -384,16 +377,10 @@ def _codex_rate_limits() -> bytes:
         if _rate_limit_cache and now - _rate_limit_cache[0] < RATE_LIMIT_CACHE_SECONDS:
             return _rate_limit_cache[1]
     identity = _codex_provider_identity()
-    process: subprocess.Popen[str] | None = None
+    provider = CodexCliProvider()
+    process = None
     try:
-        process = subprocess.Popen(
-            ("codex", "app-server"),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        process = provider.app_server()
         if process.stdin is None or process.stdout is None:
             return json.dumps(identity, separators=(",", ":")).encode()
         process.stdin.write(
@@ -441,15 +428,7 @@ def _codex_rate_limits() -> bytes:
         return json.dumps(identity, separators=(",", ":")).encode()
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=1)
-            for stream in (process.stdin, process.stdout):
-                if stream is not None:
-                    stream.close()
+            provider.close_app_server(process)
     return json.dumps(identity, separators=(",", ":")).encode()
 
 
@@ -460,16 +439,10 @@ class RateLimitResetError(RuntimeError):
 def _consume_codex_rate_limit_reset_credit() -> str:
     """Consume exactly one available Codex reset credit through its app-server API."""
     global _rate_limit_cache
-    process: subprocess.Popen[str] | None = None
+    provider = CodexCliProvider()
+    process = None
     try:
-        process = subprocess.Popen(
-            ("codex", "app-server"),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        process = provider.app_server()
         if process.stdin is None or process.stdout is None:
             raise RateLimitResetError("Codex-reset is niet beschikbaar.")
         process.stdin.write(
@@ -525,15 +498,7 @@ def _consume_codex_rate_limit_reset_credit() -> str:
         raise RateLimitResetError("Codex-reset is niet beschikbaar.") from error
     finally:
         if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=1)
-            for stream in (process.stdin, process.stdout):
-                if stream is not None:
-                    stream.close()
+            provider.close_app_server(process)
     raise RateLimitResetError("Codex-reset reageerde niet op tijd.")
 
 
@@ -563,16 +528,9 @@ def _component_log_versions(root: Path) -> dict[str, str]:
 
 def _launch_agent_health(label: str) -> dict[str, str | bool]:
     """Inspect one owned LaunchAgent without changing its state."""
-    executable = shutil.which("launchctl")
-    if not executable:
+    if not LaunchdProvider().status().qualified:
         return {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"}
-    observed = subprocess.run(
-        (executable, "print", f"gui/{os.getuid()}/{label}"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if observed.returncode:
+    if not LaunchdProvider().inspect(label):
         return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is niet geladen"}
     return {"healthy": True, "state": "running", "detail": "LaunchAgent is geladen"}
 
@@ -637,12 +595,7 @@ def _component_processes(component: str) -> list[dict[str, int | str]]:
     if not patterns:
         return []
     try:
-        observed = subprocess.run(
-            ("ps", "-axo", "pid=,rss=,etime=,command="),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        observed = LocalProcessProvider().execute(Path.cwd(), ("ps", "-axo", "pid=,rss=,etime=,command="))
     except OSError:
         return []
     if observed.returncode:
@@ -726,17 +679,10 @@ def _restart_component(component: str) -> None:
     """Safely ask launchd to restart one explicitly owned, restartable component."""
     if component not in RESTARTABLE_COMPONENTS:
         raise ValueError("Dit onderdeel kan niet veilig vanuit het dashboard worden herstart.")
-    executable = shutil.which("launchctl")
-    if not executable:
-        raise OSError("launchctl ontbreekt.")
-    observed = subprocess.run(
-        (executable, "kickstart", "-k", f"gui/{os.getuid()}/{COMPONENT_LABELS[component]}"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if observed.returncode:
-        raise OSError(observed.stderr.strip() or "De herstart is niet gelukt.")
+    try:
+        LaunchdProvider().restart(COMPONENT_LABELS[component])
+    except OSError as error:
+        raise OSError("De herstart is niet gelukt.") from error
 
 
 def _restart_component_after_response(component: str, logger: logging.Logger) -> None:
@@ -759,12 +705,7 @@ def _codex_process_metrics(root: Path) -> bytes:
     if not isinstance(process_group, int) or process_group <= 0 or not isinstance(runner_pid, int) or runner_pid <= 0:
         return json.dumps({"process_count": 0, "cpu_percent": 0, "gpu_status": "Niet beschikbaar: geen actieve Execution Host-runner."}, separators=(",", ":")).encode()
     try:
-        observed = subprocess.run(
-            ("ps", "-axo", "pid=,pgid=,pcpu=,command="),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        observed = LocalProcessProvider().execute(Path.cwd(), ("ps", "-axo", "pid=,pgid=,pcpu=,command="))
     except OSError:
         observed = None
     processes: list[dict[str, int | float]] = []
@@ -1048,28 +989,23 @@ def _prompt_started(root: Path) -> bytes:
 
 def _build_commit(root: Path) -> str:
     """Return the local checked-out revision for read-only dashboard identification."""
-    observed = subprocess.run(
-        ("git", "-C", str(root), "rev-parse", "--short=12", "HEAD"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        observed = GitProvider().execute(root, "git", "rev-parse", "--short=12", "HEAD")
+    except OSError:
+        return "onbekend"
     return observed.stdout.strip() if observed.returncode == 0 else "onbekend"
 
 
 def _tracked_file_count(root: Path) -> str:
     """Return the recursive count of files tracked by the workspace Git repository."""
     try:
-        observed = subprocess.run(
-            ("git", "-C", str(root), "ls-files", "-z"),
-            capture_output=True,
-            check=False,
-        )
+        observed = GitProvider().execute(root, "git", "ls-files", "-z")
     except OSError:
         return "Niet beschikbaar"
     if observed.returncode != 0:
         return "Niet beschikbaar"
-    return str(sum(1 for path in observed.stdout.split(b"\0") if path))
+    separator = b"\0" if isinstance(observed.stdout, bytes) else "\0"
+    return str(sum(1 for path in observed.stdout.split(separator) if path))
 
 
 def _workspace_free_disk_space(root: Path) -> str:
@@ -1208,6 +1144,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
         def _send(self, content: bytes, content_type: str, status_code: int = 200) -> None:
             self.send_response(status_code)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
@@ -1698,7 +1635,9 @@ def build_relay(repo: Path) -> Path:
         raise RuntimeError("Swift compiler ontbreekt; de private dashboardrelay kan niet starten.")
     binary = relay_binary(repo)
     binary.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    subprocess.run((compiler, str(repo / "tools/engineering/dashboard_supervisor.swift"), "-o", str(binary)), check=True)
+    compiled = LocalProcessProvider().execute(repo, (compiler, str(repo / "tools/engineering/dashboard_supervisor.swift"), "-o", str(binary)))
+    if compiled.returncode:
+        raise RuntimeError("Dashboardrelay compilation failed.")
     binary.chmod(0o700)
     return binary
 

@@ -35,15 +35,10 @@ class CodexChatTest(unittest.TestCase):
                 + "\n",
                 "",
             )
-            with patch("tools.engineering.codex_chat.subprocess.run", side_effect=(git, codex)) as run:
-                answer = respond(
-                    root,
-                    {"last_executed_run": "inbox-last", "last_executed_title": "Laatste prompt"},
-                    "Wat is de volgende stap?",
-                    [],
-                )
-            self.assertEqual(answer, "Veilig advies.")
-            command = run.call_args_list[1].args[0]
+            with patch("tools.engineering.codex_chat.GitProvider.execute", return_value=git), patch("tools.engineering.codex_chat.CodexCliProvider.invoke", return_value=codex) as run:
+                answer = respond(root, {"last_executed_run": "inbox-last", "last_executed_title": "Laatste prompt"}, "Wat is de volgende stap?", [])
+                self.assertEqual(answer, "Veilig advies.")
+                command = run.call_args.args[1]
             self.assertIn("--sandbox", command)
             self.assertIn("read-only", command)
             self.assertIn("--ephemeral", command)
@@ -82,16 +77,10 @@ class CodexChatTest(unittest.TestCase):
                 ("codex",), 0,
                 json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Rungebonden advies."}}) + "\n", "",
             )
-            with patch("tools.engineering.codex_chat.subprocess.run", side_effect=(git, codex)) as run:
-                answer = respond(
-                    root,
-                    {"last_executed_run": "inbox-other", "last_executed_title": "Andere prompt"},
-                    "Wat is de status?",
-                    [],
-                    "inbox-selected",
-                )
-            self.assertEqual(answer, "Rungebonden advies.")
-            context = run.call_args_list[1].args[0][-1]
+            with patch("tools.engineering.codex_chat.GitProvider.execute", return_value=git), patch("tools.engineering.codex_chat.CodexCliProvider.invoke", return_value=codex) as run:
+                answer = respond(root, {"last_executed_run": "inbox-other", "last_executed_title": "Andere prompt"}, "Wat is de status?", [], "inbox-selected")
+                self.assertEqual(answer, "Rungebonden advies.")
+                context = run.call_args.args[1][-1]
             self.assertIn("inbox-selected", context)
             self.assertIn("Geselecteerde prompt", context)
             self.assertNotIn("inbox-other", context)

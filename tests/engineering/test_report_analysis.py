@@ -11,7 +11,7 @@ from tools.engineering.report_analysis import analyze
 
 
 class ReportAnalysisTest(unittest.TestCase):
-    @patch("tools.engineering.report_analysis.subprocess.run")
+    @patch("tools.engineering.providers.subprocess.run")
     def test_analysis_is_read_only_redacted_and_persisted_per_run(self, run: object) -> None:
         payload = {
             "summary": "Een veilige samenvatting.",
@@ -39,7 +39,7 @@ class ReportAnalysisTest(unittest.TestCase):
         self.assertIn("## Bevindingen", content)
         self.assertIn("## Advies aan Product Architect", content)
 
-    @patch("tools.engineering.report_analysis.subprocess.run")
+    @patch("tools.engineering.providers.subprocess.run")
     def test_analysis_failure_is_advisory_and_does_not_raise(self, run: object) -> None:
         run.return_value = subprocess.CompletedProcess(("codex",), 1, "", "unavailable")
         with tempfile.TemporaryDirectory() as temporary:

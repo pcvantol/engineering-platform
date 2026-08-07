@@ -80,7 +80,7 @@ changes execution semantics.
   per-run provenance (for example, `AI-provider: Codex CLI`). It offers
   server-pushed status, category-coded evidence cards, client-side structured
   log filtering/sorting and browser-session-local read-only advice history.
-- Engineering Storage schema `9` is versioned and fail-closed in the platform
+- Engineering Storage schema `15` is versioned and fail-closed in the platform
   manifest. `.engineering/engineering.db` and the surrounding `.engineering/`
   workspace are canonical; a verified, fail-closed legacy migration preserves
   prior `.djconnect/` evidence before the legacy directory is removed.

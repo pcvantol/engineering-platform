@@ -18,7 +18,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 13
+ENGINEERING_STORAGE_SCHEMA_VERSION = 15
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -485,6 +485,61 @@ def _schema_v13(connection: sqlite3.Connection) -> None:
         )
 
 
+def _schema_v14(connection: sqlite3.Connection) -> None:
+    """Add canonical, bounded ownership leases without assuming old ACTIVE runs live."""
+    for statement in """
+        CREATE TABLE execution_run_leases (
+            lease_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES engineering_transactions(run_id) ON DELETE CASCADE,
+            host_identity TEXT NOT NULL,
+            host_instance_id TEXT NOT NULL,
+            process_id INTEGER,
+            acquired_at TEXT NOT NULL,
+            last_heartbeat_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            lease_state TEXT NOT NULL CHECK(lease_state IN ('ACTIVE','EXPIRED','RELEASED')),
+            lease_version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX execution_run_one_active_lease
+            ON execution_run_leases(run_id) WHERE lease_state='ACTIVE';
+        CREATE INDEX execution_run_leases_expiry_lookup
+            ON execution_run_leases(lease_state, expires_at);
+        CREATE TABLE execution_lease_events (
+            id INTEGER PRIMARY KEY,
+            lease_id TEXT NOT NULL REFERENCES execution_run_leases(lease_id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('LEASE_ACQUIRED','LEASE_EXPIRED','STALE_DETECTED','STALE_RECONCILED','LEASE_RELEASED')),
+            outcome TEXT NOT NULL DEFAULT '',
+            recorded_at TEXT NOT NULL,
+            UNIQUE(lease_id, event_type, outcome)
+        );
+        CREATE INDEX execution_lease_events_run_lookup
+            ON execution_lease_events(run_id, id DESC);
+        CREATE TABLE execution_run_reconciliations (
+            run_id TEXT PRIMARY KEY REFERENCES engineering_transactions(run_id) ON DELETE CASCADE,
+            outcome TEXT NOT NULL CHECK(outcome IN ('RECOVERABLE','OPERATOR_INTERVENTION_REQUIRED','TERMINAL_EVIDENCE_PRESENT','INCONSISTENT')),
+            reason TEXT NOT NULL,
+            reconciled_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    """.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
+def _schema_v15(connection: sqlite3.Connection) -> None:
+    """Persist typed readiness decisions as canonical run-correlated evidence."""
+    connection.execute(
+        "CREATE TABLE execution_readiness_evaluations ("
+        "run_id TEXT PRIMARY KEY REFERENCES engineering_transactions(run_id) ON DELETE CASCADE,"
+        "profile_id TEXT NOT NULL,profile_version INTEGER NOT NULL,execution_mode TEXT NOT NULL,"
+        "passed INTEGER NOT NULL CHECK(passed IN (0,1)),failed_requirements TEXT NOT NULL,"
+        "facts TEXT NOT NULL,evaluated_at TEXT NOT NULL,diagnostic TEXT)"
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -499,6 +554,8 @@ MIGRATIONS: dict[int, Migration] = {
     11: _schema_v11,
     12: _schema_v12,
     13: _schema_v13,
+    14: _schema_v14,
+    15: _schema_v15,
 }
 
 
@@ -748,7 +805,6 @@ def open_storage(
             )
         connection.execute("COMMIT")
         path.chmod(0o600)
-        return connection
     except (OSError, sqlite3.DatabaseError, EngineeringStorageError) as error:
         try:
             connection.execute("ROLLBACK")
@@ -758,3 +814,35 @@ def open_storage(
         if isinstance(error, EngineeringStorageError):
             raise
         raise EngineeringStorageError("Engineering storage could not be opened safely.") from error
+    return connection
+
+
+def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, profile_version: int,
+                                execution_mode: str, passed: bool, failed_requirements: tuple[str, ...],
+                                facts: dict[str, object], evaluated_at: str, diagnostic: str | None) -> None:
+    """Store one deterministic readiness decision for a transaction."""
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT INTO execution_readiness_evaluations(run_id,profile_id,profile_version,execution_mode,passed,failed_requirements,facts,evaluated_at,diagnostic) VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET profile_id=excluded.profile_id,profile_version=excluded.profile_version,execution_mode=excluded.execution_mode,passed=excluded.passed,failed_requirements=excluded.failed_requirements,facts=excluded.facts,evaluated_at=excluded.evaluated_at,diagnostic=excluded.diagnostic",
+            (run_id, profile_id, profile_version, execution_mode, int(passed), json.dumps(failed_requirements), json.dumps(facts, sort_keys=True), evaluated_at, diagnostic),
+        )
+    finally:
+        connection.close()
+
+
+def load_readiness_evaluation(root: Path, run_id: object) -> dict[str, object] | None:
+    """Read one canonical readiness projection for dashboard/report consumers."""
+    if not isinstance(run_id, str):
+        return None
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT profile_id,profile_version,execution_mode,passed,failed_requirements,evaluated_at,diagnostic FROM execution_readiness_evaluations WHERE run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    return {"profile_id": row[0], "profile_version": row[1], "execution_mode": row[2], "result": "PASS" if row[3] else "BLOCKED", "failed_requirements": json.loads(row[4]), "evaluated_at": row[5], "diagnostic": row[6]}

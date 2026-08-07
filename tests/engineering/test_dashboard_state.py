@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from tools.engineering import dashboard_state
+from tools.engineering.agent_state import StateStore, TransactionState
+from tools.engineering.execution_lease import acquire
 
 
 class DashboardStateTest(unittest.TestCase):
@@ -27,6 +29,10 @@ class DashboardStateTest(unittest.TestCase):
             (status / "current.json").write_text(
                 json.dumps({"run_id": "run-1", "phase": "EXECUTE_AGENT"}), encoding="utf-8"
             )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("run-1", "repo", "prompt.md", "EXECUTE_AGENT")
+            )
+            acquire(root, "run-1", identity="test-host", instance_id="test-instance")
 
             payload = json.loads(dashboard_state.status(root))
 
@@ -78,6 +84,29 @@ class DashboardStateTest(unittest.TestCase):
 
         self.assertEqual(payload, watcher)
 
+    def test_status_projects_stale_liveness_without_claiming_an_active_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(
+                json.dumps({"watcher_state": "RUNNER_STARTING", "run_id": "inbox-stale"}),
+                encoding="utf-8",
+            )
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-stale", "phase": "EXECUTE_AGENT"}),
+                encoding="utf-8",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("inbox-stale", "repo", "prompt.md", "EXECUTE_AGENT")
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_STALE")
+        self.assertEqual(payload["execution_liveness"]["state"], "STALE")
+        self.assertNotEqual(payload["current_action"], "Engineeringuitvoering is actief.")
+
     def test_status_ignores_a_stale_nonterminal_live_projection_after_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -110,6 +139,22 @@ class DashboardStateTest(unittest.TestCase):
             (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
             (status / "current.json").write_text(
                 json.dumps({"run_id": "inbox-failed", "phase": "WAIT_FOR_TERMINAL_EVIDENCE"}),
+                encoding="utf-8",
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload, watcher)
+
+    def test_status_ignores_a_live_projection_for_a_different_watcher_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {"watcher_state": "RUNNER_STARTING", "run_id": "inbox-current"}
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-stale", "phase": "INITIALIZE"}),
                 encoding="utf-8",
             )
 

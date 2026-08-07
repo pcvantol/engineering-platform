@@ -233,6 +233,9 @@ class ClientContractTest(unittest.TestCase):
                 }
                 return values[args]
 
+            def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+
         with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.subprocess.run") as run:
             root = Path(temporary)
             (root / "BOOTSTRAP.md").write_text("contract", encoding="utf-8")
@@ -384,6 +387,9 @@ class ClientContractTest(unittest.TestCase):
         class Provider:
             def command(self, _: Path, *args: str) -> str:
                 return ""
+
+            def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                return next(run.side_effect)
 
         clean = RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True)
         inspect.return_value = clean
@@ -1077,6 +1083,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("- Producer Type: `FORGE`", body)
         self.assertIn("- Mission ID: `MISSION-0003`", body)
         self.assertIn("- Engineering Action ID: `EA-0042`", body)
+        self.assertIn("- Execution lifecycle: `COMPLETE`", body)
+        self.assertIn("- Execution liveness:", body)
+        self.assertIn("- Recovery action:", body)
 
     def test_terminal_report_projects_forge_recommendation_without_governance_mutation(self) -> None:
         (self.root / "recommendation.json").write_text(

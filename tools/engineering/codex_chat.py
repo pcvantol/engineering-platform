@@ -6,12 +6,13 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 from threading import Lock
 from typing import Any
 
 from .prompt_history import prompt_history
+from .providers import GitProvider
+from .providers import CodexCliProvider
 
 
 MAX_MESSAGE_CHARACTERS = 2_000
@@ -59,12 +60,7 @@ def _report(root: Path, run_id: str) -> str:
 
 
 def _repository_summary(root: Path) -> str:
-    observed = subprocess.run(
-        ("git", "-C", str(root), "status", "--short", "--branch"),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    observed = GitProvider().execute(root, "git", "status", "--short", "--branch")
     return observed.stdout[:2_000] if observed.returncode == 0 else "Niet beschikbaar."
 
 
@@ -144,7 +140,8 @@ CONTEXTPAKKET:
     try:
         with tempfile.TemporaryDirectory(prefix="djconnect-codex-chat-") as workspace:
             try:
-                completed = subprocess.run(
+                completed = CodexCliProvider().invoke(
+                    Path(workspace),
                     (
                         "codex",
                         "exec",
@@ -160,13 +157,9 @@ CONTEXTPAKKET:
                         "--model",
                         chat_model(),
                         instruction,
-                    ),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    timeout=CHAT_TIMEOUT_SECONDS,
+                    ), timeout=CHAT_TIMEOUT_SECONDS,
                 )
-            except (OSError, subprocess.TimeoutExpired) as error:
+            except OSError as error:
                 raise CodexChatError("Codex Gesprek is tijdelijk niet beschikbaar.") from error
     finally:
         _chat_lock.release()
