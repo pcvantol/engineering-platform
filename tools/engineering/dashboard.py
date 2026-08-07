@@ -54,8 +54,9 @@ RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
 DASHBOARD_VERSION = "1.2.90"
 DASHBOARD_STARTED_AT = time.monotonic()
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
-APP_ICON_SVG = "engineering-status-icon.svg"
-APP_ICON_TOUCH = "engineering-status-icon-180.png"
+APP_ICON_DARK = "operations-console/apple-touch-icon-dark.png"
+APP_ICON_LIGHT = "operations-console/apple-touch-icon-light.png"
+WEB_MANIFEST = "operations-console/manifest.webmanifest"
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
 RATE_LIMIT_CACHE_SECONDS = 60
@@ -391,7 +392,7 @@ def _codex_rate_limits() -> bytes:
                     "params": {
                         "clientInfo": {
                             "name": "djconnect_engineering_dashboard",
-                            "title": "Engineering Status",
+                            "title": "Engineering Operations Console",
                             "version": DASHBOARD_VERSION,
                         }
                     },
@@ -453,7 +454,7 @@ def _consume_codex_rate_limit_reset_credit() -> str:
                     "params": {
                         "clientInfo": {
                             "name": "djconnect_engineering_dashboard",
-                            "title": "Engineering Status",
+                            "title": "Engineering Operations Console",
                             "version": DASHBOARD_VERSION,
                         }
                     },
@@ -1063,8 +1064,10 @@ def _dashboard_html(
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta id="dashboardAppleWebAppTitle" name="apple-mobile-web-app-title" content="$TITLE">
 <title>$TITLE</title>
-<link id="dashboardFavicon" rel="icon" type="image/svg+xml" href="/assets/engineering-status-icon.svg">
-<link rel="apple-touch-icon" sizes="180x180" href="/assets/engineering-status-icon-180.png">
+<link rel="manifest" href="/assets/operations-console/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="180x180" media="(prefers-color-scheme: dark)" href="/assets/operations-console/apple-touch-icon-dark.png">
+<link rel="icon" type="image/png" sizes="180x180" media="(prefers-color-scheme: light)" href="/assets/operations-console/apple-touch-icon-light.png">
+<link id="dashboardAppleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png">
 <script>try{const state=JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1")||"{}");document.documentElement.dataset.theme=state.theme==="light"?"light":"dark"}catch{document.documentElement.dataset.theme="dark"}</script>
 
 
@@ -1072,11 +1075,11 @@ def _dashboard_html(
 </head>
 <body>
 <a class="skip-link" href="#engineering-dashboard-content" data-i18n="header.skip"></a>
-<div id="dashboardSplash" role="status" aria-live="polite" data-testid="dashboard-splash"><div class="dashboard-splash__content"><img class="dashboard-splash__icon" src="/assets/engineering-status-icon.svg" alt="" aria-hidden="true" data-testid="dashboard-splash-icon"><h2 class="dashboard-splash__title" id="dashboardSplashTitle" data-i18n="dashboard.title">$TITLE</h2><span class="dashboard-splash__version" id="dashboardSplashVersion" data-platform-version="$PLATFORM_VERSION"></span><span class="dashboard-splash__spinner" aria-hidden="true"></span><span class="dashboard-splash__loading" id="dashboardSplashLoading" data-i18n="dashboard.loading"></span></div></div>
+<div id="dashboardSplash" role="status" aria-live="polite" data-testid="dashboard-splash"><div class="dashboard-splash__content"><img class="dashboard-splash__icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-splash-icon"><h2 class="dashboard-splash__title" id="dashboardSplashTitle" data-i18n="dashboard.title">$TITLE</h2><span class="dashboard-splash__version" id="dashboardSplashVersion" data-platform-version="$PLATFORM_VERSION"></span><span class="dashboard-splash__spinner" aria-hidden="true"></span><span class="dashboard-splash__loading" id="dashboardSplashLoading" data-i18n="dashboard.loading"></span></div></div>
 <div id="copyToast" role="status" aria-live="polite" aria-atomic="true" popover="manual" hidden data-testid="copy-toast"></div>
 <div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
 <div class="dashboard-scroll-region">
-<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/engineering-status-icon.svg" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" data-i18n-aria-label="language.label"><option value="nl" data-i18n="language.nl"></option><option value="en" data-i18n="language.en"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></header>
+<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="nl" data-i18n="language.nl"></option><option value="en" data-i18n="language.en"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></header>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><p class="queue-blocker" id="inboxBlocker" role="status"></p><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
 <details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="8" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
@@ -1377,14 +1380,22 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
                 "/assets/dashboard_locales.mjs": ("dashboard_locales.mjs", "text/javascript; charset=utf-8"),
                 "/assets/dashboard_status_store.mjs": ("dashboard_status_store.mjs", "text/javascript; charset=utf-8"),
-                "/assets/engineering-status-icon.svg": (APP_ICON_SVG, "image/svg+xml; charset=utf-8"),
-                "/assets/engineering-status-icon-180.png": (APP_ICON_TOUCH, "image/png"),
+                # Legacy paths keep the first paint intact while the dashboard
+                # selects the themed Operations Console icon after startup.
+                "/assets/engineering-status-icon.svg": ("engineering-status-icon.svg", "image/svg+xml; charset=utf-8"),
+                "/assets/engineering-status-icon-180.png": ("engineering-status-icon-180.png", "image/png"),
+                "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
+                "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
+                "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),
+                "/assets/operations-console/apple-touch-icon-dark.png": (APP_ICON_DARK, "image/png"),
+                "/assets/operations-console/apple-touch-icon-light.png": (APP_ICON_LIGHT, "image/png"),
+                "/assets/operations-console/manifest.webmanifest": (WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
                 # Serve the conventional browser and iOS discovery paths too.
                 # They intentionally reuse the canonical app icon rather than
                 # introducing duplicate, independently-versioned icon files.
-                "/favicon.ico": (APP_ICON_TOUCH, "image/png"),
-                "/apple-touch-icon.png": (APP_ICON_TOUCH, "image/png"),
-                "/apple-touch-icon-precomposed.png": (APP_ICON_TOUCH, "image/png"),
+                "/favicon.ico": (APP_ICON_DARK, "image/png"),
+                "/apple-touch-icon.png": (APP_ICON_DARK, "image/png"),
+                "/apple-touch-icon-precomposed.png": (APP_ICON_DARK, "image/png"),
             }
             if asset := icon_assets.get(request.path):
                 asset_name, content_type = asset
@@ -1400,7 +1411,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 run_id = request.path.removeprefix("/api/prompt-history/").removesuffix("/details").strip("/")
                 detail = _prompt_history_detail(root, run_id)
                 if not detail:
-                    self._send(b'{"error":"Promptdetails zijn niet beschikbaar."}', "application/json; charset=utf-8", 404)
+                    self._send(b'{"error":"Uitvoeringsdetails zijn niet beschikbaar."}', "application/json; charset=utf-8", 404)
                     return
                 return self._send(detail, "application/json; charset=utf-8")
             if request.path.startswith("/api/prompt-history/") and request.path.endswith("/report"):

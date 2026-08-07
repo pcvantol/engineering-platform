@@ -1,0 +1,11 @@
+{
+  "name": "Engineering Operations Console",
+  "short_name": "Operations Console",
+  "display": "standalone",
+  "background_color": "#0a6b9d",
+  "theme_color": "#0a6b9d",
+  "icons": [
+    {"src": "/assets/operations-console/icon-dark.png", "sizes": "1254x1254", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/operations-console/icon-light.png", "sizes": "1254x1254", "type": "image/png", "purpose": "any"}
+  ]
+}
