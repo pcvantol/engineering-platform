@@ -1193,6 +1193,8 @@ test.describe("Engineering Status browser smoke", () => {
       element.className = "indicator indicator--running";
     });
     await expect(page.locator("#indicator")).toHaveCSS("animation-name", "github-activity-ring");
+    await expect(page.locator("#indicator")).toHaveCSS("animation-duration", "0.82s");
+    await expect(page.locator("#indicator")).toHaveCSS("animation-iteration-count", "infinite");
     await expect(page.locator("#indicator")).toHaveCSS("background-image", /conic-gradient/);
   });
 

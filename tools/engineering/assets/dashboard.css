@@ -299,6 +299,9 @@ html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#e
    orange leading arc over a quiet bronze track, with its centre kept clear. */
 .indicator--running{animation:github-activity-ring .82s linear infinite;background:conic-gradient(from -38deg,var(--house-style) 0deg 92deg,#8c723c 92deg 332deg,var(--house-style) 332deg 360deg);border:0;box-shadow:0 0 8px var(--house-style-focus);-webkit-mask:radial-gradient(farthest-side,#0000 calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,#0000 calc(100% - 3px),#000 calc(100% - 2px))}
 @keyframes github-activity-ring{to{transform:rotate(360deg)}}
+/* A running execution is live state, not decorative motion. Keep both
+   progress rings moving even when the device requests reduced transitions. */
+@media (prefers-reduced-motion:reduce){.indicator--running{animation-duration:.82s!important;animation-iteration-count:infinite!important}.dashboard-splash__spinner{animation-duration:.85s!important;animation-iteration-count:infinite!important}}
 
 /* A sending chat action remains visibly in the conversation category while disabled. */
 .chat-compose .chat-send:disabled:hover{background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
