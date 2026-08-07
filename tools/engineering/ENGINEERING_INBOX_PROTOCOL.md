@@ -61,6 +61,11 @@ It also performs the exact Git index-lock transaction used by Git: atomically
 create `index.lock`, read repository status through the locked index, then
 remove only the lock it created. This prevents a generic directory write check
 from passing when Git itself cannot safely use its index.
+If the immediately following managed synchronization sees Git's explicit
+temporary *index lock already exists* signal, the Execution Host retries only
+that command up to three times with short backoff. It never removes a foreign
+lock. A permission-denied or other Git failure remains fail-closed immediately
+and its original bounded diagnostic is retained in the terminal checkpoint.
 Managed execution also requires the configured branch, a valid origin and an
 in-sync upstream; Genesis requires only a local target repository and does not
 require a remote. It never changes repository state.

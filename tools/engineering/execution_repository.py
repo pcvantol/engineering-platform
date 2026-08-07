@@ -3,11 +3,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
+import time
 from typing import Protocol
 
 from .execution_errors import RunnerError
 from .execution_models import PullRequestEvidence, RepositoryEvidence
 from .providers import GitProvider, GitHubProvider
+
+
+GIT_SYNC_LOCK_RETRY_ATTEMPTS = 3
+GIT_SYNC_LOCK_RETRY_DELAY_SECONDS = 0.5
+_TRANSIENT_INDEX_LOCK_CONFLICT = re.compile(
+    r"(?:index\.lock.*(?:file exists|already exists)|another git process)",
+    re.IGNORECASE,
+)
 
 
 class RepositoryClient(Protocol):
@@ -43,8 +53,28 @@ class SubprocessRepositoryClient:
     def main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "main").returncode == 0
 
+    @staticmethod
+    def _is_transient_index_lock_conflict(error: RuntimeError) -> bool:
+        """Recognize only Git's contention signal, never a permission failure."""
+        return bool(_TRANSIENT_INDEX_LOCK_CONFLICT.search(str(error)))
+
+    def _synchronize_command(self, root: Path, *args: str) -> None:
+        """Run one synchronization step with bounded, non-destructive lock retries."""
+        for attempt in range(1, GIT_SYNC_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                self._run(root, *args)
+                return
+            except RunnerError as error:
+                if (
+                    attempt == GIT_SYNC_LOCK_RETRY_ATTEMPTS
+                    or not self._is_transient_index_lock_conflict(error)
+                ):
+                    raise
+                time.sleep(GIT_SYNC_LOCK_RETRY_DELAY_SECONDS * attempt)
+
     def synchronize_main(self, root: Path) -> None:
-        self._run(root, "git", "switch", "main"); self._run(root, "git", "pull", "--ff-only")
+        self._synchronize_command(root, "git", "switch", "main")
+        self._synchronize_command(root, "git", "pull", "--ff-only")
 
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self._run(root, "git", "fetch", "--prune"); self.synchronize_main(root)

@@ -5,7 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from tools.engineering.agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from tools.engineering.execution_host import (
@@ -181,6 +181,63 @@ class ClientContractTest(unittest.TestCase):
             provider.calls,
             [("git", "switch", "main"), ("git", "pull", "--ff-only")],
         )
+
+    @patch("tools.engineering.execution_repository.time.sleep")
+    def test_repository_synchronization_retries_only_a_transient_index_lock_conflict(self, sleep: object) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+                self.failures = 1
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                if self.failures:
+                    self.failures -= 1
+                    raise RuntimeError("fatal: Unable to create '.git/index.lock': File exists.")
+                return ""
+
+        provider = Provider()
+        SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+
+        self.assertEqual(
+            provider.calls,
+            [("git", "switch", "main"), ("git", "switch", "main"), ("git", "pull", "--ff-only")],
+        )
+        sleep.assert_called_once_with(0.5)
+
+    @patch("tools.engineering.execution_repository.time.sleep")
+    def test_repository_synchronization_does_not_retry_a_git_permission_failure(self, sleep: object) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                raise RuntimeError("fatal: Unable to create '.git/index.lock': Permission denied")
+
+        provider = Provider()
+        with self.assertRaisesRegex(RunnerError, "Permission denied"):
+            SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+
+        self.assertEqual(provider.calls, [("git", "switch", "main")])
+        sleep.assert_not_called()
+
+    @patch("tools.engineering.execution_repository.time.sleep")
+    def test_repository_synchronization_stops_after_bounded_lock_retries(self, sleep: object) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                raise RuntimeError("fatal: Unable to create '.git/index.lock': File exists.")
+
+        provider = Provider()
+        with self.assertRaisesRegex(RunnerError, "index.lock.*File exists"):
+            SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+
+        self.assertEqual(provider.calls, [("git", "switch", "main")] * 3)
+        self.assertEqual(sleep.call_args_list, [call(0.5), call(1.0)])
 
     def test_repository_client_rejects_non_platform_roots_and_provider_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
