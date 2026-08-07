@@ -186,9 +186,11 @@ def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
     )
     genesis = "" if not state or state.execution_mode != "GENESIS" else """
 This is an explicit Genesis Mode transaction. Its target is a local-only direct child of the configured Engineering Workspace Root. Do not require, create, or contact an upstream remote; do not require origin/main; do not create a pull request. Reconcile only a clean local Git commit in that target repository. Return terminal_condition `local_commit_reconciled`, repository_path and commit_sha for a successful local commit."""
+    managed_synchronization = "" if not state or state.execution_mode == "GENESIS" else """
+The Execution Host has already synchronized `main` while holding this run's lease. Do not repeat `git switch main` or `git pull --ff-only`; verify the resulting repository state read-only before creating the transaction branch."""
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority}{genesis}{managed_synchronization} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
 Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -421,6 +423,20 @@ class EngineeringRunner:
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
+        # Synchronization is a host-owned admission step.  Do it while this
+        # run owns the lease so agents never race each other for index.lock,
+        # and so the bounded retry policy in the repository client is used.
+        if context.execution_mode == "MANAGED":
+            try:
+                self.repository.synchronize_main(self.root)
+                evidence = self.repository.inspect(self.root)
+            except RunnerError as error:
+                return self._save_terminal(
+                    state,
+                    "BLOCKED",
+                    "repository_synchronization",
+                    f"Repository synchronization failed: {redact_diagnostic(str(error))}",
+                )
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,

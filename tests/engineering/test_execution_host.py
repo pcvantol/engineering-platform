@@ -60,12 +60,19 @@ class FakeRepository:
         self.contains = contains
         self.cleanup_calls: list[tuple[str | None, ...]] = []
         self.cleanup_error: RunnerError | None = None
+        self.synchronize_calls: list[Path] = []
+        self.synchronize_error: RunnerError | None = None
 
     def inspect(self, root: Path) -> RepositoryEvidence:
         return self.evidence
 
     def main_contains(self, root: Path, sha: str) -> bool:
         return self.contains
+
+    def synchronize_main(self, root: Path) -> None:
+        self.synchronize_calls.append(root)
+        if self.synchronize_error:
+            raise self.synchronize_error
 
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self.cleanup_calls.append(branches)
@@ -573,12 +580,30 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
-        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        repository = FakeRepository()
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None)
         state = runner.run(self.prompt, run_id="new-run")
         self.assertEqual(state.phase, "COMPLETE")
         self.assertTrue(self.store.path_for("new-run").is_file())
         self.assertIn("Read BOOTSTRAP.md", agent.prompts[0])
         self.assertIn("# bounded objective", agent.prompts[0])
+        self.assertIn("Execution Host has already synchronized `main`", agent.prompts[0])
+        self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_managed_synchronization_blocks_before_agent_when_host_cannot_sync(self) -> None:
+        repository = FakeRepository()
+        repository.synchronize_error = RunnerError("fatal: Unable to create '.git/index.lock': Permission denied")
+        agent = FakeAgent(AgentResult("COMPLETE"))
+
+        state = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None
+        ).run(self.prompt, run_id="sync-blocked-run")
+
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "repository_synchronization")
+        self.assertIn("Permission denied", state.diagnostic or "")
+        self.assertEqual(repository.synchronize_calls, [self.root])
+        self.assertEqual(agent.prompts, [])
 
     def test_execute_agent_phase_is_published_before_agent_invocation(self) -> None:
         agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))

@@ -61,7 +61,8 @@ It also performs the exact Git index-lock transaction used by Git: atomically
 create `index.lock`, read repository status through the locked index, then
 remove only the lock it created. This prevents a generic directory write check
 from passing when Git itself cannot safely use its index.
-If the immediately following managed synchronization sees Git's explicit
+The Execution Host performs the immediately following managed synchronization
+while it owns the active-run lease, before it invokes the agent. If it sees Git's explicit
 temporary *index lock already exists* signal, the Execution Host retries only
 that command up to three times with short backoff. It never removes a foreign
 lock. A permission-denied or other Git failure remains fail-closed immediately
