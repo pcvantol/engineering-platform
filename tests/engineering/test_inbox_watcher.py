@@ -192,6 +192,18 @@ class InboxWatcherTest(unittest.TestCase):
         (checkpoint / "inbox-stale.json").write_text('{"phase":"BLOCKED"}', encoding="utf-8")
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
+    def test_terminal_watcher_status_overrides_stale_live_checkpoint(self) -> None:
+        status = self.repo / ".engineering/status"
+        status.mkdir(parents=True)
+        (status / "current.json").write_text(
+            '{"run_id":"inbox-stale","phase":"WAIT_FOR_TERMINAL_EVIDENCE"}', encoding="utf-8"
+        )
+        (status / "status.json").write_text(
+            '{"last_executed_run":"inbox-stale","last_executed_phase":"FAILED"}', encoding="utf-8"
+        )
+
+        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
     def test_terminal_workspace_snapshot_uses_the_genesis_checkout_and_git_index(self) -> None:
         target = self.repo.parent / "forge"
         checkpoint = self.repo / ".engineering" / "engineering-runs" / "inbox-snapshot.json"

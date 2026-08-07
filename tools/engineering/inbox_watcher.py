@@ -480,7 +480,7 @@ def retry_metadata(content: str) -> dict[str, object]:
 
 
 def queued_retry_children(root: Path) -> list[dict[str, object]]:
-    """Project queued retry lineage from persisted Inbox payloads only."""
+    """Project queued retry lineage without inventing an execution identity."""
     children: list[dict[str, object]] = []
     for path in discover(root, 0.0):
         content = stable_prompt(path, 0.0)
@@ -490,11 +490,9 @@ def queued_retry_children(root: Path) -> list[dict[str, object]]:
         parent = lineage["retry_of"]
         if not isinstance(parent, str):
             continue
-        _, provisional_run_id, _ = _job_id(path, content)
         children.append(
             {
                 "retry_of": parent,
-                "run_id": provisional_run_id,
                 "status": "QUEUED",
                 "retry_timestamp": lineage["retry_timestamp"],
             }
@@ -686,6 +684,20 @@ def _active_transaction(repo: Path) -> bool:
     if isinstance(run_id, str):
         checkpoint_phase, _ = _runner_result(repo, run_id)
         if checkpoint_phase in TERMINAL_PHASES:
+            return False
+        # The runner can stop after publishing its terminal watcher result but
+        # before replacing current.json. The watcher result is authoritative
+        # for that same Run ID, so it must not hold later Inbox work hostage.
+        try:
+            watcher = json.loads(
+                (repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            watcher = {}
+        if (
+            watcher.get("last_executed_run") == run_id
+            and watcher.get("last_executed_phase") in TERMINAL_PHASES
+        ):
             return False
         return True
     # The detached runner is admitted before it has written current.json.

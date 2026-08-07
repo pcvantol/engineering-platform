@@ -284,6 +284,10 @@ predecessor blocks later queued work, the category remains available for that
 queue-recovery context and shows the predecessor recovery action and retry
 control.
 
+A retry in the Inbox is shown as queued without a Run ID. The watcher assigns
+and exposes its immutable Run ID only after it has passed admission and the
+retry has become an active execution.
+
 The **Actieve prompt** category is always the first dashboard category, ahead
 of the Inbox queue and Prompt history.
 

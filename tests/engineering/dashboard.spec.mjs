@@ -806,7 +806,7 @@ test.describe("Engineering Status browser smoke", () => {
       promptHistoryEntries = [
         { run_id: "inbox-retryable", title: "Blocked without child", status: "BLOCKED", can_retry: true },
         { run_id: "inbox-failed-retryable", title: "Failed without child", status: "FAILED", can_retry: true },
-        { run_id: "inbox-queued-parent", title: "Queued child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-child", retry_status: "QUEUED" },
+        { run_id: "inbox-queued-parent", title: "Queued retry", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-run-id", retry_status: "QUEUED" },
         { run_id: "inbox-active-parent", title: "Active child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-active-child", retry_status: "ACTIVE" },
         { run_id: "inbox-complete-parent", title: "Completed child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-complete-child", retry_status: "COMPLETE" },
       ];
@@ -815,7 +815,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(2);
     await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
     await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Uitvoering opnieuw proberen");
-    await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Nieuwe uitvoering in wachtrij: child");
+    await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Nieuwe uitvoering in wachtrij");
+    await expect(page.locator("#promptHistoryRows tr").nth(2)).not.toContainText("queued-run-id");
     await expect(page.locator("#promptHistoryRows tr").nth(3)).toContainText("Huidige nieuwe uitvoering: child");
     await expect(page.locator("#promptHistoryRows tr").nth(4)).toContainText("Vervangen door: child");
   });
@@ -2837,15 +2838,16 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("formats displayed log timestamps as dd-MM-yyyy HH:mm:ss", async ({ page }) => {
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE" }, component_log_versions: {} },
+    }));
     await page.route("**/api/logs/**", (route) =>
       route.fulfill({ contentType: "application/x-ndjson", body: "" }),
     );
-    const logsLoaded = Promise.all([
-      page.waitForResponse((response) => response.url().endsWith("/api/logs/inbox")),
-      page.waitForResponse((response) => response.url().endsWith("/api/logs/dashboard")),
-    ]);
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await logsLoaded;
+    const loadComponentLogs = page.locator("#loadComponentLogs");
+    if (await loadComponentLogs.count()) await loadComponentLogs.click();
+    await page.waitForFunction(() => componentLogsLoaded === true);
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
       componentLogEntries.inbox = structuredLogEntries(

@@ -206,7 +206,6 @@ class PromptHistoryTest(unittest.TestCase):
                 queued_retry_children=[
                     {
                         "retry_of": "inbox-parent",
-                        "run_id": "inbox-queued-child",
                         "status": "QUEUED",
                         "retry_timestamp": "2026-08-06T12:01:00Z",
                     }
@@ -214,7 +213,8 @@ class PromptHistoryTest(unittest.TestCase):
             )[0]
             self.assertFalse(queued["can_retry"])
             self.assertTrue(queued["queued_retry_child"])
-            self.assertEqual(queued["retry_child_run_id"], "inbox-queued-child")
+            self.assertIsNone(queued["retry_child_run_id"])
+            self.assertEqual(queued["current_active_run"], "inbox-parent")
 
             job = root / ".engineering" / "inbox-processing" / "retry" / "job.json"
             job.parent.mkdir(parents=True)

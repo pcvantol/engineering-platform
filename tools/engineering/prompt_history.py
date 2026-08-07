@@ -274,7 +274,7 @@ def _active_retry_children(root: Path) -> list[dict[str, object]]:
 
 
 def _valid_retry_children(children: object) -> list[dict[str, object]]:
-    """Accept bounded persisted child projections without creating lineage."""
+    """Accept bounded persisted child projections without inventing run IDs."""
     if not isinstance(children, list):
         return []
     valid: list[dict[str, object]] = []
@@ -283,18 +283,20 @@ def _valid_retry_children(children: object) -> list[dict[str, object]]:
             continue
         parent, run_id = _safe_run_id(child.get("retry_of")), _safe_run_id(child.get("run_id"))
         state = child.get("status")
-        if parent is None or run_id is None or state not in RETRY_CHILD_STATES:
+        if parent is None or state not in RETRY_CHILD_STATES:
             continue
-        valid.append(
-            {
-                "retry_of": parent,
-                "run_id": run_id,
-                "status": state,
-                "retry_timestamp": _safe_timestamp(child["retry_timestamp"])
-                if child.get("retry_timestamp")
-                else None,
-            }
-        )
+        if state != "QUEUED" and run_id is None:
+            continue
+        projection = {
+            "retry_of": parent,
+            "status": state,
+            "retry_timestamp": _safe_timestamp(child["retry_timestamp"])
+            if child.get("retry_timestamp")
+            else None,
+        }
+        if run_id is not None:
+            projection["run_id"] = run_id
+        valid.append(projection)
     return valid
 
 
@@ -377,7 +379,9 @@ def prompt_history(
             chain.insert(0, cursor["retry_of"])
             cursor = next((item for item in records if item["run_id"] == cursor["retry_of"]), {})
         record["retry_chain"] = chain
-        record["current_active_run"] = child.get("run_id") if child else record["run_id"]
+        record["current_active_run"] = (
+            child.get("run_id") if child and child.get("status") != "QUEUED" else record["run_id"]
+        )
     return records
 
 

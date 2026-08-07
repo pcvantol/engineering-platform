@@ -2545,14 +2545,14 @@ function renderPromptHistory() {
         entry.title || entry.run_id || t("retry.unavailable_title"),
       );
       title.append(titleText);
-      if (entry.retry_child_run_id) {
+      if (entry.retry_status) {
         const lineage = document.createElement("span"),
-          childSuffix = String(entry.retry_child_run_id).slice(-5),
-          retryState = String(entry.retry_status || "").toLowerCase();
+          retryState = String(entry.retry_status).toLowerCase(),
+          childSuffix = String(entry.retry_child_run_id || "").slice(-5);
         lineage.className = "prompt-history-lineage";
         lineage.textContent = t(
           retryState === "queued"
-            ? "retry.queued_by"
+            ? "retry.queued"
             : retryState === "active"
               ? "retry.current_execution"
               : "retry.superseded_by",
