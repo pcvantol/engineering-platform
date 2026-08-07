@@ -99,6 +99,41 @@ def _writable(path: Path) -> bool:
         return False
 
 
+def _git_index_lock_transaction(target: Path, git_directory: Path) -> tuple[bool, str]:
+    """Prove that Git's real index-lock path can be claimed and released.
+
+    A generic temporary file proves only directory permissions.  Git commits
+    through ``index.lock`` specifically, so admission verifies that exact
+    atomic create/unlink operation before allowing a managed execution.
+    """
+    lock = git_directory / "index.lock"
+    descriptor: int | None = None
+    created = False
+    try:
+        descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        os.close(descriptor)
+        descriptor = None
+        status = _git(target, "status", "--porcelain=v1", "--untracked-files=no")
+        if status.returncode != 0:
+            return False, "Git cannot read the repository index while its index lock is held."
+        lock.unlink()
+        return True, "Git can create, read through and clear the repository index lock."
+    except FileExistsError:
+        return False, "Git index lock already exists."
+    except OSError as error:
+        return False, f"Git cannot create the repository index lock: {error.strerror or 'write access denied'}."
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        # Only remove a lock we successfully created in this transaction.
+        if created and lock.exists():
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
+
 def _persist(root: Path, result: WorkspacePreflightResult, run_id: str | None) -> None:
     directory = root / ".engineering" / "status"
     if not _writable(directory):
@@ -160,6 +195,13 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> WorkspaceP
         checks.append(_check("git_metadata_access", git_directory.is_dir(), "Git metadata is accessible." if git_directory.is_dir() else "Git metadata is inaccessible.", "Restore access to the repository Git metadata."))
         metadata_writable = _writable(git_directory)
         checks.append(_check("git_metadata_writable", metadata_writable, "Git metadata is writable." if metadata_writable else "Git metadata is not writable.", "Restore write access to the repository Git metadata."))
+        lock_transaction, lock_reason = _git_index_lock_transaction(target, git_directory)
+        checks.append(_check(
+            "git_index_lock_transaction",
+            lock_transaction,
+            lock_reason,
+            "Stop competing Git processes and restore write access to the repository index before retrying.",
+        ))
         status = _git(target, "status", "--porcelain=v1", "--untracked-files=all")
         entries = status.stdout.splitlines() if status.returncode == 0 else []
         staged = any(len(entry) >= 2 and entry[:2] != "??" and entry[0] != " " for entry in entries)

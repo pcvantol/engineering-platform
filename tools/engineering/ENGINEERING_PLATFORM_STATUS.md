@@ -80,6 +80,10 @@ changes execution semantics.
   per-run provenance (for example, `AI-provider: Codex CLI`). It offers
   server-pushed status, category-coded evidence cards, client-side structured
   log filtering/sorting and browser-session-local read-only advice history.
+- **Operationeel overzicht** exposes a bounded Git workspace-lock signal. A
+  stale-lock recovery is available only after a five-minute age threshold and
+  an ownership check for the exact index-lock file; uncertain ownership is
+  fail-closed and never offers automatic deletion.
 - The Operations Console has one shared visual interaction contract across
   dark and light themes. The transparent console mark is used in the title
   bar and splash screen; packaged icon variants and their intended contexts

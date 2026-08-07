@@ -50,7 +50,8 @@ class DashboardStatusTest(unittest.TestCase):
         for key in (
             "detail.recommended_next_mission", "detail.recommendation_status", "detail.mission_origin",
             "detail.business_value", "detail.confidence", "detail.dependencies", "detail.alternatives",
-            "detail.decision_evidence", "detail.projection_incomplete",
+            "detail.decision_evidence", "detail.projection_incomplete", "technical.git_lock",
+            "technical.git_lock_recovery_action",
         ):
             self.assertEqual(catalog.count(f'"{key}"'), 5)
         self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
@@ -144,6 +145,55 @@ class DashboardStatusTest(unittest.TestCase):
         ]
         with self.assertRaisesRegex(RuntimeError, "geen lokale wijzigingen"):
             dashboard._restore_managed_main_branch(root)
+
+    @patch("tools.engineering.dashboard.LocalProcessProvider")
+    @patch("tools.engineering.dashboard.shutil.which", return_value="/usr/sbin/lsof")
+    def test_workspace_git_lock_only_becomes_recoverable_when_lsof_proves_it_stale(
+        self, which: object, process_provider: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / ".git" / "index.lock"
+            lock.parent.mkdir()
+            lock.write_text("", encoding="utf-8")
+            lock.touch()
+            process_provider.return_value.execute.return_value = __import__("subprocess").CompletedProcess(
+                ("lsof",), 1, "", ""
+            )
+            stale = dashboard._workspace_git_lock(
+                root, now=lock.stat().st_mtime + dashboard.GIT_INDEX_LOCK_STALE_SECONDS
+            )
+            self.assertEqual(stale["state"], "stale")
+            self.assertTrue(stale["stale"])
+
+            process_provider.return_value.execute.return_value = __import__("subprocess").CompletedProcess(
+                ("lsof",), 0, "1234\n", ""
+            )
+            active = dashboard._workspace_git_lock(
+                root, now=lock.stat().st_mtime + dashboard.GIT_INDEX_LOCK_STALE_SECONDS
+            )
+            self.assertEqual(active["state"], "active")
+            self.assertFalse(active["stale"])
+
+            which.return_value = None
+            unavailable = dashboard._workspace_git_lock(
+                root, now=lock.stat().st_mtime + dashboard.GIT_INDEX_LOCK_STALE_SECONDS * 2
+            )
+            self.assertEqual(unavailable["state"], "active")
+            self.assertFalse(unavailable["stale"])
+
+    @patch("tools.engineering.dashboard._workspace_git_lock", return_value={"state": "stale", "stale": True})
+    def test_stale_workspace_git_lock_recovery_removes_only_confirmed_lock(self, lock_state: object) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / ".git" / "index.lock"
+            lock.parent.mkdir()
+            lock.write_text("", encoding="utf-8")
+            self.assertEqual(
+                dashboard._recover_stale_workspace_git_lock(root),
+                {"state": "free", "recovered": True},
+            )
+            self.assertFalse(lock.exists())
 
     def test_rate_limit_helpers_cover_generic_windows_and_unavailable_provider_version(self) -> None:
         self.assertEqual(dashboard._rate_limit_window_label(1_440), "1-daags venster")
@@ -251,7 +301,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn(".execution-history-action{background:#4f453c", stylesheet)
         self.assertIn("min-height:32px;min-width:0;padding:5px 9px", stylesheet)
         self.assertIn(".execution-history-action:hover:not(:disabled){background:#e7b876", stylesheet)
-        self.assertIn(".prompt-history-actions{vertical-align:middle}", stylesheet)
+        self.assertIn(
+            "#promptHistoryRows td:has(.prompt-history-actions){vertical-align:middle}",
+            stylesheet,
+        )
         self.assertIn("Dashboard UI component layer", stylesheet)
         self.assertIn("--dashboard-section-gap:24px", stylesheet)
         self.assertIn("gap:var(--dashboard-section-gap)", stylesheet)
@@ -736,6 +789,7 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertEqual(snapshot["component_versions"]["dashboard"], DASHBOARD_VERSION)
         self.assertEqual(snapshot["component_versions"]["worker"], WATCHER_VERSION)
+        self.assertEqual(snapshot["workspace_git_lock"], {"state": "free", "active": False, "stale": False})
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1355,6 +1409,7 @@ class DashboardStatusTest(unittest.TestCase):
             retry_outcome = {"blocking_run_id": "inbox-blocked", "retry_filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),
+                patch("tools.engineering.dashboard.predecessor_retry_admission_preflight", return_value="inbox-blocked") as preflight_retry,
                 patch("tools.engineering.dashboard.submit_predecessor_retry", return_value=retry_outcome) as submit_retry,
                 patch("tools.engineering.dashboard.log_event") as retry_log_event,
             ):
@@ -1362,11 +1417,50 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), retry_outcome)
+                preflight_retry.assert_called_once_with(root)
                 submit_retry.assert_called_once_with(root, root)
                 retry_log_event.assert_any_call(ANY, logging.INFO, "predecessor_retry_submission_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
+            with (
+                patch(
+                    "tools.engineering.dashboard.predecessor_retry_admission_preflight",
+                    side_effect=dashboard.RetrySubmissionError("Preflight mislukt: werkmap is niet schrijfbaar."),
+                ),
+                patch("tools.engineering.dashboard.submit_predecessor_retry") as submit_retry,
+            ):
+                connection.request("POST", "/api/queue-recovery", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Preflight mislukt: werkmap is niet schrijfbaar."})
+                submit_retry.assert_not_called()
+            connection.request("POST", "/api/predecessor-retry", body="[]", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409)
+            self.assertEqual(json.loads(response.read()), {"error": "De Inbox-watcher verwerkt momenteel een actie. Probeer het opnieuw."})
+            managed_recovery = {"previous_branch": "codex/work", "restored_branch": "main"}
+            with patch("tools.engineering.dashboard._restore_managed_main_branch", return_value=managed_recovery):
+                connection.request("POST", "/api/managed-branch-recovery", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), managed_recovery)
+            with patch("tools.engineering.dashboard._restore_managed_main_branch", side_effect=RuntimeError("busy")):
+                connection.request("POST", "/api/managed-branch-recovery", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "De werkmap kon niet veilig naar main worden hersteld."})
+            with patch("tools.engineering.dashboard._recover_stale_workspace_git_lock", return_value={"recovered": True}):
+                connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), {"recovered": True})
+            with patch("tools.engineering.dashboard._recover_stale_workspace_git_lock", side_effect=RuntimeError("active")):
+                connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "De Git-vergrendeling is niet veilig herstelbaar."})
             execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),
+                patch("tools.engineering.dashboard.retry_admission_preflight") as retry_preflight,
                 patch("tools.engineering.dashboard.submit_execution_retry", return_value=execution_retry_outcome) as submit_execution_retry,
                 patch("tools.engineering.dashboard.log_event") as execution_retry_log,
             ):
@@ -1374,12 +1468,39 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read()), execution_retry_outcome)
+                retry_preflight.assert_called_once_with(root, "inbox-blocked")
                 submit_execution_retry.assert_called_once_with(root, root, "inbox-blocked")
                 execution_retry_log.assert_any_call(ANY, logging.INFO, "execution_retry_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
+            with (
+                patch("tools.engineering.dashboard.retry_admission_preflight", side_effect=dashboard.RetrySubmissionError("Preflight mislukt: Git kan geen index-lock aanmaken.")),
+                patch("tools.engineering.dashboard.submit_execution_retry") as submit_execution_retry,
+            ):
+                connection.request("POST", "/api/execution-retry", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Preflight mislukt: Git kan geen index-lock aanmaken."})
+                submit_execution_retry.assert_not_called()
             connection.request("POST", "/api/execution-retry", body="{}", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
+            deferred = {"filename": "later.md", "deferred_filename": "later.md", "deferred_at": "2026-08-07T16:00:00+00:00"}
+            with (
+                patch("tools.engineering.dashboard.cloud_root", return_value=root),
+                patch("tools.engineering.dashboard.defer_queued_prompt", return_value=deferred) as defer_prompt,
+                patch("tools.engineering.dashboard.log_event") as defer_log_event,
+            ):
+                connection.request("POST", "/api/queue-defer", body='{"filename":"later.md"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), deferred)
+                defer_prompt.assert_called_once_with(root, root, "later.md")
+                defer_log_event.assert_any_call(ANY, logging.INFO, "queue_item_deferred", diagnostic="filename=later.md; deferred_filename=later.md")
+            for body in ("{}", "[]", '{"filename":1}', '{"filename":"later.md","extra":true}'):
+                connection.request("POST", "/api/queue-defer", body=body, headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                response.read()
             dismissal = {"run_id": "inbox-blocked", "dismissed": True, "dismissed_at": "2026-08-03T12:01:00+00:00", "dismissed_by": "dashboard_operator"}
             with (
                 patch("tools.engineering.dashboard.dismiss_execution", return_value=dismissal) as dismiss,

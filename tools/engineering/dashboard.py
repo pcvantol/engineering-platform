@@ -27,7 +27,7 @@ from .platform_bootstrap import provision_workspace
 from .providers import CodexCliProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, cloud_root, dismiss_execution, queued_retry_children, submit_execution_retry, submit_predecessor_retry
+from .inbox_watcher import RetrySubmissionError, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, submit_execution_retry, submit_predecessor_retry
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -63,6 +63,7 @@ RATE_LIMIT_CACHE_SECONDS = 60
 _rate_limit_cache_lock = Lock()
 _rate_limit_cache: tuple[float, bytes] | None = None
 CODEX_IDENTITY_CACHE_SECONDS = 300
+GIT_INDEX_LOCK_STALE_SECONDS = 300
 _codex_identity_cache_lock = Lock()
 _codex_identity_cache: tuple[float, dict[str, str]] | None = None
 
@@ -141,7 +142,7 @@ def _sse_snapshot(root: Path) -> bytes:
     its observable values changes.  This keeps the dashboard event-driven
     without giving the dashboard any transaction authority.
     """
-    return dashboard_state.snapshot(
+    snapshot = dashboard_state.snapshot(
         root,
         status_reader=_sse_status,
         unavailable_reader=_unavailable_status,
@@ -162,6 +163,13 @@ def _sse_snapshot(root: Path) -> bytes:
         dashboard_version=DASHBOARD_VERSION,
         worker_version=WATCHER_VERSION,
     )
+    try:
+        payload = json.loads(snapshot)
+    except json.JSONDecodeError:
+        return snapshot
+    if isinstance(payload, dict):
+        payload["workspace_git_lock"] = _workspace_git_lock(root)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def _prompt_history(root: Path) -> bytes:
@@ -719,6 +727,47 @@ def _restore_managed_main_branch(root: Path) -> dict[str, str]:
     return {"previous_branch": previous_branch, "branch": "main", "watcher": "restarted"}
 
 
+def _workspace_git_lock(root: Path, *, now: float | None = None) -> dict[str, object]:
+    """Describe the index lock without offering recovery unless it is provably stale."""
+    lock_path = root / ".git" / "index.lock"
+    try:
+        age_seconds = max(0, int((now if now is not None else time.time()) - lock_path.stat().st_mtime))
+    except OSError:
+        return {"state": "free", "active": False, "stale": False}
+
+    # lsof is the conservative ownership check: if it is unavailable or cannot
+    # determine ownership, recovery remains disabled.  Never guess that a lock
+    # is stale merely because it is old.
+    lsof = shutil.which("lsof")
+    if not lsof:
+        return {"state": "active", "active": True, "stale": False, "age_seconds": age_seconds}
+    try:
+        ownership = LocalProcessProvider().execute(root, (lsof, "-t", str(lock_path)))
+    except OSError:
+        return {"state": "active", "active": True, "stale": False, "age_seconds": age_seconds}
+    owner_pids = [line for line in ownership.stdout.splitlines() if line.strip().isdigit()]
+    stale = ownership.returncode == 1 and not owner_pids and age_seconds >= GIT_INDEX_LOCK_STALE_SECONDS
+    return {
+        "state": "stale" if stale else "active",
+        "active": not stale,
+        "stale": stale,
+        "age_seconds": age_seconds,
+    }
+
+
+def _recover_stale_workspace_git_lock(root: Path) -> dict[str, object]:
+    """Remove only a lock that the read-only inspection proved stale."""
+    lock = _workspace_git_lock(root)
+    if not lock.get("stale"):
+        raise RuntimeError("De Git-vergrendeling is niet aantoonbaar verouderd.")
+    lock_path = root / ".git" / "index.lock"
+    try:
+        lock_path.unlink()
+    except OSError as error:
+        raise RuntimeError("De verouderde Git-vergrendeling kon niet worden verwijderd.") from error
+    return {"state": "free", "recovered": True}
+
+
 def _codex_process_metrics(root: Path) -> bytes:
     """Measure only the process group explicitly recorded by the Execution Host."""
     try:
@@ -1104,7 +1153,7 @@ def _dashboard_html(
 <div id="copyToast" role="status" aria-live="polite" aria-atomic="true" popover="manual" hidden data-testid="copy-toast"></div>
 <div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
 <div class="dashboard-scroll-region">
-<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="nl" data-i18n="language.nl"></option><option value="en" data-i18n="language.en"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></header>
+<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><details class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><summary data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></summary><div class="dashboard-titlebar__options-content"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></details></div></header>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
 <details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="8" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
@@ -1130,6 +1179,7 @@ def _dashboard_html(
 <details class="technical-details" id="technicalDetails"><summary><strong data-i18n="section.technical_details"></strong></summary><p class="category-description" data-i18n="description.technical_details"></p><div class="technical-grid">
 <div class="card"><strong id="technicalPullRequestsTitle" data-i18n="technical.pull_requests"></strong><p class="field"><span class="label" id="technicalImplementationLabel" data-i18n="technical.implementation"></span><span id="implementation"></span></p><p class="field"><span class="label" id="technicalFinalizationLabel" data-i18n="technical.finalization"></span><span id="finalization"></span></p></div>
 <div class="card"><strong id="technicalRepositoryTitle" data-i18n="technical.repository"></strong><p class="field"><span class="label" id="technicalRepositoryStateLabel" data-i18n="technical.repository_status"></span><span id="repositoryState"></span></p><p class="field"><span class="label" id="technicalWorkspaceStateLabel" data-i18n="technical.workspace_status"></span><span id="workspaceState"></span></p></div>
+<div class="card technical-git-lock" id="technicalGitLock"><strong data-i18n="technical.git_lock"></strong><p class="field"><span class="label" data-i18n="technical.git_lock_state"></span><span id="technicalGitLockState" data-i18n="format.loading"></span></p><p class="technical-git-lock__detail" id="technicalGitLockDetail" hidden></p><button class="queue-blocker__repair" id="technicalGitLockRecover" type="button" hidden data-i18n="technical.git_lock_recovery_action"></button><p class="technical-git-lock__status" id="technicalGitLockRecoveryStatus" role="status" aria-live="polite"></p></div>
 <div class="card"><strong id="technicalHostPreflightTitle" data-i18n="technical.host_preflight"></strong><p class="field"><span class="label" id="technicalExecutionHostLabel" data-i18n="technical.execution_host"></span><span id="executionHostName" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalExecutionHostVersionLabel" data-i18n="technical.execution_host_version"></span><span id="executionHostVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeLabel" data-i18n="technical.runtime"></span><span id="executionHostRuntime" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimePromptTransportLabel" data-i18n="technical.runtime_prompt_transport"></span><span id="executionHostTransport" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalHostStatusLabel" data-i18n="technical.host_status"></span><span id="hostPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastCheckLabel" data-i18n="technical.last_check"></span><span id="hostPreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalWorkspacePreflightStatusLabel" data-i18n="technical.workspace_status"></span><span id="workspacePreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastWorkspaceCheckLabel" data-i18n="technical.last_workspace_check"></span><span id="workspacePreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalCapabilityStatusLabel" data-i18n="technical.capability_status"></span><span id="capabilityPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecoverabilityLabel" data-i18n="technical.recoverability"></span><span id="capabilityRecoverability" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalFailureOriginLabel" data-i18n="technical.failure_origin"></span><span id="capabilityFailureOrigin" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecommendationLabel" data-i18n="technical.recommended_action"></span><span id="capabilityRecommendation" data-i18n="format.unavailable"></span></p></div>
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
@@ -1269,6 +1319,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     length = int(self.headers.get("Content-Length", "0"))
                     if length != 2 or self.rfile.read(length) != b"{}":
                         raise ValueError
+                    predecessor_retry_admission_preflight(root)
                     outcome = submit_predecessor_retry(root, cloud_root(repo=root))
                     log_event(
                         logger,
@@ -1315,12 +1366,29 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
+            if request_path == "/api/stale-git-lock-recovery":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = _recover_stale_workspace_git_lock(root)
+                    log_event(logger, logging.INFO, "stale_git_lock_recovered")
+                except (RuntimeError, ValueError):
+                    self._send(
+                        b'{"error":"De Git-vergrendeling is niet veilig herstelbaar."}',
+                        "application/json; charset=utf-8",
+                        409,
+                    )
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
             if request_path == "/api/execution-retry":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
                         raise ValueError
+                    retry_admission_preflight(root, payload["run_id"])
                     outcome = submit_execution_retry(root, cloud_root(repo=root), payload["run_id"])
                     log_event(logger, logging.INFO, "execution_retry_triggered", run_id=payload["run_id"], diagnostic=f"retry_run_id={outcome['retry_run_id']}")
                 except RetrySubmissionError as error:
@@ -1344,6 +1412,27 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     self._send(b'{"error":"De uitvoering kan nu niet veilig worden bevestigd."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/queue-defer":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"filename"} or not isinstance(payload["filename"], str):
+                        raise ValueError
+                    outcome = defer_queued_prompt(root, cloud_root(repo=root), payload["filename"])
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "queue_item_deferred",
+                        diagnostic=f"filename={outcome['filename']}; deferred_filename={outcome['deferred_filename']}",
+                    )
+                except RetrySubmissionError as error:
+                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De Inbox-opdracht kan nu niet veilig worden uitgesteld."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return

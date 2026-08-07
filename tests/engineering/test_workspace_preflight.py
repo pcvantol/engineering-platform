@@ -51,6 +51,8 @@ class WorkspacePreflightTest(unittest.TestCase):
     def test_managed_valid_repository_persists_evidence(self) -> None:
         result = self._managed()
         self.assertEqual(result.outcome, "PASS")
+        self.assertNotIn("git_index_lock_transaction", self._failed(result))
+        self.assertFalse((self.root / ".git" / "index.lock").exists())
         self.assertEqual(workspace_preflight.latest(self.root)["run_id"], "inbox-workspace")
 
     def test_missing_repository_fails(self) -> None:
@@ -83,6 +85,17 @@ class WorkspacePreflightTest(unittest.TestCase):
         (git / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
         (git / "rebase-merge").mkdir()
         self.assertTrue({"git_merge", "git_rebase"}.issubset(self._failed(workspace_preflight.execute(self.root, "Execution Mode: Managed\n"))))
+
+    def test_index_lock_transaction_failure_blocks_admission_without_removing_a_foreign_lock(self) -> None:
+        self._managed()
+        git = self.root / ".git"
+        foreign_lock = git / "index.lock"
+        foreign_lock.write_text("another Git transaction\n", encoding="utf-8")
+
+        result = workspace_preflight.execute(self.root, "Execution Mode: Managed\n")
+
+        self.assertIn("git_index_lock_transaction", self._failed(result))
+        self.assertTrue(foreign_lock.exists())
 
     def test_invalid_workspace_root_fails(self) -> None:
         target = Path(self.temporary.name) / "other" / "target"

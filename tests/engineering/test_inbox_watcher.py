@@ -10,12 +10,12 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from tools.engineering import inbox_watcher
-from tools.engineering.host_preflight import HostPreflightResult
-from tools.engineering.workspace_preflight import WorkspacePreflightResult
-from tools.engineering.capability_preflight import CapabilityPreflightResult
+from tools.engineering.host_preflight import HostPreflightCheck, HostPreflightResult
+from tools.engineering.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
+from tools.engineering.capability_preflight import CapabilityCheck, CapabilityPreflightResult
 from tools.engineering.storage import open_storage, store_projection
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
@@ -179,6 +179,43 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(items[0]["title"], "Queue title")
         self.assertIn("T", items[0]["modified_at"])
         self.assertNotIn("Sensitive prompt body", str(items))
+
+    def test_defer_queued_prompt_moves_only_the_selected_waiting_inbox_file(self) -> None:
+        selected = self.inbox / "defer-me.md"
+        selected.write_text("# Later uitvoeren\n", encoding="utf-8")
+        waiting = self.inbox / "keep-waiting.md"
+        waiting.write_text("# Blijft actief\n", encoding="utf-8")
+
+        outcome = inbox_watcher.defer_queued_prompt(self.repo, self.root, selected.name)
+
+        self.assertFalse(selected.exists())
+        deferred = self.inbox / "_deferred" / outcome["deferred_filename"]
+        self.assertTrue(deferred.exists())
+        self.assertEqual(deferred.read_text(encoding="utf-8"), "# Later uitvoeren\n")
+        self.assertEqual([path.name for path in inbox_watcher.discover(self.root)], [waiting.name])
+
+    def test_defer_queued_prompt_preserves_an_existing_deferred_file(self) -> None:
+        selected = self.inbox / "defer-me.md"
+        selected.write_text("# Nieuwe uitvoering\n", encoding="utf-8")
+        deferred_folder = self.inbox / "_deferred"
+        deferred_folder.mkdir()
+        original = deferred_folder / selected.name
+        original.write_text("# Eerder uitgestelde uitvoering\n", encoding="utf-8")
+
+        outcome = inbox_watcher.defer_queued_prompt(self.repo, self.root, selected.name)
+
+        self.assertFalse(selected.exists())
+        self.assertNotEqual(outcome["deferred_filename"], selected.name)
+        self.assertEqual(original.read_text(encoding="utf-8"), "# Eerder uitgestelde uitvoering\n")
+        self.assertEqual(
+            (deferred_folder / outcome["deferred_filename"]).read_text(encoding="utf-8"),
+            "# Nieuwe uitvoering\n",
+        )
+
+    def test_defer_queued_prompt_rejects_paths_and_missing_items(self) -> None:
+        for filename in ("../outside.md", "missing.md"):
+            with self.assertRaises(inbox_watcher.RetrySubmissionError):
+                inbox_watcher.defer_queued_prompt(self.repo, self.root, filename)
 
     def test_launch_path_preserves_codex_location(self) -> None:
         with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
@@ -465,15 +502,42 @@ class InboxWatcherTest(unittest.TestCase):
     def test_failed_workspace_preflight_prevents_inbox_claim(self) -> None:
         prompt = self.inbox / "workspace-failure.md"
         prompt.write_text("# Workspace failure", encoding="utf-8")
-        failed = WorkspacePreflightResult("FAIL", "DJConnect", "repo", "main", "MANAGED", "now", 1, ())
+        failed = WorkspacePreflightResult(
+            "FAIL",
+            "DJConnect",
+            "repo",
+            "main",
+            "MANAGED",
+            "now",
+            1,
+            (
+                WorkspacePreflightCheck(
+                    "git_index_lock_transaction",
+                    "FAIL",
+                    "Git index lock already exists.",
+                    "Stop competing Git processes and restore write access to the repository index before retrying.",
+                ),
+            ),
+        )
         with patch("tools.engineering.inbox_watcher.execute_workspace_preflight", return_value=failed), patch(
             "tools.engineering.inbox_watcher.subprocess.run"
-        ) as run:
+        ) as run, patch("tools.engineering.inbox_watcher.log_event") as log_event:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
         self.assertTrue(prompt.exists())
         self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
         run.assert_not_called()
         self.assertEqual(json_status(self.repo)["watcher_state"], "WORKSPACE_PREFLIGHT_FAILED")
+        log_event.assert_any_call(
+            ANY,
+            logging.ERROR,
+            "workspace_preflight_failed",
+            run_id=ANY,
+            diagnostic=(
+                "git_index_lock_transaction: Git index lock already exists. "
+                "Required action: Stop competing Git processes and restore write access "
+                "to the repository index before retrying."
+            ),
+        )
 
     def test_failed_capability_preflight_prevents_inbox_claim(self) -> None:
         prompt = self.inbox / "capability-failure.md"
@@ -705,6 +769,59 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn(original, retry)
         self.assertEqual(archived.read_text(encoding="utf-8"), original)
         self.assertNotEqual(outcome["retry_run_id"], run_id)
+
+    def test_retry_admission_preflight_blocks_before_queue_submission_and_reports_recovery(self) -> None:
+        original = "# Blocked prompt\n\nKeep this evidence immutable."
+        archived = self.repo / ".engineering" / "inbox" / "Failed" / "blocked__preflight.md"
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text(original, encoding="utf-8")
+        _, run_id, _ = inbox_watcher._job_id(archived, original)
+        failed = WorkspacePreflightResult(
+            "FAIL", "DJConnect", "repo", "main", "MANAGED", "now", 1,
+            (WorkspacePreflightCheck(
+                "git_index_lock_transaction", "FAIL", "Git cannot create the repository index lock.", "Restore Git metadata write access."
+            ),),
+        )
+
+        with patch("tools.engineering.inbox_watcher.execute_workspace_preflight", return_value=failed):
+            with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Preflight mislukt.*index lock"):
+                inbox_watcher.retry_admission_preflight(self.repo, run_id)
+
+        self.assertFalse(list(self.inbox.iterdir()))
+
+    def test_retry_admission_preflight_reports_each_preflight_failure_and_keeps_inbox_empty(self) -> None:
+        original = "# Blocked prompt"
+        archived = self.repo / ".engineering" / "inbox" / "Failed" / "blocked__preflight.md"
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text(original, encoding="utf-8")
+        _, run_id, _ = inbox_watcher._job_id(archived, original)
+        host_failure = HostPreflightResult(
+            "FAIL", "Engineering Platform", "1.5.0", "2026.12", "now", 1,
+            (HostPreflightCheck("git_metadata", "FAIL", "Git metadata is read-only.", "Restore write access."),),
+        )
+        capability_failure = CapabilityPreflightResult(
+            "FAIL", "now", 1,
+            (CapabilityCheck("provider", "FAIL", "Required provider is unavailable.", "Repair the provider."),),
+            "RETRYABLE_AFTER_HOST_REPAIR", "CAPABILITY", "Repair the provider.",
+        )
+        with patch("tools.engineering.inbox_watcher.execute_host_preflight", return_value=host_failure):
+            with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Git metadata is read-only"):
+                inbox_watcher.retry_admission_preflight(self.repo, run_id)
+        with patch("tools.engineering.inbox_watcher.execute_capability_preflight", return_value=capability_failure):
+            with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Required provider is unavailable"):
+                inbox_watcher.retry_admission_preflight(self.repo, run_id)
+        self.assertFalse(list(self.inbox.iterdir()))
+
+    def test_predecessor_retry_preflight_requires_a_blocker_and_returns_its_run_id(self) -> None:
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "geen geblokkeerde"):
+            inbox_watcher.predecessor_retry_admission_preflight(self.repo)
+        predecessor = {"run_id": "inbox-blocked"}
+        with (
+            patch("tools.engineering.inbox_watcher._blocking_predecessor", return_value=predecessor),
+            patch("tools.engineering.inbox_watcher.retry_admission_preflight") as preflight,
+        ):
+            self.assertEqual(inbox_watcher.predecessor_retry_admission_preflight(self.repo), "inbox-blocked")
+            preflight.assert_called_once_with(self.repo, "inbox-blocked")
 
     def test_execution_retry_supports_failed_and_refuses_non_retryable_or_duplicate_execution(self) -> None:
         original = "# Failed prompt"

@@ -27,7 +27,8 @@ engineering execution authority merely by being configured.
 
 Actual package extraction and additional provider implementations require
 extraction-readiness evidence. The generic command rename is complete; the
-deprecated `dj-engineer` alias remains available for existing automation. The
+canonical `engineering-execution-host` command is the supported automation
+entry point. The previous `dj-engineer` compatibility alias has been removed.
 1.5 repository bootstrap API, idempotent workspace provisioning and generic
 configuration template are complete compatibility surfaces.
 No functional product, release, deployment or publication behavior changed.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import importlib
 import subprocess
 import tempfile
 import unittest
@@ -159,7 +158,7 @@ class FakeReviewer:
 
 
 class ClientContractTest(unittest.TestCase):
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_repository_main_containment_uses_git_ancestry_evidence(self, run: object) -> None:
         client = SubprocessRepositoryClient()
         run.return_value = subprocess.CompletedProcess(("git",), 0)
@@ -236,7 +235,7 @@ class ClientContractTest(unittest.TestCase):
             def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
                 return subprocess.CompletedProcess(args, 0, "", "")
 
-        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.subprocess.run") as run:
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.execution_host.subprocess.run") as run:
             root = Path(temporary)
             (root / "BOOTSTRAP.md").write_text("contract", encoding="utf-8")
             (root / ".git").mkdir()
@@ -286,7 +285,7 @@ class ClientContractTest(unittest.TestCase):
         self.assertIn(("pr", "ready", "7"), provider.calls)
         self.assertIn(("pr", "merge", "7", "--squash", "--delete-branch"), provider.calls)
 
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:
         review_message = json.dumps(
             {"contribution": "reviewed", "recommendations": ["keep scope"]}
@@ -315,8 +314,8 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(review.recommendations, ("keep scope",))
         self.assertEqual(result.pull_request, 12)
 
-    @patch("tools.engineering.dj_engineer.time.monotonic", side_effect=(10.0, 12.75))
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.time.monotonic", side_effect=(10.0, 12.75))
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_codex_client_records_measured_invocation_time(
         self, run: object, _: object
     ) -> None:
@@ -343,7 +342,7 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(client.last_execution_seconds, 2.75)
 
 
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_codex_client_keeps_bounded_diagnostics_on_failures(self, run: object) -> None:
         run.return_value = subprocess.CompletedProcess(("codex",), 1, "prompt body", "token=secret\nfailed")
         with tempfile.TemporaryDirectory() as temporary:
@@ -352,8 +351,8 @@ class ClientContractTest(unittest.TestCase):
         self.assertIn("code 1", str(raised.exception))
         self.assertNotIn("secret", raised.exception.console_detail)
 
-    @patch("tools.engineering.dj_engineer.generate_terminal_report", return_value=None)
-    @patch("tools.engineering.dj_engineer.EngineeringRunner")
+    @patch("tools.engineering.execution_host.generate_terminal_report", return_value=None)
+    @patch("tools.engineering.execution_host.EngineeringRunner")
     def test_main_publishes_complete_runner_result(self, runner_type: object, _: object) -> None:
         state = TransactionState(
             run_id="run-main",
@@ -366,21 +365,21 @@ class ClientContractTest(unittest.TestCase):
         runner_type.return_value.run.return_value = state
         runner_type.return_value.platform_manifest = None
         runner_type.return_value.console_detail = None
-        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.Path.cwd", return_value=Path(temporary)):
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("tools.engineering.dj_engineer", fromlist=["main"]).main([str(prompt)]), 0)
+            self.assertEqual(__import__("tools.engineering.execution_host", fromlist=["main"]).main([str(prompt)]), 0)
 
-    @patch("tools.engineering.dj_engineer.EngineeringRunner")
+    @patch("tools.engineering.execution_host.EngineeringRunner")
     def test_main_reports_blocked_runner_and_writes_redacted_console_log(self, runner_type: object) -> None:
         runner_type.return_value.run.side_effect = RunnerError("blocked preflight")
-        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.dj_engineer.Path.cwd", return_value=Path(temporary)):
+        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("tools.engineering.dj_engineer", fromlist=["main"]).main([str(prompt)]), 2)
+            self.assertEqual(__import__("tools.engineering.execution_host", fromlist=["main"]).main([str(prompt)]), 2)
 
     @patch.object(SubprocessRepositoryClient, "inspect")
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_repository_cleanup_handles_absent_and_squash_merged_branches(
         self, run: object, inspect: object
     ) -> None:
@@ -418,7 +417,7 @@ class ClientContractTest(unittest.TestCase):
             with self.assertRaisesRegex(RunnerError, "resolves to main"):
                 client.cleanup_transaction(Path("/repository"), ("main",))
 
-    @patch("tools.engineering.dj_engineer.subprocess.run")
+    @patch("tools.engineering.execution_host.subprocess.run")
     def test_live_status_and_status_command_cover_missing_invalid_and_valid_files(self, run: object) -> None:
         run.return_value = subprocess.CompletedProcess(("git",), 0, "main\n", "")
         state = TransactionState(
@@ -427,7 +426,7 @@ class ClientContractTest(unittest.TestCase):
             prompt_path="/missing-prompt.md",
             phase="INITIALIZE",
         )
-        module = __import__("tools.engineering.dj_engineer", fromlist=["print_live_status"])
+        module = __import__("tools.engineering.execution_host", fromlist=["print_live_status"])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.assertEqual(module.print_live_status(root), 1)
@@ -438,7 +437,7 @@ class ClientContractTest(unittest.TestCase):
             self.assertEqual(module.print_live_status(root), 0)
 
     def test_engineering_memory_is_bounded_advisory_metadata(self) -> None:
-        module = __import__("tools.engineering.dj_engineer", fromlist=["capture_engineering_memory"])
+        module = __import__("tools.engineering.execution_host", fromlist=["capture_engineering_memory"])
         state = TransactionState(
             run_id="run-memory",
             repository="pcvantol/djconnect",
@@ -461,7 +460,7 @@ class ClientContractTest(unittest.TestCase):
             self.assertIn("documentation", module.retrieve_engineering_memory(root, Path("documentation-next.md")))
 
     def test_cli_helpers_are_bounded(self) -> None:
-        module = __import__("tools.engineering.dj_engineer", fromlist=["_codex_final_message"])
+        module = __import__("tools.engineering.execution_host", fromlist=["_codex_final_message"])
         usage = extract_codex_usage(
             '{"usage":[{"input-tokens":12},{"nested":{"output_tokens":3}}]}\nnot-json'
         )
@@ -469,7 +468,7 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(module._codex_final_message("plain final message"), "plain final message")
 
     def test_usage_and_execution_context_helpers_fail_closed(self) -> None:
-        module = __import__("tools.engineering.dj_engineer", fromlist=["write_codex_usage"])
+        module = __import__("tools.engineering.execution_host", fromlist=["write_codex_usage"])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             module.write_codex_usage(root, "run-usage", {"unknown": 1, "input_tokens": -1})
@@ -498,12 +497,6 @@ class ClientContractTest(unittest.TestCase):
 class LocalAgentRunnerTest(unittest.TestCase):
     def test_execution_host_exposes_the_generic_command_name(self) -> None:
         self.assertEqual(build_parser().prog, "engineering-execution-host")
-
-    def test_legacy_runner_module_resolves_to_the_execution_host(self) -> None:
-        legacy = importlib.import_module("tools.engineering.dj_engineer")
-        canonical = importlib.import_module("tools.engineering.execution_host")
-
-        self.assertIs(legacy, canonical)
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -665,7 +658,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
-        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.dj_engineer.target_repository_authorization", return_value=None):
+        with patch("tools.engineering.execution_host.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.execution_host.target_repository_authorization", return_value=None):
             state = runner.run(self.prompt, run_id="genesis-run")
         self.assertEqual(state.phase, "COMPLETE")
         self.assertEqual(state.execution_mode, "GENESIS")
@@ -686,7 +679,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.prompt.write_text(f"Execution Mode: Genesis\n\nTarget repository:\n\n{target}\n", encoding="utf-8")
         agent = FakeAgent(AgentResult("COMPLETE", terminal_condition="local_commit_reconciled", repository_path=str(target), commit_sha=commit))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None)
-        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.dj_engineer.target_repository_authorization", return_value=None):
+        with patch("tools.engineering.execution_host.additional_workspace_write_roots", return_value=(target.parent.resolve(),)), patch("tools.engineering.execution_host.target_repository_authorization", return_value=None):
             state = runner.run(self.prompt, run_id="genesis-before-managed")
         self.assertEqual(state.phase, "COMPLETE")
         self.assertEqual(state.genesis_repository_path, str(target))
@@ -723,7 +716,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.prompt.write_text(f"Execution Mode: Genesis\n\nTarget repository:\n\n{target}\n", encoding="utf-8")
         agent = FakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(clean=False), FakeGitHub([]), agent, lambda _: None)
-        with patch("tools.engineering.dj_engineer.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
+        with patch("tools.engineering.execution_host.additional_workspace_write_roots", return_value=(target.parent.resolve(),)):
             state = runner.run(self.prompt, run_id="genesis-dirty-target")
         self.assertEqual(state.phase, "BLOCKED")
         self.assertIn("Genesis preflight blocked", state.diagnostic or "")
@@ -802,7 +795,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_cli_failure_exposes_only_redacted_console_detail(self) -> None:
         completed = __import__("subprocess").CompletedProcess(("codex",), 7, "ACCESS_TOKEN=stdout-secret", "Bearer stderr-secret")
-        with patch("tools.engineering.dj_engineer.subprocess.run", return_value=completed):
+        with patch("tools.engineering.execution_host.subprocess.run", return_value=completed):
             with self.assertRaises(CodexInvocationError) as raised:
                 CodexCliClient().invoke(self.root, "test")
         self.assertIn("code 7", str(raised.exception))
@@ -832,7 +825,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             return __import__("subprocess").CompletedProcess(command, 0, output, "")
 
         client = CodexCliClient()
-        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_json):
+        with patch("tools.engineering.execution_host.subprocess.run", side_effect=invoke_with_json):
             result = client.invoke(self.root, "test")
 
         self.assertIn("--json", captured)
@@ -867,7 +860,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 "",
             )
 
-        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_schema):
+        with patch("tools.engineering.execution_host.subprocess.run", side_effect=invoke_with_schema):
             CodexCliClient().invoke(self.root, "test")
 
         self.assertEqual(set(captured["properties"]), set(captured["required"]))
@@ -895,7 +888,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 "",
             )
 
-        with patch("tools.engineering.dj_engineer.subprocess.run", side_effect=invoke_with_workspace_root):
+        with patch("tools.engineering.execution_host.subprocess.run", side_effect=invoke_with_workspace_root):
             CodexCliClient().invoke(self.root, "test")
 
         self.assertEqual(captured[captured.index("--add-dir") + 1], str(workspace_root))

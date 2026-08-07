@@ -13,6 +13,8 @@ html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manip
   --dashboard-focus-outline-width:3px;
   --dashboard-focus-outline-offset:3px;
   --dashboard-focus-ring-size:6px;
+  --dashboard-input-focus-border:var(--house-style);
+  --dashboard-input-focus-ring:color-mix(in srgb,var(--house-style) 30%,transparent);
   --dashboard-surface-base:#24242d;
   --dashboard-surface-light:#fff;
   --dashboard-page-surface-light:#e8edf4;
@@ -41,6 +43,8 @@ html[data-theme="light"]{
   --dashboard-modal-document-surface:#f7fbff;
   --dashboard-modal-ink:#182230;
   --dashboard-modal-muted:#415168;
+  --operations-console-icon-surface:#e8edf4;
+  --operations-console-blue-ink:#182230;
 }
 .log-controls label:has(#logSort){display:none}.log-table th.log-sortable{cursor:pointer;user-select:none}.log-table th.log-sortable::after{color:#8dc7ff;content:attr(data-sort-indicator);font-size:11px;margin-left:6px}.log-table th.log-sortable:focus-visible{outline:2px solid #8dc7ff;outline-offset:-2px}
 .current-run .card:has(#indicator){background:#2a2530;border-left:3px solid #c7a6ff}.current-run .card:has(#predecessorRun),#currentDiagnostic,.technical-details--diagnostic{background:#302a24;border-left:3px solid #f0b66a}.current-run .card:has(#queueList),.current-run .card:has(#runId),.current-run .card:has(#executionMode){background:#28263a;border-left:3px solid #a78bfa}.current-run .card:has(#currentTime),.current-run .card:has(#executionEstimate){background:#202b34;border-left:3px solid #65c5d9}#processMetrics,#usage,#rateLimits{background:#20332f;border-left:3px solid #54d6a0}#commits{background:#202a36;border-left:3px solid #8dc7ff}#codexChat{background:#292336;border-left:3px solid #d0a4ff}
@@ -82,7 +86,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 #componentLogs .card{border-left-width:1px}
 .workspace-card>summary,#rateLimits>summary,#componentLogs>summary,#codexChat>summary,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary{border-bottom:1px solid var(--category-color);margin-bottom:12px;padding-bottom:14px}
 .category-description{color:#b9b6c0;font-size:14px;line-height:1.4;margin:0 0 14px}
-.queue-blocker--error{align-items:center;background:#4a202b;border:1px solid #ff718f;border-radius:10px;color:#ffe9ef;display:flex;gap:12px;justify-content:space-between;margin:0 0 14px;padding:10px 12px}.queue-blocker--error p{color:inherit;font-size:13px;line-height:1.4;margin:0}.queue-blocker__repair{background:#ffe9ef;border:1px solid #ff718f;border-radius:999px;color:#8c243b;flex:none;font:700 13px/1 system-ui;min-height:32px;padding:0 12px}.queue-blocker__repair:hover:not(:disabled){background:#ff718f;color:#271923}.queue-blocker__repair:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-blocker--error{background:#fff0f4;color:#8c243b}html[data-theme="light"] .queue-blocker__repair{background:#fff;color:#8c243b}
+.queue-blocker--error{align-items:center;background:#4a202b;border:1px solid #ff718f;border-radius:10px;color:#ffe9ef;display:flex;gap:12px;justify-content:space-between;margin:0 0 14px;padding:10px 12px}.queue-blocker--error p{color:inherit;font-size:13px;line-height:1.4;margin:0}.queue-blocker__repair{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;flex:none;font:13px system-ui;min-height:32px;padding:8px 10px}.queue-blocker__repair:hover:not(:disabled){background:#543721;color:#fff0dc}.queue-blocker__repair:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-blocker--error{background:#fff0f4;color:#8c243b}html[data-theme="light"] .queue-blocker__repair{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .queue-blocker__repair:hover:not(:disabled){background:#fff0dc;color:#643a13}
 .workspace-card,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs){border:1px solid var(--category-color);border-left-width:3px}
 .rate-limit-reset{background:#173c31;border:1px solid #54d6a0;border-radius:8px;color:#d9fff0;font:13px system-ui;margin-top:12px;padding:8px 10px}.rate-limit-reset:disabled{cursor:wait;opacity:.7}.rate-limit-reset-status{color:#b9b6c0;font-size:12px;margin:8px 0 0}
 .predecessor-retry{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;font:13px system-ui;margin-top:12px;padding:8px 10px}.predecessor-retry:hover:not(:disabled){background:#543721}.predecessor-retry:disabled{cursor:wait;opacity:.7}.predecessor-retry-status{color:#d6c5a8;font-size:12px;margin:8px 0 0}
@@ -126,7 +130,7 @@ body{overflow-x:hidden}.dashboard-grid,.dashboard-grid>*{min-width:0}.telemetry,
 @media (min-width:621px){#promptHistory .log-table th:nth-child(7),#promptHistory .log-table td:nth-child(7){min-width:4rem;width:4rem}#promptHistory .log-table th:nth-child(8),#promptHistory .log-table td:nth-child(8){min-width:14rem;width:auto}}
 @media (min-width:621px){#promptHistory .log-table:not(:has(.execution-history-action)) th:nth-child(8),#promptHistory .log-table:not(:has(.execution-history-action)) td:nth-child(8){min-width:4.5rem;width:4.5rem}}
 @media (min-width:621px){#promptHistory .log-table{width:max(100%,1320px)}#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){width:100%}}
-@media (min-width:621px){#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){max-width:30rem;overflow:hidden;text-overflow:ellipsis;width:auto}#promptHistory .log-table th:nth-child(4),#promptHistory .log-table td:nth-child(4){min-width:13rem;width:13rem}#promptHistory .log-table th:nth-child(9),#promptHistory .log-table td:nth-child(9){min-width:4rem;width:4rem}}
+@media (min-width:621px){#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){max-width:18rem;overflow:hidden;text-overflow:ellipsis;width:18rem}#promptHistory .log-table th:nth-child(4),#promptHistory .log-table td:nth-child(4){min-width:13rem;width:13rem}#promptHistory .log-table th:nth-child(9),#promptHistory .log-table td:nth-child(9){min-width:4rem;width:4rem}}
 @media (min-width:621px){#promptHistory .log-table th:nth-child(2),#promptHistory .log-table td:nth-child(2){min-width:7.5rem;overflow-wrap:normal;white-space:nowrap;width:7.5rem}}
 /* Keep disclosure arrows at the far edge of top-level dashboard categories. */
 :where(.workspace-card,#queueItems,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),#currentRun,.telemetry,.platform-health)>summary{padding-right:40px;position:relative}:where(.workspace-card,#queueItems,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),#currentRun,.telemetry,.platform-health)>summary::before{margin:0;padding-right:0;position:absolute;right:0;top:0}
@@ -228,14 +232,15 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 .log-card-actions .download.download--glyph:hover{background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
 
 /* The skip-link target remains programmatically focusable without outlining every category. */
-#engineering-dashboard-content:focus,#engineering-dashboard-content:focus-visible{box-shadow:none;outline:none}
+#engineering-dashboard-content,#engineering-dashboard-content:focus,#engineering-dashboard-content:focus-visible{border:0!important;box-shadow:none!important;outline:0!important}
+#diag{white-space:pre-line}
 
 /* Report and analysis both open blue evidence modals, not the pink history shell. */
 .prompt-history-report,.prompt-history-analysis{border-color:#8dc7ff;color:#8dc7ff}.prompt-history-report:hover,.prompt-history-analysis:hover{background:#8dc7ff!important;border-color:#8dc7ff!important;color:#172331!important}
 .prompt-detail-status{align-items:center;display:inline-flex;gap:7px}.prompt-detail-status .indicator{display:block;flex:none}
 
 /* Historical execution evidence is opened from its table row, not duplicated as a dashboard section. */
-.prompt-history-row{cursor:pointer}.prompt-history-row:focus-visible{outline:2px solid var(--category-color);outline-offset:-2px}.prompt-history-lineage{color:#b9b6c0;display:block;font:11px/1.35 system-ui;margin-top:4px;white-space:normal}.prompt-detail-modal{background:transparent;border:0;height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);padding:0;width:min(1000px,94vw)}.prompt-detail-modal::backdrop{background:#0d1018cc}.prompt-detail-modal__panel{--category-color:#8dc7ff;--prompt-detail-surface:var(--dashboard-surface-base,#24242d);background:var(--prompt-detail-surface);border:2px solid var(--category-color);border-radius:18px;box-sizing:border-box;color:#f7f3ee;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden;padding:24px}.prompt-detail-modal__header{align-items:start;background:var(--prompt-detail-surface);border-bottom:1px solid var(--category-color);display:grid;gap:18px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}.prompt-detail-modal__header h2{color:var(--category-color);font-size:24px;margin:0;min-width:0}.prompt-detail-modal__header .report-view-modal__close{grid-column:2;grid-row:1;justify-self:end;position:static}.prompt-detail-modal__description{color:#c9d5e4;font-size:16px;line-height:1.5;margin:16px 0}.prompt-detail-modal__content{align-items:start;box-sizing:border-box;display:grid;gap:18px;grid-template-columns:minmax(0,1fr) minmax(280px,.82fr);min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 10px;scrollbar-gutter:stable both-edges}.prompt-detail-sidebar{align-content:start;align-items:start;display:grid;gap:18px}.prompt-detail-card{background:#24242d;border:1px solid var(--category-color);border-radius:14px;padding:18px}.prompt-detail-card--wide{grid-column:1/-1}.prompt-detail-card h3{color:var(--category-color);font-size:18px;margin:0 0 14px}.prompt-detail-card .field{margin:0 0 14px}.prompt-detail-card .field:last-child{margin-bottom:0}.prompt-detail-card pre{overflow-wrap:anywhere;white-space:pre-wrap}@media (max-width:620px){.prompt-detail-modal{height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);width:min(1000px,94vw)}.prompt-detail-modal__panel{border-radius:18px;padding:18px}.prompt-detail-modal__content{grid-template-columns:1fr;padding-inline:8px}.prompt-detail-modal__header h2{font-size:20px}}html[data-theme="light"] .prompt-detail-modal__panel{--prompt-detail-surface:var(--dashboard-surface-light,#fff);color:#182230}html[data-theme="light"] .prompt-detail-modal__description{color:#415168}html[data-theme="light"] .prompt-detail-card{background:#fff}
+.prompt-history-row{cursor:pointer}.prompt-history-row:is(:focus,:focus-visible){outline:2px solid var(--category-color);outline-offset:-2px}.prompt-history-row:is(:focus,:focus-visible)>td:first-child{box-shadow:inset 3px 0 var(--dashboard-input-focus-border)}.prompt-history-row:is(:focus,:focus-visible)>td:last-child{box-shadow:inset -3px 0 var(--dashboard-input-focus-border)}.prompt-history-lineage{color:#b9b6c0;display:block;font:11px/1.35 system-ui;margin-top:4px;white-space:normal}.prompt-detail-modal{background:transparent;border:0;height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);padding:0;width:min(1000px,94vw)}.prompt-detail-modal::backdrop{background:#0d1018cc}.prompt-detail-modal__panel{--category-color:#8dc7ff;--prompt-detail-surface:var(--dashboard-surface-base,#24242d);background:var(--prompt-detail-surface);border:2px solid var(--category-color);border-radius:18px;box-sizing:border-box;color:#f7f3ee;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden;padding:24px}.prompt-detail-modal__header{align-items:start;background:var(--prompt-detail-surface);border-bottom:1px solid var(--category-color);display:grid;gap:18px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}.prompt-detail-modal__header h2{color:var(--category-color);font-size:24px;margin:0;min-width:0}.prompt-detail-modal__header .report-view-modal__close{grid-column:2;grid-row:1;justify-self:end;position:static}.prompt-detail-modal__description{color:#c9d5e4;font-size:16px;line-height:1.5;margin:16px 0}.prompt-detail-modal__content{align-items:start;box-sizing:border-box;display:grid;gap:18px;grid-template-columns:minmax(0,1fr) minmax(280px,.82fr);min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 10px;scrollbar-gutter:stable both-edges}.prompt-detail-sidebar{align-content:start;align-items:start;display:grid;gap:18px}.prompt-detail-card{background:#24242d;border:1px solid var(--category-color);border-radius:14px;padding:18px}.prompt-detail-card--wide{grid-column:1/-1}.prompt-detail-card h3{color:var(--category-color);font-size:18px;margin:0 0 14px}.prompt-detail-card .field{margin:0 0 14px}.prompt-detail-card .field:last-child{margin-bottom:0}.prompt-detail-card pre{overflow-wrap:anywhere;white-space:pre-wrap}@media (max-width:620px){.prompt-detail-modal{height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);width:min(1000px,94vw)}.prompt-detail-modal__panel{border-radius:18px;padding:18px}.prompt-detail-modal__content{grid-template-columns:1fr;padding-inline:8px}.prompt-detail-modal__header h2{font-size:20px}}html[data-theme="light"] .prompt-detail-modal__panel{--prompt-detail-surface:var(--dashboard-surface-light,#fff);color:#182230}html[data-theme="light"] .prompt-detail-modal__description{color:#415168}html[data-theme="light"] .prompt-detail-card{background:#fff}
 
 /* Dialog shells may receive programmatic focus, but only their controls need a visible ring. */
 :where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus,:where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus-visible{box-shadow:none;outline:none}
@@ -264,8 +269,10 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 /* Terminal execution actions use the explicit operational acknowledgement palette. */
 #promptHistory .execution-history-action{background:#4f453c;border-color:#e7b876;border-radius:7px;color:#f6f3ef;font:12px system-ui;min-height:32px;min-width:0;padding:5px 9px}#promptHistory .execution-history-action:hover:not(:disabled){background:#e7b876;border-color:#e7b876;color:#17151a}
 html[data-theme="light"] #promptHistory .execution-history-action{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] #promptHistory .execution-history-action:hover:not(:disabled){background:#e7b876;border-color:#e7b876;color:#17151a}
-#promptHistoryRows .prompt-history-actions{vertical-align:middle}#promptHistoryRows .execution-history-action{margin-top:0}
+#promptHistoryRows td:has(.prompt-history-actions){vertical-align:middle}#promptHistoryRows .execution-history-action{margin-top:0}
 #promptHistoryRows .prompt-history-actions{align-items:center;display:flex;flex-wrap:wrap;gap:6px}
+@media (min-width:621px){#promptHistory .log-table:has(.execution-history-action) th:nth-child(8),#promptHistory .log-table:has(.execution-history-action) td:nth-child(8){min-width:26rem;width:26rem}#promptHistoryRows .prompt-history-actions{flex-wrap:nowrap;white-space:nowrap}}
+@media (min-width:621px){#promptHistory .log-table{table-layout:fixed}}
 
 /* The header owns a fixed row; only the document pane scrolls beneath it. */
 .report-view-modal__panel{--report-modal-surface:#24242d;display:grid;grid-template-rows:auto minmax(0,1fr);height:min(90vh,calc(100dvh - 36px));overflow:hidden}.report-view-modal__header{background:var(--report-modal-surface);z-index:1}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}.report-view-modal__content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}
@@ -279,6 +286,17 @@ html[data-theme="light"] #promptHistory .execution-history-action{background:#ff
    close control, accent and destructive state. */
 .confirmation-modal__panel{border:2px solid var(--modal-accent);max-width:30rem;padding:22px}
 .confirmation-modal__panel #confirmationModalText{line-height:1.55;white-space:pre-line}
+
+/* Confirmation actions remain anchored inside the dialog on compact iPhone
+   viewports. Long explanatory copy scrolls above them instead of pushing the
+   cancel/confirm controls behind the browser's bottom chrome. */
+@media (max-width:620px){
+  .confirmation-modal{box-sizing:border-box;height:100dvh;inset:0;margin:0;max-height:none;max-width:none;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));width:100vw}
+  .confirmation-modal[open]{display:grid;place-items:center}
+  .confirmation-modal__panel{box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr) auto;max-height:100%;overflow:hidden;width:min(30rem,100%)}
+  .confirmation-modal__panel #confirmationModalText{min-height:0;overflow:auto}
+  .confirmation-modal__actions{background:var(--modal-surface);margin-bottom:0;padding-top:20px;position:relative;z-index:1}
+}
 
 /* Platform information glyphs use the same compact diameter as round download actions. */
 .component-info{min-height:32px;min-width:32px}
@@ -348,7 +366,6 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
   min-height:0;
   overflow-y:hidden;
 }
-:where(button,input,select,textarea,summary,[role="button"],[tabindex]):focus-visible{outline-width:var(--dashboard-focus-outline-width);outline-offset:var(--dashboard-focus-outline-offset);box-shadow:0 0 0 var(--dashboard-focus-ring-size) color-mix(in srgb,var(--category-color,#8dc7ff) 24%,transparent)}
 @media (max-width:620px) and (orientation:portrait){
   /* iOS handles a document scroll more reliably than a nested flex scroller.
      It also lets the title naturally leave the viewport with the content. */
@@ -364,6 +381,38 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
      Island. Keep only a small content gap instead of adding desktop padding. */
   body{padding-inline:max(8px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-right))}
   .dashboard-scroll-region{padding-inline:6px}
+}
+
+/* The title bar stays compact on phones: its controls are available from one
+   labelled disclosure, then presented as full-width rows rather than unlabeled
+   switch glyphs. Desktop keeps the existing inline control strip. */
+.dashboard-titlebar__options{display:contents}.dashboard-titlebar__options>summary{display:none}.dashboard-titlebar__options-content{align-items:center;display:flex;gap:12px}
+@media (max-width:620px){
+  .dashboard-titlebar{align-items:flex-start;flex-wrap:wrap;position:relative}
+  .dashboard-titlebar__brand{flex-basis:100%;padding-right:48px}
+  .dashboard-titlebar__actions{align-items:center;flex:1 1 100%;justify-content:flex-start;width:100%}
+  .page-refresh{position:absolute;right:16px;top:16px}
+  .dashboard-titlebar__options{display:block;flex:1 1 100%;min-width:0;width:100%}
+  .dashboard-titlebar__options>summary{align-items:center;background:color-mix(in srgb,var(--operations-console-icon-surface) 82%,#fff 18%);border:1px solid var(--house-style);border-radius:999px;color:var(--operations-console-blue-ink);cursor:pointer;display:flex;font:600 13px/1 system-ui;justify-content:space-between;list-style:none;min-height:44px;padding:0 14px}
+  .dashboard-titlebar__options>summary::-webkit-details-marker{display:none}
+  .dashboard-titlebar__options>summary::after{content:"▾";font-size:16px;line-height:1;transition:transform .18s ease}
+  .dashboard-titlebar__options[open]>summary::after{transform:rotate(180deg)}
+  .dashboard-titlebar__options-content{border-top:1px solid color-mix(in srgb,var(--operations-console-blue-ink) 35%,transparent);display:grid;gap:8px;margin-top:10px;padding-top:10px}
+  .dashboard-titlebar__options:not([open])>.dashboard-titlebar__options-content{display:none}
+  .dashboard-titlebar__options-content>.dashboard-locale,.dashboard-titlebar__options-content>.theme-toggle,.dashboard-titlebar__options-content>.section-state-toggle,.dashboard-titlebar__options-content>.auto-refresh-toggle{align-items:center;box-sizing:border-box;display:flex;justify-content:space-between;min-height:44px;width:100%}
+  .dashboard-titlebar__options-content>.dashboard-locale{font:600 13px/1 system-ui}
+  .dashboard-titlebar__options-content>.dashboard-locale>span:first-child{display:block}
+  .dashboard-titlebar__options-content>.dashboard-locale>.dashboard-locale__picker{display:flex}
+  .dashboard-titlebar__options-content>.dashboard-locale>.dashboard-locale__picker :is(#dashboardLocaleValue,[aria-hidden]){display:inline}
+  .dashboard-titlebar__options-content>.theme-toggle,.dashboard-titlebar__options-content>.section-state-toggle{flex-direction:row;gap:12px;padding:0}
+  /* Keep both pseudo-elements on the same end of the full-width row. Without
+     this, the track follows the reversed flex layout while its absolute thumb
+     remains at the left edge next to the label on iPhone. */
+  .dashboard-titlebar__options-content>:is(.theme-toggle,.section-state-toggle)::before{position:absolute;right:0;top:10px}
+  .dashboard-titlebar__options-content>:is(.theme-toggle,.section-state-toggle)::after{left:auto;right:21px}
+  .dashboard-titlebar__options-content>.theme-toggle .theme-toggle__label,.dashboard-titlebar__options-content>.section-state-toggle .section-state-toggle__label,.dashboard-titlebar__options-content>.auto-refresh-toggle span{display:block}
+  .dashboard-titlebar__options-content>.auto-refresh-toggle{flex-direction:row-reverse;gap:12px;white-space:normal}
+  .dashboard-titlebar__options-content>.auto-refresh-toggle input{flex:none}
 }
 
 /* Log controls */
@@ -492,11 +541,14 @@ html[data-theme="light"] #pullRefresh{background:var(--house-style-surface);bord
 }
 :is(.report-view-modal,.prompt-detail-modal,.prompt-chat-modal)::backdrop{background:var(--dashboard-modal-backdrop)}
 :is(.report-view-modal__content,.prompt-detail-card){background:var(--dashboard-modal-surface)}
-:is(.prompt-detail-modal__description,.prompt-chat-modal__description){color:var(--dashboard-modal-muted)}
+:is(.prompt-detail-modal__description,.prompt-chat-modal__description){border-bottom:1px solid var(--category-color);color:var(--dashboard-modal-muted);margin:16px 0 18px;padding-bottom:18px}
 
 /* Report modal: a fixed header with one scrolling document surface. */
 .report-view-modal__panel{--report-modal-surface:var(--dashboard-modal-surface)}
 html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:var(--dashboard-modal-document-surface)}
+/* The document belongs to its modal surface; padding must not read as a second panel. */
+.report-view-modal__content,.report-view-modal :is(#reportContent,#reportAnalysisContent){background:var(--report-modal-surface);box-shadow:none}
+html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .report-view-modal :is(#reportContent,#reportAnalysisContent){background:var(--report-modal-surface);box-shadow:none}
 
 /* Historical execution detail: evidence cards share the report surface. */
 .prompt-detail-modal__panel{--prompt-detail-surface:var(--dashboard-modal-surface);padding:var(--dashboard-modal-panel-padding)}
@@ -596,6 +648,7 @@ html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:col
 .predecessor-retry::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
 .execution-dismiss::before{content:"⊘"}
 #componentLogs .log-table{table-layout:auto;width:100%}#componentLogs .log-table th:last-child,#componentLogs .log-table td:last-child{width:100%}
+#queueList .queue-item{grid-template-columns:1.25rem minmax(0,1fr) auto}.queue-defer{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;font:600 12px system-ui;min-height:32px;padding:5px 9px}.queue-defer:hover:not(:disabled){background:#f0b66a;color:#201812}.queue-defer:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-defer{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .queue-defer:hover:not(:disabled){background:#f0b66a;color:#201812}
 
 /* Shared semantic action variants prevent individual surfaces from drifting. */
 .dashboard-action{align-items:center;border:1px solid;border-radius:50%;box-sizing:border-box;display:inline-flex;font:18px/1 system-ui;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;width:32px}
@@ -625,10 +678,14 @@ html[data-theme="light"] ::-webkit-scrollbar-track{background:#edf2f8}
 html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#8b9aae;border-color:#edf2f8}
 html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 
+/* Button labels and glyphs are controls, not selectable page content. */
+:where(button,[role="button"]),:where(button,[role="button"]) *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+
 /* Direct-touch controls intentionally sit as a small glass layer above their
    surface. The pressed state lasts for the touch itself, giving iPhone users
    immediate tactile confirmation without changing desktop pointer behaviour. */
 @media (hover:none) and (pointer:coarse){
+  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.auto-refresh-toggle input){touch-action:manipulation}
   button:not(:disabled),[role="button"]:not([aria-disabled="true"]){
     -webkit-tap-highlight-color:transparent;
     -webkit-backdrop-filter:blur(12px) saturate(150%);
@@ -657,3 +714,8 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
     box-shadow:none;
   }
 }
+
+/* Keep the input contract last: individual cards may colour their content,
+   but they must never replace the selected-control border. */
+:where(input,select,textarea):is(:focus,:focus-visible){border-color:var(--dashboard-input-focus-border)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}

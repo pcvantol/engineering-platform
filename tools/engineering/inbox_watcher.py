@@ -153,6 +153,35 @@ def discover(root: Path, interval: float = 0.0) -> list[Path]:
     return [path for _, _, path in sorted(candidates)]
 
 
+def defer_queued_prompt(repo: Path, root: Path, filename: str) -> dict[str, str]:
+    """Move one still-waiting Inbox prompt into the reversible deferred area."""
+    candidate = Path(filename)
+    if not filename or candidate.name != filename or filename in {".", ".."}:
+        raise RetrySubmissionError("De gekozen Inbox-opdracht is ongeldig.")
+    inbox = folders(root)["Inbox"]
+    source = inbox / filename
+    deferred = inbox / "_deferred"
+    with _lock(repo):
+        content = stable_prompt(source, 0.0)
+        if content is None:
+            raise RetrySubmissionError("De gekozen Inbox-opdracht wacht niet meer op uitvoering.")
+        deferred.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination = deferred / source.name
+        if destination.exists():
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            destination = deferred / f"{source.stem}-{timestamp}-{uuid.uuid4().hex[:8]}{source.suffix}"
+        try:
+            os.replace(source, destination)
+        except OSError as error:
+            raise RetrySubmissionError("De Inbox-opdracht kon niet veilig worden uitgesteld.") from error
+        _publish_active_queue(repo, _scan_queue(root, 0.0))
+    return {
+        "filename": redact_diagnostic(filename, limit=240),
+        "deferred_filename": redact_diagnostic(destination.name, limit=240),
+        "deferred_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _safe_detail(value: object) -> object:
     if isinstance(value, str):
         return value[:500].replace("\n", " ")
@@ -164,6 +193,20 @@ def _runner_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
     output = completed.stderr or completed.stdout
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     detail = lines[-1] if lines else "Runner stopped before publishing a checkpoint."
+    return redact_diagnostic(detail, limit=500)
+
+
+def _preflight_failure_detail(result: object) -> str:
+    """Return the actionable, redacted reasons from a failed admission check."""
+    failed: list[str] = []
+    for check in getattr(result, "checks", ()):
+        if getattr(check, "outcome", None) != "FAIL":
+            continue
+        identifier = str(getattr(check, "identifier", "preflight_check"))
+        reason = str(getattr(check, "reason", "Preflight check failed."))
+        recovery = str(getattr(check, "recovery", "Resolve the preflight issue before retrying."))
+        failed.append(f"{identifier}: {reason} Required action: {recovery}")
+    detail = " | ".join(failed) or "Preflight failed without a specific recorded reason."
     return redact_diagnostic(detail, limit=500)
 
 
@@ -553,6 +596,48 @@ def _terminal_phase_for_run(repo: Path, run_id: str) -> str | None:
     if predecessor and predecessor["run_id"] == run_id:
         return predecessor["phase"]
     return None
+
+
+def retry_admission_preflight(repo: Path, run_id: str) -> None:
+    """Fail a dashboard retry before it enters the Inbox when admission fails.
+
+    The watcher repeats these checks when it claims the new prompt.  This
+    early pass is solely operator feedback: it prevents a known-bad retry from
+    creating confusing queue lineage while preserving the original retry
+    action for a later attempt.
+    """
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    archived = _archived_prompt_for_run(repo, run_id)
+    if archived is None:
+        raise RetrySubmissionError("De oorspronkelijke terminale prompt is lokaal niet beschikbaar.")
+    _, content = archived
+    results = (
+        execute_host_preflight(repo, run_id=run_id),
+        execute_workspace_preflight(repo, content, run_id=run_id),
+        execute_capability_preflight(repo, content, run_id=run_id),
+    )
+    failures = [
+        check
+        for result in results
+        for check in result.checks
+        if check.outcome == "FAIL"
+    ]
+    if not failures:
+        return
+    primary = failures[0]
+    raise RetrySubmissionError(
+        f"Preflight mislukt: {primary.reason} Herstel: {primary.recovery}"
+    )
+
+
+def predecessor_retry_admission_preflight(repo: Path) -> str:
+    """Validate the blocking predecessor before queue recovery submits it."""
+    predecessor = _blocking_predecessor(repo)
+    if predecessor is None:
+        raise RetrySubmissionError("Er is geen geblokkeerde voorafgaande prompt om de wachtrij te hervatten.")
+    retry_admission_preflight(repo, predecessor["run_id"])
+    return predecessor["run_id"]
 
 
 def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard_operator") -> dict[str, object]:
@@ -1032,7 +1117,13 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 current_action="Execution Host preflight blokkeert het claimen van Inbox-werk.",
                 diagnostic=drift_summary(preflight.drift_evidence),
             )
-            log_event(logger, logging.ERROR, "host_preflight_failed", run_id=legacy_run_id)
+            log_event(
+                logger,
+                logging.ERROR,
+                "host_preflight_failed",
+                run_id=legacy_run_id,
+                diagnostic=_preflight_failure_detail(preflight),
+            )
             return 1
         workspace_preflight = execute_workspace_preflight(repo, content, run_id=None)
         if workspace_preflight.outcome == "FAIL":
@@ -1045,14 +1136,26 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 current_action="Workspace preflight blokkeert het claimen van Inbox-werk.",
                 diagnostic=drift_summary(workspace_preflight.drift_evidence),
             )
-            log_event(logger, logging.ERROR, "workspace_preflight_failed", run_id=legacy_run_id)
+            log_event(
+                logger,
+                logging.ERROR,
+                "workspace_preflight_failed",
+                run_id=legacy_run_id,
+                diagnostic=_preflight_failure_detail(workspace_preflight),
+            )
             return 1
         capability_preflight = execute_capability_preflight(repo, content, run_id=None)
         if capability_preflight.outcome == "FAIL":
             status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
                    current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
                    diagnostic=drift_summary(capability_preflight.drift_evidence))
-            log_event(logger, logging.ERROR, "capability_preflight_failed", run_id=legacy_run_id)
+            log_event(
+                logger,
+                logging.ERROR,
+                "capability_preflight_failed",
+                run_id=legacy_run_id,
+                diagnostic=_preflight_failure_detail(capability_preflight),
+            )
             return 1
         if _already_seen(areas, job_id):
             status(

@@ -38,7 +38,7 @@ jobs:
       - name: Provider, qualification and golden scenario
         run: |
           python3 -m unittest tests.engineering.test_platform_productization tests.engineering.test_engineering_platform_golden
-          ./tools/engineering/dj-engineer qualify
+          ./tools/engineering/engineering-execution-host qualify
           python3 -c "from pathlib import Path; from tools.engineering.golden_scenario import run; assert run(Path('.'))['result'] == 'ENGINEERING_PLATFORM_GOLDEN_PASS'"
       - name: Enforce Engineering Platform coverage contract
         run: |
@@ -55,7 +55,6 @@ jobs:
               "tools/engineering/dashboard.py",
               "tools/engineering/platform_bootstrap.py",
               "tools/engineering/providers.py",
-              "tools/engineering/dj_engineer.py",
               "tools/engineering/inbox_watcher.py",
           )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())

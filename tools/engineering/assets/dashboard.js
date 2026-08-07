@@ -58,6 +58,12 @@ function capabilityRecommendation(value) {
   }[String(value || "").trim()];
   return key ? t(key) : String(value || t("format.not_available"));
 }
+function formatDiagnostic(value) {
+  return translate(value || t("value.no_diagnostics")).replace(
+    /\.\s+(?=(?:Expected|Observed|Required action|Verwacht|Waargenomen|Vereiste actie):)/g,
+    ".\n",
+  );
+}
 function enumLabel(value, fallback = t("format.not_available")) {
   const enumValue = String(value || "").trim();
   if (!enumValue) return fallback;
@@ -469,9 +475,49 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
+    const defer = document.createElement("button");
+    defer.className = "queue-defer";
+    defer.type = "button";
+    defer.textContent = t("queue.defer_action");
+    defer.title = t("queue.defer_action");
+    defer.setAttribute("aria-label", t("queue.defer_action"));
+    defer.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deferQueueItem(item, defer);
+    });
     body.append(title, meta);
-    row.append(number, body);
+    row.append(number, body, defer);
     container.append(row);
+  });
+}
+function deferQueueItem(item, button) {
+  const filename = String(item?.filename || "");
+  if (!filename) return;
+  confirmDashboardAction(
+    t("queue.defer_title"),
+    t("queue.defer_description", { title: String(item.title || filename) }),
+    t("queue.defer_action"),
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    button.disabled = true;
+    fetch("/api/queue-defer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename }),
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json().catch(() => ({})) }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("queue.defer_failed"));
+        if (latestStatus) {
+          const items = (latestStatus.queue_items || []).filter((entry) => entry?.filename !== filename);
+          latestStatus = { ...latestStatus, queue_items: items, queue_depth: Math.max(0, Number(latestStatus.queue_depth || items.length + 1) - 1) };
+          queueItems(items, latestStatus.queue_depth);
+        }
+        return refreshDashboard();
+      })
+      .catch((error) => window.alert(error.message || t("queue.defer_failed")))
+      .finally(() => { button.disabled = false; });
   });
 }
 function renderInboxBlocker(status) {
@@ -491,6 +537,22 @@ function renderInboxBlocker(status) {
   repair.textContent = t("queue.managed_branch_recovery_action");
   repair.addEventListener("click", submitManagedBranchRecovery);
   blocker.append(message, repair);
+}
+function renderWorkspaceGitLock(lock) {
+  const state = $("technicalGitLockState"), detail = $("technicalGitLockDetail"),
+    recover = $("technicalGitLockRecover"), recoveryStatus = $("technicalGitLockRecoveryStatus"),
+    active = lock?.state === "active" || lock?.state === "stale",
+    stale = lock?.stale === true;
+  state.textContent = active ? t("technical.git_lock_active") : t("technical.git_lock_free");
+  detail.hidden = !active;
+  detail.textContent = active
+    ? t("technical.git_lock_waiting") + (Number.isFinite(lock?.age_seconds)
+      ? " " + t("technical.git_lock_since", { value: `${Math.max(1, Math.floor(lock.age_seconds / 60))} min` })
+      : "") + (stale ? " " + t("technical.git_lock_stale") : "")
+    : "";
+  recover.hidden = !stale;
+  recover.onclick = stale ? submitStaleGitLockRecovery : null;
+  if (!stale) recoveryStatus.textContent = "";
 }
 function promptStarted(x) {
   promptStartedAt = x?.started_at ? Date.parse(x.started_at) : undefined;
@@ -901,6 +963,7 @@ function renderHealthStatus(x, snapshot = {}) {
   $("executionHostVersion").textContent = executionHost.version || t("format.not_available");
   $("executionHostRuntime").textContent = executionHost.runtime || t("format.not_available");
   $("executionHostTransport").textContent = executionHost.runtime_prompt_transport || t("format.not_available");
+  renderWorkspaceGitLock(snapshot.workspace_git_lock);
   // Older dashboard fixtures and cached shells do not have Level 3 fields.
   // Keep the canonical status renderer backward compatible while they refresh.
   renderPreflightPresentation(snapshot);
@@ -926,7 +989,7 @@ function renderHealthStatus(x, snapshot = {}) {
   $("finalization").textContent = x.finalization_pr || t("value.none");
   $("repositoryState").textContent = translate(x.repository_state || "UNKNOWN");
   $("workspaceState").textContent = translate(x.workspace_state || "UNKNOWN");
-  $("diag").textContent = translate(x.diagnostic || t("value.no_diagnostics"));
+  $("diag").textContent = formatDiagnostic(x.diagnostic);
   $("platformVersion").textContent = x.platform_version || t("format.not_available");
   $("dashboardVersion").textContent =
     components.dashboard || t("format.not_available");
@@ -1088,20 +1151,20 @@ function localizeTechnicalDetails() {
     [["#technicalRepositoryTitle", "#technicalDetails .technical-grid > .card:nth-child(2) > strong"], "technical.repository"],
     [["#technicalRepositoryStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(1) .label"], "technical.repository_status"],
     [["#technicalWorkspaceStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(2) .label"], "technical.workspace_status"],
-    [["#technicalHostPreflightTitle", "#technicalDetails .technical-grid > .card:nth-child(3) > strong"], "technical.host_preflight"],
-    [["#technicalExecutionHostLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(1) .label"], "technical.execution_host"],
-    [["#technicalExecutionHostVersionLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(2) .label"], "technical.execution_host_version"],
-    [["#technicalRuntimeLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(3) .label"], "technical.runtime"],
-    [["#technicalRuntimePromptTransportLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(4) .label"], "technical.runtime_prompt_transport"],
-    [["#technicalHostStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(5) .label"], "technical.host_status"],
-    [["#technicalLastCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(6) .label"], "technical.last_check"],
-    [["#technicalWorkspacePreflightStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(7) .label"], "technical.workspace_status"],
-    [["#technicalLastWorkspaceCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(8) .label"], "technical.last_workspace_check"],
-    [["#technicalCapabilityStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(9) .label"], "technical.capability_status"],
-    [["#technicalRecoverabilityLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(10) .label"], "technical.recoverability"],
-    [["#technicalFailureOriginLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(11) .label"], "technical.failure_origin"],
-    [["#technicalRecommendationLabel", "#technicalDetails .technical-grid > .card:nth-child(3) .field:nth-of-type(12) .label"], "technical.recommended_action"],
-    [["#technicalDiagnosticsTitle", "#technicalDetails .technical-grid > .card:nth-child(4) > strong"], "technical.diagnostics"],
+    [["#technicalHostPreflightTitle", "#technicalDetails .technical-grid > .card:nth-child(4) > strong"], "technical.host_preflight"],
+    [["#technicalExecutionHostLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(1) .label"], "technical.execution_host"],
+    [["#technicalExecutionHostVersionLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(2) .label"], "technical.execution_host_version"],
+    [["#technicalRuntimeLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(3) .label"], "technical.runtime"],
+    [["#technicalRuntimePromptTransportLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(4) .label"], "technical.runtime_prompt_transport"],
+    [["#technicalHostStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(5) .label"], "technical.host_status"],
+    [["#technicalLastCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(6) .label"], "technical.last_check"],
+    [["#technicalWorkspacePreflightStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(7) .label"], "technical.workspace_status"],
+    [["#technicalLastWorkspaceCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(8) .label"], "technical.last_workspace_check"],
+    [["#technicalCapabilityStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(9) .label"], "technical.capability_status"],
+    [["#technicalRecoverabilityLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(10) .label"], "technical.recoverability"],
+    [["#technicalFailureOriginLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(11) .label"], "technical.failure_origin"],
+    [["#technicalRecommendationLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(12) .label"], "technical.recommended_action"],
+    [["#technicalDiagnosticsTitle", "#technicalDetails .technical-grid > .card:nth-child(5) > strong"], "technical.diagnostics"],
   ];
   labels.forEach(([selectors, key]) => {
     const element = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
@@ -1133,6 +1196,11 @@ function localizeLogControls() {
   const cardTitles = ["logs.inbox_watcher", "logs.status_dashboard"];
   document.querySelectorAll("#componentLogs .log-card-header strong").forEach((title, index) => {
     if (cardTitles[index]) title.textContent = t(cardTitles[index]);
+  });
+  document.querySelectorAll(".component-log-copy").forEach((button) => {
+    const label = t("logs.copy_visible");
+    button.title = label;
+    button.setAttribute("aria-label", label);
   });
   const headers = [
     "table.number", "table.timestamp", "table.level", "table.event",
@@ -2092,6 +2160,16 @@ function filteredComponentLogEntries(component) {
       return state.direction === "asc" ? result : -result;
     });
 }
+function visibleComponentLogEntries(component) {
+  const rows = filteredComponentLogEntries(component),
+    pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
+    page = Math.min(
+      Math.max(1, independentLogPageStates[component]),
+      pageCount,
+    );
+  independentLogPageStates[component] = page;
+  return rows.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
+}
 function updateLogValueFilters() {
   const entries = [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
   for (const [id, key] of [["logEventFilter", "event"]]) {
@@ -2139,12 +2217,9 @@ function renderComponentLogs() {
     const rows = filteredComponentLogEntries(component),
       body = $(component + "ComponentLog"),
       pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
-      page = Math.min(
-        Math.max(1, independentLogPageStates[component]),
-        pageCount,
-      ),
-      visible = rows.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
-    independentLogPageStates[component] = page;
+      visible = visibleComponentLogEntries(component);
+    const copy = document.querySelector(`.component-log-copy[data-component="${component}"]`);
+    if (copy) copy.disabled = !visible.length;
     body.replaceChildren();
     if (!visible.length) {
       const cell = document.createElement("td"),
@@ -2292,6 +2367,46 @@ document.querySelectorAll(".component-log-download").forEach((button) =>
     }),
   ),
 );
+function visibleComponentLogText(component) {
+  const header = [
+      t("table.number"),
+      t("table.timestamp"),
+      t("table.level"),
+      t("table.event"),
+      t("table.run_id"),
+      t("table.details"),
+    ].join("\t"),
+    rows = visibleComponentLogEntries(component).map((entry) => [
+      entry.line,
+      logTimestampText(entry.timestamp),
+      entry.level,
+      entry.event,
+      entry.runId || "—",
+      entry.details || "—",
+    ].join("\t"));
+  return [header, ...rows].join("\n");
+}
+function addComponentLogCopyButtons() {
+  document.querySelectorAll(".component-log-download").forEach((download) => {
+    if (download.parentElement.querySelector(".component-log-copy")) return;
+    const button = document.createElement("button");
+    button.className = "dashboard-action dashboard-action--copy component-log-copy";
+    button.dataset.component = download.dataset.component;
+    button.dataset.testid = "copy-" + download.dataset.component + "-visible-log";
+    button.type = "button";
+    button.textContent = "⧉";
+    button.disabled = !visibleComponentLogEntries(button.dataset.component).length;
+    button.title = t("logs.copy_visible");
+    button.setAttribute("aria-label", t("logs.copy_visible"));
+    button.addEventListener("click", () => {
+      copyText(visibleComponentLogText(button.dataset.component))
+        .then(() => void recordUserAction("component_visible_log_copied"))
+        .catch(() => { button.title = t("copy.failed"); });
+    });
+    download.before(button);
+  });
+}
+addComponentLogCopyButtons();
 document.querySelectorAll(".clear-component-log").forEach((button) => {
   button.classList.add("dashboard-action", "dashboard-action--destructive");
   button.textContent = "⌧";
@@ -2548,7 +2663,8 @@ function renderPromptHistory() {
           openDetails(event);
         }
       });
-      action.className = "prompt-history-actions";
+      const actionControls = document.createElement("div");
+      actionControls.className = "prompt-history-actions";
       status.className =
         "prompt-history-status prompt-history-status--" +
         locale.lower(String(entry.status || ""));
@@ -2627,7 +2743,7 @@ function renderPromptHistory() {
         retry.className = "predecessor-retry execution-history-action";
         retry.textContent = t("action.retry_execution");
         retry.addEventListener("click", () => submitExecutionRetry(entry));
-        action.append(retry);
+        actionControls.append(retry);
       }
       if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && !entry.retry_child_run_id && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
         const dismiss = document.createElement("button");
@@ -2635,9 +2751,10 @@ function renderPromptHistory() {
         dismiss.className = "predecessor-retry execution-history-action execution-dismiss";
         dismiss.textContent = t("action.dismiss_execution");
         dismiss.addEventListener("click", () => dismissExecution(entry));
-        action.append(dismiss);
+        actionControls.append(dismiss);
       }
-      if (!action.childElementCount) action.textContent = "—";
+      if (actionControls.childElementCount) action.append(actionControls);
+      else action.textContent = "—";
       if (entry.run_id) {
         const button = document.createElement("button");
         button.className = "prompt-history-details";
@@ -2771,6 +2888,13 @@ function loadDashboardClientState() {
 const dashboardClientState = loadDashboardClientState();
 const dashboardLocaleSelector = $("dashboardLocale");
 const dashboardLocaleButton = $("dashboardLocaleButton"), dashboardLocaleMenu = $("dashboardLocaleMenu");
+const dashboardTitlebarOptions = $("dashboardTitlebarOptions");
+const compactTitlebarMedia = window.matchMedia("(max-width: 620px)");
+function syncTitlebarOptions() {
+  dashboardTitlebarOptions.open = !compactTitlebarMedia.matches;
+}
+compactTitlebarMedia.addEventListener("change", syncTitlebarOptions);
+syncTitlebarOptions();
 function setLocaleMenuOpen(open) {
   dashboardLocaleMenu.hidden = !open;
   dashboardLocaleButton.setAttribute("aria-expanded", String(open));
@@ -2801,6 +2925,7 @@ function applyDashboardLocale() {
     [".theme-toggle__label", "header.theme"],
     [".section-state-toggle__label", "header.expand"],
     [".auto-refresh-toggle span", "header.auto_refresh"],
+    [".dashboard-titlebar__options > summary span", "header.options"],
     [".dashboard-locale span", "language.label"],
     ["#dashboardTitle", "dashboard.title"],
     ["#dashboardSplashTitle", "dashboard.title"],
@@ -3653,6 +3778,32 @@ function submitManagedBranchRecovery() {
       .catch((error) => {
         if (button) button.disabled = false;
         blocker.textContent = error.message || t("queue.managed_branch_recovery_failed");
+      });
+  });
+}
+function submitStaleGitLockRecovery() {
+  confirmDashboardAction(
+    t("technical.git_lock_recovery_title"),
+    t("technical.git_lock_recovery"),
+    t("technical.git_lock_recovery_action"),
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    const button = $("technicalGitLockRecover"), status = $("technicalGitLockRecoveryStatus");
+    button.disabled = true;
+    fetch("/api/stale-git-lock-recovery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("technical.git_lock_recovery_failed"));
+        renderWorkspaceGitLock({ state: "free", active: false, stale: false });
+        status.textContent = t("technical.git_lock_recovery_ready");
+      })
+      .catch((error) => {
+        status.textContent = error.message || t("technical.git_lock_recovery_failed");
+        button.disabled = false;
       });
   });
 }

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
@@ -10,27 +11,38 @@ import {
 } from "../../tools/engineering/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const dashboardUrl = "http://127.0.0.1:8876";
 let dashboard;
+let dashboardRoot;
+let dashboardUrl;
 
 async function waitForDashboard() {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
       if ((await fetch(`${dashboardUrl}/api/health`)).ok) return;
     } catch {
-      // The local dashboard process is still starting.
+      // The isolated dashboard process is still starting.
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("Engineering Status did not become healthy in time.");
 }
 
-test.beforeAll(async () => {
+test.beforeAll(async ({}, testInfo) => {
+  const port = 8876 + testInfo.workerIndex;
+  dashboardUrl = `http://127.0.0.1:${port}`;
+  dashboardRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-test-"));
+  const engineeringDirectory = path.join(dashboardRoot, "tools/engineering");
+  mkdirSync(engineeringDirectory, { recursive: true });
+  for (const filename of ["ENGINEERING_PLATFORM_CONFIG.json", "ENGINEERING_PLATFORM_VERSION.json"]) {
+    copyFileSync(path.join(repository, "tools/engineering", filename), path.join(engineeringDirectory, filename));
+  }
   dashboard = spawn(
     "python3",
     [
       "-c",
-      'from pathlib import Path; from tools.engineering.dashboard import DashboardHTTPServer, handler; DashboardHTTPServer(("127.0.0.1", 8876), handler(Path(".").resolve())).serve_forever()',
+      "from pathlib import Path; import sys; from tools.engineering.dashboard import DashboardHTTPServer, handler; DashboardHTTPServer(('127.0.0.1', int(sys.argv[2])), handler(Path(sys.argv[1]))).serve_forever()",
+      dashboardRoot,
+      String(port),
     ],
     { cwd: repository, stdio: "ignore" },
   );
@@ -39,6 +51,29 @@ test.beforeAll(async () => {
 
 test.afterAll(() => {
   dashboard?.kill("SIGTERM");
+  if (dashboardRoot) rmSync(dashboardRoot, { force: true, recursive: true });
+});
+
+async function openTitlebarOptions(page) {
+  const options = page.locator("#dashboardTitlebarOptions");
+  if (!(await options.evaluate((element) => element.open))) {
+    await page.getByTestId("titlebar-options-toggle").click();
+  }
+}
+
+test.beforeEach(async ({ page }, testInfo) => {
+  const goto = page.goto.bind(page);
+  page.goto = async (...arguments_) => {
+    const response = await goto(...arguments_);
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    if (![
+      "puts every mobile title-bar setting in a labelled expandable panel",
+      "only starts pull-to-refresh from the scroll region's top edge",
+    ].includes(testInfo.title)) {
+      await openTitlebarOptions(page);
+    }
+    return response;
+  };
 });
 
 test.describe("Engineering Status browser smoke", () => {
@@ -50,6 +85,17 @@ test.describe("Engineering Status browser smoke", () => {
       expect(Object.keys(DASHBOARD_MESSAGES[locale]).sort(), locale).toEqual(canonicalKeys);
       for (const key of canonicalKeys) expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
     }
+  });
+
+  test("lists English first in both language selectors", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardLocaleButton").click();
+    expect(await page.locator("#dashboardLocale option").evaluateAll(
+      (options) => options.map((option) => option.value),
+    )).toEqual(["en", "nl", "de", "fr", "es"]);
+    expect(await page.locator("[data-dashboard-locale]").evaluateAll(
+      (options) => options.map((option) => option.dataset.dashboardLocale),
+    )).toEqual(["en", "nl", "de", "fr", "es"]);
   });
 
   test("renders repository and workspace state codes as readable labels", () => {
@@ -256,6 +302,10 @@ test.describe("Engineering Status browser smoke", () => {
         "aria-label",
         DASHBOARD_MESSAGES[language]["logs.dashboard_entries"],
       );
+      await expect(page.getByTestId("copy-inbox-visible-log")).toHaveAttribute(
+        "aria-label",
+        DASHBOARD_MESSAGES[language]["logs.copy_visible"],
+      );
       await page.locator("#clearChat").click();
       await expect(page.locator("#confirmationModalTitle")).toHaveText(
         DASHBOARD_MESSAGES[language]["chat.clear_title"],
@@ -407,8 +457,35 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailModal")).toHaveClass(/dashboard-modal-shell--evidence/);
     await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__panel")).toHaveClass(/dashboard-modal-shell__panel/);
     await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__header")).toHaveClass(/dashboard-modal-shell__header/);
+    await expect(page.locator("#promptHistoryDetailDescription")).toHaveCSS("border-bottom-color", "rgb(141, 199, 255)");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
     await expect(page.locator("dialog[open]")).toHaveCount(1);
+  });
+
+  test("draws the selected prompt-history row border on both table edges", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-row-focus",
+        status: "COMPLETE",
+        title: "Focused row",
+        executed_at: "2026-08-04T08:00:00Z",
+      }];
+      renderPromptHistory();
+    });
+    const row = page.locator("#promptHistoryRows .prompt-history-row");
+    await row.focus();
+    await expect(row).toBeFocused();
+    await expect(row.locator("td").first()).toHaveCSS(
+      "box-shadow",
+      "rgb(240, 182, 106) 3px 0px 0px 0px inset",
+    );
+    await expect(row.locator("td").last()).toHaveCSS(
+      "box-shadow",
+      "rgb(240, 182, 106) -3px 0px 0px 0px inset",
+    );
   });
 
   test("renders a read-only Forge recommendation handoff with expandable alternatives", async ({ page }) => {
@@ -515,6 +592,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(styles).toContain("backdrop-filter:blur(12px)");
     expect(styles).toContain("background-image:linear-gradient");
     expect(styles).toContain("scale(1.045)");
+    expect(styles).toContain("-webkit-user-select:none");
+    expect(styles).toContain(".dashboard-titlebar :is(.theme-toggle,.section-state-toggle)");
   });
 
   test("keeps the execution-details modal as compact as the report modal on iPhone", async ({ page }) => {
@@ -541,6 +620,29 @@ test.describe("Engineering Status browser smoke", () => {
     expect(await page.locator("#promptHistoryDetailContent").evaluate(
       (element) => element.scrollHeight > element.clientHeight,
     )).toBe(true);
+  });
+
+  test("keeps confirmation actions above iPhone browser chrome for long copy", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#confirmationModal");
+    await modal.evaluate((element) => {
+      element.querySelector("#confirmationModalText").textContent = "Deze bevestiging bevat extra toelichting. ".repeat(80);
+      element.showModal();
+    });
+
+    const actions = modal.locator("#confirmationModalCancel, #confirmationModalConfirm");
+    await expect(actions).toHaveCount(2);
+    await expect(actions.nth(0)).toBeVisible();
+    await expect(actions.nth(1)).toBeVisible();
+    const placement = await actions.evaluateAll((buttons) => ({
+      viewportHeight: window.visualViewport?.height ?? window.innerHeight,
+      bottoms: buttons.map((button) => button.getBoundingClientRect().bottom),
+      panelBottom: document.querySelector(".confirmation-modal__panel").getBoundingClientRect().bottom,
+    }));
+    expect(Math.max(...placement.bottoms)).toBeLessThanOrEqual(placement.viewportHeight);
+    expect(Math.max(...placement.bottoms)).toBeLessThanOrEqual(placement.panelBottom);
+    await modal.evaluate((element) => element.close());
   });
 
   test("keeps the prompt-history AI chat as compact as the detail modal on iPhone", async ({ page }) => {
@@ -696,6 +798,17 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
   });
 
+  test("puts preflight diagnostic clauses on separate lines", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      diagnostic: "Workspace Preflight blocked by worktree_unstaged (Repository). Expected: worktree_unstaged: PASS. Observed: Unstaged changes are present. Required action: Commit, stash, or remove unstaged changes before execution.",
+    }, {}));
+    await expect(page.locator("#diag")).toHaveText(
+      "Workspace Preflight blocked by worktree_unstaged (Repository).\nExpected: worktree_unstaged: PASS.\nObserved: Unstaged changes are present.\nRequired action: Commit, stash, or remove unstaged changes before execution.",
+    );
+    await expect(page.locator("#diag")).toHaveCSS("white-space", "pre-line");
+  });
+
   test("renders host, workspace and capability preflight fields through one presentation", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
@@ -800,7 +913,8 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("rerenders prompt history pagination in the selected language", async ({ page }) => {
-    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    let historyRuns = [];
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: historyRuns } }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await historyLoaded;
@@ -811,15 +925,16 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(
       () => typeof window.renderPromptHistory === "function",
     );
-    await page.evaluate(() => {
-      document.querySelector("#promptHistory").open = true;
-      promptHistoryEntries = Array.from({ length: 101 }, (_, index) => ({
+    historyRuns = Array.from({ length: 101 }, (_, index) => ({
         run_id: `inbox-${index}`,
         title: `Prompt ${index}`,
         status: "COMPLETE",
       }));
+    await page.evaluate((fixture) => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = fixture;
       renderPromptHistory();
-    });
+    }, historyRuns);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Page 1 of 11 · 101 executions");
     await expect(page.locator("#promptHistoryRows tr")).toHaveCount(10);
     expect(await page.locator("#promptHistory .log-table-wrap").evaluate((wrap) => {
@@ -847,10 +962,47 @@ test.describe("Engineering Status browser smoke", () => {
       };
     });
     expect(layout.tableWidth).toBeGreaterThanOrEqual(layout.wrapWidth - 2);
-    // The persistent scrollbar gutter occupies room inside the viewport; keep
-    // the table within that small, reserved overflow budget on wide screens.
-    expect(layout.tableWidth).toBeLessThanOrEqual(layout.wrapWidth + 32);
+    // A terminal row can reserve one unwrapped action strip. Its bounded
+    // overflow remains much smaller than a title column expanding freely.
+    expect(layout.tableWidth).toBeLessThanOrEqual(layout.wrapWidth + 128);
     expect(layout.titleWidth).toBeGreaterThan(layout.statusWidth * 2.5);
+  });
+
+  test("keeps terminal history actions on one wide-screen row beside a compact title", async ({ page }) => {
+    await page.setViewportSize({ width: 2048, height: 900 });
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      r({ last_executed_run: "inbox-actions", watcher_state: "WATCHER_IDLE" }, {});
+      promptHistoryEntries = [{
+        run_id: "inbox-actions",
+        title: "Engineering Platform Increment — Producer Submission Envelope",
+        status: "BLOCKED",
+        can_retry: true,
+      }];
+      renderPromptHistory();
+    });
+    const actions = page.locator("#promptHistoryRows .prompt-history-actions").first();
+    await expect(actions).toHaveCSS("flex-wrap", "nowrap");
+    const layout = await actions.evaluate((element) => ({
+      height: Math.round(element.getBoundingClientRect().height),
+      firstTop: Math.round(element.children[0].getBoundingClientRect().top),
+      secondTop: Math.round(element.children[1].getBoundingClientRect().top),
+      titleWidth: Math.round(element.closest("tr").children[2].getBoundingClientRect().width),
+      actionCellDisplay: getComputedStyle(element.parentElement).display,
+      actionCellBottom: Math.round(element.parentElement.getBoundingClientRect().bottom),
+      titleCellBottom: Math.round(element.closest("tr").children[2].getBoundingClientRect().bottom),
+    }));
+    expect(layout.firstTop).toBe(layout.secondTop);
+    expect(layout.height).toBeLessThanOrEqual(46);
+    expect(layout.titleWidth).toBeLessThanOrEqual(384);
+    expect(layout.actionCellDisplay).toBe("table-cell");
+    expect(layout.actionCellBottom).toBe(layout.titleCellBottom);
   });
 
   test("shows only the final five Run-ID characters on an iPad-sized history table", async ({ page }) => {
@@ -925,6 +1077,7 @@ test.describe("Engineering Status browser smoke", () => {
     );
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.locator("#dashboardTitlebarOptions").evaluate((element) => { element.open = false; });
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const image = await page.screenshot({ animations: "disabled" });
     await testInfo.attach("iphone-portrait-dashboard", {
@@ -1016,8 +1169,108 @@ test.describe("Engineering Status browser smoke", () => {
         viewportTop: 0,
       };
     });
-    expect(layout.position).toBe("static");
+    expect(layout.position).toBe("relative");
     expect(layout.titleBottom).toBeLessThan(layout.viewportTop);
+  });
+
+  test("puts every mobile title-bar setting in a labelled expandable panel", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const options = page.locator("#dashboardTitlebarOptions");
+    const disclosure = page.getByTestId("titlebar-options-toggle");
+    await expect(options).not.toHaveAttribute("open", "");
+    await expect(disclosure).toBeVisible();
+    await expect(page.getByTestId("theme-toggle")).not.toBeVisible();
+
+    await disclosure.click();
+    await expect(options).toHaveAttribute("open", "");
+    await expect(page.locator("#dashboardLocaleButton")).toBeVisible();
+    await expect(page.locator("#dashboardLocaleButton")).toContainText("Nederlands");
+    for (const label of [
+      ".dashboard-titlebar__options-content .dashboard-locale > span:first-child",
+      ".dashboard-titlebar__options-content .theme-toggle__label",
+      ".dashboard-titlebar__options-content .section-state-toggle__label",
+      ".dashboard-titlebar__options-content .auto-refresh-toggle span",
+    ]) {
+      await expect(page.locator(label)).toBeVisible();
+      expect((await page.locator(label).textContent()).trim()).not.toBe("");
+    }
+
+    const controls = await page.locator(
+      ".dashboard-titlebar__options-content > .dashboard-locale, .dashboard-titlebar__options-content > .theme-toggle, .dashboard-titlebar__options-content > .section-state-toggle, .dashboard-titlebar__options-content > .auto-refresh-toggle",
+    ).evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().top)));
+    expect(controls).toEqual([...controls].sort((first, second) => first - second));
+    const titlebarLayout = await page.evaluate(() => {
+      const refresh = document.querySelector("#pageRefresh").getBoundingClientRect();
+      const options = document.querySelector("#dashboardTitlebarOptions").getBoundingClientRect();
+      return { refreshBottom: Math.round(refresh.bottom), optionsTop: Math.round(options.top) };
+    });
+    expect(titlebarLayout.refreshBottom).toBeLessThanOrEqual(titlebarLayout.optionsTop);
+  });
+
+  test("keeps each iPhone title-bar switch thumb inside its track", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await openTitlebarOptions(page);
+    for (const toggle of [page.getByTestId("theme-toggle"), page.getByTestId("toggle-all-sections")]) {
+      const pseudo = await toggle.evaluate((element) => ({
+        trackPosition: getComputedStyle(element, "::before").position,
+        trackRight: getComputedStyle(element, "::before").right,
+        thumbRight: getComputedStyle(element, "::after").right,
+      }));
+      expect(pseudo).toEqual({
+        trackPosition: "absolute",
+        trackRight: "0px",
+        thumbRight: "21px",
+      });
+    }
+  });
+
+  test.describe("iPhone direct touch", () => {
+    test.use({ hasTouch: true, isMobile: true });
+
+    test("persists every iPhone title-bar toggle after one direct touch at a time", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await openTitlebarOptions(page);
+
+    const touch = async (locator) => {
+      const box = await locator.boundingBox();
+      expect(box).not.toBeNull();
+      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    };
+    const storedState = () => page.evaluate(() =>
+      JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1") || "{}"),
+    );
+    const theme = page.getByTestId("theme-toggle");
+    const allSections = page.getByTestId("toggle-all-sections");
+    const autoRefresh = page.locator("#autoRefresh");
+
+    await expect(theme).toHaveAttribute("aria-checked", "false");
+    await touch(theme);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(theme).toHaveAttribute("aria-checked", "true");
+    await expect.poll(storedState).toMatchObject({ theme: "light" });
+
+    await expect(allSections).toHaveAttribute("aria-checked", "false");
+    await touch(allSections);
+    await expect(allSections).toHaveAttribute("aria-checked", "true");
+    for (const id of ["workspaceCard", "queueItems", "promptHistory", "platformHealth", "technicalDetails", "componentLogs"])
+      await expect(page.locator(`#${id}`)).toHaveAttribute("open", "");
+    await expect.poll(storedState).toMatchObject({ allSectionsOpen: true });
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("engineering-dashboard-all-sections-open-v1"))).toBe("true");
+
+    await expect(autoRefresh).toBeChecked();
+    await touch(autoRefresh);
+    await expect(autoRefresh).not.toBeChecked();
+    await expect.poll(storedState).toMatchObject({ autoRefresh: false });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(page.getByTestId("toggle-all-sections")).toHaveAttribute("aria-checked", "true");
+      await expect(page.locator("#autoRefresh")).not.toBeChecked();
+    });
   });
 
   test("restores the iPhone page position after an input loses focus", async ({ page }) => {
@@ -1760,6 +2013,10 @@ test.describe("Engineering Status browser smoke", () => {
     for (const selector of ["#promptHistoryReportContent", "#promptHistoryReportCopy", "#promptHistoryReportDownload"]) {
       expect(await page.locator(selector).evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(24, 24, 31)");
     }
+    await expect(page.locator("#promptHistoryReportContent")).toHaveCSS(
+      "background-color",
+      await page.locator(".report-view-modal__panel").evaluate((element) => getComputedStyle(element).backgroundColor),
+    );
     await expect(page.locator("#promptHistoryReportDownload")).toHaveText("⇩");
     expect(await page.locator("#promptHistoryReportDownload").evaluate((element) => getComputedStyle(element, "::before").content)).toContain("↓");
   });
@@ -1876,6 +2133,37 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("copies only the visible filtered component-log entries", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    await page.evaluate(() => {
+      window.__copiedVisibleLog = "";
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: (value) => {
+            window.__copiedVisibleLog = value;
+            return Promise.resolve();
+          },
+        },
+      });
+      componentLogEntries.inbox = [
+        { line: 1, timestamp: "2026-08-07T10:00:00Z", level: "INFO", event: "retain_me", runId: "visible-run", details: "visible detail" },
+        { line: 2, timestamp: "2026-08-07T10:01:00Z", level: "ERROR", event: "exclude_me", runId: "hidden-run", details: "hidden detail" },
+      ];
+      document.querySelector("#logFilter").value = "retain_me";
+      independentLogPageStates.inbox = 1;
+      renderComponentLogs();
+    });
+
+    await expect(page.locator("#inboxComponentLog tr")).toHaveCount(1);
+    await page.getByTestId("copy-inbox-visible-log").click();
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("retain_me");
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("visible-run");
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("exclude_me");
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("hidden-run");
+  });
+
   test("uses the shared single-line circular border for download glyphs", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
@@ -1894,8 +2182,8 @@ test.describe("Engineering Status browser smoke", () => {
     for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
       await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--download/);
     }
-    for (const selector of ["#copyChat", "#promptHistoryReportCopy"]) {
-      await expect(page.locator(selector)).toHaveClass(/dashboard-action--copy/);
+    for (const selector of ["#copyChat", "#promptHistoryReportCopy", "#componentLogs .component-log-copy"]) {
+      await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--copy/);
     }
     for (const selector of ["#clearChat", "#componentLogs .clear-component-log"]) {
       await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--destructive/);
@@ -2033,6 +2321,29 @@ test.describe("Engineering Status browser smoke", () => {
     expect(box.y + box.height).toBeLessThanOrEqual(844);
   });
 
+  test("uses the house-orange focus contract and a light mobile options surface", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const styles = await page.evaluate(() => {
+      const root = document.documentElement;
+      root.dataset.theme = "light";
+      const summary = document.querySelector("#dashboardTitlebarOptions > summary");
+      document.querySelector("#dashboardTitlebarOptions").open = true;
+      const input = document.querySelector("#autoRefresh");
+      input.focus({ preventScroll: true });
+      return {
+        focusOutline: getComputedStyle(input).outlineColor,
+        summaryBackground: getComputedStyle(summary).backgroundColor,
+        summaryColor: getComputedStyle(summary).color,
+      };
+    });
+
+    expect(styles.focusOutline).toBe("rgb(240, 182, 106)");
+    expect(styles.summaryBackground).not.toBe("rgb(17, 19, 29)");
+    expect(styles.summaryColor).toBe("rgb(24, 34, 48)");
+  });
+
   test("keeps the sticky title bar square while padding content evenly", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const padding = await page.locator(".dashboard-titlebar").evaluate((element) => {
@@ -2091,6 +2402,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(content).toBeFocused();
     await expect(content).toHaveCSS("outline-style", "none");
     await expect(content).toHaveCSS("box-shadow", "none");
+    await expect(content).toHaveCSS("border-top-width", "0px");
   });
 
   test("keeps report-modal shell focusable without a visible selection ring", async ({ page }) => {
@@ -2408,12 +2720,22 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows a searchable, sortable and paginated prompt history", async ({ page }) => {
+    let historyRuns = [];
     await page.route("**/api/prompt-history", async (route) => {
-      await route.fulfill({ json: { runs: [] } });
+      await route.fulfill({ json: { runs: historyRuns } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
+    historyRuns = Array.from({ length: 26 }, (_, index) => ({
+      run_id: `inbox-history-${index}`,
+      status: index % 2 ? "COMPLETE" : "FAILED",
+      title: `Geschiedenis prompt ${String(index).padStart(2, "0")}`,
+      executed_at: `2026-08-02T12:${String(index).padStart(2, "0")}:00Z`,
+      git_commit: index % 2 ? "abcdef1" : null,
+      report_available: index % 2 === 1,
+      analysis_available: index % 2 === 1,
+    }));
     await page.evaluate(() => {
       const legacyCommitHeader = document.createElement("th");
       legacyCommitHeader.dataset.historySortKey = "git_commit";
@@ -2423,17 +2745,11 @@ test.describe("Engineering Status browser smoke", () => {
         document.querySelector("#promptHistory thead tr").children[3],
       );
       document.querySelector("#promptHistory").open = true;
-      promptHistoryEntries = Array.from({ length: 26 }, (_, index) => ({
-        run_id: `inbox-history-${index}`,
-        status: index % 2 ? "COMPLETE" : "FAILED",
-        title: `Geschiedenis prompt ${String(index).padStart(2, "0")}`,
-        executed_at: `2026-08-02T12:${String(index).padStart(2, "0")}:00Z`,
-        git_commit: index % 2 ? "abcdef1" : null,
-        report_available: index % 2 === 1,
-        analysis_available: index % 2 === 1,
-      }));
-      renderPromptHistory();
     });
+    await page.evaluate((fixture) => {
+      promptHistoryEntries = fixture;
+      renderPromptHistory();
+    }, historyRuns);
 
     await expect(page.locator("#promptHistoryRows tr")).toHaveCount(10);
     await expect(page.locator("#promptHistory th")).toHaveCount(8);
@@ -2996,6 +3312,63 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueSummary")).toHaveText("2 uitvoeringen in de wachtrij.");
   });
 
+  test("defers one waiting Inbox item through a confirmed reversible action", async ({ page }) => {
+    let deferred = false;
+    const queued = [
+      { filename: "defer-me.md", title: "Later uitvoeren", modified_at: "2026-08-02T10:01:00Z" },
+      { filename: "keep-waiting.md", title: "Blijft wachten", modified_at: "2026-08-02T10:02:00Z" },
+    ];
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: { watcher_state: "WATCHER_IDLE", queue_depth: deferred ? 1 : 2, queue_items: deferred ? queued.slice(1) : queued },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
+    await page.route("**/api/queue-defer", async (route) => {
+      expect(JSON.parse(route.request().postData() || "{}")).toEqual({ filename: "defer-me.md" });
+      deferred = true;
+      await route.fulfill({ status: 202, json: { filename: "defer-me.md", deferred_filename: "defer-me.md" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+
+    await page.getByRole("button", { name: "Stel uit" }).first().click();
+    await expect(page.locator("#confirmationModalTitle")).toHaveText("Uitvoering uitstellen");
+    await expect(page.locator("#confirmationModalText")).toContainText("Inbox/_deferred");
+    await page.locator("#confirmationModalConfirm").click();
+
+    await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
+    await expect(page.locator("#queueList")).toContainText("Blijft wachten");
+    await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
+  });
+
+  test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
+    let deferRequests = 0;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      status: {
+        watcher_state: "WATCHER_IDLE",
+        queue_depth: 1,
+        queue_items: [{ filename: "keep-me.md", title: "Blijf actief", modified_at: "2026-08-02T10:01:00Z" }],
+      },
+      component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
+    } }));
+    await page.route("**/api/queue-defer", async (route) => {
+      deferRequests += 1;
+      await route.fulfill({ status: 500, json: { error: "niet verwacht" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
+    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+
+    await page.getByRole("button", { name: "Stel uit" }).click();
+    await page.locator("#confirmationModalCancel").click();
+
+    await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
+    await expect(page.locator("#queueList")).toContainText("Blijf actief");
+    expect(deferRequests).toBe(0);
+  });
+
   test("shows the Codex CLI blocker in the Inbox queue", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
@@ -3041,12 +3414,47 @@ test.describe("Engineering Status browser smoke", () => {
     const blocker = page.locator("#inboxBlocker");
     await expect(blocker).toHaveClass(/queue-blocker--error/);
     await expect(blocker).toContainText("Execution Host mag alleen werk vanaf main claimen.");
-    await blocker.getByRole("button", { name: "Herstel" }).click();
+    const repair = blocker.getByRole("button", { name: "Herstel" });
+    await expect(repair).toHaveCSS("background-color", "rgb(59, 40, 27)");
+    await expect(repair).toHaveCSS("border-color", "rgb(240, 182, 106)");
+    await expect(repair).toHaveCSS("border-radius", "8px");
+    await repair.click();
     await expect(page.locator("#confirmationModal")).toBeVisible();
     await expect(page.locator("#confirmationModalText")).toContainText("herstart de Inbox-watcher");
     await page.locator("#confirmationModalConfirm").click();
     await expect(blocker).toHaveText("Werkmap hersteld naar main; de Inbox-watcher draait weer.");
     expect(repairRequested).toBeTruthy();
+  });
+
+  test("shows and safely recovers a confirmed stale Git workspace lock", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    let recoveryRequested = false;
+    await page.route("**/api/stale-git-lock-recovery", async (route) => {
+      recoveryRequested = true;
+      expect(route.request().postData()).toBe("{}");
+      await route.fulfill({ json: { state: "free", recovered: true }, status: 202 });
+    });
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE", queue_depth: 0 }, {
+      workspace_git_lock: { state: "stale", stale: true, age_seconds: 360 },
+    }));
+
+    await page.locator("#technicalDetails > summary").click();
+    const lock = page.locator("#technicalGitLock");
+    await expect(lock).toContainText("Werkmapvergrendeling");
+    await expect(lock).toContainText("Actief");
+    await expect(lock).toContainText("Git voert een andere actie uit; nieuwe uitvoeringen wachten.");
+    await lock.getByRole("button", { name: "Herstel vergrendeling" }).click();
+    await expect(page.locator("#confirmationModal")).toBeVisible();
+    await expect(page.locator("#confirmationModalText")).toContainText("uitsluitend de verouderde Git-indexvergrendeling");
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(lock).toContainText("Vrij");
+    await expect(lock).toContainText("De verouderde Git-vergrendeling is verwijderd.");
+    expect(recoveryRequested).toBeTruthy();
   });
 
   test("renders provider limit rows on separate lines", async ({ page }) => {
