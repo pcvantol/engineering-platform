@@ -588,6 +588,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Read BOOTSTRAP.md", agent.prompts[0])
         self.assertIn("# bounded objective", agent.prompts[0])
         self.assertIn("Execution Host has already synchronized `main`", agent.prompts[0])
+        self.assertIn("host, workspace and capability preflights passed", agent.prompts[0])
+        self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_managed_synchronization_blocks_before_agent_when_host_cannot_sync(self) -> None:

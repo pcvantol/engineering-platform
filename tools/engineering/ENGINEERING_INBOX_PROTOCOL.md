@@ -67,6 +67,13 @@ temporary *index lock already exists* signal, the Execution Host retries only
 that command up to three times with short backoff. It never removes a foreign
 lock. A permission-denied or other Git failure remains fail-closed immediately
 and its original bounded diagnostic is retained in the terminal checkpoint.
+
+For a Managed transaction, the host's successful host, workspace and capability
+preflights are also the authoritative admission evidence. The invoked agent must
+not repeat development-host bootstrap verification or a predecessor lookup from
+its sandboxed runtime: those checks can have different network access and create
+a false blocking result after admission has already passed. The agent retains
+GitHub access only for the transaction's own pull-request work.
 Managed execution also requires the configured branch, a valid origin and an
 in-sync upstream; Genesis requires only a local target repository and does not
 require a remote. It never changes repository state.
