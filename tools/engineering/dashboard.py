@@ -694,6 +694,31 @@ def _restart_component_after_response(component: str, logger: logging.Logger) ->
         log_event(logger, logging.ERROR, "component_restart_failed", diagnostic=str(error))
 
 
+def _restore_managed_main_branch(root: Path) -> dict[str, str]:
+    """Return a clean managed workspace to main, then restart its Inbox watcher."""
+    provider = GitProvider()
+    try:
+        status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
+        branch = provider.execute(root, "git", "branch", "--show-current")
+    except OSError as error:
+        raise RuntimeError("De werkmap kon niet worden gecontroleerd.") from error
+    if status.returncode or branch.returncode:
+        raise RuntimeError("De werkmap kon niet veilig worden gecontroleerd.")
+    if status.stdout.strip():
+        raise RuntimeError("Herstel is alleen mogelijk wanneer de werkmap geen lokale wijzigingen bevat.")
+    previous_branch = branch.stdout.strip()
+    if previous_branch != "main":
+        try:
+            provider.command(root, "git", "switch", "main")
+        except RuntimeError as error:
+            raise RuntimeError("De werkmap kon niet veilig naar main worden teruggezet.") from error
+    try:
+        LaunchdProvider().restart(WATCHER_LABEL)
+    except OSError as error:
+        raise RuntimeError("De werkmap staat op main, maar de Inbox-watcher kon niet worden herstart.") from error
+    return {"previous_branch": previous_branch, "branch": "main", "watcher": "restarted"}
+
+
 def _codex_process_metrics(root: Path) -> bytes:
     """Measure only the process group explicitly recorded by the Execution Host."""
     try:
@@ -1081,7 +1106,7 @@ def _dashboard_html(
 <div class="dashboard-scroll-region">
 <header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="nl" data-i18n="language.nl"></option><option value="en" data-i18n="language.en"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></header>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
-<details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><p class="queue-blocker" id="inboxBlocker" role="status"></p><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
+<details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
 <details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="8" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
 <details class="current-run" id="currentRun" data-i18n-aria-label="detail.execution" hidden><summary class="current-run__title"><span class="label" data-i18n="section.active_prompt"></span></summary><div class="current-run__grid"><div class="field"><span class="label" data-i18n="detail.prompt_title"></span><h2 id="currentPrompt" data-i18n="format.loading"></h2></div><div class="field"><span class="label" data-i18n="ui.filename"></span><pre id="currentFile" data-i18n="format.loading"></pre></div>
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" data-i18n-aria-label="status.unknown"></span><strong data-i18n="detail.prompt_status"></strong></div><p class="field"><span class="label" data-i18n="ui.watcher"></span><span id="watcher" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.phase"></span><span id="phase" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.current_activity"></span><span id="action" data-i18n="format.loading"></span></p></div>
@@ -1268,6 +1293,27 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     "application/json; charset=utf-8",
                     202,
                 )
+                return
+            if request_path == "/api/managed-branch-recovery":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = _restore_managed_main_branch(root)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "managed_branch_recovery_completed",
+                        diagnostic=f"previous_branch={outcome['previous_branch']}; watcher=restarted",
+                    )
+                except (RuntimeError, ValueError):
+                    self._send(
+                        b'{"error":"De werkmap kon niet veilig naar main worden hersteld."}',
+                        "application/json; charset=utf-8",
+                        409,
+                    )
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path == "/api/execution-retry":
                 try:

@@ -477,10 +477,20 @@ function queueItems(x, queueDepth) {
 function renderInboxBlocker(status) {
   const blocker = $("inboxBlocker"),
     runtimeInvocationFailed = status?.watcher_state === "HOST_PREFLIGHT_FAILED" &&
-      String(status?.diagnostic || "").includes("runtime_invocation");
-  blocker.textContent = runtimeInvocationFailed
-    ? t("queue.runtime_invocation_blocked")
-    : "";
+      String(status?.diagnostic || "").includes("runtime_invocation"),
+    managedBranchBlocked = String(status?.diagnostic || "").includes("managed_expected_branch");
+  blocker.replaceChildren();
+  blocker.hidden = !(runtimeInvocationFailed || managedBranchBlocked);
+  blocker.classList.toggle("queue-blocker--error", managedBranchBlocked);
+  if (runtimeInvocationFailed) blocker.textContent = t("queue.runtime_invocation_blocked");
+  if (!managedBranchBlocked) return;
+  const message = document.createElement("p"), repair = document.createElement("button");
+  message.textContent = t("queue.managed_branch_blocked");
+  repair.className = "queue-blocker__repair";
+  repair.type = "button";
+  repair.textContent = t("queue.managed_branch_recovery_action");
+  repair.addEventListener("click", submitManagedBranchRecovery);
+  blocker.append(message, repair);
 }
 function promptStarted(x) {
   promptStartedAt = x?.started_at ? Date.parse(x.started_at) : undefined;
@@ -3617,6 +3627,32 @@ function submitPredecessorRetry() {
       })
       .finally(() => {
         button.disabled = false;
+      });
+  });
+}
+function submitManagedBranchRecovery() {
+  confirmDashboardAction(
+    t("queue.managed_branch_recovery_title"),
+    t("queue.managed_branch_recovery"),
+    t("queue.managed_branch_recovery_action"),
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    const blocker = $("inboxBlocker"), button = blocker.querySelector(".queue-blocker__repair");
+    if (button) button.disabled = true;
+    fetch("/api/managed-branch-recovery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("queue.managed_branch_recovery_failed"));
+        blocker.textContent = t("queue.managed_branch_recovery_ready");
+        blocker.classList.remove("queue-blocker--error");
+      })
+      .catch((error) => {
+        if (button) button.disabled = false;
+        blocker.textContent = error.message || t("queue.managed_branch_recovery_failed");
       });
   });
 }

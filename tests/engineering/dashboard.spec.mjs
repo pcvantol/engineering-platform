@@ -2999,6 +2999,38 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
+  test("offers a confirmed repair for a queue blocked on a working branch", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    let repairRequested = false;
+    await page.route("**/api/managed-branch-recovery", async (route) => {
+      repairRequested = true;
+      expect(route.request().postData()).toBe("{}");
+      await route.fulfill({ json: { previous_branch: "codex/ui-polish", branch: "main", watcher: "restarted" }, status: 202 });
+    });
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WORKSPACE_PREFLIGHT_FAILED", queue_depth: 1 } },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => r({
+      watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
+      diagnostic: "Workspace Preflight blocked by managed_expected_branch.",
+      queue_depth: 1,
+      queue_items: [{ filename: "waiting.txt", title: "Waiting prompt" }],
+    }, {}));
+
+    await page.getByTestId("engineering-inbox-queue").locator("summary").click();
+    const blocker = page.locator("#inboxBlocker");
+    await expect(blocker).toHaveClass(/queue-blocker--error/);
+    await expect(blocker).toContainText("Execution Host mag alleen werk vanaf main claimen.");
+    await blocker.getByRole("button", { name: "Herstel" }).click();
+    await expect(page.locator("#confirmationModal")).toBeVisible();
+    await expect(page.locator("#confirmationModalText")).toContainText("herstart de Inbox-watcher");
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(blocker).toHaveText("Werkmap hersteld naar main; de Inbox-watcher draait weer.");
+    expect(repairRequested).toBeTruthy();
+  });
+
   test("renders provider limit rows on separate lines", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
