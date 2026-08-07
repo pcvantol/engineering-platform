@@ -1179,6 +1179,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator(".dashboard-splash__version")).toContainText("1.5.0");
     await expect(page.locator(".dashboard-splash__loading")).toHaveText("Gegevens laden…");
     await expect(page.locator(".dashboard-splash__version")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");

@@ -34,6 +34,7 @@ class DashboardStatusTest(unittest.TestCase):
         ).decode("utf-8")
         self.assertIn('data-i18n="workspace.free_disk_space"', page)
         self.assertIn("12.3 GB", page)
+        self.assertIn("Engineering Platform 1.5.0", page)
 
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]
