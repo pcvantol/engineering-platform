@@ -308,6 +308,8 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
 
 /* Main sections */
 .dashboard-grid{gap:var(--dashboard-section-gap)}
+.execution-context--primary{background:#1f3140!important;border-color:#65c5d9!important;grid-column:1 / -1}.execution-context--primary strong{color:#8de1f2!important}.execution-context--primary .field{border-top:1px solid #65c5d955;padding-top:8px}.execution-context--primary .field:first-of-type{border-top:0;padding-top:0}.execution-context__phase{border:1px solid currentColor;border-radius:999px;display:inline-block;font-weight:700;padding:4px 8px}
+@media (min-width:720px){.execution-context--primary{columns:2;column-gap:24px}.execution-context--primary>strong{column-span:all}.execution-context--primary .field{break-inside:avoid}}
 .workspace-card{margin-bottom:0}
 .workspace-card,.inbox-queue,.prompt-history,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),.telemetry,.platform-health,.current-run{box-shadow:none}
 #currentRun>.current-run__title{border-bottom-color:var(--category-color)}

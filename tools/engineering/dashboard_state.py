@@ -115,6 +115,10 @@ def status(root: Path) -> bytes:
                 "active_branch": live.get("active_branch"),
                 "reviewer_agents": live.get("reviewer_agents", []),
                 "runtime_metadata": live.get("runtime_metadata", {}),
+                # Forge supplies this immutable, read-only projection. The
+                # dashboard transports and presents it without deriving or
+                # changing Mission semantics.
+                "execution_context": live.get("execution_context") if isinstance(live.get("execution_context"), dict) else None,
             },
             separators=(",", ":"),
         ).encode()

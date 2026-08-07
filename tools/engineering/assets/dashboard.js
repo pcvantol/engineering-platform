@@ -799,6 +799,51 @@ function renderPreflightPresentation(snapshot = {}) {
     for (const [id, value] of values) if ($(id)) $(id).textContent = value || t("format.not_available");
   }
 }
+function executionContextValue(value) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
+  return "";
+}
+function executionContextField(label, value, badge = false) {
+  const field = document.createElement("p"), caption = document.createElement("span"), content = document.createElement("span");
+  field.className = "field";
+  caption.className = "label";
+  caption.textContent = label;
+  const supplied = executionContextValue(value);
+  content.textContent = supplied || t("execution_context.not_supplied");
+  if (badge) content.className = "execution-context__phase";
+  field.append(caption, content);
+  return field;
+}
+function renderExecutionContext(context) {
+  const card = $("executionContext");
+  if (!card) return;
+  card.hidden = !context || typeof context !== "object";
+  if (card.hidden) return;
+  card.classList.add("execution-context--primary");
+  const fields = [
+    [t("detail.mission_id"), context.mission_id],
+    [t("execution_context.mission_title"), context.mission_title],
+    [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
+    [t("execution_context.business_summary"), context.business_summary],
+    [t("execution_context.engineering_summary"), context.engineering_summary],
+    [t("execution_context.current_intent"), context.current_intent],
+    [t("execution_context.current_engineering_action"), context.current_engineering_action],
+    [t("execution_context.execution_phase"), context.execution_phase, true],
+    [t("execution_context.planning_confidence"), context.planning_confidence],
+    [t("execution_context.current_iteration"), context.current_iteration],
+    [t("execution_context.mission_progress"), context.mission_progress],
+    [t("execution_context.last_runtime_update"), context.last_runtime_update || context.last_updated_timestamp],
+    [t("execution_context.version"), context.context_version],
+    [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
+    [t("execution_context.decision_type"), context.decision_type],
+    [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
+    [t("execution_context.dispatcher_state"), context.dispatcher_state],
+    [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
+  ];
+  card.replaceChildren(Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }), ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)));
+  $("currentRun")?.querySelector(".current-run__grid")?.prepend(card);
+}
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
   clock();
@@ -826,11 +871,7 @@ function renderHealthStatus(x, snapshot = {}) {
   );
   $("predecessorAction").textContent =
     x.predecessor_recovery_action || t("format.not_available");
-  $("executionContext").hidden = !x.execution_mode;
-  $("executionMode").textContent = x.execution_mode || t("format.not_available");
-  $("targetRepository").textContent = x.target_repository || t("format.not_available");
-  $("checkoutPath").textContent = x.checkout_path || t("format.not_available");
-  $("activeBranch").textContent = x.active_branch || t("format.not_available");
+  renderExecutionContext(x.execution_context);
   indicator.className =
     "indicator indicator--" +
     statusTone +
@@ -3272,6 +3313,16 @@ function promptDetailDuration(value) {
 }
 function promptDetailExecutionSection(history) {
   const timestamp = Date.parse(String(history.executed_at || ""));
+  const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
+  const contextFields = context ? [
+    detailField(t("detail.mission_id"), executionContextValue(context.mission_id) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.business_summary"), executionContextValue(context.business_summary) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.engineering_summary"), executionContextValue(context.engineering_summary) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.execution_phase"), executionContextValue(context.execution_phase) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
+    detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
+  ] : [];
   return promptDetailCard(t("detail.execution"), [
     promptDetailStatusField(history.status),
     detailField(t("detail.prompt_title"), history.title),
@@ -3293,6 +3344,7 @@ function promptDetailExecutionSection(history) {
     detailField(t("ui.active_branch"), history.target_branch || t("detail.not_recorded"), true),
     detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true),
     detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
+    ...contextFields,
   ]);
 }
 function promptDetailDurationSection(execution) {

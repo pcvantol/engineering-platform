@@ -36,6 +36,26 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["queue_depth"], 1)
         self.assertEqual(payload["queue_items"], [{"filename": "later.md"}])
 
+    def test_status_projects_forge_execution_context_without_deriving_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            context = {
+                "mission_id": "MISSION-42",
+                "business_summary": "Protect the operator journey.",
+                "planning_confidence": {"value": "0.91"},
+            }
+            (status / "status.json").write_text(json.dumps({}), encoding="utf-8")
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "run-42", "phase": "EXECUTE_AGENT", "execution_context": context}),
+                encoding="utf-8",
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["execution_context"], context)
+
     def test_status_ignores_a_terminal_live_projection_for_active_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
