@@ -912,6 +912,24 @@ test.describe("Engineering Status browser smoke", () => {
     expect(layout.footerBottom).toBeLessThanOrEqual(layout.viewportBottom);
   });
 
+  test("keeps the desktop title bar flush with the scrolling region", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 760 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#engineering-dashboard-content").evaluate((content) => {
+      content.style.minHeight = "2000px";
+    });
+    const layout = await page.evaluate(() => {
+      const region = document.querySelector(".dashboard-scroll-region");
+      const titleBar = document.querySelector(".dashboard-titlebar");
+      region.scrollTop = 160;
+      return {
+        regionTop: Math.round(region.getBoundingClientRect().top),
+        titleBarTop: Math.round(titleBar.getBoundingClientRect().top),
+      };
+    });
+    expect(layout.titleBarTop).toBe(layout.regionTop);
+  });
+
   test("scrolls the title bar out of view on iPhone portrait", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
