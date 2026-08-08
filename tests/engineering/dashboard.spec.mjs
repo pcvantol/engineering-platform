@@ -784,7 +784,20 @@ test.describe("Engineering Status browser smoke", () => {
       // Disable periodic refreshes so an unrelated later snapshot cannot
       // replace its usage payload halfway through the assertion loop.
       await page.locator("#autoRefresh").uncheck();
+      // Selecting a locale persists the choice and reloads the document.
+      // Wait for the new dashboard before injecting its runtime projection;
+      // otherwise CI can write usage into the outgoing document and assert
+      // against an empty replacement page.
+      const localeReload = page.waitForEvent(
+        "framenavigated",
+        (frame) => frame === page.mainFrame(),
+      );
       await page.locator("#dashboardLocale").selectOption(language);
+      await localeReload;
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForFunction(
+        () => document.body.classList.contains("dashboard-ready"),
+      );
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await page.waitForFunction(() => typeof window.r === "function");
       await page.evaluate(() => r({

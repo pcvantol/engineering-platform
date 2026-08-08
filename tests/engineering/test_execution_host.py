@@ -1109,6 +1109,25 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("tools.engineering.repository_handoff", agent.prompts[0])
         self.assertIn("handoff records to that same Finalization branch", agent.prompts[0])
 
+    def test_merged_finalization_returned_by_agent_is_reconciled_without_ready(self) -> None:
+        implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
+        final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)])
+        state = TransactionState(
+            "already-finalized", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation",
+            pull_request=21, owner_authorized=True,
+        )
+        github = FakeGitHub([implementation, final_merged])
+        result = EngineeringRunner(
+            self.root, self.store, FakeRepository(), github, agent, lambda _: None,
+        )._poll(state)
+
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.finalization_pull_request, 22)
+        self.assertEqual(result.finalization_merge_commit, "c" * 40)
+        self.assertEqual(github.ready_calls, [])
+
     def test_finalization_checkpoint_prevents_duplicate_generation(self) -> None:
         state = TransactionState("no-duplicate", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT", owner_authorized=True, transaction_kind="FINALIZATION", finalization_branch="codex/final", finalization_pull_request=23)
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([PullRequestEvidence(23, "OPEN", False, False)]), FakeAgent(AgentResult("WAITING")), lambda _: None)

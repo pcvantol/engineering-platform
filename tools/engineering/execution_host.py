@@ -842,6 +842,14 @@ class EngineeringRunner:
         )
         self.store.save(finalization)
         write_live_status(self.root, finalization, finalization.next_action)
+        # A resumed transaction can discover that its mandatory Finalization
+        # PR was already merged before the agent returned it.  It is valid
+        # evidence for this same transaction, so reconcile it through the
+        # normal merge/cleanup path instead of trying to mark a closed PR
+        # ready for review.
+        finalization_evidence = self.github.pull_request(result.pull_request)
+        if finalization_evidence.state == "MERGED":
+            return self._poll(finalization, result)
         self.github.ready(result.pull_request)
         return self._poll(finalization, result)
 
