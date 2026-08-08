@@ -998,23 +998,25 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("keeps terminal history actions on one wide-screen row beside a compact title", async ({ page }) => {
+    const history = [{
+      run_id: "inbox-actions",
+      title: "Engineering Platform Increment — Producer Submission Envelope",
+      status: "BLOCKED",
+      can_retry: true,
+    }];
     await page.setViewportSize({ width: 2048, height: 900 });
     await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: history } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, last_executed_run: "inbox-actions" } },
     }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
       r({ last_executed_run: "inbox-actions", watcher_state: "WATCHER_IDLE" }, {});
-      promptHistoryEntries = [{
-        run_id: "inbox-actions",
-        title: "Engineering Platform Increment — Producer Submission Envelope",
-        status: "BLOCKED",
-        can_retry: true,
-      }];
-      renderPromptHistory();
     });
     const actions = page.locator("#promptHistoryRows .prompt-history-actions").first();
     await expect(actions).toHaveCSS("flex-wrap", "nowrap");
@@ -1047,7 +1049,14 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses the server retry projection for historical parent actions and lineage", async ({ page }) => {
-    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const retryHistory = [
+      { run_id: "inbox-retryable", title: "Blocked without child", status: "BLOCKED", can_retry: true },
+      { run_id: "inbox-failed-retryable", title: "Failed without child", status: "FAILED", can_retry: true },
+      { run_id: "inbox-queued-parent", title: "Queued retry", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-run-id", retry_status: "QUEUED" },
+      { run_id: "inbox-active-parent", title: "Active child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-active-child", retry_status: "ACTIVE" },
+      { run_id: "inbox-complete-parent", title: "Completed child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-complete-child", retry_status: "COMPLETE" },
+    ];
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: retryHistory } }));
     await page.setViewportSize({ width: 1024, height: 844 });
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1055,13 +1064,6 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
-      promptHistoryEntries = [
-        { run_id: "inbox-retryable", title: "Blocked without child", status: "BLOCKED", can_retry: true },
-        { run_id: "inbox-failed-retryable", title: "Failed without child", status: "FAILED", can_retry: true },
-        { run_id: "inbox-queued-parent", title: "Queued retry", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-queued-run-id", retry_status: "QUEUED" },
-        { run_id: "inbox-active-parent", title: "Active child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-active-child", retry_status: "ACTIVE" },
-        { run_id: "inbox-complete-parent", title: "Completed child", status: "BLOCKED", can_retry: false, retry_child_run_id: "inbox-complete-child", retry_status: "COMPLETE" },
-      ];
       renderPromptHistory();
     });
     await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(2);
