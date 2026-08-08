@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.repository_handoff import publish as publish_handoff
+from tools.engineering.repository_handoff import main as handoff_main, publish as publish_handoff
 from tools.engineering.status_model import build, publish
 from tools.engineering.platform_version import EngineeringPlatformManifest
 
@@ -34,3 +34,13 @@ class RemoteEngineeringTest(unittest.TestCase):
             self.assertIn(
                 "remote-1", (root / "docs/engineering/runs/index.json").read_text(encoding="utf-8")
             )
+
+    def test_handoff_command_writes_records_to_the_selected_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            exit_code = handoff_main([
+                "--root", str(root), "--run-id", "remote-2", "--platform-version", "1.5.0",
+                "--implementation-pr", "3", "--finalization-pr", "4",
+            ])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("remote-2", (root / "docs/engineering/runs/latest.md").read_text(encoding="utf-8"))

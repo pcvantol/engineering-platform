@@ -1082,6 +1082,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.finalization_pull_request, 22)
         self.assertEqual(result.finalization_merge_commit, "c" * 40)
         self.assertIn("mandatory governance-only Finalization", agent.prompts[0])
+        self.assertIn("tools.engineering.repository_handoff", agent.prompts[0])
+        self.assertIn("handoff records to that same Finalization branch", agent.prompts[0])
 
     def test_finalization_checkpoint_prevents_duplicate_generation(self) -> None:
         state = TransactionState("no-duplicate", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT", owner_authorized=True, transaction_kind="FINALIZATION", finalization_branch="codex/final", finalization_pull_request=23)

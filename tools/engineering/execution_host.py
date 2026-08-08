@@ -46,7 +46,6 @@ from .platform_version import (
     validate_compatibility,
 )
 from .qualification import dashboard, execute_qualification, latest_qualification
-from .repository_handoff import publish as publish_repository_handoff
 from .report_analysis import analyze as analyze_terminal_report
 from .producer import ProducerMetadata, parse_producer_metadata
 from .recommendation_handoff import RecommendationHandoff, parse_forge_recommendation_handoff, report_lines as recommendation_handoff_report_lines
@@ -772,7 +771,16 @@ class EngineeringRunner:
         )
         self.store.save(finalization)
         write_live_status(self.root, finalization, finalization.next_action)
-        instruction = f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory governance-only Finalization: reconcile the four rolling records and immutable Prompt History, create a draft Finalization PR, and return that PR number."
+        instruction = (
+            f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory "
+            "governance-only Finalization: reconcile the four rolling records and immutable Prompt "
+            "History, then create a draft Finalization PR. After GitHub assigns its number, run "
+            f"`python3 -m tools.engineering.repository_handoff --run-id {finalization.run_id} "
+            f"--platform-version {self.platform_manifest.platform_version if self.platform_manifest else 'unknown'} "
+            f"--implementation-pr {implementation_pr} --finalization-pr <PR_NUMBER>`, commit the "
+            "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "
+            "push it, and only then return that PR number."
+        )
         try:
             result = self.agent.invoke(
                 self.root,
@@ -945,19 +953,6 @@ def main(argv: list[str] | None = None) -> int:
                 latest_report=str(report_path) if report_path else None,
                 diagnostic=state.diagnostic,
             ),
-        )
-    if (
-        state.phase == "COMPLETE"
-        and state.finalization_pull_request
-        and state.implementation_pull_request
-        and runner.platform_manifest
-    ):
-        publish_repository_handoff(
-            root,
-            run_id=state.run_id,
-            platform_version=runner.platform_manifest.platform_version,
-            implementation_pr=state.implementation_pull_request,
-            finalization_pr=state.finalization_pull_request,
         )
     if report_path:
         print(

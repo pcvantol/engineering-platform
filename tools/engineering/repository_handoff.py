@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import argparse
 import json
 from pathlib import Path
 
@@ -65,3 +66,30 @@ def publish(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return relative
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the handoff record on the Finalization PR branch before merge."""
+    parser = argparse.ArgumentParser(
+        prog="engineering-repository-handoff",
+        description="Publish durable Engineering Platform Finalization handoff records.",
+    )
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--platform-version", required=True)
+    parser.add_argument("--implementation-pr", required=True, type=int)
+    parser.add_argument("--finalization-pr", required=True, type=int)
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(argv)
+    handoff = publish(
+        args.root.resolve(),
+        run_id=args.run_id,
+        platform_version=args.platform_version,
+        implementation_pr=args.implementation_pr,
+        finalization_pr=args.finalization_pr,
+    )
+    print(handoff)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
