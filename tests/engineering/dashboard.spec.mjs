@@ -1531,14 +1531,21 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows uptime only for locally owned processes", async ({ page }) => {
+    // Keep the initial asynchronous health request from replacing the
+    // deliberately rendered fixture while this presentation-only test runs.
+    await page.route("**/health", (route) => route.fulfill({ json: { components: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => renderPlatformHealth({ components: {
-      dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "1.2.82", uptime_seconds: 3725 },
-      inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "1.1.4", uptime_seconds: 75 },
-    }}));
-
-    const componentText = await page.locator("#platformHealthComponents").textContent();
+    // Read the fixture within the same browser task as the render. The page
+    // also refreshes live health data on an interval, so awaiting a separate
+    // locator operation can otherwise race the deliberately static fixture.
+    const componentText = await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true, detail: "HTTP-dashboard reageert", version: "1.2.82", uptime_seconds: 3725 },
+        inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen", version: "1.1.4", uptime_seconds: 75 },
+      }});
+      return document.querySelector("#platformHealthComponents")?.textContent || "";
+    });
     expect(componentText).toContain("Uptime 1u 2m");
     expect(componentText).toContain("Uptime 1m");
     expect(componentText).not.toContain("Statusopslag");

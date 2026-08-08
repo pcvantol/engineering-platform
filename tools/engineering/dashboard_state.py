@@ -205,15 +205,10 @@ def status(root: Path) -> bytes:
         and live_liveness.get("state") == "LIVE"
         and not _terminal_checkpoint(root, live.get("run_id"))
         and not _watcher_has_terminal_run(watcher, live.get("run_id"))
-        and (
-            not watcher
-            or not watcher.get("watcher_state")
-            or (
-                watcher.get("run_id") == live.get("run_id")
-                and watcher.get("watcher_state") in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING"}
-            )
-        )
     ):
+        # A watcher can already be idle after it has detached a runner.  A
+        # confirmed live lease is authoritative for the active execution and
+        # must not be hidden by that older watcher projection.
         return projection
     if watcher:
         return json.dumps(watcher, separators=(",", ":")).encode()

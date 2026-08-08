@@ -166,6 +166,31 @@ class DashboardStateTest(unittest.TestCase):
 
         self.assertEqual(payload, watcher)
 
+    def test_status_prefers_a_live_lease_over_an_idle_watcher_for_an_older_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {
+                "watcher_state": "WATCHER_IDLE",
+                "run_id": None,
+                "last_executed_run": "inbox-older",
+                "last_executed_phase": "BLOCKED",
+            }
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-live", "phase": "EXECUTE_AGENT"}), encoding="utf-8"
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("inbox-live", "repo", "prompt.md", "EXECUTE_AGENT")
+            )
+            acquire(root, "inbox-live", identity="test-host", instance_id="test-instance")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(payload["run_id"], "inbox-live")
+
     def test_snapshot_isolated_from_optional_telemetry_failure(self) -> None:
         root = Path("/workspace")
 
