@@ -2,7 +2,7 @@
 
 **Status:** Canonical code-derived baseline  
 **Scope:** Private Engineering Operations Console (`tools/engineering/dashboard.py`, `assets/dashboard.css` and `assets/dashboard.js`)  
-**Last reconciled:** 2026-08-07
+**Last reconciled:** 2026-08-08
 
 This document makes the current console design explicit. It is the design and
 review baseline for every future console change: a new control, section,
@@ -46,6 +46,7 @@ near-duplicates in a component.
 | Standard content surface | `#24242d` | `#fff` |
 | Modal surface | `--dashboard-modal-surface` | White; document surface is `#f7fbff` |
 | Modal radius / shadow | `18px` / `0 16px 50px #000a` | Same geometry, theme-appropriate shadow |
+| Selected-control border | `2px` orange outline with a `4px` soft ring | Inputs, selects and text areas only |
 | Console blue | `--operations-console-blue: #0a6b9d` | Header/identity accent, not a replacement for semantic category colour |
 | Mark blue | `--operations-console-mark-blue: #00b8f4` | Product mark only |
 
@@ -96,20 +97,34 @@ remains a single, readable ownership boundary from content below it. The mark
 must blend into its surrounding title-bar surface; do not give it an unrelated
 tile background.
 
+Browser and installed-app identity use only the themed assets in
+`assets/operations-console/`. The document has one versioned browser-tab icon
+link, which is updated on a theme change. Do not retain or reintroduce an
+Engineering Status icon, fallback route or parallel icon family.
+
 ### Main categories
 
 Use native `<details>` / `<summary>` for major dashboard disclosure. A
 category has a coloured border, category glyph, heading and one-sentence
 description. When open, its header gets a subtle category-tinted surface while
 the contained evidence uses the neutral content surface. Do not tint every
-nested card heavily.
+nested card heavily. Categories are navigation surfaces rather than selected
+inputs: they do not receive the orange selected-control ring. Reserve that
+orange border for actual inputs, selects and text areas.
 
 ### Cards and tables
 
 Cards group one coherent evidence type. Tables retain headers, sortable states
 and horizontal scrolling at narrow widths; they are not squeezed into
-illegible columns. Selected history rows show an unbroken selected edge on all
-four sides, including both horizontal edges.
+illegible columns. Selected history rows and sortable table headers show a
+thin, unbroken `1px` selected edge inside their own cells. This keeps the
+first row directly under the table header and sticky headers fully bounded
+without drawing across adjacent cells.
+
+Repeated compact evidence, such as specialist reviewer status, uses an
+auto-fitting grid of at least `180px` tiles. It fills a row when space permits
+and wraps cleanly at narrower widths; never hard-code a single wide tile per
+reviewer.
 
 Log copy means the **currently visible result set**: after filtering, sorting
 and current-page pagination. It includes headers and no hidden rows.

@@ -1279,8 +1279,8 @@ class DashboardStatusTest(unittest.TestCase):
         with self._dashboard_http_connection() as (_, connection):
             for route, content_type in (
                 ("/", "text/html"),
-                ("/assets/engineering-status-icon.svg", "image/svg+xml"),
-                ("/assets/engineering-status-icon-180.png", "image/png"),
+                ("/assets/operations-console/apple-touch-icon-dark.png", "image/png"),
+                ("/assets/operations-console/apple-touch-icon-light.png", "image/png"),
                 ("/favicon.ico", "image/png"),
                 ("/apple-touch-icon.png", "image/png"),
                 ("/apple-touch-icon-precomposed.png", "image/png"),

@@ -1139,9 +1139,8 @@ def _dashboard_html(
 <meta id="dashboardAppleWebAppTitle" name="apple-mobile-web-app-title" content="$TITLE">
 <title>$TITLE</title>
 <link rel="manifest" href="/assets/operations-console/manifest.webmanifest">
-<link rel="icon" type="image/png" sizes="180x180" media="(prefers-color-scheme: dark)" href="/assets/operations-console/apple-touch-icon-dark.png">
-<link rel="icon" type="image/png" sizes="180x180" media="(prefers-color-scheme: light)" href="/assets/operations-console/apple-touch-icon-light.png">
-<link id="dashboardAppleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png">
+<link id="dashboardFavicon" rel="icon" type="image/png" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2">
+<link id="dashboardAppleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2">
 <script>try{const state=JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1")||"{}");document.documentElement.dataset.theme=state.theme==="light"?"light":"dark"}catch{document.documentElement.dataset.theme="dark"}</script>
 
 
@@ -1515,10 +1514,6 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
                 "/assets/dashboard_locales.mjs": ("dashboard_locales.mjs", "text/javascript; charset=utf-8"),
                 "/assets/dashboard_status_store.mjs": ("dashboard_status_store.mjs", "text/javascript; charset=utf-8"),
-                # Legacy paths keep the first paint intact while the dashboard
-                # selects the themed Operations Console icon after startup.
-                "/assets/engineering-status-icon.svg": ("engineering-status-icon.svg", "image/svg+xml; charset=utf-8"),
-                "/assets/engineering-status-icon-180.png": ("engineering-status-icon-180.png", "image/png"),
                 "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
                 "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
                 "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),

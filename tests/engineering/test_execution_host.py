@@ -335,6 +335,7 @@ class ClientContractTest(unittest.TestCase):
                 "statusCheckRollup": [
                     {"name": "green", "status": "COMPLETED", "conclusion": "SUCCESS"},
                     {"name": "bad", "status": "COMPLETED", "conclusion": "FAILURE"},
+                    {"name": None, "status": None, "conclusion": None},
                 ],
             }
         )
@@ -348,6 +349,27 @@ class ClientContractTest(unittest.TestCase):
         client.merge(7)
         self.assertIn(("pr", "ready", "7"), provider.calls)
         self.assertIn(("pr", "merge", "7", "--squash", "--delete-branch"), provider.calls)
+
+    def test_github_client_ignores_empty_check_rollup_entries(self) -> None:
+        class Provider:
+            def github(self, *_: str) -> str:
+                return json.dumps(
+                    {
+                        "number": 8,
+                        "state": "MERGED",
+                        "isDraft": False,
+                        "mergeCommit": {"oid": "c" * 40},
+                        "statusCheckRollup": [
+                            {"name": "green", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                            {"name": None, "status": None, "conclusion": None},
+                        ],
+                    }
+                )
+
+        evidence = GhCliClient(Provider()).pull_request(8)
+        self.assertTrue(evidence.checks_terminal)
+        self.assertTrue(evidence.checks_passed)
+        self.assertEqual(evidence.failed_checks, ())
 
     @patch("tools.engineering.execution_host.subprocess.run")
     def test_codex_client_handles_valid_review_and_invoke_results(self, run: object) -> None:

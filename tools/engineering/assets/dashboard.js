@@ -2076,8 +2076,9 @@ window.executionTelemetry = executionTelemetry;
 function updateFavicon() {
   const icon =
     document.documentElement.dataset.theme === "light"
-      ? "/assets/operations-console/apple-touch-icon-light.png"
-      : "/assets/operations-console/apple-touch-icon-dark.png";
+      ? "/assets/operations-console/apple-touch-icon-light.png?v=operations-console-2"
+      : "/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2";
+  $("dashboardFavicon")?.setAttribute("href", icon);
   $("dashboardAppleTouchIcon")?.setAttribute("href", icon);
 }
 function renderDashboardTelemetry(snapshot) {
@@ -3242,9 +3243,6 @@ const themeToggle = $("themeToggle"),
   themeColor = $("dashboardThemeColor");
 function applyDashboardTheme(theme) {
   const light = theme === "light";
-  const icon = light
-    ? "/assets/operations-console/apple-touch-icon-light.png"
-    : "/assets/operations-console/apple-touch-icon-dark.png";
   const chromeIcon = "/assets/operations-console/icon-transparent.png";
   document.documentElement.dataset.theme = light ? "light" : "dark";
   themeColor.content = light ? "#f4f7fb" : "#15151d";
@@ -3253,7 +3251,6 @@ function applyDashboardTheme(theme) {
     .forEach((image) => {
       image.src = chromeIcon;
     });
-  $("dashboardAppleTouchIcon")?.setAttribute("href", icon);
   themeToggle.setAttribute("aria-checked", String(light));
   themeToggle.setAttribute(
     "aria-label",

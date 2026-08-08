@@ -87,7 +87,9 @@ changes execution semantics.
 - The Operations Console has one shared visual interaction contract across
   dark and light themes. The transparent console mark is used in the title
   bar and splash screen; packaged icon variants and their intended contexts
-  are recorded in `assets/operations-console/ASSET_CATALOG.md`.
+  are recorded in `assets/operations-console/ASSET_CATALOG.md`. Browser-tab
+  and Apple touch identity use the same versioned, themed Operations Console
+  icon family; the retired Engineering Status icon is not served or retained.
 - Every modal uses the same full-width, context-tinted header inside its
   rounded panel. Header content keeps equal vertical spacing, all modal titles
   use the same compact `18–20px` scale and the category accent remains the

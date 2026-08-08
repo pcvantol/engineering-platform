@@ -101,7 +101,14 @@ class GhCliClient:
     def pull_request(self, number: int) -> PullRequestEvidence:
         try: raw = json.loads(self.provider.github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup"))
         except RuntimeError as error: raise RunnerError(str(error)) from error
-        checks = raw.get("statusCheckRollup") or []
+        # GitHub can append an empty rollup entry to an otherwise completed
+        # merged PR. It is not a check and must not keep terminal evidence in
+        # an endless polling loop.
+        checks = [
+            item
+            for item in (raw.get("statusCheckRollup") or [])
+            if isinstance(item, dict) and isinstance(item.get("status"), str)
+        ]
         terminal = bool(checks) and all(item.get("status") == "COMPLETED" for item in checks)
         passed = terminal and all(item.get("conclusion") in {"SUCCESS", "NEUTRAL", "SKIPPED"} for item in checks)
         failed = tuple(str(item.get("name") or "unnamed check") for item in checks if item.get("status") == "COMPLETED" and item.get("conclusion") not in {"SUCCESS", "NEUTRAL", "SKIPPED"})

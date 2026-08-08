@@ -459,7 +459,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
-  test("draws the selected prompt-history row border on both table edges", async ({ page }) => {
+  test("draws a complete thin selected prompt-history row border", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
@@ -475,14 +475,25 @@ test.describe("Engineering Status browser smoke", () => {
     const row = page.locator("#promptHistoryRows .prompt-history-row");
     await row.focus();
     await expect(row).toBeFocused();
-    await expect(row.locator("td").first()).toHaveCSS(
-      "box-shadow",
-      "rgb(240, 182, 106) 3px 0px 0px 0px inset",
-    );
-    await expect(row.locator("td").last()).toHaveCSS(
-      "box-shadow",
-      "rgb(240, 182, 106) -3px 0px 0px 0px inset",
-    );
+    const edgeShadows = await row.locator("td").evaluateAll((cells) => [
+      getComputedStyle(cells[0]).boxShadow,
+      getComputedStyle(cells[Math.floor(cells.length / 2)]).boxShadow,
+      getComputedStyle(cells.at(-1)).boxShadow,
+    ]);
+    expect(edgeShadows[0]).toContain("1px 0px 0px 0px inset");
+    expect(edgeShadows[0]).toContain("0px 1px 0px 0px inset");
+    expect(edgeShadows[1]).toContain("0px 1px 0px 0px inset");
+    expect(edgeShadows.at(-1)).toContain("-1px 0px 0px 0px inset");
+  });
+
+  test("keeps selected sortable headers within a thin cell edge", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    const header = page.locator("#componentLogs .log-table th.log-sortable").first();
+    await header.focus();
+    await expect(header).toHaveCSS("outline-width", "1px");
+    await expect(header).toHaveCSS("outline-offset", "-1px");
+    await expect(header).toHaveCSS("box-shadow", "none");
   });
 
   test("renders a read-only Forge recommendation handoff with expandable alternatives", async ({ page }) => {
@@ -1023,8 +1034,11 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses the server retry projection for historical parent actions and lineage", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
     await page.setViewportSize({ width: 1024, height: 844 });
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
@@ -1510,12 +1524,9 @@ test.describe("Engineering Status browser smoke", () => {
     expect(health.components.dashboard_relay).toHaveProperty("uptime_seconds");
     expect(health.components).not.toHaveProperty("private_remote_access");
 
-    const favicon = await request.get(`${dashboardUrl}/assets/engineering-status-icon.svg`);
+    const favicon = await request.get(`${dashboardUrl}/assets/operations-console/apple-touch-icon-dark.png`);
     expect(favicon.status()).toBe(200);
-    expect(favicon.headers()["content-type"]).toContain("image/svg+xml");
-    const homescreenIcon = await request.get(`${dashboardUrl}/assets/engineering-status-icon-180.png`);
-    expect(homescreenIcon.status()).toBe(200);
-    expect(homescreenIcon.headers()["content-type"]).toContain("image/png");
+    expect(favicon.headers()["content-type"]).toContain("image/png");
     const stylesheet = await request.get(`${dashboardUrl}/assets/dashboard.css`);
     expect(stylesheet.status()).toBe(200);
     expect(stylesheet.headers()["content-type"]).toContain("text/css");
@@ -1640,6 +1651,35 @@ test.describe("Engineering Status browser smoke", () => {
       reviewer_agents: [{ reviewer: "repository_governance", capability: "engineering", status: "completed" }],
     }, {}));
     await expect(page.locator(".reviewer-agent__name")).toHaveCSS("color", "rgb(47, 134, 189)");
+  });
+
+  test("wraps specialist reviewers into compact responsive tiles", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await statusLoaded;
+    await page.locator("#autoRefresh").uncheck();
+    const reviewer_agents = ["repository_governance", "validation", "documentation", "finalization"]
+      .map((reviewer) => ({ reviewer, capability: "engineering", status: "completed" }));
+    await page.evaluate((reviewers) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "review-grid", reviewer_agents: reviewers,
+    }, {}), reviewer_agents);
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    const tiles = page.locator(".reviewer-agent");
+    await expect(tiles).toHaveCount(4);
+    await expect(tiles.first()).toBeVisible();
+    const wideRows = await tiles.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().y)));
+    expect(new Set(wideRows).size).toBe(1);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrowRows = await tiles.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().y)));
+    expect(new Set(narrowRows).size).toBe(4);
   });
 
   test("uses related primary and secondary accents for category titles and field labels", async ({ page }) => {
@@ -2343,17 +2383,40 @@ test.describe("Engineering Status browser smoke", () => {
       const summary = document.querySelector("#dashboardTitlebarOptions > summary");
       document.querySelector("#dashboardTitlebarOptions").open = true;
       const input = document.querySelector("#autoRefresh");
+      const refresh = document.querySelector("#pageRefresh");
       input.focus({ preventScroll: true });
+      const inputStyle = getComputedStyle(input);
+      const focusOutline = inputStyle.outlineColor;
+      const focusOutlineWidth = inputStyle.outlineWidth;
+      refresh.focus({ preventScroll: true });
+      const refreshStyle = getComputedStyle(refresh);
       return {
-        focusOutline: getComputedStyle(input).outlineColor,
+        focusOutline,
+        focusOutlineWidth,
+        refreshOutlineWidth: refreshStyle.outlineWidth,
         summaryBackground: getComputedStyle(summary).backgroundColor,
         summaryColor: getComputedStyle(summary).color,
       };
     });
 
     expect(styles.focusOutline).toBe("rgb(240, 182, 106)");
+    expect(styles.focusOutlineWidth).toBe("2px");
+    expect(styles.refreshOutlineWidth).toBe("2px");
     expect(styles.summaryBackground).not.toBe("rgb(17, 19, 29)");
     expect(styles.summaryColor).toBe("rgb(24, 34, 48)");
+  });
+
+  test("keeps category summaries out of the selected-input focus treatment", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const styles = await page.locator("#currentRun > summary").evaluate((summary) => {
+      summary.focus({ preventScroll: true });
+      const style = getComputedStyle(summary);
+      return { outlineStyle: style.outlineStyle, shadow: style.boxShadow };
+    });
+
+    expect(styles.outlineStyle).toBe("none");
+    expect(styles.shadow).toBe("none");
   });
 
   test("keeps the sticky title bar square while padding content evenly", async ({ page }) => {
@@ -2551,7 +2614,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.getByTestId("engineering-dashboard-title")).toHaveText("Engineering Operationele console");
     await expect(page.getByTestId("dashboard-splash")).toBeHidden();
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/assets/operations-console/manifest.webmanifest");
-    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/assets/operations-console/apple-touch-icon-dark.png");
+    await expect(page.locator('#dashboardFavicon')).toHaveAttribute("href", "/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2");
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2");
     await expect(page.getByTestId("dashboard-app-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
     await expect(page.getByTestId("engineering-workspace")).not.toHaveAttribute("open", "");
     expect(await page.getByTestId("engineering-workspace").evaluate((element) => element.parentElement.id)).toBe("engineering-dashboard-content");
