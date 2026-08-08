@@ -20,6 +20,7 @@ WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 ENGINEERING_STORAGE_SCHEMA_VERSION = 18
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
+LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 
 
 class EngineeringStorageError(RuntimeError):
@@ -577,6 +578,52 @@ def _schema_v18(connection: sqlite3.Connection) -> None:
     )
 
 
+def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
+    """Copy valid legacy dismissal evidence into the canonical datastore.
+
+    The former JSON audit is retained as source evidence, but never consulted
+    by projections after its records have been copied to SQLite. Repeating the
+    import is safe: the canonical run key makes it idempotent and permits a
+    record whose history was backfilled later to be imported on a later open.
+    """
+    path = root / LEGACY_DISMISSALS_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, list):
+        return
+    for record in payload:
+        if not isinstance(record, dict) or record.get("dismissed") is not True:
+            continue
+        run_id = record.get("run_id")
+        terminal_state = record.get("terminal_state")
+        dismissed_at = record.get("dismissed_at")
+        dismissed_by = record.get("dismissed_by")
+        if (
+            not isinstance(run_id, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id)
+            or terminal_state not in {"COMPLETE", "BLOCKED", "FAILED"}
+            or not isinstance(dismissed_at, str)
+            or not dismissed_at.strip()
+            or not isinstance(dismissed_by, str)
+            or not dismissed_by.strip()
+        ):
+            continue
+        history_exists = connection.execute(
+            "SELECT 1 FROM prompt_execution_history WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if history_exists is None:
+            continue
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_dismissals(run_id,terminal_state,handling_state,dismissed_at,dismissed_by) "
+            "VALUES(?,?,?,?,?)",
+            (run_id, terminal_state, "DISMISSED", dismissed_at.strip(), dismissed_by.strip()),
+        )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -954,6 +1001,7 @@ def open_storage(
             connection.execute(
                 "INSERT INTO engineering_schema_migrations(version) VALUES(?)", (version,)
             )
+        _import_legacy_execution_dismissals(root, connection)
         connection.execute("COMMIT")
         path.chmod(0o600)
     except (OSError, sqlite3.DatabaseError, EngineeringStorageError) as error:

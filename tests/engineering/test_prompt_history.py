@@ -35,6 +35,33 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertEqual(entry["producer_submission_contract_version"], "1.0")
             self.assertEqual(entry["execution_context_version"], "1.0")
             self.assertEqual(entry["execution_context"], {"context_version": "1.0", "mission_title": "Aurora"})
+
+    def test_imports_legacy_dismissal_evidence_once_into_canonical_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root, run_id="inbox-legacy-dismissal", terminal_state="BLOCKED",
+                prompt_title="Previously dismissed execution", executed_at="2026-08-08T10:00:00Z",
+            )
+            audit = root / ".engineering" / "status" / "execution_dismissals.json"
+            audit.parent.mkdir(parents=True, exist_ok=True)
+            audit.write_text(
+                '[{"run_id":"inbox-legacy-dismissal","terminal_state":"BLOCKED",'
+                '"dismissed":true,"dismissed_at":"2026-08-08T10:01:00Z",'
+                '"dismissed_by":"dashboard_operator"}]',
+                encoding="utf-8",
+            )
+
+            imported = prompt_history(root)[0]
+            self.assertTrue(imported["dismissed"])
+            self.assertEqual(imported["handling_state"], "DISMISSED")
+            self.assertFalse(imported["can_retry"])
+
+            audit.unlink()
+            persisted = prompt_history(root)[0]
+            self.assertTrue(persisted["dismissed"])
+            self.assertEqual(persisted["dismissed_at"], "2026-08-08T10:01:00Z")
+
     def test_records_terminal_run_and_serves_only_its_local_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

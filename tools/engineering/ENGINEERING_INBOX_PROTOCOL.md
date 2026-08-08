@@ -223,6 +223,7 @@ remain immutable. A dismissed terminal execution is read-only: Retry, Resume,
 Dismiss and every other lifecycle-mutating action are unavailable and rejected
 server-side, including requests from a stale client. Queue Recovery remains the
 separate explicit operation for dependent Inbox work. Dismiss never resumes
-that queue.
+that queue. Existing records from the former JSON audit are imported
+idempotently into SQLite; thereafter SQLite remains authoritative.
 
 Commands: `python3 -m tools.engineering.inbox_watcher once|run|status|install|uninstall|doctor|migrate-icloud-archives`.
