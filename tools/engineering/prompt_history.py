@@ -16,6 +16,7 @@ REPORT_STATE = re.compile(r"^- Terminal state: `(COMPLETE|BLOCKED|FAILED)`$", re
 REPORT_TIMESTAMP = re.compile(r"^- Timestamp: ([^\n]{1,80})$", re.MULTILINE)
 REPORT_OBJECTIVE = re.compile(r"^- Objective: (.+)$", re.MULTILINE)
 REPORT_TITLE = re.compile(r"^# (.+)$", re.MULTILINE)
+REPORT_INCREMENT_TITLE = re.compile(r"^# Engineering Platform Increment\s+—\s+(.+)$", re.MULTILINE)
 REPORT_COMMIT = re.compile(
     r"^- (?:Target Commit|Genesis-commit|Implementation Merge Commit|Finalization Merge Commit): `?([0-9a-f]{7,64})`?$",
     re.MULTILINE | re.IGNORECASE,
@@ -169,6 +170,7 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
     if run is None or state is None:
         return None
     title = REPORT_TITLE.search(content)
+    increment_title = REPORT_INCREMENT_TITLE.search(content)
     objective = REPORT_OBJECTIVE.search(content)
     timestamp = REPORT_TIMESTAMP.search(content)
     commit = REPORT_COMMIT.search(content)
@@ -181,7 +183,9 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
         "run_id": run.group(1),
         "terminal_state": state.group(1),
         "prompt_title": (
-            objective.group(1).strip()
+            increment_title.group(1).strip()
+            if increment_title and increment_title.group(1).strip()
+            else objective.group(1).strip()
             if objective and objective.group(1).strip()
             else title.group(1).strip()
             if title
@@ -198,6 +202,20 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
         "retry_timestamp": retry_timestamp.group(1) if retry_timestamp else None,
         "target_branch": target_branch.group(1) if target_branch else None,
     }
+
+
+def record_terminal_report(root: Path, report: Path) -> None:
+    """Project one authoritative terminal report into prompt history.
+
+    Direct execution-host invocations do not pass through the inbox watcher.
+    Keeping this projection here makes the terminal report the shared source
+    for both paths and lets a later reconciled report correct an older,
+    incomplete history row for the same run.
+    """
+    record = _report_record(root, report)
+    if record is None:
+        raise ValueError("terminal report cannot be projected into prompt history")
+    record_prompt_execution(root, **record)
 
 
 def backfill_prompt_history(root: Path) -> None:
@@ -219,7 +237,7 @@ def backfill_prompt_history(root: Path) -> None:
             # legacy fallback can share a Run ID with a later, real report;
             # never let a filesystem scan replace that explicit reference.
             if record is not None and record["run_id"] not in indexed_run_ids:
-                record_prompt_execution(root, **record)
+                record_terminal_report(root, report)
                 indexed_run_ids.add(record["run_id"])
     connection = open_storage(root)
     try:

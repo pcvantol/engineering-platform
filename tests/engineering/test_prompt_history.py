@@ -8,6 +8,7 @@ import unittest
 
 from tools.engineering.prompt_history import (
     prompt_history,
+    record_terminal_report,
     record_prompt_execution,
     report_for_prompt_history,
 )
@@ -147,6 +148,42 @@ class PromptHistoryTest(unittest.TestCase):
 
             self.assertEqual(prompt_history(root)[0]["report_available"], True)
             self.assertEqual(report_for_prompt_history(root, "inbox-duplicate"), actual.read_bytes())
+
+    def test_terminal_report_reconciles_an_earlier_history_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / ".engineering" / "reports" / "complete.md"
+            report.parent.mkdir(parents=True)
+            report.write_text(
+                "\n".join(
+                    (
+                        "# Engineering Report",
+                        "# Engineering Platform Increment — Reconciled Producer Submission Envelope",
+                        "- Objective: Reconciled Producer Submission Envelope",
+                        "- Timestamp: 2026-08-08T08-06-11Z",
+                        "- Run ID: `inbox-reconciled`",
+                        "- Terminal state: `COMPLETE`",
+                        "- Finalization Merge Commit: `abcdef1`",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            record_prompt_execution(
+                root,
+                run_id="inbox-reconciled",
+                terminal_state="FAILED",
+                prompt_title="Earlier incomplete projection",
+                executed_at="2026-08-08T07:00:00Z",
+            )
+
+            record_terminal_report(root, report)
+
+            entry = prompt_history(root)[0]
+            self.assertEqual(entry["status"], "COMPLETE")
+            self.assertEqual(entry["title"], "Reconciled Producer Submission Envelope")
+            self.assertEqual(entry["executed_at"], "2026-08-08T08:06:11Z")
+            self.assertEqual(entry["git_commit"], "abcdef1")
+            self.assertTrue(entry["report_available"])
 
     def test_rejects_non_terminal_or_invalid_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
