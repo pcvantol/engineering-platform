@@ -1061,6 +1061,30 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.next_action, "invalid_pull_request_evidence")
         self.assertIn("current main branch", result.diagnostic or "")
 
+    def test_agent_cannot_adopt_an_already_merged_pull_request_as_new_evidence(self) -> None:
+        state = TransactionState(
+            "historical-pr-evidence",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="codex/historical",
+            pull_request=790,
+            owner_authorized=True,
+        )
+        github = FakeGitHub([PullRequestEvidence(790, "MERGED", True, True, "b" * 40)])
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), github,
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        result = runner._reject_historical_agent_pull_request(state)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertEqual(result.next_action, "historical_pull_request_evidence")
+        self.assertIn("already merged PR #790", result.diagnostic or "")
+        self.assertEqual(github.ready_calls, [])
+
     def test_owner_authorization_merges_green_finalization_pr(self) -> None:
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
         github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])

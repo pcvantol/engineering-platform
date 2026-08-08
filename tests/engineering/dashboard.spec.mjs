@@ -250,7 +250,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↑", "i", "↺", "⌧", "▤", "✦", "⋯", "—",
+      "", "⧉", "↑", "i", "↺", "⌧", "▤", "✓", "✦", "⋯", "—",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
 
@@ -1651,6 +1651,27 @@ test.describe("Engineering Status browser smoke", () => {
       reviewer_agents: [{ reviewer: "repository_governance", capability: "engineering", status: "completed" }],
     }, {}));
     await expect(page.locator(".reviewer-agent__name")).toHaveCSS("color", "rgb(47, 134, 189)");
+  });
+
+  test("shows live and completed reviewer status indicators", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "reviewer-status-run",
+      reviewer_agents: [
+        { reviewer: "validation", capability: "engineering", status: "running" },
+        { reviewer: "documentation", capability: "engineering", status: "completed" },
+      ],
+    }, {}));
+
+    const cards = page.locator(".reviewer-agent");
+    await expect(cards).toHaveCount(2);
+    await expect(cards.nth(0).locator(".reviewer-agent__status--running")).toHaveAttribute(
+      "aria-label", /.+/,
+    );
+    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveText("✓");
+    await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
+      "aria-label", /.+/,
+    );
   });
 
   test("wraps specialist reviewers into compact responsive tiles", async ({ page }) => {

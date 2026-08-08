@@ -285,6 +285,31 @@ class EngineeringRunner:
             return state
         return replace(state, validation_evidence=result.validation_evidence)
 
+    def _reject_historical_agent_pull_request(
+        self, state: TransactionState
+    ) -> TransactionState | None:
+        """Keep a newly invoked agent from reusing a merged PR as its evidence.
+
+        A run has no transaction evidence until its first agent invocation has
+        returned.  A merged PR at that point belongs to earlier work and must
+        not be marked ready or silently adopted into this new transaction.
+        """
+        if not state.pull_request:
+            return None
+        try:
+            pull_request = self.github.pull_request(state.pull_request)
+        except RunnerError:
+            # _poll owns bounded retry behaviour for transient GitHub reads.
+            return None
+        if pull_request.state != "MERGED":
+            return None
+        return self._save_terminal(
+            state,
+            "BLOCKED",
+            "historical_pull_request_evidence",
+            f"Agent result referenced already merged PR #{pull_request.number}; a new transaction must return its own open pull request.",
+        )
+
     def run(
         self,
         prompt_path: Path,
@@ -532,6 +557,9 @@ class EngineeringRunner:
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
         if state.owner_authorized and state.pull_request:
+            historical = self._reject_historical_agent_pull_request(state)
+            if historical is not None:
+                return historical
             self.github.ready(state.pull_request)
         return self._poll(state, result)
 

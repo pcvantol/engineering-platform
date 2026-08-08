@@ -404,13 +404,26 @@ function activeReviewerAgents(items) {
     : t("ui.reviewer_completed", { completed, count: agents.length });
   list.replaceChildren();
   for (const agent of agents) {
-    const row = document.createElement("article"), name = document.createElement("p"), meta = document.createElement("p");
+    const row = document.createElement("article"), header = document.createElement("div"),
+      name = document.createElement("p"), meta = document.createElement("p"),
+      indicator = document.createElement("span"), status = String(agent?.status || "").toLowerCase();
+    const isRunning = status === "running";
+    const isCompleted = ["completed", "uitgevoerd"].includes(status);
     row.className = "reviewer-agent";
+    header.className = "reviewer-agent__header";
     name.className = "reviewer-agent__name";
     meta.className = "reviewer-agent__meta";
     name.textContent = String(agent.reviewer || t("ui.reviewer_default")).replaceAll("_", " ");
     meta.textContent = `${enumLabel(agent.capability || "ENGINEERING")} · ${enumLabel(agent.status || "SELECTED")}`;
-    row.append(name, meta);
+    if (isRunning || isCompleted) {
+      indicator.className = `reviewer-agent__status reviewer-agent__status--${isRunning ? "running" : "completed"}`;
+      indicator.setAttribute("role", "status");
+      indicator.setAttribute("aria-label", isRunning ? t("ui.reviewer_status_running") : t("ui.reviewer_status_completed"));
+      indicator.setAttribute("title", indicator.getAttribute("aria-label"));
+      if (isCompleted) indicator.textContent = "✓";
+    }
+    header.append(name, indicator);
+    row.append(header, meta);
     list.append(row);
   }
 }
