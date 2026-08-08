@@ -216,10 +216,13 @@ and clears Active Execution so the watcher returns to idle without changing the
 queue. The confirmation shows Run ID, prompt title and terminal state, and
 explains that no work will restart.
 
-Dismiss records `dismissed`, `dismissed_at` and `dismissed_by` in local audit
-evidence. Engineering Reports, terminal evidence, telemetry, Prompt History
-and retry relationships remain immutable. A dismissed `BLOCKED` execution may
-still be retried later, while Queue Recovery remains the separate explicit
-operation for dependent Inbox work. Dismiss never resumes that queue.
+Dismiss records `dismissed`, `dismissed_at` and `dismissed_by` as immutable
+operator-handling evidence in the canonical SQLite datastore. Engineering
+Reports, terminal evidence, telemetry, Prompt History and retry relationships
+remain immutable. A dismissed terminal execution is read-only: Retry, Resume,
+Dismiss and every other lifecycle-mutating action are unavailable and rejected
+server-side, including requests from a stale client. Queue Recovery remains the
+separate explicit operation for dependent Inbox work. Dismiss never resumes
+that queue.
 
 Commands: `python3 -m tools.engineering.inbox_watcher once|run|status|install|uninstall|doctor|migrate-icloud-archives`.

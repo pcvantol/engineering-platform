@@ -761,7 +761,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
         self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], "17")
+        self.assertEqual(details["schema_version"], "18")
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:

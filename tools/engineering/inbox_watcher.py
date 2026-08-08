@@ -43,7 +43,7 @@ from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
-from .storage import EngineeringStorageError, load_projection, open_storage, record_artifact, record_submission
+from .storage import EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
 
 LABEL = "com.djconnect.engineering-inbox"
@@ -608,6 +608,8 @@ def retry_admission_preflight(repo: Path, run_id: str) -> None:
     """
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
         raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    if dismissal_for_run(repo, run_id):
+        raise RetrySubmissionError("Deze uitvoering is al afgesloten; opnieuw proberen is niet beschikbaar.")
     archived = _archived_prompt_for_run(repo, run_id)
     if archived is None:
         raise RetrySubmissionError("De oorspronkelijke terminale prompt is lokaal niet beschikbaar.")
@@ -655,19 +657,27 @@ def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard
         phase = _terminal_phase_for_run(repo, run_id)
         if phase not in TERMINAL_PHASES or current.get("last_executed_run") != run_id:
             raise RetrySubmissionError("Alleen de huidige terminale uitvoering kan worden bevestigd.")
+        if dismissal_for_run(repo, run_id):
+            raise RetrySubmissionError("Deze uitvoering is al afgesloten.")
         timestamp = datetime.now(timezone.utc).isoformat()
-        audit_path = status_path.with_name("execution_dismissals.json")
+        connection = open_storage(repo)
         try:
-            records = json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.exists() else []
-        except (OSError, json.JSONDecodeError) as error:
+            history_exists = connection.execute(
+                "SELECT 1 FROM prompt_execution_history WHERE run_id=?", (run_id,)
+            ).fetchone() is not None
+        finally:
+            connection.close()
+        if not history_exists:
+            record_prompt_execution(
+                repo, run_id=run_id, terminal_state=phase,
+                prompt_title=current.get("last_executed_title") or run_id, executed_at=timestamp,
+            )
+        try:
+            record = record_execution_dismissal(
+                repo, run_id=run_id, terminal_state=phase, dismissed_at=timestamp, dismissed_by=dismissed_by,
+            )
+        except EngineeringStorageError as error:
             raise RetrySubmissionError("De dismissal-audit is niet veilig beschikbaar.") from error
-        if not isinstance(records, list):
-            raise RetrySubmissionError("De dismissal-audit is ongeldig.")
-        record = {"run_id": run_id, "terminal_state": phase, "dismissed": True, "dismissed_at": timestamp, "dismissed_by": dismissed_by}
-        records.append(record)
-        temporary = audit_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(records, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temporary, audit_path)
         status(
             repo,
             "WATCHER_IDLE",
@@ -687,6 +697,8 @@ def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recover
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
         raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
     with _lock(repo):
+        if dismissal_for_run(repo, run_id):
+            raise RetrySubmissionError("Deze uitvoering is al afgesloten; opnieuw proberen is niet beschikbaar.")
         terminal_phase = _terminal_phase_for_run(repo, run_id)
         if terminal_phase not in BLOCKING_PREDECESSOR_PHASES:
             raise RetrySubmissionError("Alleen een terminal geblokkeerde of mislukte uitvoering kan opnieuw worden uitgevoerd.")

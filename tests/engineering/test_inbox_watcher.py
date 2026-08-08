@@ -852,7 +852,7 @@ class InboxWatcherTest(unittest.TestCase):
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
 
-    def test_dismiss_terminal_execution_clears_operational_state_and_preserves_audit(self) -> None:
+    def test_dismiss_terminal_execution_persists_immutable_handling_and_blocks_retry(self) -> None:
         run_id = "inbox-dismissed"
         runs = self.repo / ".engineering" / "engineering-runs"
         runs.mkdir(parents=True, exist_ok=True)
@@ -864,8 +864,13 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(outcome["dismissed"])
         self.assertEqual(json_status(self.repo)["watcher_state"], "WATCHER_IDLE")
         self.assertIsNone(json_status(self.repo)["last_executed_run"])
-        audit = json.loads((status / "execution_dismissals.json").read_text(encoding="utf-8"))
-        self.assertEqual(audit[-1]["run_id"], run_id)
+        self.assertEqual(outcome["terminal_state"], "BLOCKED")
+        self.assertEqual(outcome["handling_state"], "DISMISSED")
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "al afgesloten"):
+            inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
+        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        self.assertTrue(history[0]["dismissed"])
+        self.assertEqual(history[0]["status"], "BLOCKED")
 
     def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
         (self.root / "Completed").mkdir()

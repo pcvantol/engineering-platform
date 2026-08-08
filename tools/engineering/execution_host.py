@@ -83,6 +83,7 @@ from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
 from .storage import load_readiness_evaluation, record_readiness_evaluation
+from .storage import dismissal_for_run
 
 # Compatibility exports remain at this façade while implementation resides in
 # the dedicated context, repository and executor modules.
@@ -320,6 +321,8 @@ class EngineeringRunner:
     ) -> TransactionState:
         objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
+        if resume and state is not None and dismissal_for_run(self.root, state.run_id):
+            raise RunnerError("This execution has already been dismissed and cannot be resumed.")
         try:
             context = resolve_execution_context(objective, self.root)
         except RunnerError as error:

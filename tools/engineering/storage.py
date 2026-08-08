@@ -18,7 +18,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 17
+ENGINEERING_STORAGE_SCHEMA_VERSION = 18
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 
 
@@ -556,6 +556,27 @@ def _schema_v17(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE execution_submissions ADD COLUMN engineering_action_id TEXT")
 
 
+def _schema_v18(connection: sqlite3.Connection) -> None:
+    """Persist immutable operator handling separately from terminal outcome."""
+    connection.execute(
+        "CREATE TABLE execution_dismissals ("
+        "run_id TEXT PRIMARY KEY REFERENCES prompt_execution_history(run_id) ON DELETE RESTRICT,"
+        "terminal_state TEXT NOT NULL CHECK(terminal_state IN ('COMPLETE','BLOCKED','FAILED')) ,"
+        "handling_state TEXT NOT NULL CHECK(handling_state='DISMISSED'),"
+        "dismissed_at TEXT NOT NULL,dismissed_by TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TRIGGER execution_dismissals_immutable_update "
+        "BEFORE UPDATE ON execution_dismissals BEGIN "
+        "SELECT RAISE(ABORT, 'Execution dismissal evidence is immutable.'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER execution_dismissals_immutable_delete "
+        "BEFORE DELETE ON execution_dismissals BEGIN "
+        "SELECT RAISE(ABORT, 'Execution dismissal evidence is immutable.'); END"
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _schema_v1,
     2: _schema_v2,
@@ -574,7 +595,54 @@ MIGRATIONS: dict[int, Migration] = {
     15: _schema_v15,
     16: _schema_v16,
     17: _schema_v17,
+    18: _schema_v18,
 }
+
+
+def dismissal_for_run(root: Path, run_id: object) -> dict[str, object] | None:
+    """Return immutable operator-handling evidence from canonical SQLite."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return None
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT terminal_state,handling_state,dismissed_at,dismissed_by "
+            "FROM execution_dismissals WHERE run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return {
+        "run_id": run_id,
+        "terminal_state": row[0],
+        "dismissed": True,
+        "handling_state": row[1],
+        "dismissed_at": row[2],
+        "dismissed_by": row[3],
+    }
+
+
+def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
+                               dismissed_at: str, dismissed_by: str) -> dict[str, object]:
+    """Record one immutable dismissal after its terminal history row exists."""
+    if terminal_state not in {"COMPLETE", "BLOCKED", "FAILED"}:
+        raise EngineeringStorageError("Dismissal requires a terminal execution outcome.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT INTO execution_dismissals(run_id,terminal_state,handling_state,dismissed_at,dismissed_by) "
+            "VALUES(?,?,?,?,?)",
+            (run_id, terminal_state, "DISMISSED", dismissed_at, dismissed_by),
+        )
+    except sqlite3.IntegrityError as error:
+        raise EngineeringStorageError("Execution dismissal is already recorded or has no terminal history.") from error
+    finally:
+        connection.close()
+    return {
+        "run_id": run_id, "terminal_state": terminal_state, "dismissed": True,
+        "handling_state": "DISMISSED", "dismissed_at": dismissed_at, "dismissed_by": dismissed_by,
+    }
 
 
 def _encoded_payload(payload: dict[str, object]) -> str:

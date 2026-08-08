@@ -339,11 +339,13 @@ def prompt_history(
                 COALESCE(submission.engineering_action_id, runs.engineering_action_id),
                 runs.execution_constraint_version, submission.submission_id,
                 submission.contract_version, submission.execution_context_version,
-                submission.execution_context_snapshot
+                submission.execution_context_snapshot, dismissal.terminal_state,
+                dismissal.handling_state, dismissal.dismissed_at, dismissal.dismissed_by
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
             LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
             LEFT JOIN execution_submissions AS submission ON submission.submission_id = submission_link.submission_id
+            LEFT JOIN execution_dismissals AS dismissal ON dismissal.run_id = history.run_id
             ORDER BY history.executed_at DESC, history.run_id DESC
             LIMIT ?
             """,
@@ -379,6 +381,10 @@ def prompt_history(
             "producer_submission_contract_version": row[23],
             "execution_context_version": row[24],
             "execution_context": json.loads(row[25]) if isinstance(row[25], str) else None,
+            "dismissed": row[26] is not None,
+            "handling_state": row[27] or "OPEN",
+            "dismissed_at": row[28],
+            "dismissed_by": row[29],
         }
         for row in rows
     ]
@@ -401,7 +407,7 @@ def prompt_history(
         record["retry_timestamp"] = child.get("retry_timestamp") if child else record["retry_timestamp"]
         record["queued_retry_child"] = bool(child and child.get("status") == "QUEUED")
         record["active_retry_child"] = bool(child and child.get("status") == "ACTIVE")
-        record["can_retry"] = record.get("status") in {"BLOCKED", "FAILED"} and child is None
+        record["can_retry"] = record.get("status") in {"BLOCKED", "FAILED"} and child is None and not record["dismissed"]
         chain = [record["run_id"]]
         cursor = record
         while cursor.get("retry_of") and cursor["retry_of"] not in chain:

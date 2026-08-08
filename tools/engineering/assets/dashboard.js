@@ -2758,7 +2758,7 @@ function renderPromptHistory() {
         button.addEventListener("click", () => openPromptHistoryChat(entry));
         chat.append(button);
       } else chat.textContent = "—";
-      if (entry.can_retry === true && entry.run_id) {
+      if (entry.can_retry === true && !entry.dismissed && entry.run_id) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "predecessor-retry execution-history-action";
@@ -3523,6 +3523,8 @@ function promptDetailExecutionSection(history) {
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   return promptDetailCard(t("detail.execution"), [
     promptDetailStatusField(history.status),
+    detailField(t("detail.operator_handling"), history.dismissed ? t("handling.dismissed") : t("handling.open")),
+    ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
     detailField(t("detail.prompt_title"), history.title),
     detailField(t("detail.run_id"), history.run_id, true),
     detailField(
