@@ -1515,10 +1515,12 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses the house-style orange for an active execution spinner", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.route("**/api/events", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#indicator").evaluate((element) => {
+      document.querySelector("#currentRun").hidden = false;
       element.className = "indicator indicator--running";
     });
     await expect(page.locator("#indicator")).toHaveCSS("animation-name", "github-activity-ring");
@@ -1526,6 +1528,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#indicator")).toHaveCSS("animation-iteration-count", "infinite");
     await expect(page.locator("#indicator")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(page.locator("#indicator")).toHaveCSS("will-change", "transform");
+    const elapsed = await page.locator("#indicator").evaluate(async (element) => {
+      const [animation] = element.getAnimations();
+      if (!animation) return null;
+      const before = Number(animation.currentTime);
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+      return Number(animation.currentTime) - before;
+    });
+    expect(elapsed).toBeGreaterThan(100);
   });
 
   test("loads the initial status before serverpush connects", async ({ page }) => {
