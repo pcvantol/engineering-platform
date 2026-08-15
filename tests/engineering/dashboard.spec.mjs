@@ -2204,6 +2204,9 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("fills the historical report action blue on hover", async ({ page }) => {
+    // Keep the fixture stable during the hover assertion. A live dashboard
+    // event can legitimately rebuild the prompt-history row mid-hover.
+    await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2276,6 +2279,74 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("visible-run");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("exclude_me");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("hidden-run");
+  });
+
+  test("selects multiple component-log rows and copies the selected rows", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    await page.evaluate(() => {
+      componentLogEntries.inbox = [
+        { line: 1, timestamp: "2026-08-07T10:00:00Z", level: "INFO", event: "first_event", runId: "first-run", details: "first detail" },
+        { line: 2, timestamp: "2026-08-07T10:01:00Z", level: "ERROR", event: "second_event", runId: "second-run", details: "second detail" },
+        { line: 3, timestamp: "2026-08-07T10:02:00Z", level: "WARNING", event: "third_event", runId: "third-run", details: "third detail" },
+      ];
+      componentLogEntries.dashboard = [];
+      renderComponentLogs();
+    });
+
+    const rows = page.locator("#inboxComponentLog tr");
+    await rows.nth(0).click();
+    await rows.nth(2).click({ modifiers: ["Meta"] });
+    await expect(rows.nth(0)).toHaveAttribute("aria-selected", "true");
+    await expect(rows.nth(1)).toHaveAttribute("aria-selected", "false");
+    await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+
+    const copied = await page.evaluate(() => {
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data }));
+      return data.getData("text/plain");
+    });
+    expect(copied).toContain("first_event");
+    expect(copied).toContain("third_event");
+    expect(copied).not.toContain("second_event");
+
+    await rows.nth(0).click({ modifiers: ["Shift"] });
+    await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+
+    await page.locator("#logFilter").fill("first_event");
+    expect(await page.evaluate(() => {
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data }));
+      return data.getData("text/plain");
+    })).toBe("");
+
+    await page.locator("#inboxComponentLog tr").first().click();
+    await page.locator(".reset-log-filters").click();
+    expect(await page.evaluate(() => {
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data }));
+      return data.getData("text/plain");
+    })).toBe("");
+
+    await page.evaluate(() => {
+      document.querySelector("#logFilter").value = "";
+      componentLogEntries.inbox = Array.from({ length: 51 }, (_, index) => ({
+        line: index + 1,
+        timestamp: `2026-08-07T10:${String(index).padStart(2, "0")}:00Z`,
+        level: "INFO",
+        event: `page_event_${index + 1}`,
+        runId: `page-run-${index + 1}`,
+        details: "page detail",
+      }));
+      document.querySelector("#logFilter").dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.locator("#inboxComponentLog tr").first().click();
+    await page.locator("#inboxLogPagination button").last().click();
+    expect(await page.evaluate(() => {
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data }));
+      return data.getData("text/plain");
+    })).toBe("");
   });
 
   test("uses the shared single-line circular border for download glyphs", async ({ page }) => {
