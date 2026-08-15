@@ -960,6 +960,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--resume requires --run-id")
     if args.admitted_storage_schema is not None and args.admitted_storage_schema < 1:
         raise SystemExit("--admitted-storage-schema must be positive")
+    if args.admitted_storage_schema is not None:
+        # Keep the watcher admission boundary with every child process the
+        # runner starts. Source may change during execution, but the canonical
+        # live database must remain readable by the admitting components.
+        os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"] = str(args.admitted_storage_schema)
+        os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"] = str(root)
     compatibility = (
         RunnerCompatibility(storage_schemas=frozenset({args.admitted_storage_schema}))
         if args.admitted_storage_schema is not None

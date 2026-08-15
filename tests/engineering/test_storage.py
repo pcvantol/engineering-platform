@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.engineering.storage import (
     DATABASE_FILENAME,
@@ -214,6 +216,34 @@ class EngineeringStorageTest(unittest.TestCase):
                 )
             with self.assertRaisesRegex(EngineeringStorageError, "newer"):
                 open_storage(root)
+
+    def test_execution_admission_defers_a_newer_root_schema_migration(self) -> None:
+        """A prompt cannot upgrade the live store beyond its admitting watcher."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
+                    ENGINEERING_STORAGE_SCHEMA_VERSION,
+                )
+            from tools.engineering import storage
+
+            migrations = dict(storage.MIGRATIONS)
+            migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
+            environment = {
+                "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(root),
+                "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            }
+            with patch.dict(os.environ, environment, clear=False), patch.object(
+                storage, "ENGINEERING_STORAGE_SCHEMA_VERSION", ENGINEERING_STORAGE_SCHEMA_VERSION + 1
+            ), patch.object(storage, "MIGRATIONS", migrations):
+                with self.assertRaisesRegex(EngineeringStorageError, "migration is deferred"):
+                    storage.open_storage(root)
+            with open_storage(root) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
+                    ENGINEERING_STORAGE_SCHEMA_VERSION,
+                )
 
     def test_canonical_records_survive_projection_loss_and_verify_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

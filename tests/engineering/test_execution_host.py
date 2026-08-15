@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -589,6 +590,30 @@ class LocalAgentRunnerTest(unittest.TestCase):
             ["prompt.md", "--admitted-storage-schema", "18"]
         )
         self.assertEqual(arguments.admitted_storage_schema, 18)
+
+    @patch("tools.engineering.execution_host.generate_terminal_report", return_value=None)
+    @patch("tools.engineering.execution_host.EngineeringRunner")
+    def test_main_propagates_watcher_schema_admission_to_child_processes(self, runner_type: object, _: object) -> None:
+        state = TransactionState("run-admission", "pcvantol/djconnect", "prompt.md", "COMPLETE", terminal=True)
+        runner_type.return_value.run.return_value = state
+        runner_type.return_value.platform_manifest = None
+        runner_type.return_value.console_detail = None
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True), patch(
+            "tools.engineering.execution_host.Path.cwd", return_value=Path(temporary)
+        ):
+            prompt = Path(temporary) / "prompt.md"
+            prompt.write_text("# objective", encoding="utf-8")
+            self.assertEqual(
+                __import__("tools.engineering.execution_host", fromlist=["main"]).main(
+                    [str(prompt), "--admitted-storage-schema", "18"]
+                ),
+                0,
+            )
+            self.assertEqual(os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"], "18")
+            self.assertEqual(
+                Path(os.environ["DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"]).resolve(),
+                Path(temporary).resolve(),
+            )
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

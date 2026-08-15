@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import json
 import hashlib
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -21,10 +22,33 @@ DATABASE_FILENAME = "engineering.db"
 ENGINEERING_STORAGE_SCHEMA_VERSION = 19
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
+ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
+ADMITTED_STORAGE_ROOT_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"
 
 
 class EngineeringStorageError(RuntimeError):
     """Raised when the local Engineering evidence database is unsafe to use."""
+
+
+def _admitted_migration_ceiling(root: Path) -> int | None:
+    """Return the watcher-admitted schema only for its canonical workspace."""
+    admitted_root = os.environ.get(ADMITTED_STORAGE_ROOT_ENVIRONMENT)
+    admitted_schema = os.environ.get(ADMITTED_STORAGE_SCHEMA_ENVIRONMENT)
+    if not admitted_root and not admitted_schema:
+        return None
+    if not admitted_root or not admitted_schema:
+        raise EngineeringStorageError("Engineering storage admission context is incomplete.")
+    try:
+        ceiling = int(admitted_schema)
+    except ValueError as error:
+        raise EngineeringStorageError("Engineering storage admission schema is invalid.") from error
+    if ceiling < 1:
+        raise EngineeringStorageError("Engineering storage admission schema is invalid.")
+    try:
+        applies = root.resolve() == Path(admitted_root).resolve()
+    except OSError as error:
+        raise EngineeringStorageError("Engineering storage admission root is invalid.") from error
+    return ceiling if applies else None
 
 
 Migration = Callable[[sqlite3.Connection], None]
@@ -1035,6 +1059,15 @@ def open_storage(
         if current > ENGINEERING_STORAGE_SCHEMA_VERSION:
             raise EngineeringStorageError(
                 "Engineering storage schema is newer than this Engineering Platform supports."
+            )
+        admitted_ceiling = _admitted_migration_ceiling(root)
+        if (
+            admitted_ceiling is not None
+            and current < ENGINEERING_STORAGE_SCHEMA_VERSION
+            and ENGINEERING_STORAGE_SCHEMA_VERSION > admitted_ceiling
+        ):
+            raise EngineeringStorageError(
+                "Engineering storage migration is deferred until the Execution Host is upgraded."
             )
         connection.execute("BEGIN IMMEDIATE")
         for version in range(current + 1, ENGINEERING_STORAGE_SCHEMA_VERSION + 1):
