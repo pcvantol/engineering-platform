@@ -911,17 +911,23 @@ function executionContextField(label, value, badge = false) {
   field.append(caption, content);
   return field;
 }
-function renderExecutionContext(context) {
+function renderExecutionContext(context, execution = {}) {
   const card = $("executionContext");
   if (!card) return;
   card.hidden = false;
   card.classList.add("execution-context--primary");
+  const hostFields = [
+    [t("field.execution_mode"), execution.execution_mode],
+    [t("field.repository"), execution.target_repository],
+    [t("detail.target_checkout"), execution.checkout_path],
+    [t("ui.active_branch"), execution.active_branch],
+  ].filter(([, value]) => executionContextValue(value));
   if (!context || typeof context !== "object") {
     card.replaceChildren(
       Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
+      ...hostFields.map(([label, value]) => executionContextField(label, value)),
       Object.assign(document.createElement("p"), { textContent: t("execution_context.not_supplied") }),
     );
-    $("currentRun")?.querySelector(".current-run__grid")?.prepend(card);
     return;
   }
   const fields = [
@@ -944,8 +950,11 @@ function renderExecutionContext(context) {
     [t("execution_context.dispatcher_state"), context.dispatcher_state],
     [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
   ];
-  card.replaceChildren(Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }), ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)));
-  $("currentRun")?.querySelector(".current-run__grid")?.prepend(card);
+  card.replaceChildren(
+    Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
+    ...hostFields.map(([label, value]) => executionContextField(label, value)),
+    ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)),
+  );
 }
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
@@ -974,7 +983,7 @@ function renderHealthStatus(x, snapshot = {}) {
   );
   $("predecessorAction").textContent =
     x.predecessor_recovery_action || t("format.not_available");
-  renderExecutionContext(x.execution_context);
+  renderExecutionContext(x.execution_context, x);
   indicator.className =
     "indicator indicator--" +
     statusTone +

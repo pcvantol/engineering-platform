@@ -2624,6 +2624,30 @@ test.describe("Engineering Status browser smoke", () => {
     expect(styles.summaryColor).toBe("rgb(24, 34, 48)");
   });
 
+  test("uses a dark locale picker surface in dark mode", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const styles = await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+      const button = document.querySelector("#dashboardLocaleButton");
+      const menu = document.querySelector("#dashboardLocaleMenu");
+      menu.hidden = false;
+      return {
+        buttonBackground: getComputedStyle(button).backgroundColor,
+        buttonColor: getComputedStyle(button).color,
+        menuBackground: getComputedStyle(menu).backgroundColor,
+        optionBackground: getComputedStyle(menu.querySelector("button")).backgroundColor,
+        optionColor: getComputedStyle(menu.querySelector("button")).color,
+      };
+    });
+
+    expect(styles.buttonBackground).toBe("rgb(37, 37, 48)");
+    expect(styles.buttonColor).toBe("rgb(247, 243, 238)");
+    expect(styles.menuBackground).toBe("rgb(37, 37, 48)");
+    expect(styles.optionBackground).toBe("rgb(37, 37, 48)");
+    expect(styles.optionColor).toBe("rgb(247, 243, 238)");
+  });
+
   test("keeps category summaries out of the selected-input focus treatment", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
@@ -3311,7 +3335,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("uses purpose-matched glyphs in modal titles", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [selector, glyph] of [
-      ["#componentModalTitle", "⚙"],
+      ["#componentModalTitle", "⚙︎"],
       ["#confirmationModalTitle", "!"],
       ["#promptHistoryReportModalTitle", "▤"],
       ["#promptHistoryDetailTitle", "i"],

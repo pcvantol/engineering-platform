@@ -280,7 +280,7 @@ html[data-theme="light"] #promptHistory .execution-history-action{background:#ff
 .report-view-modal__panel{--report-modal-surface:#24242d;display:grid;grid-template-rows:auto minmax(0,1fr);height:min(90vh,calc(100dvh - 36px));overflow:hidden}.report-view-modal__header{background:var(--report-modal-surface);z-index:1}.report-view-modal__actions{grid-column:2;grid-row:1;justify-self:end;position:static}.report-view-modal__content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px}html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:#f7fbff}
 
 /* A small, decorative glyph gives each modal title a clear visual purpose. */
-:is(.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2)::before{display:inline-block;font-size:1.2em;line-height:1;margin-right:.42em;vertical-align:-.06em}.component-modal h2::before{content:"⚙"}.confirmation-modal h2::before{content:"!"}.report-view-modal__title::before{content:"▤"}.prompt-detail-modal__header h2::before{content:"i";font-weight:700}.prompt-chat-modal__header h2::before{content:"💬"}
+:is(.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2)::before{display:inline-block;font-size:1.2em;line-height:1;margin-right:.42em;vertical-align:-.06em}.component-modal h2::before{content:"⚙︎"}.confirmation-modal h2::before{content:"!"}.report-view-modal__title::before{content:"▤"}.prompt-detail-modal__header h2::before{content:"i";font-weight:700}.prompt-chat-modal__header h2::before{content:"💬"}
 /* Modal titles use one responsive type scale across every modal family. */
 :is(.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2){font-size:clamp(18px,2vw,20px);line-height:1.2}
 
@@ -339,6 +339,7 @@ html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#e
 .dashboard-locale select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}
 .dashboard-locale__native{height:1px!important;margin:-1px!important;opacity:0!important;pointer-events:none!important;position:absolute!important;width:1px!important}
 .dashboard-locale__picker{position:relative}.dashboard-locale__button{align-items:center;background:#fff;border:1px solid #9aabc3;border-radius:7px;color:#1b2b38;cursor:pointer;display:flex;font:inherit;gap:14px;justify-content:space-between;min-height:32px;min-width:132px;padding:4px 10px}.dashboard-locale__button:focus-visible{outline:3px solid var(--house-style);outline-offset:3px}.dashboard-locale__menu{background:#fff;border:1px solid #9aabc3;border-radius:0 0 7px 7px;box-shadow:0 8px 18px #0003;display:grid;left:0;min-width:100%;overflow:hidden;position:absolute;top:calc(100% + 2px);z-index:20}.dashboard-locale__menu[hidden]{display:none}.dashboard-locale__menu button{background:#fff;border:0;color:#1b2b38;cursor:pointer;font:inherit;padding:8px 10px;text-align:left}.dashboard-locale__menu button[aria-selected="true"]{background:var(--house-style);color:var(--button-ink)}.dashboard-locale__menu button:hover,.dashboard-locale__menu button:focus-visible{background:var(--operations-console-mark-blue);color:var(--button-ink);outline:0}
+html[data-theme="dark"] .dashboard-locale__button{background:#252530;border-color:#747484;color:#f7f3ee;color-scheme:dark}html[data-theme="dark"] .dashboard-locale__menu{background:#252530;border-color:#747484;box-shadow:0 10px 22px #0009;color-scheme:dark}html[data-theme="dark"] .dashboard-locale__menu button{background:#252530;color:#f7f3ee}
 html[data-theme="light"] :is(body,.dashboard-titlebar,.footer){background:var(--dashboard-page-surface-light)}
 html[data-theme="light"] .dashboard-locale{color:#415168}
 html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-surface-light);border-color:#9aabc3}
@@ -714,6 +715,21 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
   }
   .dashboard-titlebar :is(.theme-toggle,.section-state-toggle):active{
     box-shadow:none;
+  }
+  /* WebKit may blend the generic glass layer from off-screen row actions
+     through a momentum-scrolling table. Keep the history surface opaque and
+     opt those controls out so iOS renders the table as a stable document. */
+  #promptHistory .log-table-wrap,
+  #promptHistory .log-table,
+  #promptHistory .log-table tbody,
+  #promptHistory .log-table td{
+    background:var(--dashboard-expanded-content-surface);
+  }
+  #promptHistory .log-table-wrap{isolation:isolate}
+  #promptHistory .log-table-wrap :is(button,[role="button"]){
+    -webkit-backdrop-filter:none;
+    backdrop-filter:none;
+    background-image:none;
   }
 }
 

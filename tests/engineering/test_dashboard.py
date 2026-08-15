@@ -275,7 +275,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('href="/assets/dashboard.css"', page)
         self.assertIn('src="/assets/dashboard.js" type="module"', page)
         self.assertIn('id="pageRefresh"', page)
+        self.assertLess(page.index('id="currentFile"'), page.index('id="executionContext"'))
         self.assertLess(page.index('id="executionContext"'), page.index('id="indicator"'))
+
         for identifier in (
             "dashboardSplash",
             "engineering-dashboard-content",
@@ -309,9 +311,21 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertIn("Dashboard UI component layer", stylesheet)
         self.assertIn("--dashboard-section-gap:24px", stylesheet)
+
+    def test_execution_context_keeps_host_verified_target_details(self) -> None:
+        script = (Path(__file__).parents[2] / "tools" / "engineering" / "assets" / "dashboard.js").read_text()
+        self.assertIn("function renderExecutionContext(context, execution = {})", script)
+        self.assertIn('[t("field.repository"), execution.target_repository]', script)
+        self.assertIn('[t("detail.target_checkout"), execution.checkout_path]', script)
+        self.assertIn('[t("ui.active_branch"), execution.active_branch]', script)
+        self.assertIn("renderExecutionContext(x.execution_context, x);", script)
+        root = Path("tools/engineering/assets")
+        stylesheet = (root / "dashboard.css").read_text(encoding="utf-8")
         self.assertIn("gap:var(--dashboard-section-gap)", stylesheet)
         self.assertIn("scrollbar-gutter:stable", stylesheet)
         self.assertIn(".inbox-queue,.prompt-history", stylesheet)
+        self.assertIn("#promptHistory .log-table-wrap{isolation:isolate}", stylesheet)
+        self.assertIn("#promptHistory .log-table tbody", stylesheet)
         self.assertIn("box-shadow:none", stylesheet)
         self.assertIn(".reset-log-filters", stylesheet)
         self.assertIn("--dashboard-control-label-gap:8px", stylesheet)
