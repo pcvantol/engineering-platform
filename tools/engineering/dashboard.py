@@ -1750,17 +1750,25 @@ def run(root: Path, port: int = 8765, provider: TailscaleProvider | None = None)
 
 
 def launch_agent(repo: Path) -> Path:
-    """Render the only owned per-user LaunchAgent; no network policy changes."""
+    """Render the only owned per-user LaunchAgent; no network policy changes.
+
+    The agent deliberately starts from the neutral filesystem root.  A
+    LaunchAgent may not inherit the interactive shell's protected working
+    directory access, so relying on its current repository directory can
+    leave Python waiting before it has imported the dashboard module.  The
+    explicit ``PYTHONPATH`` keeps the selected repository importable while the
+    ``--repo`` argument remains the sole source of operational paths.
+    """
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
     launcher = (sys.executable, "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
-    command = f"cd {shlex.quote(str(repo))} && exec " + " ".join(shlex.quote(value) for value in launcher)
+    command = "cd / && exec " + " ".join(shlex.quote(value) for value in launcher)
     arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
     log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
     if log_level not in VALID_LEVELS:
         log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>/</string><key>EnvironmentVariables</key><dict><key>PYTHONPATH</key><string>{escape(str(repo))}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
         encoding="utf-8",
     )
     return destination
