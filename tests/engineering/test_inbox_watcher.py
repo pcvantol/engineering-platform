@@ -351,7 +351,10 @@ class InboxWatcherTest(unittest.TestCase):
             run.return_value = __import__("subprocess").CompletedProcess((), 0)
             code = inbox_watcher.once(self.repo, self.root, 0)
         self.assertEqual(code, 0)
-        self.assertEqual(run.call_args.args[0][-2:], ["--run-id", run_id])
+        self.assertEqual(
+            run.call_args.args[0][-4:],
+            ["--run-id", run_id, "--admitted-storage-schema", str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION)],
+        )
         self.assertEqual(len(list(inbox_watcher.local_folders(self.repo)["Completed"].glob("*__job.txt"))), 1)
         self.assertFalse((self.root / "Reports").exists())
         snapshot = json_status(self.repo)
@@ -414,7 +417,15 @@ class InboxWatcherTest(unittest.TestCase):
         child_results: list[int] = []
 
         def run_command(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            self.assertEqual(arguments[-2:], ["--run-id", "inbox-detached-run"])
+            self.assertEqual(
+                arguments[-4:],
+                [
+                    "--run-id",
+                    "inbox-detached-run",
+                    "--admitted-storage-schema",
+                    str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION),
+                ],
+            )
             # The child reads its identity before invoking the host.  Removing
             # it here lets the concurrently polling parent stay a parent.
             os.environ.pop(inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT, None)
@@ -695,7 +706,15 @@ class InboxWatcherTest(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess((), 0)
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
-        self.assertEqual(run.call_args.args[0][-1], retry_run_id)
+        self.assertEqual(
+            run.call_args.args[0][-4:],
+            [
+                "--run-id",
+                retry_run_id,
+                "--admitted-storage-schema",
+                str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION),
+            ],
+        )
         self.assertTrue(later.exists())
         snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")

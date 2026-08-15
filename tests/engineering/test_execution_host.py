@@ -584,6 +584,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_execution_host_exposes_the_generic_command_name(self) -> None:
         self.assertEqual(build_parser().prog, "engineering-execution-host")
 
+    def test_execution_host_accepts_watcher_admitted_storage_schema(self) -> None:
+        arguments = build_parser().parse_args(
+            ["prompt.md", "--admitted-storage-schema", "18"]
+        )
+        self.assertEqual(arguments.admitted_storage_schema, 18)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -1223,6 +1229,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         validate_compatibility(manifest, RunnerCompatibility(), "0.146.0")
+
+    def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:
+        compatibility = RunnerCompatibility(
+            platform_version="1.0.0",
+            runner_version="1.0.0",
+            bootstrap_contract="2026.07",
+            checkpoint_formats=frozenset({1}),
+            memory_formats=frozenset({1}),
+            report_formats=frozenset({1}),
+            storage_schemas=frozenset({2}),
+        )
+        runner = EngineeringRunner(
+            self.root,
+            self.store,
+            FakeRepository(),
+            FakeGitHub([]),
+            FakeAgent(AgentResult("COMPLETE")),
+            lambda _: None,
+            compatibility=compatibility,
+        )
+
+        with self.assertRaisesRegex(RunnerError, "Engineering storage schema mismatch"):
+            runner.run(self.prompt, run_id="schema-rollout")
+
+        self.assertFalse((self.root / ".engineering" / "engineering.db").exists())
 
     def test_engineering_platform_rejects_incompatible_platform_version(self) -> None:
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")

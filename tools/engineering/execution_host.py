@@ -366,6 +366,14 @@ class EngineeringRunner:
             state=state,
             target_repository=context.target_repository or self.root,
         )
+        # The Inbox watcher admits a run with the schema it has loaded.  A
+        # freshly spawned runner reads source files again, so it can otherwise
+        # observe a newer manifest and migrate the database while the watcher
+        # still runs the older code.  Verify that compatibility boundary before
+        # StateStore.save() opens (and could migrate) the datastore.
+        if not self.agent.available():
+            raise RunnerError("Codex CLI is not installed or invokable")
+        self._verify_engineering_platform()
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
         readiness = evaluate_readiness(
@@ -431,9 +439,6 @@ class EngineeringRunner:
                     "genesis_workspace_conflict",
                     f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
                 )
-        if not self.agent.available():
-            raise RunnerError("Codex CLI is not installed or invokable")
-        self._verify_engineering_platform()
         reconcile_stale(self.root)
         self.store.save(state)
         try:
@@ -924,6 +929,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("prompt", type=Path)
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--admitted-storage-schema",
+        type=int,
+        help="storage schema admitted by the watcher that spawned this run",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--owner-authorized",
@@ -949,12 +959,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"prompt does not exist: {prompt_path}")
     if args.resume and not args.run_id:
         raise SystemExit("--resume requires --run-id")
+    if args.admitted_storage_schema is not None and args.admitted_storage_schema < 1:
+        raise SystemExit("--admitted-storage-schema must be positive")
+    compatibility = (
+        RunnerCompatibility(storage_schemas=frozenset({args.admitted_storage_schema}))
+        if args.admitted_storage_schema is not None
+        else RunnerCompatibility()
+    )
     runner = EngineeringRunner(
         root,
         StateStore(root / ".engineering" / "engineering-runs"),
         SubprocessRepositoryClient(),
         GhCliClient(),
         CodexCliClient(),
+        compatibility=compatibility,
     )
     try:
         state = runner.run(prompt_path, args.run_id, args.resume, args.owner_authorized)

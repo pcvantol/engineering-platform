@@ -43,7 +43,7 @@ from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
-from .storage import EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
 
 LABEL = "com.djconnect.engineering-inbox"
@@ -1079,6 +1079,8 @@ def _execute_runner_command(
         "--owner-authorized",
         "--run-id",
         run_id,
+        "--admitted-storage-schema",
+        str(ENGINEERING_STORAGE_SCHEMA_VERSION),
     ]
     if phase and phase not in TERMINAL_PHASES:
         arguments.append("--resume")
