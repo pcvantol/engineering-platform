@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import json
 import re
 
+from .recommendation_handoff import ForgeGovernanceHandoffError, validate_forge_governance_handoff
+
 
 _FIELD_LIMIT = 160
 _PRODUCER_TYPES = frozenset({"HUMAN", "FORGE", "EXTERNAL", "UNKNOWN"})
@@ -40,6 +42,7 @@ class ProducerSubmission:
     submission_id: str | None
     contract_version: str | None
     execution_context: dict[str, object] | None
+    forge_governance_handoff: dict[str, object] | None
     envelope: dict[str, object]
     is_legacy: bool
 
@@ -84,6 +87,7 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
             submission_id=None,
             contract_version=None,
             execution_context=None,
+            forge_governance_handoff=None,
             envelope={"kind": "legacy_prompt", "prompt": content},
             is_legacy=True,
         )
@@ -118,6 +122,12 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
     if context is not None:
         context = _object(context, "execution_context")
         _required_token(context.get("context_version"), "execution_context.context_version")
+    handoff = envelope.get("forge_governance_handoff")
+    if handoff is not None:
+        try:
+            handoff = validate_forge_governance_handoff(handoff)
+        except ForgeGovernanceHandoffError as error:
+            raise ProducerSubmissionError(str(error)) from error
     return ProducerSubmission(
         prompt=prompt,
         producer=ProducerMetadata(
@@ -132,6 +142,7 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
         submission_id=submission_id,
         contract_version=contract_version,
         execution_context=context,
+        forge_governance_handoff=handoff,
         envelope=envelope,
         is_legacy=False,
     )

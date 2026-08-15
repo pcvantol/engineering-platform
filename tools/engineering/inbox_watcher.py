@@ -1227,6 +1227,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 engineering_action_id=producer.engineering_action_id,
                 link_run_id=run_id,
                 execution_context=submission.execution_context,
+                forge_governance_handoff=submission.forge_governance_handoff,
                 received_at=arrived_at.isoformat(),
             )
         except EngineeringStorageError as error:

@@ -49,7 +49,6 @@ from .qualification import dashboard, execute_qualification, latest_qualificatio
 from .report_analysis import analyze as analyze_terminal_report
 from .prompt_history import record_terminal_report
 from .producer import ProducerMetadata, parse_producer_metadata
-from .recommendation_handoff import RecommendationHandoff, parse_forge_recommendation_handoff, report_lines as recommendation_handoff_report_lines
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import migrate_legacy_workspace

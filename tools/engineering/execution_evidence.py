@@ -16,5 +16,7 @@ class TerminalEvidenceBundle:
     files_modified: tuple[str, ...]
     files_removed: tuple[str, ...]
     diff_check: str
+    transaction_baseline: str
+    resulting_commit: str | None
     lease: dict[str, object]
     readiness: dict[str, object] | None

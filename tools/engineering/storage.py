@@ -18,7 +18,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 18
+ENGINEERING_STORAGE_SCHEMA_VERSION = 19
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 
@@ -578,6 +578,12 @@ def _schema_v18(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v19(connection: sqlite3.Connection) -> None:
+    """Persist each supplied Forge governance snapshot with its submission."""
+    connection.execute("ALTER TABLE execution_submissions ADD COLUMN forge_governance_handoff_snapshot TEXT")
+    connection.execute("ALTER TABLE execution_submissions ADD COLUMN forge_governance_handoff_version TEXT")
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -643,6 +649,7 @@ MIGRATIONS: dict[int, Migration] = {
     16: _schema_v16,
     17: _schema_v17,
     18: _schema_v18,
+    19: _schema_v19,
 }
 
 
@@ -745,6 +752,7 @@ def record_submission(
     execution_run_id: str | None = None,
     link_run_id: str | None = None,
     execution_context: dict[str, object] | None = None,
+    forge_governance_handoff: dict[str, object] | None = None,
 ) -> None:
     """Persist the complete producer envelope before an Inbox file is consumed."""
     if not all(isinstance(value, str) and value for value in (submission_id, producer_id, producer_type, prompt_content, received_at)):
@@ -753,16 +761,20 @@ def record_submission(
     try:
         encoded_envelope = original_envelope if isinstance(original_envelope, str) else _encoded_payload(original_envelope)
         encoded_context = _encoded_payload(execution_context) if execution_context is not None else None
+        encoded_handoff = _encoded_payload(forge_governance_handoff) if forge_governance_handoff is not None else None
         context_version = execution_context.get("context_version") if isinstance(execution_context, dict) else None
+        handoff_version = forge_governance_handoff.get("version") if isinstance(forge_governance_handoff, dict) else None
         if context_version is not None and not isinstance(context_version, str):
             raise EngineeringStorageError("Execution Context snapshot version is invalid.")
+        if handoff_version is not None and not isinstance(handoff_version, str):
+            raise EngineeringStorageError("Forge Governance Handoff snapshot version is invalid.")
         connection.execute(
-            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at,execution_context_snapshot,execution_context_version,engineering_action_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,producer_version,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,correlation_id,mission_id,execution_run_id,received_at,execution_context_snapshot,execution_context_version,engineering_action_id,forge_governance_handoff_snapshot,forge_governance_handoff_version) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(submission_id) DO NOTHING",
             (submission_id, producer_id, producer_type, producer_version, contract_version, prompt_content,
              _encoded_payload(prompt_metadata), _encoded_payload(target_identity), encoded_envelope,
-             correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id),
+             correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id, encoded_handoff, handoff_version),
         )
         if link_run_id:
             connection.execute(
@@ -795,6 +807,28 @@ def load_execution_context_snapshot(root: Path, run_id: str) -> dict[str, object
     return snapshot
 
 
+def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str, object] | None:
+    """Read the immutable Producer-supplied Forge handoff for one run."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT submission.forge_governance_handoff_snapshot FROM execution_submissions AS submission "
+            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "WHERE link.run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not row or row[0] is None:
+        return None
+    try:
+        snapshot = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Persisted Forge Governance Handoff snapshot is corrupt.") from error
+    if not isinstance(snapshot, dict):
+        raise EngineeringStorageError("Persisted Forge Governance Handoff snapshot is invalid.")
+    return snapshot
+
+
 def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None:
     """Load immutable Producer provenance for one linked execution without prompt inspection."""
     connection = open_storage(root)
@@ -802,7 +836,8 @@ def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None
         row = connection.execute(
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
             "submission.producer_version,submission.contract_version,submission.correlation_id,"
-            "submission.mission_id,submission.engineering_action_id,submission.execution_context_version,submission.execution_context_snapshot "
+            "submission.mission_id,submission.engineering_action_id,submission.execution_context_version,submission.execution_context_snapshot,"
+            "submission.forge_governance_handoff_version,submission.forge_governance_handoff_snapshot "
             "FROM execution_submissions AS submission JOIN execution_submission_links AS link "
             "ON link.submission_id=submission.submission_id WHERE link.run_id=?", (run_id,)
         ).fetchone()
@@ -818,10 +853,19 @@ def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None
             raise EngineeringStorageError("Persisted Execution Context snapshot is corrupt.") from error
         if not isinstance(snapshot, dict):
             raise EngineeringStorageError("Persisted Execution Context snapshot is invalid.")
+    handoff = None
+    if row[11] is not None:
+        try:
+            handoff = json.loads(row[11])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise EngineeringStorageError("Persisted Forge Governance Handoff snapshot is corrupt.") from error
+        if not isinstance(handoff, dict):
+            raise EngineeringStorageError("Persisted Forge Governance Handoff snapshot is invalid.")
     return {
         "submission_id": row[0], "producer_id": row[1], "producer_type": row[2],
         "producer_version": row[3], "contract_version": row[4], "correlation_id": row[5],
         "mission_id": row[6], "engineering_action_id": row[7], "execution_context_version": row[8], "execution_context": snapshot,
+        "forge_governance_handoff_version": row[10], "forge_governance_handoff": handoff,
     }
 
 

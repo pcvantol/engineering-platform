@@ -48,7 +48,7 @@ from .platform_version import EngineeringPlatformManifest
 from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
-from .recommendation_handoff import RecommendationHandoff, parse_forge_recommendation_handoff, report_lines as recommendation_handoff_report_lines
+from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
 
@@ -274,10 +274,12 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
         if baseline
         else _git_output(target, "diff-tree", "--root", "--check", commit)
         if root_genesis_commit
-        else None
+        else _git_output(target, "diff", "--check")
     )
-    diff_check = (
-        "passed" if (baseline or root_genesis_commit) and diff == "" else "not available: transaction baseline was not recorded"
+    diff_check = "PASS" if diff == "" else "FAIL" if diff is not None else "UNAVAILABLE"
+    resulting_commit = (
+        state.genesis_commit_sha if state.execution_mode == "GENESIS" else
+        state.finalization_merge_commit or state.implementation_merge_commit or state.implementation_head_sha
     )
     return TerminalEvidenceBundle(
         target_workspace=str(target),
@@ -295,6 +297,8 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
         files_modified=tuple(modified),
         files_removed=tuple(removed),
         diff_check=diff_check,
+        transaction_baseline="AVAILABLE" if baseline or root_genesis_commit else "UNAVAILABLE",
+        resulting_commit=resulting_commit,
         lease=lease_history(root, state.run_id),
         readiness=load_readiness_evaluation(root, state.run_id),
     )
@@ -370,12 +374,17 @@ def _branch_traceability(state: TransactionState, bundle: TerminalEvidenceBundle
     execution = state.implementation_branch or state.branch or bundle.target_branch
     final_branch = bundle.target_branch
     transition = "unchanged" if preflight == execution == final_branch else "recorded lifecycle transition"
+    mutation = "NONE" if bundle.resulting_commit is None else ("NONE" if not bundle.changed_files else "RECORDED")
     return (
+        f"- Initial Repository Baseline: `{bundle.transaction_baseline}`",
+        f"- Repository Mutation: `{mutation}`",
+        f"- Files Changed By This Execution: {', '.join(f'`{path}`' for path in bundle.changed_files) or 'NONE'}",
         f"- Preflight branch: `{preflight}`",
         f"- Execution branch: `{execution}`",
         f"- Final repository branch: `{final_branch}`",
         f"- Final repository commit: `{bundle.target_commit}`",
-        f"- Result commit: `{bundle.target_commit}`",
+        f"- Resulting New Commit: `{bundle.resulting_commit or 'NONE'}`",
+        f"- Target Commit: `{bundle.target_commit}`",
         f"- Repository state transition: {transition}.",
     )
 
@@ -405,6 +414,7 @@ def _requirement_traceability(objective: str, state: TransactionState, bundle: T
 def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
     records = list(state.validation_evidence)
     records.append({"command": "git diff --check", "result": bundle.diff_check})
+    records.append({"command": "Transaction Baseline", "result": bundle.transaction_baseline})
     records.append({"command": "Documentation validation", "result": "report documentation is rendered from the canonical reporting contract"})
     return tuple(
         line
@@ -448,7 +458,7 @@ def _deliverable_projection(
     objective: str,
     state: TransactionState,
     bundle: TerminalEvidenceBundle,
-    handoff: RecommendationHandoff | None = None,
+    handoff: ForgeGovernanceHandoff | None = None,
 ) -> tuple[str, ...]:
     """Project requested outcomes and repository artefacts without claiming intent."""
     requested = _objective_requirements(objective)
@@ -478,13 +488,8 @@ def _deliverable_projection(
         return projection
     return (
         *projection,
-        "### Forge Advisory Deliverable",
-        "- Requested Deliverable: Next Business Mission Recommendation",
-        f"- Delivered Artefact: `{handoff.artifact_path or 'NOT SUPPLIED'}`",
-        f"- Recommended Mission: {handoff.recommendation.title or 'NOT SUPPLIED'}",
-        f"- Decision Evidence: {handoff.recommendation.decision_evidence or 'NOT SUPPLIED'}",
-        "- Business Approval: `NOT PERFORMED BY ENGINEERING PLATFORM`",
-        "- Mission Allocation: `NOT PERFORMED`",
+        "### Forge Governance Handoff Deliverable",
+        "- Governance values are rendered only in the dedicated read-only handoff section.",
     )
 
 
@@ -500,7 +505,7 @@ def _qualification_projection(
         f"- Qualification Status: `{qualification_status or 'not recorded'}`",
         f"- Runtime Status: `{'reported' if runtime_provider != 'unavailable' else 'not reported'}`",
         f"- Validation Status: `{validation}`",
-        f"- Governance Status: `{state.latest_github_evidence or 'not recorded'}`",
+        "- Governance Status: see the Forge Governance Handoff projection above.",
     )
 
 
@@ -817,9 +822,8 @@ def generate_terminal_report(
     except OSError:
         pass
     producer, submission = _persisted_producer_submission(root, state, objective)
-    handoff = parse_forge_recommendation_handoff(
-        objective, root, producer_type=producer.producer_type
-    )
+    raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
+    handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
     manifest = manifest or EngineeringPlatformManifest.load(
         root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
     )

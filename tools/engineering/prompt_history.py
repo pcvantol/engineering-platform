@@ -355,7 +355,8 @@ def prompt_history(
                 COALESCE(submission.engineering_action_id, runs.engineering_action_id),
                 runs.execution_constraint_version, submission.submission_id,
                 submission.contract_version, submission.execution_context_version,
-                submission.execution_context_snapshot, dismissal.terminal_state,
+                submission.execution_context_snapshot, submission.forge_governance_handoff_version,
+                submission.forge_governance_handoff_snapshot, dismissal.terminal_state,
                 dismissal.handling_state, dismissal.dismissed_at, dismissal.dismissed_by
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
@@ -398,13 +399,19 @@ def prompt_history(
             "producer_submission_contract_version": row[24],
             "execution_context_version": row[25],
             "execution_context": json.loads(row[26]) if isinstance(row[26], str) else None,
-            "dismissed": row[27] is not None,
-            "handling_state": row[28] or "OPEN",
-            "dismissed_at": row[29],
-            "dismissed_by": row[30],
+            "forge_governance_handoff_version": row[27],
+            "forge_governance_handoff": json.loads(row[28]) if isinstance(row[28], str) else None,
+            "dismissed": row[29] is not None,
+            "handling_state": row[30] or "OPEN",
+            "dismissed_at": row[31],
+            "dismissed_by": row[32],
         }
         for row in rows
     ]
+    for record in records:
+        if record["forge_governance_handoff"] is None:
+            record.pop("forge_governance_handoff_version")
+            record.pop("forge_governance_handoff")
     # Lineage is a read-only projection of persisted child evidence. It never
     # changes a terminal parent or treats retry as resume. A terminal child
     # wins over active, which wins over an unclaimed Inbox child.

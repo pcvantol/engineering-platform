@@ -1317,19 +1317,25 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("- Execution liveness:", body)
         self.assertIn("- Recovery action:", body)
 
-    def test_terminal_report_projects_forge_recommendation_without_governance_mutation(self) -> None:
-        (self.root / "recommendation.json").write_text(
-            json.dumps({"recommendation": {"title": "Mission Aurora", "status": "RECOMMENDED", "mission_origin": "PORTFOLIO_INTELLIGENCE", "business_value": "High", "confidence": "0.91", "dependencies": ["DEC-7"], "decision_evidence_reference": "DEC-7"}, "alternatives": [{"title": "Mission Borealis", "rank": 2, "ordering_reason": "Lower value", "status": "PROPOSED"}]}),
-            encoding="utf-8",
+    def test_terminal_report_projects_persisted_forge_governance_handoff_without_governance_mutation(self) -> None:
+        from tools.engineering.storage import record_submission
+        record_submission(
+            self.root, submission_id="submission-handoff", producer_id="forge", producer_type="FORGE",
+            prompt_content="bounded", prompt_metadata={}, target_identity={}, original_envelope={},
+            received_at="2026-08-15T00:00:00+00:00", link_run_id="forge-handoff",
+            forge_governance_handoff={"version": "1.0", "recommendation_set": {"id": "set-1", "count": 2},
+                "selected_recommendation": {"recommendation_id": "REC-1", "title": "Mission Aurora", "rank": 1, "lifecycle_status": "RECOMMENDED", "confidence": "0.91", "business_value": "High", "dependencies": ["DEC-7"]},
+                "alternatives": [{"recommendation_id": "REC-2", "title": "Mission Borealis", "rank": 2, "lifecycle_status": "PROPOSED", "confidence": "0.7"}],
+                "decision_evidence": {"id": "DEC-7", "type": "RANKING", "timestamp": "2026-08-15T00:00:00Z"},
+                "governance": {"business_approval_state": "PENDING"}},
         )
-        self.prompt.write_text("Producer Type: FORGE\nForge Recommendation Artifact Path: recommendation.json\n", encoding="utf-8")
         state = TransactionState("forge-handoff", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
-        self.assertIn("## Forge Mission Recommendation Handoff", body)
-        self.assertIn("- Recommended Mission: Mission Aurora", body)
-        self.assertIn("- Business Decision: `NOT YET RECORDED`", body)
-        self.assertIn("- Mission Created: `NO`", body)
-        self.assertIn("- Rank 2: Mission Borealis — Lower value", body)
+        self.assertIn("## Forge Governance Handoff", body)
+        self.assertIn("- Recommendation Set ID: `set-1`", body)
+        self.assertIn("- Selected Recommendation ID: `REC-1`", body)
+        self.assertIn("- Recommendation ID: `REC-2`; Rank: 2", body)
+        self.assertNotIn("NOT PERFORMED BY ENGINEERING PLATFORM", body)
 
     def test_retry_report_records_immutable_execution_lineage(self) -> None:
         self.prompt.write_text(
@@ -1422,7 +1428,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("File added: `added.txt`", body)
         self.assertIn("File modified: `modified.txt`", body)
         self.assertIn("File removed: `removed.txt`", body)
-        self.assertIn("git diff --check result: passed", body)
+        self.assertIn("git diff --check result: PASS", body)
 
     def test_complete_report_renders_structured_validation_evidence(self) -> None:
         state = TransactionState(

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import unittest
 import json
-import tempfile
-from pathlib import Path
 
 from tools.engineering.producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
-from tools.engineering.recommendation_handoff import parse_forge_recommendation_handoff
+from tools.engineering.recommendation_handoff import ForgeGovernanceHandoff, report_lines
 from tools.engineering.execution_host import execution_mode_for
 
 
@@ -76,35 +74,30 @@ class ProducerContractTest(unittest.TestCase):
         self.assertEqual(parse_producer_metadata(producer_prompt).producer_type, "FORGE")
         self.assertEqual(execution_mode_for(producer_prompt), execution_mode_for(legacy))
 
-    def test_forge_recommendation_is_read_only_from_declared_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            artifact = root / "forge-recommendation.json"
-            artifact.write_text(json.dumps({
-                "recommended_candidate": {
-                    "recommendation_id": "REC-1", "title": "Mission Aurora", "mission_origin": "PORTFOLIO_INTELLIGENCE",
-                    "rank": 1, "summary": "Highest validated value.", "business_value": "High", "confidence": "0.91",
-                    "dependencies": ["DEC-7"], "decision_evidence_reference": "DEC-7", "status": "RECOMMENDED",
-                },
-                "alternative_candidates": [{"title": "Mission Borealis", "rank": 2, "ordering_reason": "Lower confidence", "status": "PROPOSED"}],
-            }), encoding="utf-8")
-            handoff = parse_forge_recommendation_handoff(
-                "Forge Recommendation Artifact Path: forge-recommendation.json", root, producer_type="FORGE"
-            )
-        self.assertIsNotNone(handoff)
-        assert handoff is not None
-        self.assertEqual(handoff.recommendation.title, "Mission Aurora")
+    def test_forge_governance_handoff_is_versioned_and_read_only(self) -> None:
+        raw = json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "submission-forge"}, "producer": {"id": "forge", "type": "FORGE"},
+            "prompt": {"text": "A bounded action"},
+            "forge_governance_handoff": {"version": "1.0", "recommendation_set": {"id": "set-1", "count": 2},
+                "selected_recommendation": {"recommendation_id": "REC-1", "title": "Mission Aurora", "rank": 1, "lifecycle_status": "RECOMMENDED", "confidence": "0.91"},
+                "alternatives": [{"recommendation_id": "REC-2", "title": "Mission Borealis", "rank": 2, "lifecycle_status": "PROPOSED", "confidence": "0.7"}],
+                "decision_evidence": {"id": "DEC-7", "type": "RANKING", "timestamp": "2026-08-15T00:00:00Z"},
+                "governance": {"business_approval_state": "PENDING"}},
+        })
+        submission = parse_producer_submission(raw)
+        assert submission.forge_governance_handoff is not None
+        handoff = ForgeGovernanceHandoff.from_snapshot(submission.forge_governance_handoff)
+        self.assertEqual(handoff.recommendation_set_id, "set-1")
         self.assertEqual(handoff.alternatives[0].rank, 2)
-        self.assertEqual(handoff.projection_status, "COMPLETE")
+        self.assertEqual(handoff.completeness, "COMPLETE")
+        self.assertIn("Selected Recommendation ID: `REC-1`", "\n".join(report_lines(handoff, "COMPLETE")))
 
-    def test_missing_decision_evidence_is_explicitly_incomplete(self) -> None:
-        handoff = parse_forge_recommendation_handoff(
-            """Forge Recommendation Handoff JSON:
-```json
-{"recommendation": {"title": "Mission Aurora", "status": "RECOMMENDED"}}
-```""", Path.cwd(), producer_type="FORGE"
-        )
-        self.assertIsNotNone(handoff)
-        assert handoff is not None
-        self.assertEqual(handoff.projection_status, "INCOMPLETE")
-        self.assertEqual(handoff.missing_fields, ("Decision Evidence reference",))
+    def test_malformed_supplied_governance_handoff_fails_closed(self) -> None:
+        raw = json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "submission-invalid"}, "producer": {"id": "forge", "type": "FORGE"},
+            "prompt": {"text": "A bounded action"}, "forge_governance_handoff": {"version": "1.0", "alternatives": "invalid"},
+        })
+        with self.assertRaisesRegex(ProducerSubmissionError, "alternatives"):
+            parse_producer_submission(raw)

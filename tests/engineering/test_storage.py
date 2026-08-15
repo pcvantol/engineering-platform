@@ -15,6 +15,7 @@ from tools.engineering.storage import (
     database_path,
     load_projection,
     load_execution_context_snapshot,
+    load_forge_governance_handoff_snapshot,
     open_storage,
     record_artifact,
     record_submission,
@@ -28,6 +29,20 @@ from tools.engineering.agent_state import StateStore, TransactionState
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_submission_persists_an_immutable_forge_governance_handoff_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            handoff = {"version": "1.0", "recommendation_set": {"id": "set-1"}}
+            record_submission(
+                root, submission_id="submission-handoff", producer_id="forge", producer_type="FORGE",
+                prompt_content="bounded prompt", prompt_metadata={}, target_identity={}, original_envelope={},
+                received_at="2026-08-15T08:00:00+00:00", link_run_id="inbox-handoff", forge_governance_handoff=handoff,
+            )
+            handoff["recommendation_set"]["id"] = "changed"
+            self.assertEqual(load_forge_governance_handoff_snapshot(root, "inbox-handoff"), {
+                "version": "1.0", "recommendation_set": {"id": "set-1"},
+            })
+
     def test_submission_persists_an_immutable_execution_context_snapshot_and_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

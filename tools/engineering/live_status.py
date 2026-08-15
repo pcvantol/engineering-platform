@@ -10,7 +10,7 @@ import tempfile
 from typing import Mapping
 
 from .agent_state import TransactionState, redact_diagnostic
-from .storage import EngineeringStorageError, load_execution_context_snapshot, load_projection, open_storage, store_projection
+from .storage import EngineeringStorageError, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, open_storage, store_projection
 from .providers import GitProvider
 
 
@@ -86,8 +86,10 @@ def write_live_status(
     }
     try:
         payload["execution_context"] = load_execution_context_snapshot(root, state.run_id)
+        payload["forge_governance_handoff"] = load_forge_governance_handoff_snapshot(root, state.run_id)
     except EngineeringStorageError:
         payload["execution_context"] = None
+        payload["forge_governance_handoff"] = None
     connection = open_storage(root)
     try:
         store_projection(connection, "live_status", payload)

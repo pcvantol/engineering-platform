@@ -17,7 +17,7 @@ from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 from .telemetry import comparable_duration_estimate
-from .storage import EngineeringStorageError, import_legacy_projection_once, load_execution_context_snapshot, load_projection, load_readiness_evaluation, open_storage
+from .storage import EngineeringStorageError, import_legacy_projection_once, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, load_readiness_evaluation, open_storage
 from .execution_lease import liveness as lease_liveness
 
 
@@ -163,6 +163,7 @@ def status(root: Path) -> bytes:
                 # linked to this run; legacy/current prompt projections never
                 # become an Execution Context source.
                 "execution_context": load_execution_context_snapshot(root, str(live.get("run_id"))),
+                "forge_governance_handoff": load_forge_governance_handoff_snapshot(root, str(live.get("run_id"))),
             },
             separators=(",", ":"),
         ).encode()

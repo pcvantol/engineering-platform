@@ -1,19 +1,21 @@
-"""Read-only projection of a Forge Mission Recommendation handoff."""
+"""Read-only projection of an immutable Forge governance handoff snapshot."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
 from typing import Any
 
 
-STATUSES = frozenset({"PROPOSED", "RECOMMENDED", "NOT_RECOMMENDED", "SUPERSEDED", "UNAVAILABLE"})
+FORGE_GOVERNANCE_HANDOFF_VERSION = "1.0"
 _MAX_TEXT = 2_000
-_ARTIFACT = re.compile(r"(?mi)^\s*Forge Recommendation Art(?:ifact|efact) Path\s*:\s*([^\r\n]+?)\s*$")
-_INLINE = re.compile(r"(?ms)^\s*Forge Recommendation Handoff JSON\s*:\s*\n```(?:json)?\s*(\{.*?\})\s*```")
-_REPORT = re.compile(r"(?ms)^## Forge Mission Recommendation Handoff\s*$.*?^```json\s*(\{.*?\})\s*```")
+_REPORT = re.compile(r"(?ms)^## Forge Governance Handoff\s*$.*?^### Immutable Handoff Snapshot\s*$\n```json\s*(\{.*?\})\s*```")
+_LEGACY_REPORT = re.compile(r"(?ms)^## Forge Mission Recommendation Handoff\s*$.*?^```json\s*(\{.*?\})\s*```")
+
+
+class ForgeGovernanceHandoffError(ValueError):
+    """Raised only when a supplied Forge handoff cannot meet its transport contract."""
 
 
 def _text(value: object) -> str | None:
@@ -23,178 +25,214 @@ def _text(value: object) -> str | None:
     return value[:_MAX_TEXT] if value else None
 
 
-def _list(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for raw in value if (item := _text(raw)))[:20]
-
-
 def _value(raw: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
-        if (value := _text(raw.get(key))) is not None:
+        value = _text(raw.get(key))
+        if value is not None:
             return value
     return None
 
 
-def _rank(raw: dict[str, Any]) -> int | None:
-    value = raw.get("rank")
+def _items(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for entry in value if (item := _text(entry)))[:50]
+
+
+def _rank(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def validate_forge_governance_handoff(payload: object) -> dict[str, object]:
+    """Validate transport shape without deriving any Forge governance meaning.
+
+    Unknown future fields are retained verbatim.  Known fields are checked only
+    when supplied, so legacy and incrementally richer Forge producers remain
+    compatible while malformed supplied handoffs fail closed at ingress.
+    """
+    if not isinstance(payload, dict):
+        raise ForgeGovernanceHandoffError("Forge Governance Handoff payload must be an object.")
+    if payload.get("version") != FORGE_GOVERNANCE_HANDOFF_VERSION:
+        raise ForgeGovernanceHandoffError("Forge Governance Handoff version is unsupported.")
+    for name in ("recommendation_set", "selected_recommendation", "decision_evidence", "business_workspace", "governance", "mission_runtime"):
+        if name in payload and payload[name] is not None and not isinstance(payload[name], dict):
+            raise ForgeGovernanceHandoffError(f"Forge Governance Handoff {name} must be an object when supplied.")
+    alternatives = payload.get("alternatives", payload.get("alternative_recommendations"))
+    if alternatives is not None:
+        if not isinstance(alternatives, list) or not all(isinstance(item, dict) for item in alternatives):
+            raise ForgeGovernanceHandoffError("Forge Governance Handoff alternatives must be an array of objects when supplied.")
+    selected = payload.get("selected_recommendation")
+    if selected is not None and not isinstance(selected, dict):
+        raise ForgeGovernanceHandoffError("Forge Governance Handoff selected_recommendation must be an object when supplied.")
+    return payload
 
 
 @dataclass(frozen=True)
 class Recommendation:
     recommendation_id: str | None
-    title: str | None
-    recommendation_type: str | None
-    mission_origin: str | None
     rank: int | None
-    summary: str | None
+    title: str | None
+    mission_origin: str | None
+    lifecycle_status: str | None
+    business_summary: str | None
+    engineering_summary: str | None
     business_value: str | None
+    architecture_value: str | None
     engineering_value: str | None
-    architectural_value: str | None
-    expected_outcome: str | None
-    repository_impact: str | None
     risk_if_deferred: str | None
     dependencies: tuple[str, ...]
+    constraints: tuple[str, ...]
     confidence: str | None
-    alternatives_considered: tuple[str, ...]
-    decision_evidence: str | None
-    timestamp: str | None
-    status: str
-    ordering_reason: str | None
-    supersedes: str | None
+    evidence_references: tuple[str, ...]
 
     @classmethod
     def from_mapping(cls, raw: object) -> "Recommendation":
-        raw = raw if isinstance(raw, dict) else {}
-        status = (_value(raw, "status", "recommendation_status") or "UNAVAILABLE").upper()
+        mapping = raw if isinstance(raw, dict) else {}
         return cls(
-            recommendation_id=_value(raw, "recommendation_id", "id"), title=_value(raw, "title", "recommendation_title"),
-            recommendation_type=_value(raw, "recommendation_type", "type"), mission_origin=_value(raw, "mission_origin"),
-            rank=_rank(raw), summary=_value(raw, "summary", "recommendation_summary"),
-            business_value=_value(raw, "business_value"), engineering_value=_value(raw, "engineering_value"),
-            architectural_value=_value(raw, "architectural_value"), expected_outcome=_value(raw, "expected_outcome"),
-            repository_impact=_value(raw, "expected_repository_impact", "repository_impact"),
-            risk_if_deferred=_value(raw, "risk_if_deferred"), dependencies=_list(raw.get("dependencies")),
-            confidence=_value(raw, "confidence"), alternatives_considered=_list(raw.get("alternatives_considered")),
-            decision_evidence=_value(raw, "decision_evidence_reference", "decision_evidence"),
-            timestamp=_value(raw, "recommendation_timestamp", "timestamp"), status=status if status in STATUSES else "UNAVAILABLE",
-            ordering_reason=_value(raw, "ordering_reason", "rank_reason"), supersedes=_value(raw, "supersedes", "supersedes_recommendation_id"),
+            recommendation_id=_value(mapping, "recommendation_id", "id"), rank=_rank(mapping.get("rank")),
+            title=_value(mapping, "title", "recommendation_title"), mission_origin=_value(mapping, "mission_origin"),
+            lifecycle_status=_value(mapping, "lifecycle_status", "status", "recommendation_status"),
+            business_summary=_value(mapping, "business_summary", "summary"), engineering_summary=_value(mapping, "engineering_summary"),
+            business_value=_value(mapping, "business_value"), architecture_value=_value(mapping, "architecture_value", "architectural_value"),
+            engineering_value=_value(mapping, "engineering_value"), risk_if_deferred=_value(mapping, "risk_if_deferred"),
+            dependencies=_items(mapping.get("dependencies")), constraints=_items(mapping.get("constraints")),
+            confidence=_value(mapping, "confidence"), evidence_references=_items(mapping.get("evidence_references")),
         )
-
-    def as_dict(self) -> dict[str, object]:
-        return {key: getattr(self, key) for key in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True)
-class RecommendationHandoff:
-    artifact_path: str | None
-    recommendation: Recommendation
+class ForgeGovernanceHandoff:
+    snapshot: dict[str, object]
+    recommendation_set_id: str | None
+    recommendation_set_timestamp: str | None
+    recommendation_count: int | None
+    selected: Recommendation
     alternatives: tuple[Recommendation, ...]
+    decision_evidence: dict[str, object] | None
+    business_workspace: dict[str, object] | None
+    governance: dict[str, object] | None
+    mission_runtime: dict[str, object] | None
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict[str, object]) -> "ForgeGovernanceHandoff":
+        data = validate_forge_governance_handoff(snapshot)
+        recommendation_set = data.get("recommendation_set") if isinstance(data.get("recommendation_set"), dict) else {}
+        selected_raw = data.get("selected_recommendation") if isinstance(data.get("selected_recommendation"), dict) else {}
+        alternatives_raw = data.get("alternatives", data.get("alternative_recommendations", []))
+        alternatives = tuple(Recommendation.from_mapping(item) for item in alternatives_raw if isinstance(item, dict)) if isinstance(alternatives_raw, list) else ()
+        count = recommendation_set.get("count", data.get("recommendation_count"))
+        return cls(
+            snapshot=data, recommendation_set_id=_value(recommendation_set, "id", "recommendation_set_id") or _value(data, "recommendation_set_id"),
+            recommendation_set_timestamp=_value(recommendation_set, "timestamp", "created_at") or _value(data, "recommendation_set_timestamp"),
+            recommendation_count=count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None,
+            selected=Recommendation.from_mapping(selected_raw), alternatives=alternatives,
+            decision_evidence=data.get("decision_evidence") if isinstance(data.get("decision_evidence"), dict) else None,
+            business_workspace=data.get("business_workspace") if isinstance(data.get("business_workspace"), dict) else None,
+            governance=data.get("governance") if isinstance(data.get("governance"), dict) else None,
+            mission_runtime=data.get("mission_runtime") if isinstance(data.get("mission_runtime"), dict) else None,
+        )
 
     @property
-    def missing_fields(self) -> tuple[str, ...]:
-        fields = (("Recommendation title", self.recommendation.title), ("Decision Evidence reference", self.recommendation.decision_evidence))
-        return tuple(label for label, value in fields if value is None)
+    def completeness(self) -> str:
+        required = (self.selected.recommendation_id, self.selected.title, self.selected.rank, self.selected.lifecycle_status, self.selected.confidence, self.decision_evidence_id, self.alternatives, self.business_approval_state)
+        return "COMPLETE" if all(value is not None and value != () for value in required) else "INCOMPLETE"
 
     @property
-    def projection_status(self) -> str:
-        return "INCOMPLETE" if self.missing_fields else "COMPLETE"
+    def decision_evidence_id(self) -> str | None:
+        return _value(self.decision_evidence or {}, "id", "decision_evidence_id")
 
-    def as_dict(self) -> dict[str, object]:
-        return {"artifact_path": self.artifact_path, "projection_status": self.projection_status,
-                "missing_fields": list(self.missing_fields), "recommendation": self.recommendation.as_dict(),
-                "alternatives": [candidate.as_dict() for candidate in self.alternatives]}
-
-
-def _artifact(root: Path, value: str) -> tuple[str, dict[str, Any]] | None:
-    path = Path(value.strip())
-    if path.is_absolute() or ".." in path.parts:
-        return None
-    candidate = root / path
-    try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root.resolve())
-        content = resolved.read_text(encoding="utf-8")
-    except (OSError, ValueError, UnicodeDecodeError):
-        return None
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        match = _INLINE.search(content)
-        if match is None:
-            return None
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return None
-    return str(path), data if isinstance(data, dict) else {}
+    @property
+    def business_approval_state(self) -> str | None:
+        return _value(self.governance or {}, "business_approval_state")
 
 
-def parse_forge_recommendation_handoff(prompt: str, root: Path, *, producer_type: str) -> RecommendationHandoff | None:
-    """Consume only explicit Forge metadata or its declared persisted artefact."""
-    if producer_type.upper() != "FORGE":
-        return None
-    artifact_match = _ARTIFACT.search(prompt)
-    raw: dict[str, Any] | None = None
-    artifact_path: str | None = None
-    if artifact_match:
-        resolved = _artifact(root, artifact_match.group(1))
-        if resolved is None:
-            raw = {}
-            artifact_path = _text(artifact_match.group(1))
-        else:
-            artifact_path, raw = resolved
-    else:
-        inline = _INLINE.search(prompt)
-        if inline:
-            try:
-                decoded = json.loads(inline.group(1))
-                raw = decoded if isinstance(decoded, dict) else {}
-            except json.JSONDecodeError:
-                raw = {}
-    if raw is None:
-        return None
-    recommended = raw.get("recommended_candidate", raw.get("recommendation", raw))
-    alternatives = raw.get("alternative_candidates", raw.get("alternatives", []))
-    return RecommendationHandoff(artifact_path, Recommendation.from_mapping(recommended),
-                                 tuple(Recommendation.from_mapping(item) for item in alternatives if isinstance(item, dict))[:10])
+def _display(value: object) -> str:
+    if isinstance(value, tuple):
+        return ", ".join(value) or "NOT SUPPLIED BY PRODUCER"
+    return str(value) if value is not None else "NOT SUPPLIED BY PRODUCER"
+
+
+def _provenance(source: str) -> str:
+    return f"[Source: {source}]"
 
 
 def handoff_from_report(report: str) -> dict[str, object] | None:
-    match = _REPORT.search(report)
+    """Read the already-rendered immutable snapshot for legacy report detail views."""
+    match = _REPORT.search(report) or _LEGACY_REPORT.search(report)
     if match is None:
         return None
     try:
-        data = json.loads(match.group(1))
+        payload = json.loads(match.group(1))
     except json.JSONDecodeError:
         return None
-    return data if isinstance(data, dict) else None
+    return payload if isinstance(payload, dict) else None
 
 
-def report_lines(handoff: RecommendationHandoff | None, execution_status: str) -> tuple[str, ...]:
+def report_lines(handoff: ForgeGovernanceHandoff | None, execution_status: str) -> tuple[str, ...]:
+    """Render only values explicitly supplied in the immutable snapshot."""
     if handoff is None:
-        return ()
-    candidate = handoff.recommendation
-    def value(item: str | None) -> str:
-        return item if item else "NOT SUPPLIED"
-    lines = ["## Forge Mission Recommendation Handoff", "Forge owns recommendation semantics, ranking, Business governance and Mission creation. Engineering Platform projects this immutable handoff read-only.",
-             f"- Execution Status: `{execution_status}`", f"- Recommendation Projection: `{handoff.projection_status}`",
-             f"- Recommendation Status: `{candidate.status}`", "- Business Decision: `NOT YET RECORDED`", "- Mission Created: `NO`",
-             "- Business Approval: `NOT PERFORMED BY ENGINEERING PLATFORM`", "- Mission Allocation: `NOT PERFORMED`",
-             f"- Delivered Artefact: `{value(handoff.artifact_path)}`", f"- Recommended Mission: {value(candidate.title)}",
-             f"- Recommendation ID: `{value(candidate.recommendation_id)}`", f"- Recommendation Type: {value(candidate.recommendation_type)}",
-             f"- Mission Origin: {value(candidate.mission_origin)}", f"- Rank: {candidate.rank if candidate.rank is not None else 'NOT SUPPLIED'}",
-             f"- Recommendation Summary: {value(candidate.summary)}", f"- Business Value: {value(candidate.business_value)}",
-             f"- Engineering Value: {value(candidate.engineering_value)}", f"- Architectural Value: {value(candidate.architectural_value)}",
-             f"- Expected Outcome: {value(candidate.expected_outcome)}", f"- Expected Repository Impact: {value(candidate.repository_impact)}",
-             f"- Risk If Deferred: {value(candidate.risk_if_deferred)}", f"- Dependencies: {', '.join(candidate.dependencies) or 'NOT SUPPLIED'}",
-             f"- Confidence: {value(candidate.confidence)}", f"- Alternatives Considered: {', '.join(candidate.alternatives_considered) or 'NOT SUPPLIED'}",
-             f"- Decision Evidence: {value(candidate.decision_evidence)}", f"- Recommendation Timestamp: {value(candidate.timestamp)}",
-             f"- Supersedes: {value(candidate.supersedes)}"]
-    if handoff.missing_fields:
-        lines.append("- Missing Contract Fields: " + ", ".join(handoff.missing_fields))
-    if handoff.alternatives:
-        lines.extend(("### Alternative Candidates", *(f"- Rank {item.rank if item.rank is not None else 'NOT SUPPLIED'}: {value(item.title)} — {value(item.ordering_reason)}" for item in handoff.alternatives)))
-    lines.extend(("### Handoff Data", "```json", json.dumps(handoff.as_dict(), sort_keys=True), "```", ""))
+        return (
+            "## Forge Governance Handoff", "- Forge Governance Handoff: `NOT SUPPLIED BY PRODUCER`",
+            "- Governance Status: `FORGE GOVERNANCE HANDOFF NOT SUPPLIED`", "- Decision Evidence: `NOT SUPPLIED BY PRODUCER`",
+            "- Governance Handoff Completeness: `INCOMPLETE`", "- Business Review Readiness: `NOT SUPPLIED BY PRODUCER`", "",
+        )
+    selected = handoff.selected
+    evidence = handoff.decision_evidence or {}
+    workspace = handoff.business_workspace or {}
+    governance = handoff.governance or {}
+    runtime = handoff.mission_runtime or {}
+    governance_status = _value(governance, "status", "governance_status") or "FORGE GOVERNANCE HANDOFF SUPPLIED"
+    readiness = _value(governance, "business_review_readiness", "readiness")
+    lines = [
+        "## Forge Governance Handoff",
+        "Forge owns governance truth. Engineering Platform persists and projects this supplied snapshot immutably; completeness is factual reporting, not governance authority.",
+        "- Forge Governance Handoff: `SUPPLIED BY PRODUCER; PERSISTED IMMUTABLY`",
+        f"- Governance Status: `{governance_status}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Governance Handoff Completeness: `{handoff.completeness}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Review Readiness: `{_display(readiness)}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Recommendation Set ID: `{_display(handoff.recommendation_set_id)}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Recommendation Set Timestamp: {_display(handoff.recommendation_set_timestamp)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Recommendation Count: {_display(handoff.recommendation_count)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Recommendation ID: `{_display(selected.recommendation_id)}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Recommendation Rank: {_display(selected.rank)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Recommendation Title: {_display(selected.title)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Mission Origin: {_display(selected.mission_origin)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Lifecycle Status: {_display(selected.lifecycle_status)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Business Summary: {_display(selected.business_summary)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Engineering Summary: {_display(selected.engineering_summary)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Business Value: {_display(selected.business_value)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Architecture Value: {_display(selected.architecture_value)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Engineering Value: {_display(selected.engineering_value)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Risk If Deferred: {_display(selected.risk_if_deferred)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Dependencies: {_display(selected.dependencies)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Constraints: {_display(selected.constraints)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Confidence: {_display(selected.confidence)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Selected Evidence References: {_display(selected.evidence_references)} {_provenance('Forge Governance Handoff payload')}",
+        f"- Decision Evidence ID: `{_display(_value(evidence, 'id', 'decision_evidence_id'))}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Decision Evidence Type: {_display(_value(evidence, 'type', 'decision_evidence_type'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Decision Evidence Timestamp: {_display(_value(evidence, 'timestamp', 'created_at'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Decision Evidence Confidence: {_display(_value(evidence, 'confidence'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Decision Evidence References: {_display(_items(evidence.get('references')))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Workspace Availability: {_display(_value(workspace, 'availability', 'state'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Workspace Reference: {_display(_value(workspace, 'reference', 'id'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Workspace Projected Selected Recommendation ID: {_display(_value(workspace, 'projected_selected_recommendation_id'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Workspace Projection Match State: {_display(_value(workspace, 'projection_match_state'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Business Approval State: {_display(_value(governance, 'business_approval_state'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Architecture Approval State: {_display(_value(governance, 'architecture_approval_state'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Mission Candidate ID: `{_display(_value(runtime, 'mission_candidate_id'))}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Mission ID: `{_display(_value(runtime, 'mission_id'))}` {_provenance('Forge Governance Handoff payload')}",
+        f"- Mission Runtime State: {_display(_value(runtime, 'mission_runtime_state'))} {_provenance('Forge Governance Handoff payload')}",
+        f"- Scheduler State: {_display(_value(runtime, 'scheduler_state'))} {_provenance('Forge Governance Handoff payload')}",
+        "### Alternatives",
+    ]
+    if not handoff.alternatives:
+        lines.append("- Alternatives: `NOT SUPPLIED BY PRODUCER`")
+    for item in handoff.alternatives:
+        lines.extend((
+            f"- Recommendation ID: `{_display(item.recommendation_id)}`; Rank: {_display(item.rank)}; Title: {_display(item.title)}",
+            f"  - Mission Origin: {_display(item.mission_origin)}; Lifecycle Status: {_display(item.lifecycle_status)}",
+            f"  - Business Value: {_display(item.business_value)}; Architecture Value: {_display(item.architecture_value)}; Engineering Value: {_display(item.engineering_value)}",
+            f"  - Risk If Deferred: {_display(item.risk_if_deferred)}; Dependencies: {_display(item.dependencies)}; Confidence: {_display(item.confidence)} {_provenance('Forge Governance Handoff payload')}",
+        ))
+    lines.extend(("### Immutable Handoff Snapshot", "```json", json.dumps(handoff.snapshot, sort_keys=True), "```", ""))
     return tuple(lines)
