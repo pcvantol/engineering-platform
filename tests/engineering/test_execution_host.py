@@ -333,6 +333,8 @@ class ClientContractTest(unittest.TestCase):
                 "state": "OPEN",
                 "isDraft": False,
                 "mergeCommit": {"oid": "b" * 40},
+                "headRefName": "engineering/example",
+                "baseRefName": "main",
                 "statusCheckRollup": [
                     {"name": "green", "status": "COMPLETED", "conclusion": "SUCCESS"},
                     {"name": "bad", "status": "COMPLETED", "conclusion": "FAILURE"},
@@ -346,6 +348,8 @@ class ClientContractTest(unittest.TestCase):
         self.assertTrue(evidence.checks_terminal)
         self.assertFalse(evidence.checks_passed)
         self.assertEqual(evidence.failed_checks, ("bad",))
+        self.assertEqual(evidence.head_branch, "engineering/example")
+        self.assertEqual(evidence.base_branch, "main")
         client.ready(7)
         client.merge(7)
         self.assertIn(("pr", "ready", "7"), provider.calls)
@@ -1144,6 +1148,63 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.next_action, "historical_pull_request_evidence")
         self.assertIn("already merged PR #790", result.diagnostic or "")
         self.assertEqual(github.ready_calls, [])
+
+    def test_retry_lineage_reconciles_its_own_merged_pull_request(self) -> None:
+        self.prompt.write_text("Retry-Of: inbox-original\n# Retry", encoding="utf-8")
+        state = TransactionState(
+            "lineage-pr-evidence",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="engineering/execution-phase-telemetry",
+            pull_request=819,
+        )
+        github = FakeGitHub([
+            PullRequestEvidence(
+                819, "MERGED", True, True, "b" * 40, False, (),
+                "engineering/execution-phase-telemetry", "main",
+            ),
+        ])
+        repository = FakeRepository(contains=True)
+        runner = EngineeringRunner(
+            self.root, self.store, repository, github,
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        result = runner._reject_historical_agent_pull_request(state)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.implementation_pull_request, 819)
+        self.assertEqual(result.implementation_merge_commit, "b" * 40)
+        self.assertEqual(repository.cleanup_calls, [("engineering/execution-phase-telemetry", None)])
+
+    def test_retry_lineage_rejects_a_merged_pull_request_from_another_branch(self) -> None:
+        self.prompt.write_text("Retry-Of: inbox-original\n# Retry", encoding="utf-8")
+        state = TransactionState(
+            "lineage-pr-mismatch",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="engineering/current-work",
+            pull_request=819,
+        )
+        github = FakeGitHub([
+            PullRequestEvidence(
+                819, "MERGED", True, True, "b" * 40, False, (),
+                "engineering/other-work", "main",
+            ),
+        ])
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(contains=True), github,
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        result = runner._reject_historical_agent_pull_request(state)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertEqual(result.next_action, "historical_pull_request_evidence")
 
     def test_owner_authorization_merges_green_finalization_pr(self) -> None:
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)

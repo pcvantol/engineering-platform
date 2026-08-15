@@ -371,6 +371,25 @@ class EngineeringRunner:
             return None
         if pull_request.state != "MERGED":
             return None
+        try:
+            objective = Path(state.prompt_path).read_text(encoding="utf-8")
+        except OSError:
+            objective = ""
+        has_retry_lineage = bool(re.search(r"(?mi)^Retry-Of:\s*[-a-z0-9]+\s*$", objective))
+        is_reconcilable_lineage_merge = (
+            has_retry_lineage
+            and state.branch is not None
+            and state.branch == pull_request.head_branch
+            and pull_request.base_branch == "main"
+            and pull_request.merge_commit is not None
+            and self.repository.main_contains(self.root, pull_request.merge_commit)
+        )
+        if is_reconcilable_lineage_merge:
+            evidence = self.repository.inspect(self.root)
+            reconciled = self._record_merged_evidence(state, pull_request, evidence)
+            if reconciled.owner_authorized and reconciled.transaction_kind == "IMPLEMENTATION":
+                return self._start_finalization(reconciled, pull_request.number)
+            return self._cleanup(reconciled)
         return self._save_terminal(
             state,
             "BLOCKED",

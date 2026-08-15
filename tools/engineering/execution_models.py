@@ -22,6 +22,8 @@ class PullRequestEvidence:
     merge_commit: str | None = None
     is_draft: bool = False
     failed_checks: tuple[str, ...] = ()
+    head_branch: str | None = None
+    base_branch: str | None = None
 
 
 @dataclass(frozen=True)

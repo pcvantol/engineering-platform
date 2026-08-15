@@ -476,7 +476,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
-  test("draws a complete thin selected prompt-history row border", async ({ page }) => {
+  test("uses the orange selected-row treatment for prompt history", async ({ page }) => {
     // Keep the client-side fixture stable: the initial history refresh can
     // otherwise replace this row after it has been rendered in CI.
     await page.route("**/api/events", (route) => route.abort());
@@ -499,15 +499,42 @@ test.describe("Engineering Status browser smoke", () => {
     const row = page.locator("#promptHistoryRows .prompt-history-row");
     await row.focus();
     await expect(row).toBeFocused();
-    const edgeShadows = await row.locator("td").evaluateAll((cells) => [
+    const selection = await row.locator("td").evaluateAll((cells) => [
       getComputedStyle(cells[0]).boxShadow,
       getComputedStyle(cells[Math.floor(cells.length / 2)]).boxShadow,
       getComputedStyle(cells.at(-1)).boxShadow,
+      getComputedStyle(cells[0]).backgroundColor,
     ]);
-    expect(edgeShadows[0]).toContain("1px 0px 0px 0px inset");
-    expect(edgeShadows[0]).toContain("0px 1px 0px 0px inset");
-    expect(edgeShadows[1]).toContain("0px 1px 0px 0px inset");
-    expect(edgeShadows.at(-1)).toContain("-1px 0px 0px 0px inset");
+    expect(selection[0]).toContain("2px 0px 0px 0px inset");
+    expect(selection[1]).toBe("none");
+    expect(selection[2]).toBe("none");
+    expect(selection[3]).not.toBe("rgba(0, 0, 0, 0)");
+  });
+
+  test("prevents iOS long-press selection on prompt-history rows", () => {
+    const styles = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      "utf8",
+    );
+    expect(styles).toContain(".prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}");
+  });
+
+  test("keeps sortable table headers opaque on iOS", () => {
+    const styles = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      "utf8",
+    );
+    expect(styles).toContain("#engineering-dashboard-content .log-table th{");
+    expect(styles).toContain("#engineering-dashboard-content .log-table th:is([tabindex],[role=\"button\"]):active{");
+  });
+
+  test("keeps execution context in one column at every viewport width", () => {
+    const styles = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      "utf8",
+    );
+    expect(styles).not.toMatch(/\.execution-context--primary\{columns:/);
+    expect(styles).not.toContain(".execution-context--primary>strong{column-span:all}");
   });
 
   test("keeps selected sortable headers within a thin cell edge", async ({ page }) => {
@@ -2531,6 +2558,8 @@ test.describe("Engineering Status browser smoke", () => {
 
     await expect(autoRefresh).toHaveAttribute("role", "switch");
     await expect(autoRefresh).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    expect(await allSections.evaluate((element) => getComputedStyle(element, "::before").backgroundColor)).toBe("rgb(74, 74, 85)");
+    expect(await allSections.evaluate((element) => getComputedStyle(element, "::after").backgroundColor)).toBe("rgb(247, 243, 238)");
     await theme.click();
     await allSections.click();
     await page.waitForTimeout(250);

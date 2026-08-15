@@ -175,6 +175,20 @@ recorded. Neither action bypasses watcher ownership, bootstrap or runner
 checks. This deliberately supplies sequential safety before a future
 Engineering Intent `depends_on` model can express finer-grained rules.
 
+### Retry lineage and merged pull-request evidence
+
+A retry may reconcile a previously merged implementation pull request only
+when it can prove that the pull request belongs to that retry lineage: the
+prompt contains `Retry-Of`, the recorded execution branch equals the pull
+request head branch, the pull request targets `main`, and its merge commit is
+present on `main`. The runner then records the existing merge as implementation
+evidence and continues through the normal finalization or cleanup path. This
+prevents an interrupted retry from being blocked solely because its own branch
+was merged while it was running.
+
+Any missing or mismatched condition remains a hard block. A retry must never
+adopt an unrelated historical merged pull request as its own evidence.
+
 ## Development Host Drift Diagnostics
 
 Development Host Qualification remains fail-closed and its admission behavior is
