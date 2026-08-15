@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import sqrt
 from pathlib import Path
 from threading import Lock, Thread, current_thread
 from time import monotonic
@@ -273,7 +274,7 @@ def comparable_duration_estimate(
     prompt_characters: object,
     runtime_metadata: object,
 ) -> dict[str, float | int | str]:
-    """Return a size-adjusted estimate from complete runs with one exact runtime profile.
+    """Return a robust size-adjusted estimate from one exact runtime profile.
 
     This is intentionally advisory: it never affects scheduling or engineering
     state.  Missing or unreported profile fields yield no estimate rather than
@@ -305,13 +306,22 @@ def comparable_duration_estimate(
         ).fetchall()
     finally:
         connection.close()
-    scaled = [float(seconds) * characters / int(size) for seconds, size in rows if seconds >= 0]
+    # A linear character ratio turns a modestly larger prompt into an
+    # implausibly long estimate even though each run has fixed startup,
+    # validation and reporting work.  Use a bounded square-root factor instead:
+    # it still reflects substantial input differences without letting sparse
+    # historical samples dominate the operator-facing indication.
+    scaled = [
+        float(seconds) * min(1.6, max(0.7, sqrt(characters / int(size))))
+        for seconds, size in rows
+        if seconds >= 0
+    ]
     if len(scaled) < 2:
         return {}
     ordered = sorted(scaled)
     # The observed spread gives an honest range while avoiding a single old
-    # outlier dominating the indicator.  The arithmetic mean keeps the value
-    # easy to explain and deterministic for a fixed evidence set.
+    # outlier dominating the indicator. The arithmetic mean remains available
+    # as transparent diagnostic evidence for a fixed input and sample set.
     lower = ordered[max(0, (len(ordered) - 1) // 4)]
     upper = ordered[min(len(ordered) - 1, (len(ordered) - 1) * 3 // 4)]
     return {

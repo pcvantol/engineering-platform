@@ -1410,6 +1410,32 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryRows .execution-history-action")).toBeVisible();
   });
 
+  test("projects dismissed handling beside the immutable terminal outcome", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-dismissed-status",
+        title: "Dismissed blocked execution",
+        status: "BLOCKED",
+        dismissed: true,
+        handling_state: "DISMISSED",
+        executed_at: "2026-08-08T10:00:00Z",
+        total_execution_seconds: 125,
+      }];
+      renderPromptHistory();
+    });
+
+    await expect(page.locator("#promptHistoryRows .prompt-history-status--blocked"))
+      .toHaveText("Geblokkeerd · Afgesloten");
+    await expect(page.locator("#promptHistoryRows .prompt-history-row")).toContainText("(3 min)");
+    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(0);
+  });
+
   test("keeps execution detail modal borders inside iPhone landscape safe areas", async ({ page }) => {
     await page.setViewportSize({ width: 844, height: 390 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1786,7 +1812,7 @@ test.describe("Engineering Status browser smoke", () => {
       },
     }));
 
-    await expect(page.locator("#executionEstimate")).toHaveText("Indicatieve totale duur: 22–30 minuten");
+    await expect(page.locator("#executionEstimate")).toHaveText("Indicatieve totale duur: 25–34 minuten");
     await expect(page.locator("#executionEstimateMeta")).toContainText(
       "3 vergelijkbare voltooide uitvoeringen",
     );

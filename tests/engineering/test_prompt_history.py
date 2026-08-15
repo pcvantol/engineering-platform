@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,9 +14,53 @@ from tools.engineering.prompt_history import (
     report_for_prompt_history,
 )
 from tools.engineering.storage import record_submission
+from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
 
 
 class PromptHistoryTest(unittest.TestCase):
+    def test_projects_total_execution_duration_from_host_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            finished_at = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
+            persist_execution(
+                root,
+                ExecutionTelemetry(
+                    run_id="inbox-duration", arrived_at=finished_at - timedelta(seconds=125),
+                    execution_started_at=finished_at - timedelta(seconds=120),
+                    execution_finished_at=finished_at, terminal_state="COMPLETE",
+                    execution_seconds=120, input_tokens=None, output_tokens=None, total_tokens=None,
+                    execution_mode="GENESIS", workspace="/workspace", repository="djconnect",
+                    execution_host_version="1.5.0",
+                ),
+            )
+            record_prompt_execution(
+                root, run_id="inbox-duration", terminal_state="COMPLETE", prompt_title="Timed execution",
+                executed_at="2026-08-15T12:00:00Z",
+            )
+
+            self.assertEqual(prompt_history(root)[0]["total_execution_seconds"], 125.0)
+
+    def test_projects_total_execution_duration_from_run_bound_component_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            from tools.engineering.storage import open_storage
+
+            with open_storage(root) as connection:
+                for timestamp, event in (
+                    ("2026-08-15T12:00:00+00:00", "runner_started"),
+                    ("2026-08-15T12:02:05+00:00", "job_completed"),
+                ):
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        ("inbox", f'{{"event":"{event}","run_id":"inbox-log-duration"}}', timestamp),
+                    )
+            record_prompt_execution(
+                root, run_id="inbox-log-duration", terminal_state="COMPLETE",
+                prompt_title="Measured from component evidence", executed_at="2026-08-15T12:02:05Z",
+            )
+
+            self.assertEqual(prompt_history(root)[0]["total_execution_seconds"], 125.0)
+
     def test_projects_persisted_submission_and_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -98,6 +143,7 @@ class PromptHistoryTest(unittest.TestCase):
                         "target_branch": None,
                         "execution_mode": None,
                         "repository": None,
+                        "total_execution_seconds": None,
                         "producer_id": "legacy",
                         "producer_type": "HUMAN",
                         "producer_version": None,

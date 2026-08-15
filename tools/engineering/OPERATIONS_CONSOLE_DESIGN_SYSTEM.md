@@ -126,6 +126,16 @@ auto-fitting grid of at least `180px` tiles. It fills a row when space permits
 and wraps cleanly at narrower widths; never hard-code a single wide tile per
 reviewer.
 
+### Duration indications
+
+Execution-duration indications are advisory operational evidence, never a
+scheduling promise. When at least two completed executions share the exact
+reported runtime profile, the console uses their recent measured Codex time,
+adjusted sublinearly and with a capped factor for prompt-size differences.
+That learned range takes priority over the coarse prompt-size fallback; the
+fallback retains a small safety contribution. The UI must explain the sample
+count and never report a live Codex-progress or token signal it does not have.
+
 Log copy means the **currently visible result set**: after filtering, sorting
 and current-page pagination. It includes headers and no hidden rows.
 

@@ -50,6 +50,15 @@ function formatPromptHistoryTimestamp(value, fallback = t("format.timestamp_unav
     day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
   }).format(new Date(timestamp));
 }
+function formatPromptHistoryDuration(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  return t("history.total_duration_minutes", {
+    minutes: new Intl.NumberFormat(dashboardLocale, { maximumFractionDigits: 0 }).format(
+      Math.ceil(seconds / 60),
+    ),
+  });
+}
 function capabilityRecommendation(value) {
   const key = {
     "Capability admission passed.": "capability.recommendation.admission_passed",
@@ -165,11 +174,13 @@ function historicalRange(estimate, fallback) {
   if (samples < 2 || !Number.isFinite(lower) || !Number.isFinite(upper)) return fallback;
   const learnedMinimum = Math.max(1, Math.round(lower / 60)),
     learnedMaximum = Math.max(learnedMinimum, Math.ceil(upper / 60));
-  // Prompt size is represented both in the static range and in the
-  // size-adjusted history.  Retain a conservative static contribution.
+  // The exact runtime profile's size-adjusted history is more informative
+  // than the coarse static table. Keep a small safety contribution from the
+  // latter, with confidence increasing as more comparable runs exist.
+  const historyWeight = samples >= 8 ? 0.9 : samples >= 4 ? 0.85 : 0.8;
   return [
-    Math.max(1, Math.round(fallback[0] * 0.35 + learnedMinimum * 0.65)),
-    Math.max(1, Math.round(fallback[1] * 0.35 + learnedMaximum * 0.65)),
+    Math.max(1, Math.round(fallback[0] * (1 - historyWeight) + learnedMinimum * historyWeight)),
+    Math.max(1, Math.round(fallback[1] * (1 - historyWeight) + learnedMaximum * historyWeight)),
   ];
 }
 function historicalContext(estimate, fallback) {
@@ -2577,7 +2588,7 @@ function filteredPromptHistory() {
         !needle ||
         locale
           .lower(
-            [...Object.values(entry), promptHistoryStatus(entry.status)].join(" "),
+            [...Object.values(entry), promptHistoryDisplayStatus(entry)].join(" "),
           )
           .includes(needle),
     )
@@ -2593,6 +2604,10 @@ function filteredPromptHistory() {
 }
 function promptHistoryStatus(value) {
   return t("status." + String(value || "unknown").toLowerCase());
+}
+function promptHistoryDisplayStatus(entry) {
+  const outcome = promptHistoryStatus(entry?.status);
+  return entry?.dismissed ? `${outcome} · ${t("handling.dismissed")}` : outcome;
 }
 function updatePromptHistoryHeaders() {
   document
@@ -2689,7 +2704,7 @@ function renderPromptHistory() {
       status.className =
         "prompt-history-status prompt-history-status--" +
         locale.lower(String(entry.status || ""));
-      status.textContent = promptHistoryStatus(entry.status);
+      status.textContent = promptHistoryDisplayStatus(entry);
       runSuffix.textContent = String(entry.run_id || "—").slice(-5);
       const titleText = document.createElement("span");
       titleText.textContent = String(
@@ -2719,7 +2734,8 @@ function renderPromptHistory() {
         }
         title.append(lineage);
       }
-      executed.textContent = formatPromptHistoryTimestamp(entry.executed_at);
+      executed.textContent = formatPromptHistoryTimestamp(entry.executed_at) +
+        formatPromptHistoryDuration(entry.total_execution_seconds);
       if (entry.report_available && entry.run_id) {
         const view = document.createElement("button");
         view.className = "prompt-history-report";

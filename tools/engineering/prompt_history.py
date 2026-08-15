@@ -331,6 +331,22 @@ def prompt_history(
                 history.git_commit, history.report_path, history.retry_of, history.original_run_id,
                 history.retry_generation, history.retry_timestamp, history.target_checkout_path,
                 history.tracked_file_count, history.target_branch, runs.execution_mode, runs.repository,
+                COALESCE(
+                    runs.total_execution_seconds,
+                    ROUND((
+                        SELECT MAX(
+                            0.0,
+                            (julianday(MAX(CASE
+                                WHEN json_extract(log.payload, '$.event') IN ('job_completed', 'job_failed')
+                                THEN log.created_at END)) - julianday(MIN(CASE
+                                WHEN json_extract(log.payload, '$.event') = 'runner_started'
+                                THEN log.created_at END))) * 86400.0
+                        )
+                        FROM engineering_component_logs AS log
+                        WHERE log.component = 'inbox'
+                          AND json_extract(log.payload, '$.run_id') = history.run_id
+                    ), 3)
+                ) AS total_execution_seconds,
                 COALESCE(submission.producer_id, runs.producer_id),
                 COALESCE(submission.producer_type, runs.producer_type),
                 COALESCE(submission.producer_version, runs.producer_version),
@@ -370,21 +386,22 @@ def prompt_history(
             "target_branch": row[12],
             "execution_mode": row[13],
             "repository": row[14],
-            "producer_id": row[15] or "legacy",
-            "producer_type": row[16] or "HUMAN",
-            "producer_version": row[17],
-            "correlation_id": row[18],
-            "mission_id": row[19],
-            "engineering_action_id": row[20],
-            "execution_constraint_version": row[21],
-            "submission_id": row[22],
-            "producer_submission_contract_version": row[23],
-            "execution_context_version": row[24],
-            "execution_context": json.loads(row[25]) if isinstance(row[25], str) else None,
-            "dismissed": row[26] is not None,
-            "handling_state": row[27] or "OPEN",
-            "dismissed_at": row[28],
-            "dismissed_by": row[29],
+            "total_execution_seconds": row[15],
+            "producer_id": row[16] or "legacy",
+            "producer_type": row[17] or "HUMAN",
+            "producer_version": row[18],
+            "correlation_id": row[19],
+            "mission_id": row[20],
+            "engineering_action_id": row[21],
+            "execution_constraint_version": row[22],
+            "submission_id": row[23],
+            "producer_submission_contract_version": row[24],
+            "execution_context_version": row[25],
+            "execution_context": json.loads(row[26]) if isinstance(row[26], str) else None,
+            "dismissed": row[27] is not None,
+            "handling_state": row[28] or "OPEN",
+            "dismissed_at": row[29],
+            "dismissed_by": row[30],
         }
         for row in rows
     ]

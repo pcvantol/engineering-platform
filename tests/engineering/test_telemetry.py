@@ -179,9 +179,9 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             )
 
             self.assertEqual(estimate["sample_count"], 2)
-            self.assertEqual(estimate["average_seconds"], 150.0)
-            self.assertEqual(estimate["lower_seconds"], 150.0)
-            self.assertEqual(estimate["upper_seconds"], 150.0)
+            self.assertEqual(estimate["average_seconds"], 106.066)
+            self.assertEqual(estimate["lower_seconds"], 106.066)
+            self.assertEqual(estimate["upper_seconds"], 106.066)
             self.assertEqual(
                 comparable_duration_estimate(
                     root,
