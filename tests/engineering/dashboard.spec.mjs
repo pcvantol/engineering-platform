@@ -1080,11 +1080,13 @@ test.describe("Engineering Status browser smoke", () => {
       document.querySelector("#promptHistory").open = true;
       renderPromptHistory();
     });
-    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(2);
+    await expect(page.locator("#promptHistoryRows .execution-history-action")).toHaveCount(4);
     await expect(page.locator("#promptHistoryRows .prompt-history-actions").first()).toHaveCSS("gap", "6px");
     await expect(page.locator("#promptHistoryRows .prompt-history-actions").first()).toHaveCSS("display", "flex");
     await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering opnieuw proberen");
     await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Uitvoering opnieuw proberen");
+    await expect(page.locator("#promptHistoryRows tr").nth(0)).toContainText("Uitvoering afsluiten");
+    await expect(page.locator("#promptHistoryRows tr").nth(1)).toContainText("Uitvoering afsluiten");
     await expect(page.locator("#promptHistoryRows tr").nth(2)).toContainText("Nieuwe uitvoering in wachtrij");
     await expect(page.locator("#promptHistoryRows tr").nth(2)).not.toContainText("queued-run-id");
     await expect(page.locator("#promptHistoryRows tr").nth(3)).toContainText("Huidige nieuwe uitvoering: child");
@@ -1421,7 +1423,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(status).toBeVisible();
     await expect(status).toHaveCSS("white-space", "nowrap");
     expect((await status.boundingBox()).width).toBeGreaterThanOrEqual(120);
-    await expect(page.locator("#promptHistoryRows .execution-history-action")).toBeVisible();
+    await expect(page.locator("#promptHistoryRows .execution-history-action").first()).toBeVisible();
   });
 
   test("projects dismissed handling beside the immutable terminal outcome", async ({ page }) => {
@@ -3825,7 +3827,7 @@ test.describe("Engineering Status browser smoke", () => {
       return route.fulfill({ json: { dismissed: "inbox-dismiss" } });
     });
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
-      status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-dismiss", queue_depth: 0, queue_items: [] },
+      status: { watcher_state: "WATCHER_IDLE", last_executed_run: "inbox-newer-terminal", queue_depth: 0, queue_items: [] },
       component_versions: {}, telemetry: [], duration_estimate: {}, build_commit: "",
     } }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");

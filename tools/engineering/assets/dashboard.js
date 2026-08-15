@@ -243,7 +243,7 @@ function renderEstimate(x, durationEstimate = latestDurationEstimate) {
   $("executionEstimateMeta").textContent = value.context;
   $("executionEstimateMeta").hidden = !value.context;
 }
-function isActiveRun(x) {
+function isActiveRun(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_ACTIVE" && Boolean(x.run_id);
 }
 function checkBuild(build) {
@@ -2855,7 +2855,7 @@ function renderPromptHistory() {
         retry.addEventListener("click", () => submitExecutionRetry(entry));
         actionControls.append(retry);
       }
-      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && !entry.retry_child_run_id && entry.run_id && entry.run_id === latestStatus?.last_executed_run && !isActiveRun(latestStatus)) {
+      if (["BLOCKED", "FAILED"].includes(entry.status) && !entry.dismissed && !entry.retry_child_run_id && entry.run_id && !isActiveRun(latestStatus)) {
         const dismiss = document.createElement("button");
         dismiss.type = "button";
         dismiss.className = "predecessor-retry execution-history-action execution-dismiss";

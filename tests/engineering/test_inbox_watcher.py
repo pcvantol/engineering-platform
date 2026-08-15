@@ -917,6 +917,41 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(history[0]["dismissed"])
         self.assertEqual(history[0]["status"], "BLOCKED")
 
+    def test_dismisses_an_older_terminal_execution_without_erasing_newer_status(self) -> None:
+        from tools.engineering.prompt_history import record_prompt_execution
+
+        older_run = "inbox-historical-failed"
+        newer_run = "inbox-newer-complete"
+        record_prompt_execution(
+            self.repo, run_id=older_run, terminal_state="FAILED",
+            prompt_title="Historical failure", executed_at="2026-08-15T20:00:00Z",
+        )
+        status = self.repo / ".engineering" / "status"
+        status.mkdir(parents=True, exist_ok=True)
+        (status / "status.json").write_text(
+            json.dumps(
+                {
+                    "watcher_state": "WATCHER_IDLE",
+                    "last_executed_run": newer_run,
+                    "last_executed_phase": "COMPLETE",
+                    "last_executed_title": "Newer complete execution",
+                    "queue_depth": 0,
+                    "queue_items": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        outcome = inbox_watcher.dismiss_execution(self.repo, older_run)
+
+        self.assertTrue(outcome["dismissed"])
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["last_executed_run"], newer_run)
+        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        older = next(item for item in history if item["run_id"] == older_run)
+        self.assertTrue(older["dismissed"])
+        self.assertFalse(older["can_retry"])
+
     def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
         (self.root / "Completed").mkdir()
         (self.root / "Reports").mkdir()

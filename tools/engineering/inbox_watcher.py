@@ -655,8 +655,8 @@ def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard
         if current.get("watcher_state") == "ENGINEERING_RUN_ACTIVE" or current.get("run_id"):
             raise RetrySubmissionError("Een actieve uitvoering kan niet worden bevestigd.")
         phase = _terminal_phase_for_run(repo, run_id)
-        if phase not in TERMINAL_PHASES or current.get("last_executed_run") != run_id:
-            raise RetrySubmissionError("Alleen de huidige terminale uitvoering kan worden bevestigd.")
+        if phase not in TERMINAL_PHASES:
+            raise RetrySubmissionError("Alleen een terminale uitvoering kan worden bevestigd.")
         if dismissal_for_run(repo, run_id):
             raise RetrySubmissionError("Deze uitvoering is al afgesloten.")
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -678,17 +678,20 @@ def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard
             )
         except EngineeringStorageError as error:
             raise RetrySubmissionError("De dismissal-audit is niet veilig beschikbaar.") from error
-        status(
-            repo,
-            "WATCHER_IDLE",
-            queued_jobs=current.get("queue_depth", 0),
-            queue_items=current.get("queue_items", []),
-            last_executed_filename=None,
-            last_executed_title=None,
-            last_executed_run=None,
-            last_executed_phase=None,
-            current_action="Execution Host Idle",
-        )
+        # Dismissing an older terminal record must not erase the watcher
+        # context of a newer terminal execution.
+        if current.get("last_executed_run") == run_id:
+            status(
+                repo,
+                "WATCHER_IDLE",
+                queued_jobs=current.get("queue_depth", 0),
+                queue_items=current.get("queue_items", []),
+                last_executed_filename=None,
+                last_executed_title=None,
+                last_executed_run=None,
+                last_executed_phase=None,
+                current_action="Execution Host Idle",
+            )
         return record
 
 
