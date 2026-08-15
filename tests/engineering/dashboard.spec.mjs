@@ -267,6 +267,9 @@ test.describe("Engineering Status browser smoke", () => {
       "", "⧉", "↑", "i", "↺", "⌧", "▤", "✓", "✦", "⋯", "—",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
+    // Dashboard feedback must remain inside the shared modal system.  A
+    // browser-native alert is unstyled, untranslated and blocks mobile UX.
+    expect(dashboardSource).not.toMatch(/\b(?:window\.)?alert\s*\(/);
 
     for (const language of SUPPORTED_LOCALES) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -543,6 +546,7 @@ test.describe("Engineering Status browser smoke", () => {
     for (const [selector, modifier, accent] of [
       ["#componentModal", "dashboard-modal-shell--component", "rgb(163, 230, 53)"],
       ["#confirmationModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
+      ["#dashboardErrorModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
       ["#promptHistoryReportModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryDetailModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryChatModal", "dashboard-modal-shell--chat", "rgb(208, 164, 255)"],
@@ -564,6 +568,7 @@ test.describe("Engineering Status browser smoke", () => {
     for (const selector of [
       "#componentModal",
       "#confirmationModal",
+      "#dashboardErrorModal",
       "#promptHistoryReportModal",
       "#promptHistoryDetailModal",
       "#promptHistoryChatModal",
@@ -595,6 +600,23 @@ test.describe("Engineering Status browser smoke", () => {
       await modal.evaluate((element) => element.close());
     }
     expect(new Set(titles)).toEqual(new Set(["20px"]));
+  });
+
+  test("presents localized retry preflight failures in the dashboard modal", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    let nativeDialog = false;
+    page.on("dialog", () => { nativeDialog = true; });
+    await page.evaluate(() => window.showDashboardError(
+      "Preflight failed: Managed target is not on the expected branch main. Recovery: Switch the repository to main before submitting work.",
+    ));
+    const modal = page.locator("#dashboardErrorModal");
+    await expect(modal).toBeVisible();
+    await expect(page.locator("#dashboardErrorModalTitle")).toHaveText(DASHBOARD_MESSAGES.nl["ui.action_failed"]);
+    await expect(page.locator("#dashboardErrorModalText")).toContainText("branch main");
+    await expect(page.locator("#dashboardErrorModalDismiss")).toHaveText(DASHBOARD_MESSAGES.nl["action.close"]);
+    expect(nativeDialog).toBe(false);
+    await page.locator("#dashboardErrorModalDismiss").click();
+    await expect(modal).not.toBeVisible();
   });
 
   test("keeps the site-wide scrollbar and action-size tokens explicit", () => {
@@ -1009,6 +1031,36 @@ test.describe("Engineering Status browser smoke", () => {
     // overflow remains much smaller than a title column expanding freely.
     expect(layout.tableWidth).toBeLessThanOrEqual(layout.wrapWidth + 128);
     expect(layout.titleWidth).toBeGreaterThan(layout.statusWidth * 2.5);
+  });
+
+  test("sizes the visible status column before narrowing the prompt title", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      document.querySelector("#promptHistory").open = true;
+      promptHistoryEntries = [{
+        run_id: "inbox-dismissed-status",
+        status: "FAILED",
+        dismissed: true,
+        title: "A deliberately long execution title that yields space to status",
+        executed_at: "2026-08-04T08:00:00Z",
+      }];
+      renderPromptHistory();
+    });
+    const layout = await page.locator("#promptHistory .log-table").evaluate((table) => {
+      const status = table.querySelector("tbody td:nth-child(2)");
+      const title = table.querySelector("tbody td:nth-child(3)");
+      return {
+        statusWidth: Math.round(status.getBoundingClientRect().width),
+        statusScrollWidth: Math.ceil(status.scrollWidth),
+        titleTextWidth: Math.round(title.querySelector(".prompt-history-title").getBoundingClientRect().width),
+        configuredTitleWidth: Number.parseInt(table.style.getPropertyValue("--prompt-history-title-width"), 10),
+      };
+    });
+    expect(layout.statusWidth).toBeGreaterThanOrEqual(layout.statusScrollWidth);
+    expect(layout.statusWidth).toBeGreaterThan(120);
+    expect(layout.configuredTitleWidth).toBeLessThan(288);
+    expect(layout.titleTextWidth).toBeLessThanOrEqual(layout.configuredTitleWidth + 1);
   });
 
   test("keeps terminal history actions on one wide-screen row beside a compact title", async ({ page }) => {
@@ -2079,11 +2131,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentModalRestart").click();
 
     await expect(page.locator("#confirmationModal")).toHaveAttribute("data-theme-mode", "light");
-    await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("background-color", "rgb(247, 251, 255)");
-    await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("color", "rgb(24, 34, 48)");
+    await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("background-color", "rgb(247, 251, 255)");
+    await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("color", "rgb(24, 34, 48)");
     await expect(page.locator("#confirmationModalText")).toHaveCSS("color", "rgb(24, 34, 48)");
     await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(240, 182, 106)");
-    await expect(page.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    await expect(page.locator("#confirmationModal .confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(240, 182, 106)");
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await page.locator("#confirmationModalCancel").hover();
@@ -3742,7 +3794,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toBeVisible();
     await expect(modal).toBeFocused();
     await expect(modal.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
-    await expect(page.locator(".confirmation-modal__header")).toHaveCSS("border-bottom-color", "rgb(255, 113, 143)");
+    await expect(page.locator("#confirmationModal .confirmation-modal__header")).toHaveCSS("border-bottom-color", "rgb(255, 113, 143)");
     await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(255, 113, 143)");
     expect(await page.locator("#confirmationModalTitle").evaluate((title) => getComputedStyle(title, "::before").color)).toBe("rgb(255, 113, 143)");
     expect(await page.locator("#confirmationModalConfirm").evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe("rgb(240, 182, 106)");

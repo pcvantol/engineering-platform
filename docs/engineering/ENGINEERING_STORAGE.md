@@ -14,7 +14,7 @@ iCloud Drive remains transport only. It is not an Engineering evidence store.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `15`**. The required version is declared as `storage_schema` in
+schema `19`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -85,6 +85,17 @@ Schema `15` stores one typed readiness evaluation for each admitted Run ID:
 profile identity and version, execution mode, observed bounded facts, PASS or
 BLOCKED result, failed requirements and a redacted diagnostic. It is local
 datastore evidence; status files and the dashboard only project it.
+
+Schema `16` persists an immutable Producer Envelope execution-context
+snapshot and its version with the submission, and links each submission to its
+Run ID. Schema `17` retains declared Engineering Action provenance with that
+submission. Schema `18` adds immutable operator dismissal evidence separately
+from the terminal outcome, so the dashboard can distinguish a failed or
+blocked execution that an operator has deliberately closed from one still
+requiring action. Schema `19` persists the supplied Forge governance handoff
+snapshot and version with the submission. These additions remain local
+Engineering evidence; they do not grant the Execution Host ownership of Forge
+planning or decision state.
 
 ## Component logging
 

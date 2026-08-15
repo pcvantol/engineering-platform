@@ -284,6 +284,7 @@ class DashboardStatusTest(unittest.TestCase):
             "componentLogs",
             "codexChat",
             "confirmationModal",
+            "dashboardErrorModal",
         ):
             self.assertIn(f'id="{identifier}"', page)
 

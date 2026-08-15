@@ -540,7 +540,7 @@ function deferQueueItem(item, button) {
         }
         return refreshDashboard();
       })
-      .catch((error) => window.alert(error.message || t("queue.defer_failed")))
+      .catch((error) => showDashboardError(error.message, t("queue.defer_failed")))
       .finally(() => { button.disabled = false; });
   });
 }
@@ -2682,6 +2682,42 @@ function promptHistoryDisplayStatus(entry) {
   const outcome = promptHistoryStatus(entry?.status);
   return entry?.dismissed ? `${outcome} · ${t("handling.dismissed")}` : outcome;
 }
+function updatePromptHistoryColumnWidths(entries) {
+  const table = document.querySelector("#promptHistory .log-table");
+  if (!table) return;
+  const probe = document.createElement("canvas").getContext("2d");
+  if (!probe) return;
+  const statusCell = document.querySelector("#promptHistoryRows .prompt-history-status");
+  probe.font = getComputedStyle(statusCell || table).font;
+  const widestStatus = [t("table.status"), ...entries.map(promptHistoryDisplayStatus)]
+    .reduce((width, label) => Math.max(width, probe.measureText(label).width), 0);
+  // Include the cell's inline padding.  The paired title width yields this
+  // space first, so a long terminal/dismissed status never paints into it.
+  const statusWidth = Math.max(120, Math.ceil(widestStatus + 16));
+  const titleWidth = Math.max(144, 288 - Math.max(0, statusWidth - 120));
+  table.style.setProperty("--prompt-history-status-width", `${statusWidth}px`);
+  table.style.setProperty("--prompt-history-title-width", `${titleWidth}px`);
+  const header = table.tHead?.rows[0];
+  if (!header) return;
+  let columns = table.querySelector("colgroup");
+  if (!columns) {
+    columns = document.createElement("colgroup");
+    table.prepend(columns);
+  }
+  while (columns.children.length < header.cells.length) {
+    columns.append(document.createElement("col"));
+  }
+  while (columns.children.length > header.cells.length) columns.lastElementChild.remove();
+  const headers = [...header.cells];
+  const statusIndex = headers.findIndex(
+    (cell) => cell.dataset.historySortKey === "status",
+  );
+  const titleIndex = headers.findIndex(
+    (cell) => cell.dataset.historySortKey === "title",
+  );
+  if (statusIndex >= 0) columns.children[statusIndex].style.width = `${statusWidth}px`;
+  if (titleIndex >= 0) columns.children[titleIndex].style.width = `${titleWidth}px`;
+}
 function updatePromptHistoryHeaders() {
   document
     .querySelectorAll("#promptHistory th[data-history-sort-key]")
@@ -2780,6 +2816,7 @@ function renderPromptHistory() {
       status.textContent = promptHistoryDisplayStatus(entry);
       runSuffix.textContent = String(entry.run_id || "—").slice(-5);
       const titleText = document.createElement("span");
+      titleText.className = "prompt-history-title";
       titleText.textContent = String(
         entry.title || entry.run_id || t("retry.unavailable_title"),
       );
@@ -2885,6 +2922,7 @@ function renderPromptHistory() {
       body.append(row);
     }
     }
+  updatePromptHistoryColumnWidths(visible);
   navigation.replaceChildren();
   const summary = document.createElement("span"),
     previous = document.createElement("button"),
@@ -3940,7 +3978,7 @@ function submitExecutionRetry(entry) {
         if (!result.ok) throw Error(result.body.error || t("retry.failed"));
         return refreshAfterOperatorAction();
       })
-      .catch((error) => window.alert(error.message || t("retry.failed")));
+      .catch((error) => showDashboardError(error.message, t("retry.failed")));
   });
 }
 function dismissExecution(entry) {
@@ -3957,7 +3995,7 @@ function dismissExecution(entry) {
         if (!result.ok) throw Error(result.body.error || t("dismiss.failed"));
         return refreshAfterOperatorAction({ dismissedRunId: entry.run_id });
       })
-      .catch((error) => window.alert(error.message || t("dismiss.failed")));
+      .catch((error) => showDashboardError(error.message, t("dismiss.failed")));
   });
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
@@ -3993,6 +4031,41 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
     modal.showModal();
     modal.focus();
   });
+}
+function localizedDashboardError(message, fallback) {
+  const raw = String(message || fallback || "").trim();
+  const preflight = raw.match(/^Preflight (?:mislukt|failed):\s*(.*?)\s+(?:Herstel|Recovery):\s*(.*)$/iu);
+  if (!preflight) return raw || t("ui.action_failed");
+  const [, reason, recovery] = preflight;
+  if (/^Untracked files are present\.?$/iu.test(reason))
+    return t("preflight.untracked", {
+      reason: t("preflight.untracked_reason"),
+      recovery: t("preflight.untracked_recovery"),
+    });
+  const branch = reason.match(/^Managed target is not on the expected branch ([^.]+)\.?$/iu);
+  if (branch)
+    return t("preflight.branch", {
+      branch: branch[1],
+      reason: t("preflight.branch_reason", { branch: branch[1] }),
+      recovery: t("preflight.branch_recovery", { branch: branch[1] }),
+    });
+  return t("preflight.generic", { reason, recovery });
+}
+function showDashboardError(message, fallback) {
+  const modal = $("dashboardErrorModal"), close = $("dashboardErrorModalClose"), dismiss = $("dashboardErrorModalDismiss");
+  $("dashboardErrorModalTitle").textContent = t("ui.action_failed");
+  $("dashboardErrorModalText").textContent = localizedDashboardError(message, fallback);
+  const finish = () => {
+    if (modal.open) modal.close();
+    close.onclick = dismiss.onclick = null;
+  };
+  close.onclick = dismiss.onclick = finish;
+  modal.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    finish();
+  }, { once: true });
+  if (!modal.open) modal.showModal();
+  modal.focus();
 }
 function updateChatActions() {
   const visible = chatHistory.length > 0;
@@ -4113,6 +4186,7 @@ Object.assign(window, {
   renderPlatformHealth,
   renderPromptHistory,
   showComponentModal,
+  showDashboardError,
   showCopyToast,
   startPullRefresh,
   structuredLogEntries,

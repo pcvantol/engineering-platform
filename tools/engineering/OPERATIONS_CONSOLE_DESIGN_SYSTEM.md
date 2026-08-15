@@ -2,7 +2,7 @@
 
 **Status:** Canonical code-derived baseline  
 **Scope:** Private Engineering Operations Console (`tools/engineering/dashboard.py`, `assets/dashboard.css` and `assets/dashboard.js`)  
-**Last reconciled:** 2026-08-08
+**Last reconciled:** 2026-08-16
 
 This document makes the current console design explicit. It is the design and
 review baseline for every future console change: a new control, section,
@@ -46,7 +46,7 @@ near-duplicates in a component.
 | Standard content surface | `#24242d` | `#fff` |
 | Modal surface | `--dashboard-modal-surface` | White; document surface is `#f7fbff` |
 | Modal radius / shadow | `18px` / `0 16px 50px #000a` | Same geometry, theme-appropriate shadow |
-| Selected-control border | `2px` orange outline with a `4px` soft ring | Inputs, selects and text areas only |
+| Selected-control border | `1px` orange outline with a `4px` soft ring | Inputs, selects and text areas only |
 | Console blue | `--operations-console-blue: #0a6b9d` | Header/identity accent, not a replacement for semantic category colour |
 | Mark blue | `--operations-console-mark-blue: #00b8f4` | Product mark only |
 
@@ -126,6 +126,13 @@ auto-fitting grid of at least `180px` tiles. It fills a row when space permits
 and wraps cleanly at narrower widths; never hard-code a single wide tile per
 reviewer.
 
+Prompt-history status width is measured from the rendered status labels on the
+current visible page. It must accommodate the longest localized state,
+including an operator-dismissed terminal state, without colliding with the
+execution title. The title column yields proportionally, remains readable and
+then truncates with an ellipsis. Filtering, sorting and pagination recompute
+the allocation; a previous page may never determine the current page's width.
+
 ### Duration indications
 
 Execution-duration indications are advisory operational evidence, never a
@@ -194,6 +201,13 @@ Use the shared modal shell and contextual panel. Modal rules are:
    what changes, what remains, and any safe recovery path.
 5. On an iPhone, the modal stays within safe areas and its actions cannot fall
    below browser chrome. Background scrolling is locked while open.
+6. User-facing errors use the shared dashboard error dialog. Do not use a
+   browser-native `alert`, `confirm` or `prompt`: those surfaces are not
+   themed, localizable or consistent with the operational focus contract.
+   The dialog provides a localized title, error and recovery text, plus a
+   standard dismiss control. Known preflight failures are translated by their
+   meaning; unexpected redacted diagnostics use the generic localized error
+   template.
 
 ## 7. Responsive and accessibility contract
 
@@ -230,6 +244,9 @@ literal into `dashboard.js`. Keep operation language concrete:
 - Use one sentence for category descriptions. Use direct verb labels for
   actions: for example *Retry execution*, *Defer*, *Restore* and *Copy visible
   log entries*.
+- Error-dialog title, dismissal and preflight recovery copy are part of the
+  same five-language contract. A browser-supplied default label is never an
+  acceptable fallback for console feedback.
 
 ## 9. Required design-review checklist
 
@@ -272,9 +289,13 @@ Add or extend Playwright coverage for the changed state and, when applicable:
 - dark and light rendering;
 - mobile rendering and direct touch;
 - confirmation and error/retry paths;
+- dashboard-native error feedback, including an assertion that no native
+  browser dialog was invoked and no `alert()` call can be reintroduced;
 - localized labels in all five supported languages;
 - selected, hover, focus and disabled states;
 - sorting/filtering/pagination semantics for tables and logs.
+- the prompt-history page with its longest rendered status, ensuring the
+  status column fits and the title contracts before it overlaps.
 
 For a visual change, capture and review at minimum: desktop dark, desktop
 light, iPhone dark expanded, and iPhone light expanded. A passing test suite
