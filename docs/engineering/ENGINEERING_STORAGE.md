@@ -14,7 +14,7 @@ iCloud Drive remains transport only. It is not an Engineering evidence store.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `19`**. The required version is declared as `storage_schema` in
+schema `20`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -96,6 +96,38 @@ requiring action. Schema `19` persists the supplied Forge governance handoff
 snapshot and version with the submission. These additions remain local
 Engineering evidence; they do not grant the Execution Host ownership of Forge
 planning or decision state.
+
+Schema `20` adds `execution_phase_spans`, the canonical, immutable per-run
+phase-timing evidence. Each observed span records an ID, canonical phase name
+and category, optional parent, attempt and ordinal, UTC start/completion
+timestamps, a duration in milliseconds, bounded metadata and outcome. The
+canonical names are `QUEUE_WAIT`, `SUBMISSION_CLAIM`, `INITIALIZATION`,
+`HOST_PREFLIGHT`, `WORKSPACE_PREFLIGHT`, `CAPABILITY_PREFLIGHT`,
+`EXECUTION_PREPARATION`, `PROVIDER_EXECUTION`, `VALIDATION`, `REPAIR`,
+`REPOSITORY_FINALIZATION`, `PR_OR_MERGE`, `FINALIZATION`,
+`REPORT_GENERATION`, `EVIDENCE_PERSISTENCE`, `REPOSITORY_CLEANUP`,
+`RECONCILIATION`, `EXTERNAL_CI_WAIT` and `TOTAL_EXECUTION`.
+
+Durations are captured from a monotonic clock whenever a phase runs in one
+process; persisted timestamps remain stable UTC wall-clock timestamps.
+Cross-process queue timing uses its persisted submission-to-claim boundary.
+Repeated phases remain individual records and nested spans retain their parent.
+Derived category totals suppress only a same-category ancestor, so a nested
+validation wrapper and its individual checks cannot be double-counted while a
+provider span inside repair remains measurable. Critical-path rankings use
+outermost spans only, avoiding an overlapping parent and child being presented
+as two independent bottlenecks.
+The `TOTAL_EXECUTION` envelope and queue wait are excluded from bottleneck
+ranking. `Overhead Time` is `max(0, active EP processing - provider -
+validation)`, with active processing equal to total wall time less explicit
+external wait. Historical runs retain their prior total duration but have no
+fabricated phase spans. Lease reconciliation closes an active span only at the
+actual reconciliation boundary with `STALE`/`INTERRUPTED` outcome.
+
+Execution phase timing belongs solely to Engineering Platform execution
+evidence. Forge remains the authority for Mission and planning intelligence.
+Reports project the compact timing summary and largest measured consumers; the
+dashboard intentionally has no new timing UI in this increment.
 
 ## Component logging
 

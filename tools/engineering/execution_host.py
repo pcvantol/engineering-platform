@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -81,8 +82,54 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
-from .storage import load_readiness_evaluation, record_readiness_evaluation
+from .storage import EngineeringStorageError, load_readiness_evaluation, record_readiness_evaluation
 from .storage import dismissal_for_run
+from .execution_timing import ActivePhase
+from .execution_timing import complete_active_phase as _complete_active_phase
+from .execution_timing import complete_phase as _complete_phase
+from .execution_timing import start_or_resume_phase as _start_or_resume_phase
+from .execution_timing import start_phase as _start_phase
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _timing_unavailable(error: EngineeringStorageError) -> None:
+    """Keep optional phase telemetry from changing the run outcome."""
+    LOGGER.warning("Execution phase telemetry is unavailable: %s", error)
+
+
+def start_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+    try:
+        return _start_phase(root, run_id, phase_name, **kwargs)
+    except EngineeringStorageError as error:
+        _timing_unavailable(error)
+        return None
+
+
+def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+    try:
+        return _start_or_resume_phase(root, run_id, phase_name, **kwargs)
+    except EngineeringStorageError as error:
+        _timing_unavailable(error)
+        return None
+
+
+def complete_phase(root: Path, active: ActivePhase | None, **kwargs: object) -> None:
+    if active is None:
+        return
+    try:
+        _complete_phase(root, active, **kwargs)
+    except EngineeringStorageError as error:
+        _timing_unavailable(error)
+
+
+def complete_active_phase(root: Path, run_id: str, phase_name: str, **kwargs: object) -> bool:
+    try:
+        return _complete_active_phase(root, run_id, phase_name, **kwargs)
+    except EngineeringStorageError as error:
+        _timing_unavailable(error)
+        return False
 
 # Compatibility exports remain at this façade while implementation resides in
 # the dedicated context, repository and executor modules.
@@ -228,6 +275,7 @@ class EngineeringRunner:
         self.transaction: ExecutionTransaction | None = None
         self.lease_heartbeat: LeaseHeartbeat | None = None
         self.finalization = FinalizationCoordinator()
+        self._total_phase: ActivePhase | None = None
 
     def _heartbeat(self) -> None:
         if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
@@ -285,6 +333,25 @@ class EngineeringRunner:
         if not result.validation_evidence:
             return state
         return replace(state, validation_evidence=result.validation_evidence)
+
+    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False) -> AgentResult:
+        """Measure only the bounded runtime-provider process interval."""
+        parent = start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations}) if repair else None
+        provider = start_phase(
+            self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
+            attempt=max(1, state.repair_iterations + 1), metadata={"provider": "codex_cli"},
+        )
+        try:
+            result = self.agent.invoke(self.root, prompt)
+        except Exception:
+            complete_phase(self.root, provider, outcome="FAILED")
+            if parent:
+                complete_phase(self.root, parent, outcome="FAILED")
+            raise
+        complete_phase(self.root, provider)
+        if parent:
+            complete_phase(self.root, parent)
+        return result
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState
@@ -375,6 +442,12 @@ class EngineeringRunner:
         self._verify_engineering_platform()
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
+        # This envelope is deliberately persisted once and can be resumed
+        # after process restart.  It is excluded from bottleneck ranking.
+        self._total_phase = start_or_resume_phase(
+            self.root, state.run_id, "TOTAL_EXECUTION", category="EXECUTION"
+        )
+        initialization = start_phase(self.root, state.run_id, "INITIALIZATION")
         readiness = evaluate_readiness(
             selected_profile(context.execution_mode),
             host_root=self.root,
@@ -416,6 +489,7 @@ class EngineeringRunner:
             facts=vars(decision.facts),
             evaluated_at=decision.evaluated_at, diagnostic=readiness.diagnostic or decision.diagnostic,
         )
+        complete_phase(self.root, initialization, outcome="COMPLETE" if readiness.ready else "FAILED")
         if not readiness.ready:
             if context.execution_mode == "GENESIS":
                 return self._save_terminal(state, "BLOCKED", "genesis_workspace_preflight", readiness.diagnostic)
@@ -438,7 +512,13 @@ class EngineeringRunner:
                     "genesis_workspace_conflict",
                     f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
                 )
-        reconcile_stale(self.root)
+        reconciliation = start_phase(self.root, state.run_id, "RECONCILIATION")
+        try:
+            reconcile_stale(self.root)
+        except Exception:
+            complete_phase(self.root, reconciliation, outcome="FAILED")
+            raise
+        complete_phase(self.root, reconciliation)
         self.store.save(state)
         try:
             self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid())
@@ -471,6 +551,7 @@ class EngineeringRunner:
                     "repository_synchronization",
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
+        preparation = start_phase(self.root, state.run_id, "EXECUTION_PREPARATION")
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,
@@ -525,6 +606,7 @@ class EngineeringRunner:
         )
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
+        complete_phase(self.root, preparation)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         try:
@@ -542,8 +624,8 @@ class EngineeringRunner:
                         self.root, state, state.next_action, runtime_metadata=metadata
                     )
                 )
-            result = self.agent.invoke(
-                self.root, assemble_prompt(prompt_path, state) + memory + reviewer_context
+            result = self._invoke_agent_with_timing(
+                state, assemble_prompt(prompt_path, state) + memory + reviewer_context
             )
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
@@ -689,9 +771,11 @@ class EngineeringRunner:
             )
         attempts = 0
         while True:
+            pr_operation = start_phase(self.root, state.run_id, "PR_OR_MERGE")
             try:
                 pr = self.github.pull_request(state.pull_request)
             except RunnerError:
+                complete_phase(self.root, pr_operation, outcome="FAILED")
                 attempts += 1
                 if attempts >= 3:
                     return replace(
@@ -699,10 +783,15 @@ class EngineeringRunner:
                         phase="WAIT_FOR_TERMINAL_EVIDENCE",
                         next_action="retry_github_evidence",
                     )
+                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
                 self.sleep(min(30, 2**attempts))
+                complete_phase(self.root, wait)
                 continue
+            complete_phase(self.root, pr_operation)
             if not pr.checks_terminal:
+                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
                 self.sleep(15)
+                complete_phase(self.root, wait)
                 continue
             if not pr.checks_passed:
                 if state.owner_authorized:
@@ -724,8 +813,14 @@ class EngineeringRunner:
             if not state.owner_authorized and state.terminal_condition == "open_pr_checks_terminal":
                 return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
             if state.owner_authorized:
-                self.github.merge(pr.number)
+                merge = start_phase(self.root, state.run_id, "PR_OR_MERGE", metadata={"operation": "merge"})
+                try:
+                    self.github.merge(pr.number)
+                finally:
+                    complete_phase(self.root, merge)
+                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "merge_visibility"})
                 self.sleep(2)
+                complete_phase(self.root, wait)
                 continue
             return self._save_terminal(
                 state,
@@ -744,10 +839,9 @@ class EngineeringRunner:
         self.store.save(repair)
         write_live_status(self.root, repair, repair.next_action)
         try:
-            result = self.agent.invoke(
-                self.root,
-                assemble_prompt(Path(repair.prompt_path), repair)
-                + f"\n\nRepair objective: {objective}",
+            result = self._invoke_agent_with_timing(
+                repair, assemble_prompt(Path(repair.prompt_path), repair)
+                + f"\n\nRepair objective: {objective}", repair=True,
             )
             repair = self._record_agent_execution_time(repair)
             repair = self._record_validation_evidence(repair, result)
@@ -784,11 +878,13 @@ class EngineeringRunner:
                 phase="WAIT_FOR_TERMINAL_EVIDENCE",
                 next_action="poll_required_checks",
             )
+        finalization_phase = start_phase(self.root, state.run_id, "REPOSITORY_FINALIZATION")
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
             synchronize(self.root)
         evidence = self.repository.inspect(self.root)
         if not evidence.clean or evidence.branch != "main":
+            complete_phase(self.root, finalization_phase, outcome="FAILED")
             return self._save_terminal(
                 state,
                 "BLOCKED",
@@ -807,6 +903,7 @@ class EngineeringRunner:
         )
         self.store.save(finalization)
         write_live_status(self.root, finalization, finalization.next_action)
+        complete_phase(self.root, finalization_phase)
         instruction = (
             f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory "
             "governance-only Finalization: reconcile the four rolling records and immutable Prompt "
@@ -817,18 +914,20 @@ class EngineeringRunner:
             "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "
             "push it, and only then return that PR number."
         )
+        finalization_span = start_phase(self.root, state.run_id, "FINALIZATION")
         try:
-            result = self.agent.invoke(
-                self.root,
-                assemble_prompt(Path(finalization.prompt_path), finalization) + instruction,
+            result = self._invoke_agent_with_timing(
+                finalization, assemble_prompt(Path(finalization.prompt_path), finalization) + instruction
             )
             finalization = self._record_agent_execution_time(finalization)
             finalization = self._record_validation_evidence(finalization, result)
             self._persist_agent_usage(finalization.run_id)
         except CodexInvocationError as error:
+            complete_phase(self.root, finalization_span, outcome="FAILED")
             finalization = self._record_agent_execution_time(finalization)
             self.console_detail = error.console_detail
             return self._save_terminal(finalization, "BLOCKED", "inspect_codex_cli", str(error))
+        complete_phase(self.root, finalization_span)
         if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
             return self._save_terminal(
                 finalization,
@@ -886,13 +985,20 @@ class EngineeringRunner:
 
     def _cleanup(self, state: TransactionState) -> TransactionState:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
-        return self.finalization.cleanup(
-            root=self.root,
-            store=self.store,
-            repository=self.repository,
-            state=state,
-            save_terminal=self._save_terminal,
-        )
+        cleanup = start_phase(self.root, state.run_id, "REPOSITORY_CLEANUP")
+        try:
+            result = self.finalization.cleanup(
+                root=self.root,
+                store=self.store,
+                repository=self.repository,
+                state=state,
+                save_terminal=self._save_terminal,
+            )
+        except Exception:
+            complete_phase(self.root, cleanup, outcome="FAILED")
+            raise
+        complete_phase(self.root, cleanup, outcome="COMPLETE" if result.phase == "COMPLETE" else "FAILED")
+        return result
 
     def _record_merged_evidence(
         self, state: TransactionState, pr: PullRequestEvidence, evidence: RepositoryEvidence
@@ -984,21 +1090,35 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    report_path = (
-        generate_terminal_report(
-            root,
-            state,
-            runner.platform_manifest,
-            runner.detected_codex_cli,
-            runner.reviewer_records,
-            getattr(runner.agent, "last_runtime_metadata", None),
+    report_phase = start_phase(root, state.run_id, "REPORT_GENERATION") if state.terminal else None
+    try:
+        report_path = (
+            generate_terminal_report(
+                root,
+                state,
+                runner.platform_manifest,
+                runner.detected_codex_cli,
+                runner.reviewer_records,
+                getattr(runner.agent, "last_runtime_metadata", None),
+            )
+            if state.terminal
+            else None
         )
-        if state.terminal
-        else None
-    )
+    except Exception:
+        if report_phase is not None:
+            complete_phase(root, report_phase, outcome="FAILED")
+        raise
+    if report_phase is not None:
+        complete_phase(root, report_phase)
     if report_path:
-        record_terminal_report(root, report_path)
-        analyze_terminal_report(root, state.run_id, report_path)
+        evidence_phase = start_phase(root, state.run_id, "EVIDENCE_PERSISTENCE")
+        try:
+            record_terminal_report(root, report_path)
+            analyze_terminal_report(root, state.run_id, report_path)
+        except Exception:
+            complete_phase(root, evidence_phase, outcome="FAILED")
+            raise
+        complete_phase(root, evidence_phase)
     if runner.platform_manifest:
         publish_canonical_status(
             root / ".engineering" / "status",
@@ -1032,6 +1152,10 @@ def main(argv: list[str] | None = None) -> int:
         print(format_management_summary(state))
     else:
         print(json.dumps(state.to_dict(), indent=2, sort_keys=True))
+    # A watcher owns the outer envelope until it archives and persists its
+    # evidence.  Direct invocations own that final boundary themselves.
+    if args.admitted_storage_schema is None and state.terminal:
+        complete_active_phase(root, state.run_id, "TOTAL_EXECUTION", outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED")
     return 0 if state.phase == "COMPLETE" else 1
 
 

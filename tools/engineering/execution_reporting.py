@@ -39,6 +39,7 @@ from .capability_review import ReviewerResult
 from .drift_diagnostics import summary as drift_summary
 from .execution_evidence import TerminalEvidenceBundle
 from .execution_lease import history as lease_history, liveness as lease_liveness
+from .execution_timing import timing_summary
 from .execution_models import PullRequestEvidence, RepositoryEvidence
 from .execution_readiness import ReadinessDecision
 from .host_preflight import latest as latest_host_preflight
@@ -839,6 +840,26 @@ def generate_terminal_report(
     reported_reasoning = runtime_metadata.get("reasoning_profile", "not reported")
     reported_configuration = runtime_metadata.get("configuration_profile", "not reported")
     bundle = collect_terminal_evidence(root, state)
+    timing = timing_summary(root, state.run_id)
+    timing_lines = ["## Execution Phase Timing"]
+    for phase, duration in timing.get("phase_durations_ms", {}).items():
+        timing_lines.append(f"- {phase}: `{duration / 1000:.3f}` s")
+    if timing.get("phase_telemetry_available"):
+        timing_lines.extend((
+            f"- Total wall time: `{timing['total_wall_time_ms'] / 1000:.3f}` s",
+            f"- Active EP processing: `{timing['active_ep_processing_time_ms'] / 1000:.3f}` s",
+            f"- Provider execution: `{timing['provider_execution_time_ms'] / 1000:.3f}` s ({timing['provider_share_percent']:.3f}%)",
+            f"- Validation: `{timing['validation_time_ms'] / 1000:.3f}` s ({timing['validation_share_percent']:.3f}%)",
+            f"- External wait: `{timing['external_wait_time_ms'] / 1000:.3f}` s ({timing['external_wait_share_percent']:.3f}%)",
+            f"- Queue wait: `{timing['queue_wait_time_ms'] / 1000:.3f}` s ({timing['queue_share_percent']:.3f}%)",
+            f"- Overhead: `{timing['overhead_time_ms'] / 1000:.3f}` s",
+            "- Top time consumers: " + ", ".join(
+                f"{item['phase']} ({item['duration_ms'] / 1000:.3f} s)" for item in timing["top_time_consumers"]
+            ),
+            "- Aggregation: top-level spans only; nested spans are retained but excluded to prevent double-counting.",
+        ))
+    else:
+        timing_lines.append("- Phase-level telemetry: unavailable for this historical run.")
     qualification_status = qualification.get("qualification") if qualification else "not recorded"
     qualification_summary_line = (
         f"`{qualification_status}`" if qualification else "not recorded"
@@ -1019,6 +1040,8 @@ def generate_terminal_report(
             "",
             "## Lifecycle Timeline",
             f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`",
+            "",
+            *timing_lines,
             "",
             "## Pull Requests",
             f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",

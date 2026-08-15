@@ -45,6 +45,7 @@ from .producer import ProducerSubmissionError, parse_producer_metadata, parse_pr
 from .drift_diagnostics import summary as drift_summary
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
+from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -1151,8 +1152,22 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             return 1
         content = submission.prompt
         job_id, legacy_run_id, digest = _job_id(source, raw_submission)
-        preflight = execute_host_preflight(repo, run_id=None)
+        # Allocate the execution identity before admission so observed
+        # preflight work is attributable to the candidate that was actually
+        # considered.  A rejected candidate is completed with FAILED timing;
+        # it is never retroactively assigned to a later submission.
+        run_id = child_run_id or _allocate_run_id()
+        total = start_or_resume_phase(repo, run_id, "TOTAL_EXECUTION", category="EXECUTION")
+        host_preflight_phase = start_phase(repo, run_id, "HOST_PREFLIGHT", category="ADMISSION")
+        try:
+            preflight = execute_host_preflight(repo, run_id=run_id)
+        except Exception:
+            complete_phase(repo, host_preflight_phase, outcome="FAILED")
+            complete_phase(repo, total, outcome="FAILED")
+            raise
+        complete_phase(repo, host_preflight_phase, outcome="COMPLETE" if preflight.outcome != "FAIL" else "FAILED")
         if preflight.outcome == "FAIL":
+            complete_phase(repo, total, outcome="FAILED")
             status(
                 repo,
                 "HOST_PREFLIGHT_FAILED",
@@ -1170,8 +1185,16 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 diagnostic=_preflight_failure_detail(preflight),
             )
             return 1
-        workspace_preflight = execute_workspace_preflight(repo, content, run_id=None)
+        workspace_preflight_phase = start_phase(repo, run_id, "WORKSPACE_PREFLIGHT", category="ADMISSION")
+        try:
+            workspace_preflight = execute_workspace_preflight(repo, content, run_id=run_id)
+        except Exception:
+            complete_phase(repo, workspace_preflight_phase, outcome="FAILED")
+            complete_phase(repo, total, outcome="FAILED")
+            raise
+        complete_phase(repo, workspace_preflight_phase, outcome="COMPLETE" if workspace_preflight.outcome != "FAIL" else "FAILED")
         if workspace_preflight.outcome == "FAIL":
+            complete_phase(repo, total, outcome="FAILED")
             status(
                 repo,
                 "WORKSPACE_PREFLIGHT_FAILED",
@@ -1189,8 +1212,16 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 diagnostic=_preflight_failure_detail(workspace_preflight),
             )
             return 1
-        capability_preflight = execute_capability_preflight(repo, content, run_id=None)
+        capability_preflight_phase = start_phase(repo, run_id, "CAPABILITY_PREFLIGHT", category="ADMISSION")
+        try:
+            capability_preflight = execute_capability_preflight(repo, content, run_id=run_id)
+        except Exception:
+            complete_phase(repo, capability_preflight_phase, outcome="FAILED")
+            complete_phase(repo, total, outcome="FAILED")
+            raise
+        complete_phase(repo, capability_preflight_phase, outcome="COMPLETE" if capability_preflight.outcome != "FAIL" else "FAILED")
         if capability_preflight.outcome == "FAIL":
+            complete_phase(repo, total, outcome="FAILED")
             status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
                    current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
                    diagnostic=drift_summary(capability_preflight.drift_evidence))
@@ -1213,7 +1244,6 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             )
             log_event(logger, logging.WARNING, "duplicate_job_ignored", run_id=legacy_run_id)
             return 0
-        run_id = child_run_id or _allocate_run_id()
         if background and not child_run_id:
             return _detach_runner(repo, root, candidates, source, content, job_id, run_id, logger)
         claimed = _archive_path(areas["Running"], job_id, source)
@@ -1253,6 +1283,11 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             status(repo, "JOB_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.")
             log_event(logger, logging.ERROR, "submission_persist_failed", run_id=run_id, diagnostic=str(error))
             return 1
+        # The queue boundary ends at the observed claim, rather than after
+        # runner initialization or readiness work.  This keeps queue delay
+        # distinct from active Execution Host processing.
+        record_queue_wait_from_submission(repo, run_id)
+        claim = start_phase(repo, run_id, "SUBMISSION_CLAIM", category="ADMISSION")
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
         _move(source, claimed)
         local = repo / ".engineering" / "inbox-processing" / job_id
@@ -1274,6 +1309,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             + "\n",
             encoding="utf-8",
         )
+        complete_phase(repo, claim)
         status(
             repo, "RUNNER_STARTING", job_id=job_id, run_id=run_id, queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
             runner_pid=os.getpid(), submitted_filename=source.name, prompt_title=title,
@@ -1344,6 +1380,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             run_id=run_id,
             diagnostic=reason,
         )
+        evidence_phase = start_phase(repo, run_id, "EVIDENCE_PERSISTENCE")
         try:
             target_checkout_path, tracked_file_count, target_branch = _terminal_workspace_snapshot(repo, run_id)
             record_prompt_execution(
@@ -1425,6 +1462,8 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 run_id=run_id,
                 diagnostic=str(error),
             )
+        complete_phase(repo, evidence_phase)
+        complete_active_phase(repo, run_id, "TOTAL_EXECUTION", outcome="COMPLETE" if successful else "FAILED")
         return 0 if successful else (completed.returncode or 1)
 
 

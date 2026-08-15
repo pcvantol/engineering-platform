@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 19
+ENGINEERING_STORAGE_SCHEMA_VERSION = 20
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -608,6 +608,40 @@ def _schema_v19(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE execution_submissions ADD COLUMN forge_governance_handoff_version TEXT")
 
 
+def _schema_v20(connection: sqlite3.Connection) -> None:
+    """Persist immutable, run-scoped execution phase spans.
+
+    Existing executions intentionally receive no synthetic phase records.  A
+    span is started and completed at an observed runtime boundary; durations
+    are measured by the caller's monotonic clock and timestamps remain UTC.
+    """
+    for statement in """
+        CREATE TABLE execution_phase_spans (
+            phase_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            phase_name TEXT NOT NULL,
+            phase_category TEXT NOT NULL,
+            parent_phase_id TEXT,
+            attempt INTEGER NOT NULL DEFAULT 1 CHECK(attempt >= 1),
+            ordinal INTEGER NOT NULL DEFAULT 1 CHECK(ordinal >= 1),
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            duration_ms INTEGER,
+            outcome TEXT NOT NULL CHECK(outcome IN ('ACTIVE','COMPLETE','FAILED','INTERRUPTED','STALE')),
+            metadata TEXT NOT NULL DEFAULT '{}',
+            CHECK((completed_at IS NULL AND duration_ms IS NULL AND outcome='ACTIVE')
+                  OR (completed_at IS NOT NULL AND duration_ms IS NOT NULL AND outcome != 'ACTIVE')),
+            UNIQUE(run_id, ordinal)
+        );
+        CREATE INDEX execution_phase_spans_run_lookup
+            ON execution_phase_spans(run_id, ordinal);
+        CREATE INDEX execution_phase_spans_parent_lookup
+            ON execution_phase_spans(run_id, parent_phase_id, ordinal);
+        """.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -674,6 +708,7 @@ MIGRATIONS: dict[int, Migration] = {
     17: _schema_v17,
     18: _schema_v18,
     19: _schema_v19,
+    20: _schema_v20,
 }
 
 

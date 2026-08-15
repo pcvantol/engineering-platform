@@ -11,6 +11,7 @@ from threading import Event, Thread
 import uuid
 
 from .storage import EngineeringStorageError, open_storage
+from .execution_timing import reconcile_interrupted_phases
 
 LEASE_VERSION = 1
 HEARTBEAT_INTERVAL_SECONDS = 15
@@ -141,7 +142,7 @@ def release(root: Path, lease: Lease) -> None:
 
 def reconcile_stale(root: Path) -> list[dict[str, str]]:
     """Reconcile datastore ownership only; never fabricate a terminal lifecycle state."""
-    now = _now().isoformat(); outcomes: list[dict[str, str]] = []
+    now = _now().isoformat(); outcomes: list[dict[str, str]] = []; interrupted_runs: list[str] = []
     connection = open_storage(root)
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -174,6 +175,8 @@ def reconcile_stale(root: Path) -> list[dict[str, str]]:
                 "ON CONFLICT(run_id) DO UPDATE SET outcome=excluded.outcome,reason=excluded.reason,reconciled_at=excluded.reconciled_at,updated_at=excluded.updated_at",
                 (run_id, outcome, f"lease_expired;terminal_phase={terminal_phase or 'none'}", now, now),
             )
+            # Close active spans after this lease transaction commits.
+            interrupted_runs.append(run_id)
             outcomes.append({"run_id": run_id, "host_instance_id": instance, "last_heartbeat": heartbeat_at, "outcome": outcome})
         active_runs = connection.execute(
             "SELECT run_id,phase FROM engineering_transactions WHERE phase NOT IN ('COMPLETE','BLOCKED','FAILED')"
@@ -199,6 +202,10 @@ def reconcile_stale(root: Path) -> list[dict[str, str]]:
         connection.execute("COMMIT")
     finally:
         connection.close()
+    for run_id in interrupted_runs:
+        # Completed timing evidence remains immutable.  This deliberately uses
+        # the actual reconciliation boundary rather than an invented expiry.
+        reconcile_interrupted_phases(root, run_id)
     return outcomes
 
 
