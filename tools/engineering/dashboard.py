@@ -1756,12 +1756,14 @@ def launch_agent(repo: Path) -> Path:
     LaunchAgent may not inherit the interactive shell's protected working
     directory access, so relying on its current repository directory can
     leave Python waiting before it has imported the dashboard module.  The
-    explicit ``PYTHONPATH`` keeps the selected repository importable while the
-    ``--repo`` argument remains the sole source of operational paths.
+    explicit ``PYTHONPATH`` keeps the selected repository importable, while
+    Python's safe-path option prevents it from deriving import paths from the
+    LaunchAgent working directory. The ``--repo`` argument remains the sole
+    source of operational paths.
     """
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    launcher = (sys.executable, "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
+    launcher = (sys.executable, "-P", "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
     command = "cd / && exec " + " ".join(shlex.quote(value) for value in launcher)
     arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
     log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()

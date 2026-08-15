@@ -1627,6 +1627,7 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn("<key>WorkingDirectory</key><string>/</string>", rendered)
             self.assertIn("/bin/zsh", rendered)
             self.assertIn("-lc", rendered)
+            self.assertIn(" -P -m tools.engineering.dashboard ", rendered)
             self.assertIn("cd / &amp;&amp; exec", rendered)
             self.assertIn("exec", rendered)
             self.assertNotIn("StandardOutPath", rendered)

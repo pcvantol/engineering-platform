@@ -477,7 +477,14 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("draws a complete thin selected prompt-history row border", async ({ page }) => {
+    // Keep the client-side fixture stable: the initial history refresh can
+    // otherwise replace this row after it has been rendered in CI.
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
