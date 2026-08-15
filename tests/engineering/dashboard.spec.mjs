@@ -155,7 +155,21 @@ test.describe("Engineering Status browser smoke", () => {
       );
       // Change language only after the asynchronous snapshot has rendered;
       // otherwise it may overwrite localized template placeholders.
+      // A locale selection deliberately reloads the dashboard so persisted
+      // client state is applied from a clean document. Wait for that specific
+      // navigation before inspecting template bindings; otherwise a fast CI
+      // worker can read the outgoing document while its localized text is
+      // being replaced.
+      const localeReload = page.waitForEvent(
+        "framenavigated",
+        (frame) => frame === page.mainFrame(),
+      );
       await page.locator("#dashboardLocale").selectOption(language);
+      await localeReload;
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForFunction(
+        () => document.body.classList.contains("dashboard-ready"),
+      );
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await expect(page).toHaveTitle(sourceTranslator("dashboard.title"));
       await expect(page.locator("#dashboardAppleWebAppTitle")).toHaveAttribute(
