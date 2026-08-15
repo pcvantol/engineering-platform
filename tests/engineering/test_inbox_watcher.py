@@ -335,6 +335,32 @@ class InboxWatcherTest(unittest.TestCase):
         )
         self.assertTrue(inbox_watcher._report_matches_terminal_phase(report, "COMPLETE"))
 
+    def test_reconciles_a_corrected_terminal_report_missing_from_history(self) -> None:
+        """A prior schema mismatch must not hide its terminal failure forever."""
+        report = self.repo / ".engineering" / "reports" / "corrected_inbox-schema-skew.md"
+        report.parent.mkdir(parents=True)
+        report.write_text(
+            "\n".join(
+                (
+                    "# Engineering Report",
+                    "- Run ID: `inbox-schema-skew`",
+                    "- Terminal state: `FAILED`",
+                    "",
+                    "## Diagnostics",
+                    "Engineering storage schema is newer than this Engineering Platform supports.",
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        entry = next(item for item in history if item["run_id"] == "inbox-schema-skew")
+        self.assertEqual(entry["status"], "FAILED")
+        self.assertTrue(entry["report_available"])
+
     def test_complete_job_is_serialized_and_archived(self) -> None:
         (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-0cff9d624c2412db"

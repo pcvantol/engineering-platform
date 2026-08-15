@@ -262,6 +262,41 @@ class PromptHistoryTest(unittest.TestCase):
             self.assertEqual(entry["git_commit"], "abcdef1")
             self.assertTrue(entry["report_available"])
 
+    def test_terminal_report_uses_the_persisted_submission_title_when_its_title_is_generic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_submission(
+                root,
+                submission_id="submission-schema-skew",
+                producer_id="forge",
+                producer_type="FORGE",
+                prompt_content="prompt",
+                prompt_metadata={"title": "Forge Governance Handoff Reporting & Projection Gap"},
+                target_identity={},
+                original_envelope="{}",
+                received_at="2026-08-15T21:04:41Z",
+                link_run_id="inbox-schema-skew",
+            )
+            report = root / ".engineering" / "reports" / "corrected_inbox-schema-skew.md"
+            report.parent.mkdir(parents=True)
+            report.write_text(
+                "\n".join(
+                    (
+                        "# Engineering Report",
+                        "- Run ID: `inbox-schema-skew`",
+                        "- Terminal state: `FAILED`",
+                    )
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            record_terminal_report(root, report)
+
+            self.assertEqual(
+                prompt_history(root)[0]["title"],
+                "Forge Governance Handoff Reporting & Projection Gap",
+            )
+
     def test_rejects_non_terminal_or_invalid_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -204,6 +204,28 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
     }
 
 
+def _submission_prompt_title(root: Path, run_id: str) -> str | None:
+    """Read the submitted title without deriving it from prompt content."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT submission.prompt_metadata FROM execution_submissions AS submission "
+            "JOIN execution_submission_links AS link ON link.submission_id=submission.submission_id "
+            "WHERE link.run_id=?",
+            (run_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None or not isinstance(row[0], str):
+        return None
+    try:
+        metadata = json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+    title = metadata.get("title") if isinstance(metadata, dict) else None
+    return str(title).strip()[:500] or None if isinstance(title, str) else None
+
+
 def record_terminal_report(root: Path, report: Path) -> None:
     """Project one authoritative terminal report into prompt history.
 
@@ -215,6 +237,9 @@ def record_terminal_report(root: Path, report: Path) -> None:
     record = _report_record(root, report)
     if record is None:
         raise ValueError("terminal report cannot be projected into prompt history")
+    submitted_title = _submission_prompt_title(root, str(record["run_id"]))
+    if submitted_title and record["prompt_title"] in {record["run_id"], "Engineering Report"}:
+        record["prompt_title"] = submitted_title
     record_prompt_execution(root, **record)
 
 

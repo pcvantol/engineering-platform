@@ -37,7 +37,7 @@ from .component_logging import (
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .telemetry import ExecutionTelemetry, persist_execution_async
-from .prompt_history import record_prompt_execution
+from .prompt_history import backfill_prompt_history, record_prompt_execution
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
@@ -1094,6 +1094,22 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     logger = component_logger(repo, "inbox")
     areas = local_folders(repo)
     with _lock(repo):
+        # A terminal report can be written by a runner that lost storage access
+        # before it could publish its history projection.  Reconcile those
+        # immutable reports before presenting or admitting the next job.  The
+        # operation is idempotent and never changes an existing projection.
+        try:
+            backfill_prompt_history(repo)
+        except EngineeringStorageError as error:
+            status(
+                repo,
+                "JOB_FAILED",
+                queued_jobs=0,
+                queue_items=[],
+                diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.",
+            )
+            log_event(logger, logging.ERROR, "prompt_history_reconciliation_failed", diagnostic=str(error))
+            return 1
         reconciled = reconcile_stale(repo)
         if reconciled:
             log_event(logger, logging.WARNING, "active_run_lease_reconciled", diagnostic=f"reconciled_runs={len(reconciled)}")
