@@ -428,13 +428,13 @@ def _schema_v12(connection: sqlite3.Connection) -> None:
     runtime reads never rebuild authority from filesystem projections.
     """
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
-    root = database.parent.parent
+    workspace = database.parent
     now = datetime.now(timezone.utc).isoformat()
     candidates: list[tuple[Path, str, str]] = [
-        (root / ".engineering" / "status" / "status.json", "watcher_status", "PROJECTION"),
-        (root / ".engineering" / "status" / "current.json", "live_status", "PROJECTION"),
+        (workspace / "status" / "status.json", "watcher_status", "PROJECTION"),
+        (workspace / "status" / "current.json", "live_status", "PROJECTION"),
     ]
-    candidates.extend((path, f"transaction:{path.stem}", "CHECKPOINT") for path in (root / ".engineering" / "engineering-runs").glob("*.json"))
+    candidates.extend((path, f"transaction:{path.stem}", "CHECKPOINT") for path in (workspace / "engineering-runs").glob("*.json"))
     for path, name, kind in candidates:
         legacy = _legacy_payload(path)
         if legacy is None:
@@ -470,8 +470,8 @@ def _schema_v13(connection: sqlite3.Connection) -> None:
     from .prompt_history import _report_record, _safe_timestamp
 
     database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
-    root = database.parent.parent
-    reports = root / ".engineering" / "reports"
+    workspace = database.parent
+    reports = workspace / "reports"
     if not reports.is_dir():
         return
     now = datetime.now(timezone.utc).isoformat()
@@ -480,7 +480,7 @@ def _schema_v13(connection: sqlite3.Connection) -> None:
             digest = hashlib.sha256(report.read_bytes()).hexdigest()
         except OSError:
             continue
-        record = _report_record(root, report)
+        record = _report_record(workspace.parent, report)
         if record is None:
             continue
         source_location = str(report)
@@ -502,7 +502,7 @@ def _schema_v13(connection: sqlite3.Connection) -> None:
         connection.execute(
             "INSERT OR IGNORE INTO execution_artifact_records(artifact_id,artifact_type,digest_algorithm,digest,content_type,run_id,created_at,integrity_status,storage_location,projection_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (f"legacy-report:{run_id}", "TERMINAL_REPORT", "sha256", digest, "text/markdown", run_id if run_exists else None,
-             now, "VERIFIED", str(report.resolve().relative_to((root / ".engineering").resolve())), "AVAILABLE"),
+             now, "VERIFIED", str(report.resolve().relative_to(reports.resolve())), "AVAILABLE"),
         )
         connection.execute(
             "INSERT INTO execution_migration_provenance(source_location,source_digest,imported_at,record_kind) VALUES(?,?,?,?)",

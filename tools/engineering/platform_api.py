@@ -20,6 +20,46 @@ class PlatformConfigurationError(ValueError):
     """Raised for invalid or unsupported platform configuration."""
 
 
+def shared_workspace_store(root: Path) -> Path:
+    """Resolve the private Engineering store shared by every Git worktree.
+
+    A linked worktree has a ``.git`` *file* that points at its private Git
+    directory.  Git's ``commondir`` file then identifies the repository-wide
+    Git directory.  Keeping local Engineering evidence immediately below that
+    common directory makes it independent of the currently checked-out
+    worktree while remaining private and repository-scoped.
+
+    Non-Git callers deliberately retain the old local layout.  This keeps
+    isolated test fixtures and explicit non-repository tooling self-contained.
+    """
+    root = root.resolve()
+    git_marker = root / ".git"
+    if git_marker.is_dir():
+        common = git_marker.resolve()
+    elif git_marker.is_file():
+        try:
+            line = git_marker.read_text(encoding="utf-8").strip()
+            prefix = "gitdir: "
+            if not line.startswith(prefix):
+                return root / ".engineering"
+            git_dir = Path(line[len(prefix):].strip())
+            if not git_dir.is_absolute():
+                git_dir = git_marker.parent / git_dir
+            common_marker = git_dir.resolve() / "commondir"
+            if not common_marker.is_file():
+                return root / ".engineering"
+            common_path = common_marker.read_text(encoding="utf-8").strip()
+            common = Path(common_path)
+            if not common.is_absolute():
+                common = common_marker.parent / common
+            common = common.resolve()
+        except OSError:
+            return root / ".engineering"
+    else:
+        return root / ".engineering"
+    return common / "engineering-platform"
+
+
 @dataclass(frozen=True)
 class PlatformIdentity:
     id: str
@@ -104,7 +144,7 @@ class ExecutionHostConfigurationResolver:
         return RuntimePromptTransport(provider, inbox_root / "Inbox")
 
     def resolve_workspace_store(self) -> Path:
-        return self._root / ".engineering"
+        return shared_workspace_store(self._root)
 
     def resolve_status_store(self) -> Path:
         return self.resolve_workspace_store() / "status"

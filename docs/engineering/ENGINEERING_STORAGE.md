@@ -2,14 +2,41 @@
 
 ## Purpose
 
-Engineering Platform persistent evidence is stored in the repository-local,
-git-ignored `.engineering/` workspace. Its only database path is:
+Engineering Platform persistent evidence is stored in one private,
+git-ignored workspace **per Git repository**, shared by every local worktree.
+Every worktree exposes that workspace at its familiar `.engineering/` path;
+the physical store lives beneath the repository's Git common directory. This
+prevents dashboard history, terminal evidence and active status from splitting
+when the Execution Host uses a dedicated runtime worktree or when a developer
+switches branches.
+
+Its only database path is:
 
 ```text
 .engineering/engineering.db
 ```
 
 iCloud Drive remains transport only. It is not an Engineering evidence store.
+
+### Worktree-safe storage migration
+
+On first provisioning after this contract, Engineering Platform discovers all
+accessible worktrees belonging to the same Git common directory. It selects
+the store with the largest immutable prompt-history index as the initial
+shared store, safely merges independent SQLite evidence and reports, and then
+replaces each worktree-local `.engineering/` directory with a private link to
+the shared store. SQLite row identifiers are regenerated only for local log
+and lifecycle-event rows; run IDs, receipts, submissions, prompt history and
+artifacts retain their durable identities. Mutable status projections use the
+most recent timestamp.
+
+The migration is idempotent and fail-closed for incompatible schemas, foreign
+key violations, unexpected links and conflicting immutable files. No history
+is silently discarded. Process locks are intentionally not migrated: a live
+lock blocks migration until the normal component restart has stopped its
+owner, while a verified stale lock is discarded and recreated by the component
+in the shared store. It has no cloud, release, deployment or publication
+effect.
 
 ## Versioned schema
 
@@ -218,11 +245,11 @@ stored in this field.
 
 ## Canonical workspace migration
 
-`.engineering/` is the sole canonical local location for status projections,
-transaction checkpoints, immutable artifacts, reports, redacted component logs
-and locks. When an existing workspace contains the historical `.djconnect/`
-directory, provisioning performs a local, fail-closed migration before any
-component starts:
+The shared `.engineering/` workspace is the sole canonical local location for
+status projections, transaction checkpoints, immutable artifacts, reports,
+redacted component logs and locks. When an existing workspace contains the
+historical `.djconnect/` directory, provisioning performs a local, fail-closed
+migration before any component starts:
 
 - existing evidence is moved to `.engineering/` without rewriting it;
 - byte-identical duplicates are discarded only after verification;

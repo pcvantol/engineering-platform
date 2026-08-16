@@ -2529,12 +2529,17 @@ test.describe("Engineering Status browser smoke", () => {
   test("fills the historical report action blue on hover", async ({ page }) => {
     // Keep the fixture stable during the hover assertion. A live dashboard
     // event can legitimately rebuild the prompt-history row mid-hover.
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        "engineering-dashboard-client-state-v1",
+        JSON.stringify({ autoRefresh: false }),
+      );
+    });
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await historyLoaded;
-    await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {

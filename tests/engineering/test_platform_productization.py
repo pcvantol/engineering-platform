@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import json
+import sqlite3
 import tempfile
 import unittest
 
@@ -14,13 +16,21 @@ from tools.engineering.platform_api import (
 )
 from unittest.mock import patch
 from tools.engineering.platform_bootstrap import (
+    _discard_inactive_component_locks,
+    _history_count,
+    _link_workspace,
+    _merge_databases,
+    _merge_workspace,
+    _worktree_roots,
     _merge_legacy_workspace,
     _validate_legacy_merge,
     migrate_legacy_workspace,
+    migrate_worktree_workspace,
     provision_workspace,
     render_template,
     validate_repository,
 )
+from tools.engineering.storage import open_storage
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +96,160 @@ class PlatformProductizationTest(unittest.TestCase):
             second = provision_workspace(root)
             self.assertEqual(first, second)
             self.assertTrue(first["status"].is_dir())
+
+    def test_linked_worktrees_share_and_merge_engineering_history(self) -> None:
+        """A dashboard worktree must retain history recorded from a source worktree."""
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "repository"
+            runtime = Path(temporary) / "runtime"
+            common = repository / ".git"
+            worktree_git = common / "worktrees" / "runtime"
+            common.mkdir(parents=True)
+            runtime.mkdir()
+            (runtime / ".git").write_text(f"gitdir: {worktree_git}\n", encoding="utf-8")
+            worktree_git.mkdir(parents=True)
+            (worktree_git / "commondir").write_text("../..\n", encoding="utf-8")
+            for root in (repository, runtime):
+                target = root / "tools/engineering"
+                target.mkdir(parents=True)
+                (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                    (ROOT / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            for root, run_id in ((repository, "source-run"), (runtime, "runtime-run")):
+                with open_storage(root) as connection:
+                    connection.execute(
+                        "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,updated_at) VALUES(?,?,?,?,?)",
+                        (run_id, "COMPLETE", run_id, "2026-08-16T08:00:00+00:00", "2026-08-16T08:00:00+00:00"),
+                    )
+
+            workspace = migrate_worktree_workspace(runtime)
+
+            self.assertEqual(workspace, (common / "engineering-platform").resolve())
+            self.assertTrue((repository / ".engineering").is_symlink())
+            self.assertTrue((runtime / ".engineering").is_symlink())
+            with open_storage(runtime) as connection:
+                run_ids = [row[0] for row in connection.execute(
+                    "SELECT run_id FROM prompt_execution_history ORDER BY run_id"
+                )]
+            self.assertEqual(run_ids, ["runtime-run", "source-run"])
+            self.assertEqual((repository / ".engineering").resolve(), workspace)
+
+    def test_linked_worktree_migration_refuses_live_component_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "repository"
+            runtime = Path(temporary) / "runtime"
+            common = repository / ".git"
+            worktree_git = common / "worktrees" / "runtime"
+            common.mkdir(parents=True)
+            runtime.mkdir()
+            (runtime / ".git").write_text(f"gitdir: {worktree_git}\n", encoding="utf-8")
+            worktree_git.mkdir(parents=True)
+            (worktree_git / "commondir").write_text("../..\n", encoding="utf-8")
+            lock = runtime / ".engineering" / "locks" / "dashboard.lock"
+            lock.parent.mkdir(parents=True)
+            lock.write_text(json.dumps({"component": "dashboard", "pid": os.getpid()}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "running components to stop"):
+                migrate_worktree_workspace(runtime)
+
+    def test_worktree_discovery_ignores_broken_markers_and_history_count_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            common = root / ".git"
+            shared = common / "engineering-platform"
+            worktrees = common / "worktrees"
+            root.mkdir(parents=True)
+            worktrees.mkdir(parents=True)
+            broken = worktrees / "broken"
+            broken.mkdir()
+            valid = worktrees / "valid"
+            valid.mkdir()
+            runtime = Path(temporary) / "runtime"
+            runtime.mkdir()
+            (runtime / ".git").write_text("gitdir: marker\n", encoding="utf-8")
+            (valid / "gitdir").write_text(str(runtime / ".git"), encoding="utf-8")
+
+            with patch("tools.engineering.platform_bootstrap.shared_workspace_store", return_value=shared):
+                self.assertEqual(set(_worktree_roots(root)), {root.resolve(), runtime.resolve()})
+
+            workspace = root / ".engineering"
+            workspace.mkdir()
+            self.assertEqual(_history_count(workspace), 0)
+            database = workspace / "engineering.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE prompt_execution_history(run_id TEXT)")
+                connection.execute("INSERT INTO prompt_execution_history VALUES('one')")
+            self.assertEqual(_history_count(workspace), 1)
+            database.write_text("not sqlite", encoding="utf-8")
+            self.assertEqual(_history_count(workspace), 0)
+
+    def test_workspace_helpers_merge_evidence_and_reject_invalid_links_or_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            (source / "new.txt").write_text("new", encoding="utf-8")
+            (source / "same.txt").write_text("same", encoding="utf-8")
+            (destination / "same.txt").write_text("same", encoding="utf-8")
+            (source / "nested").mkdir()
+            (source / "nested" / "nested.txt").write_text("nested", encoding="utf-8")
+            (destination / "nested").mkdir()
+
+            _merge_workspace(source, destination)
+
+            self.assertEqual((destination / "new.txt").read_text(encoding="utf-8"), "new")
+            self.assertEqual(list(source.iterdir()), [])
+
+            worktree = root / "worktree"
+            shared = root / "shared"
+            worktree.mkdir()
+            shared.mkdir()
+            _link_workspace(worktree, shared)
+            _link_workspace(worktree, shared)
+            self.assertTrue((worktree / ".engineering").is_symlink())
+            wrong = root / "wrong"
+            wrong.mkdir()
+            (wrong / ".engineering").symlink_to(root / "other", target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "unexpected shared store"):
+                _link_workspace(wrong, shared)
+
+            invalid_locks = root / "invalid-locks"
+            invalid_locks.mkdir()
+            lock_target = root / "lock-target"
+            lock_target.write_text("not a directory", encoding="utf-8")
+            (invalid_locks / "locks").symlink_to(lock_target)
+            with self.assertRaisesRegex(RuntimeError, "invalid component-lock"):
+                _discard_inactive_component_locks(invalid_locks)
+
+    def test_database_merge_rejects_incompatible_schemas_and_merges_simple_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.db"
+            destination = root / "destination.db"
+            for database in (source, destination):
+                with sqlite3.connect(database) as connection:
+                    connection.execute("CREATE TABLE evidence(key TEXT PRIMARY KEY, value TEXT)")
+            with sqlite3.connect(source) as connection:
+                connection.execute("INSERT INTO evidence VALUES('source', 'preserved')")
+            with sqlite3.connect(destination) as connection:
+                connection.execute("INSERT INTO evidence VALUES('destination', 'current')")
+
+            _merge_databases(source, destination)
+
+            with sqlite3.connect(destination) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT key, value FROM evidence ORDER BY key").fetchall(),
+                    [("destination", "current"), ("source", "preserved")],
+                )
+
+            incompatible = root / "incompatible.db"
+            with sqlite3.connect(incompatible) as connection:
+                connection.execute("CREATE TABLE other(key TEXT PRIMARY KEY)")
+            with self.assertRaisesRegex(RuntimeError, "incompatible database schemas"):
+                _merge_databases(incompatible, destination)
 
     def test_legacy_workspace_migrates_without_losing_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
