@@ -120,7 +120,10 @@ as two independent bottlenecks.
 The `TOTAL_EXECUTION` envelope and queue wait are excluded from bottleneck
 ranking. `Overhead Time` is `max(0, active EP processing - provider -
 validation)`, with active processing equal to total wall time less explicit
-external wait. Historical runs retain their prior total duration but have no
+external wait. Validation commands emitted by the runtime provider are timed
+at their direct JSONL command start/complete boundaries; only a bounded
+validation category is persisted, never command text or output. Historical
+runs retain their prior total duration from `execution_runs` but have no
 fabricated phase spans. Lease reconciliation closes an active span only at the
 actual reconciliation boundary with `STALE`/`INTERRUPTED` outcome.
 

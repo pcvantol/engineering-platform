@@ -25,6 +25,30 @@ def project_codex_activity(event: object) -> str | None:
     }.get(item.get("type"))
 
 
+def project_codex_command_event(event: object) -> tuple[str, str, str] | None:
+    """Expose direct command boundaries without retaining command content.
+
+    Codex JSONL identifies command-execution items by a stable item id.  The
+    host uses this small projection only to classify known validation tools and
+    record their observed start/complete boundaries.  It must not persist the
+    raw command, its output, or any arguments.
+    """
+    if not isinstance(event, dict) or event.get("type") not in {"item.started", "item.completed"}:
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") != "command_execution":
+        return None
+    item_id = item.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    if event["type"] == "item.completed":
+        return ("completed", item_id, "")
+    command = item.get("command")
+    if not isinstance(command, str):
+        return None
+    return ("started", item_id, command)
+
+
 def redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
     without_prompt = value.replace(prompt, "[PROMPT_OMITTED]") if prompt else value
     return redact_diagnostic("\n".join(without_prompt.splitlines()[-60:]), limit=limit) or "(empty)"
@@ -83,6 +107,7 @@ class CodexCliClient:
         self._activity_callback: Callable[[str], None] | None = None
         self._process_callback: Callable[[dict[str, int] | None], None] | None = None
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
+        self._command_callback: Callable[[str, str, str], None] | None = None
 
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
@@ -97,6 +122,10 @@ class CodexCliClient:
     ) -> None:
         """Publish only explicitly reported runtime settings during a live run."""
         self._runtime_metadata_callback = callback
+
+    def set_command_callback(self, callback: Callable[[str, str, str], None] | None) -> None:
+        """Set a direct JSONL command-boundary sink for execution telemetry."""
+        self._command_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -274,7 +303,7 @@ class CodexCliClient:
         self, command: tuple[str, ...], root: Path
     ) -> subprocess.CompletedProcess[str]:
         """Run Codex, streaming only the approved activity projection when enabled."""
-        if self._activity_callback is None:
+        if self._activity_callback is None and self._command_callback is None and self._runtime_metadata_callback is None:
             return self.provider.invoke(root, command)
         process = self.provider.spawn(root, command)
         if self._process_callback is not None:
@@ -293,11 +322,17 @@ class CodexCliClient:
                     if self._runtime_metadata_callback is not None:
                         self._runtime_metadata_callback(dict(self.last_runtime_metadata))
                 try:
-                    activity = project_codex_activity(json.loads(line))
+                    event = json.loads(line)
+                    activity = project_codex_activity(event)
                 except json.JSONDecodeError:
                     activity = None
+                    event = None
                 if activity is not None:
                     self._activity_callback(activity)
+                if self._command_callback is not None:
+                    command_event = project_codex_command_event(event)
+                    if command_event is not None:
+                        self._command_callback(*command_event)
             return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
         finally:
             if self._process_callback is not None:

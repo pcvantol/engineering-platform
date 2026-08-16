@@ -53,6 +53,7 @@ from tools.engineering.capability_review import (
 )
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
+from tools.engineering.execution_timing import phase_spans
 
 
 class FakeRepository:
@@ -149,6 +150,21 @@ class LiveStatusFakeAgent(FakeAgent):
             self.activity_action = json.loads(
                 (root / ".engineering" / "status" / "current.json").read_text()
             )["current_action"]
+        return super().invoke(root, prompt)
+
+
+class CommandTimingFakeAgent(FakeAgent):
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__(result)
+        self.command_callback: object | None = None
+
+    def set_command_callback(self, callback: object) -> None:
+        self.command_callback = callback
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        if callable(self.command_callback):
+            self.command_callback("started", "command-1", "python -m pytest tests/engineering")
+            self.command_callback("completed", "command-1", "python -m pytest tests/engineering")
         return super().invoke(root, prompt)
 
 
@@ -648,6 +664,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("host, workspace and capability preflights passed", agent.prompts[0])
         self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
         self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_runtime_validation_commands_are_timed_at_direct_boundaries(self) -> None:
+        agent = CommandTimingFakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+        )
+        state = TransactionState("validation-boundary-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        runner._invoke_agent_with_timing(state, "objective")
+        spans = phase_spans(self.root, state.run_id)
+        validation = next(span for span in spans if span["phase_name"] == "VALIDATION")
+        self.assertEqual(validation["outcome"], "COMPLETE")
+        self.assertEqual(validation["metadata"], {"validation_kind": "tests"})
+        self.assertIsNotNone(validation["parent_phase_id"])
 
     def test_managed_synchronization_blocks_before_agent_when_host_cannot_sync(self) -> None:
         repository = FakeRepository()

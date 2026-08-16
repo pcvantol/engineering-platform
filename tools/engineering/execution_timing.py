@@ -226,6 +226,20 @@ def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
 def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     """Project non-double-counted run metrics from completed canonical spans."""
     spans = phase_spans(root, run_id)
+    historical_total: int | None = None
+    if not spans:
+        # Earlier runs already have a coarse immutable execution receipt.  It
+        # remains useful total-duration evidence, but never becomes invented
+        # phase detail.
+        connection = open_storage(root)
+        try:
+            row = connection.execute(
+                "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if row and isinstance(row[0], (int, float)) and not isinstance(row[0], bool) and row[0] >= 0:
+            historical_total = round(float(row[0]) * 1000)
     completed = [span for span in spans if span["outcome"] != "ACTIVE" and isinstance(span["duration_ms"], int)]
     top_level = [span for span in completed if span["parent_phase_id"] is None]
     by_id = {str(span["phase_id"]): span for span in completed}
@@ -245,7 +259,9 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
         by_phase[span["phase_name"]] = by_phase.get(span["phase_name"], 0) + int(span["duration_ms"])
     total = by_phase.get("TOTAL_EXECUTION")
     if total is None:
-        total = sum(duration for name, duration in by_phase.items() if name != "QUEUE_WAIT")
+        total = historical_total if historical_total is not None else sum(
+            duration for name, duration in by_phase.items() if name != "QUEUE_WAIT"
+        )
     def measured(name: str) -> int:
         return sum(int(span["duration_ms"]) for span in semantic if span["phase_name"] == name)
 
@@ -273,4 +289,5 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
             "longest_phase": consumers[0]["phase_name"] if consumers else None,
             "longest_phase_duration_ms": consumers[0]["duration_ms"] if consumers else None,
             "top_time_consumers": [{"phase": item["phase_name"], "duration_ms": item["duration_ms"]} for item in consumers],
-            "phase_telemetry_available": bool(spans)}
+            "phase_telemetry_available": bool(spans),
+            "historical_total_available": historical_total is not None}

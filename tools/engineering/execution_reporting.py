@@ -429,14 +429,21 @@ def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBu
     )
 
 
-def _execution_statistics(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+def _execution_statistics(
+    state: TransactionState, bundle: TerminalEvidenceBundle, timing: Mapping[str, object]
+) -> tuple[str, ...]:
+    validation_duration = (
+        f"`{int(timing['validation_time_ms']) / 1000:.3f}` seconds"
+        if timing.get("phase_telemetry_available") and isinstance(timing.get("validation_time_ms"), int)
+        else "not measured"
+    )
     return (
         "- Execution Count: `1`",
         f"- Engineering Actions: `{len(bundle.changed_files) + len(state.validation_evidence)}` evidence-backed action(s)",
         "- Mission Count (Forge): `0` (Forge is outside this reporting increment)",
         f"- Repair Iterations: `{state.repair_iterations}`",
         f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
-        f"- Validation Duration: `not measured` ({len(state.validation_evidence)} recorded validation(s))",
+        f"- Validation Duration: {validation_duration} ({len(state.validation_evidence)} recorded validation(s))",
     )
 
 
@@ -860,6 +867,10 @@ def generate_terminal_report(
         ))
     else:
         timing_lines.append("- Phase-level telemetry: unavailable for this historical run.")
+        if timing.get("historical_total_available"):
+            timing_lines.append(
+                f"- Historical total wall time: `{timing['total_wall_time_ms'] / 1000:.3f}` s."
+            )
     qualification_status = qualification.get("qualification") if qualification else "not recorded"
     qualification_summary_line = (
         f"`{qualification_status}`" if qualification else "not recorded"
@@ -1100,7 +1111,7 @@ def generate_terminal_report(
             *_validation_traceability(state, bundle),
             "",
             "## Execution Statistics",
-            *_execution_statistics(state, bundle),
+            *_execution_statistics(state, bundle, timing),
             "",
             "## Statistics Projection",
             *_statistics_projection(state, bundle),

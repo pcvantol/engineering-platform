@@ -10,6 +10,7 @@ from tools.engineering.execution_timing import (
     start_phase, timing_summary,
 )
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
 
 
 class ExecutionPhaseTimingTest(unittest.TestCase):
@@ -64,6 +65,22 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
             summary = timing_summary(Path(temporary), "legacy-run")
             self.assertFalse(summary["phase_telemetry_available"])
             self.assertEqual(summary["top_time_consumers"], [])
+
+    def test_historical_runs_preserve_existing_total_without_phase_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, tzinfo=timezone.utc)
+            persist_execution(root, ExecutionTelemetry(
+                run_id="legacy-total", arrived_at=started,
+                execution_started_at=started, execution_finished_at=started + timedelta(seconds=12),
+                terminal_state="COMPLETE", execution_seconds=None, input_tokens=None,
+                output_tokens=None, total_tokens=None, execution_mode="MANAGED",
+                workspace="djconnect", repository="pcvantol/djconnect", execution_host_version="1.0",
+            ))
+            summary = timing_summary(root, "legacy-total")
+            self.assertFalse(summary["phase_telemetry_available"])
+            self.assertTrue(summary["historical_total_available"])
+            self.assertEqual(summary["total_wall_time_ms"], 12000)
 
     def test_cross_process_total_envelope_and_nested_critical_path_are_non_overlapping(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

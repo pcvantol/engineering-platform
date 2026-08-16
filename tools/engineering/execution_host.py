@@ -334,6 +334,26 @@ class EngineeringRunner:
             return state
         return replace(state, validation_evidence=result.validation_evidence)
 
+    @staticmethod
+    def _validation_kind(command: str) -> str | None:
+        """Classify only known validation commands at their live boundary.
+
+        The command itself is transient observability input: timing metadata
+        retains the category, never command text or output.
+        """
+        normalized = command.casefold()
+        if any(tool in normalized for tool in ("ruff", "flake8", "mypy", "pyright")):
+            return "static_analysis"
+        if any(tool in normalized for tool in ("bandit", "semgrep", "codeql", "pip-audit", "safety")):
+            return "security"
+        if "git diff --check" in normalized or "prettier" in normalized or "black --check" in normalized:
+            return "format_or_diff"
+        if any(tool in normalized for tool in ("playwright", "selenium", "cypress", "e2e")):
+            return "browser_e2e"
+        if any(tool in normalized for tool in ("pytest", "unittest", "tox", "nox")):
+            return "tests"
+        return None
+
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
         parent = start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations}) if repair else None
@@ -341,13 +361,39 @@ class EngineeringRunner:
             self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
             attempt=max(1, state.repair_iterations + 1), metadata={"provider": "codex_cli"},
         )
+        validation_spans: dict[str, ActivePhase | None] = {}
+
+        def command_boundary(event: str, command_id: str, command: str) -> None:
+            if event == "started":
+                kind = self._validation_kind(command)
+                if kind is not None:
+                    validation_spans[command_id] = start_phase(
+                        self.root,
+                        state.run_id,
+                        "VALIDATION",
+                        parent_phase_id=provider.phase_id if provider else None,
+                        attempt=max(1, state.repair_iterations + 1),
+                        metadata={"validation_kind": kind},
+                    )
+            elif event == "completed":
+                active = validation_spans.pop(command_id, None)
+                complete_phase(self.root, active)
+
+        command_callback = getattr(self.agent, "set_command_callback", None)
+        if callable(command_callback):
+            command_callback(command_boundary)
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
+            for active in validation_spans.values():
+                complete_phase(self.root, active, outcome="INTERRUPTED")
             complete_phase(self.root, provider, outcome="FAILED")
             if parent:
                 complete_phase(self.root, parent, outcome="FAILED")
             raise
+        finally:
+            if callable(command_callback):
+                command_callback(None)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)
