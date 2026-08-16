@@ -10,6 +10,33 @@ from .agent_state import redact_diagnostic
 
 
 _LIVE_ACTION_NAME_DISALLOWED = re.compile(r"(?:https?://|[/\\\\`]|\b(?:api[_ -]?key|token|secret|password|authorization|bearer)\b)", re.IGNORECASE)
+_CODEX_USAGE_LIMIT = re.compile(
+    r"(?:you(?:'ve| have) hit your usage limit|purchase more credits|try again at)",
+    re.IGNORECASE,
+)
+
+
+def codex_failure_disposition(
+    exit_code: int, stdout: str, stderr: str
+) -> tuple[str, str, str]:
+    """Return the safe action and checkpoint status for a Codex CLI failure.
+
+    A provider-side quota is not an implementation failure and, crucially, is
+    not evidence that a prior pull request still awaits an operator.  Keep the
+    provider wording out of durable state while retaining a specific recovery
+    path for the Operations Console.
+    """
+    if _CODEX_USAGE_LIMIT.search(f"{stderr}\n{stdout}"):
+        return (
+            "resolve_codex_usage_limit",
+            "codex_usage_limit_reached",
+            "Codex usage limit reached. Add Codex credits or resume after the account limit resets.",
+        )
+    return (
+        "inspect_codex_cli",
+        "codex_invocation_failed",
+        f"Codex CLI exited with code {exit_code}; inspect this invocation's console output.",
+    )
 
 
 def project_codex_activity(event: object) -> str | None:
@@ -320,9 +347,14 @@ class CodexCliClient:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
             detail = _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt)
+            next_action, terminal_condition, diagnostic = codex_failure_disposition(
+                completed.returncode, completed.stdout, completed.stderr
+            )
             raise CodexInvocationError(
-                f"Codex CLI exited with code {completed.returncode}; inspect this invocation's console output.",
+                diagnostic,
                 detail,
+                next_action=next_action,
+                terminal_condition=terminal_condition,
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))

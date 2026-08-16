@@ -1779,6 +1779,24 @@ test.describe("Engineering Status browser smoke", () => {
     expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(832);
   });
 
+  test("centres the pull-request wait modal inside the iPhone portrait viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const modal = page.locator("#operatorMergeWaitModal");
+    await modal.evaluate((element) => element.showModal());
+    const panel = modal.locator(".confirmation-modal__panel");
+    const box = await panel.boundingBox();
+
+    expect(box).not.toBeNull();
+    expect(box.x).toBeGreaterThanOrEqual(12);
+    expect(box.x + box.width).toBeLessThanOrEqual(378);
+    expect(box.y).toBeGreaterThanOrEqual(12);
+    expect(box.y + box.height).toBeLessThanOrEqual(832);
+    expect(Math.round(box.x + box.width / 2)).toBe(195);
+    expect(Math.round(box.y + box.height / 2)).toBe(422);
+  });
+
   test("uses a one-line AI chat composer on iPhone landscape", async ({ page }) => {
     await page.setViewportSize({ width: 844, height: 390 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -2205,6 +2223,28 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#currentRun")).toBeHidden();
     await expect(page.locator("#predecessorGate")).toBeHidden();
     await expect(page.locator("#queueItems")).toBeVisible();
+  });
+
+  test("shows a sticky localized banner for a Codex usage-limit block", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "WATCHER_IDLE",
+      current_phase: "BLOCKED",
+      terminal_condition: "codex_usage_limit_reached",
+    }, {}));
+    const banner = page.getByTestId("codex-usage-limit-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.codex_usage_limit.title"]);
+    await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.codex_usage_limit.body"]);
+    await expect(banner).toHaveCSS("position", "sticky");
+
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
+    await expect(banner).toBeHidden();
   });
 
   test("keeps a watcher-failed stale live run out of Active Prompt", async ({ page }) => {

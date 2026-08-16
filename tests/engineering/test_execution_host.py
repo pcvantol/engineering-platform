@@ -462,6 +462,25 @@ class ClientContractTest(unittest.TestCase):
         self.assertIn("code 1", str(raised.exception))
         self.assertNotIn("secret", raised.exception.console_detail)
 
+    @patch("tools.engineering.execution_host.subprocess.run")
+    def test_codex_client_classifies_a_usage_limit_without_persisting_provider_copy(self, run: object) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            ("codex",),
+            1,
+            "You've hit your usage limit. Visit the account usage page to purchase more credits or try again at tomorrow.",
+            "",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(CodexInvocationError) as raised:
+                CodexCliClient().invoke(Path(temporary), "objective")
+        self.assertEqual(raised.exception.next_action, "resolve_codex_usage_limit")
+        self.assertEqual(raised.exception.terminal_condition, "codex_usage_limit_reached")
+        self.assertEqual(
+            str(raised.exception),
+            "Codex usage limit reached. Add Codex credits or resume after the account limit resets.",
+        )
+        self.assertNotIn("purchase more credits", str(raised.exception))
+
     @patch("tools.engineering.execution_host.generate_terminal_report", return_value=None)
     @patch("tools.engineering.execution_host.EngineeringRunner")
     def test_main_publishes_complete_runner_result(self, runner_type: object, _: object) -> None:
@@ -729,6 +748,41 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
         self.assertEqual(agent.live_action, "invoke_agent")
         self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
+
+    def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
+        class UsageLimitedAgent:
+            def available(self) -> bool:
+                return True
+
+            def version(self) -> str:
+                return "0.146.0"
+
+            def invoke(self, _: Path, __: str) -> AgentResult:
+                raise CodexInvocationError(
+                    "Codex usage limit reached. Add Codex credits or resume after the account limit resets.",
+                    "redacted provider detail",
+                    next_action="resolve_codex_usage_limit",
+                    terminal_condition="codex_usage_limit_reached",
+                )
+
+        stale = TransactionState(
+            "usage-limit-run",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_OPERATOR_MERGE",
+            next_action="await_operator_pr_merge",
+            terminal_condition="operator_merge_required",
+        )
+        self.store.save(stale)
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), UsageLimitedAgent(), lambda _: None
+        )
+        result = runner.run(self.prompt, run_id=stale.run_id, resume=True)
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertTrue(result.terminal)
+        self.assertEqual(result.next_action, "resolve_codex_usage_limit")
+        self.assertEqual(result.terminal_condition, "codex_usage_limit_reached")
+        self.assertNotEqual(result.terminal_condition, "operator_merge_required")
 
     def test_codex_activity_projection_is_fixed_and_never_echoes_event_content(self) -> None:
         self.assertEqual(

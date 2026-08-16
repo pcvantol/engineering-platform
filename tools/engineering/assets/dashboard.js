@@ -1008,6 +1008,11 @@ function renderOperatorMergeWait(x) {
     if (!modal.open) modal.showModal();
   }
 }
+function renderCodexUsageLimitBanner(x) {
+  const banner = $("codexUsageLimitBanner");
+  if (!banner) return;
+  banner.hidden = String(x?.terminal_condition || "") !== "codex_usage_limit_reached";
+}
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
   clock();
@@ -1037,6 +1042,7 @@ function renderHealthStatus(x, snapshot = {}) {
     x.predecessor_recovery_action || t("format.not_available");
   renderExecutionContext(x.execution_context, x);
   renderOperatorMergeWait(x);
+  renderCodexUsageLimitBanner(x);
   indicator.className =
     "indicator indicator--" +
     statusTone +

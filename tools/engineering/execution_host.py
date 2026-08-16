@@ -743,7 +743,13 @@ class EngineeringRunner:
         except CodexInvocationError as error:
             state = self._record_agent_execution_time(state)
             self.console_detail = error.console_detail
-            return self._save_terminal(state, "BLOCKED", "inspect_codex_cli", str(error))
+            return self._save_terminal(
+                state,
+                "BLOCKED",
+                error.next_action,
+                str(error),
+                terminal_condition=error.terminal_condition,
+            )
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
         state = replace(
@@ -960,7 +966,13 @@ class EngineeringRunner:
         except CodexInvocationError as error:
             repair = self._record_agent_execution_time(repair)
             self.console_detail = error.console_detail
-            return self._save_terminal(repair, "BLOCKED", "inspect_codex_cli", str(error))
+            return self._save_terminal(
+                repair,
+                "BLOCKED",
+                error.next_action,
+                str(error),
+                terminal_condition=error.terminal_condition,
+            )
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(
                 repair, result.terminal_state, "external_action_required", result.diagnostic
@@ -1044,7 +1056,13 @@ class EngineeringRunner:
             complete_phase(self.root, finalization_span, outcome="FAILED")
             finalization = self._record_agent_execution_time(finalization)
             self.console_detail = error.console_detail
-            return self._save_terminal(finalization, "BLOCKED", "inspect_codex_cli", str(error))
+            return self._save_terminal(
+                finalization,
+                "BLOCKED",
+                error.next_action,
+                str(error),
+                terminal_condition=error.terminal_condition,
+            )
         complete_phase(self.root, finalization_span)
         if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
             return self._save_terminal(
@@ -1079,13 +1097,20 @@ class EngineeringRunner:
         return self._poll(finalization, result)
 
     def _save_terminal(
-        self, state: TransactionState, phase: str, action: str, diagnostic: str | None = None
+        self,
+        state: TransactionState,
+        phase: str,
+        action: str,
+        diagnostic: str | None = None,
+        *,
+        terminal_condition: str | None = None,
     ) -> TransactionState:
         terminal = replace(
             state,
             phase=phase,
             terminal=True,
             next_action=action,
+            terminal_condition=terminal_condition or state.terminal_condition,
             diagnostic=redact_diagnostic(diagnostic) if diagnostic else None,
         )
         self.store.save(terminal)
