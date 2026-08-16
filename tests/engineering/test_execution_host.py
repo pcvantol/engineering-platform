@@ -53,7 +53,7 @@ from tools.engineering.capability_review import (
 )
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
-from tools.engineering.execution_timing import phase_spans
+from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 
 
 class FakeRepository:
@@ -1440,6 +1440,17 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Reasoning Profile: `medium`", body)
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
+
+    def test_terminal_report_omits_timing_categories_that_did_not_occur(self) -> None:
+        phase = start_phase(self.root, "timing-report", "HOST_PREFLIGHT", monotonic_clock=0)
+        complete_phase(self.root, phase, monotonic_clock=1)
+        state = TransactionState("timing-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Execution Phase Timing", body)
+        self.assertNotIn("- Provider execution:", body)
+        self.assertNotIn("- Validation:", body)
+        self.assertNotIn("- External wait:", body)
+        self.assertNotIn("- Queue wait:", body)
 
     def test_terminal_report_projects_producer_contract_without_forge_implementation(self) -> None:
         self.prompt.write_text(

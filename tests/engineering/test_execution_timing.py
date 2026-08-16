@@ -45,8 +45,26 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
             self.assertEqual(summary["provider_execution_time_ms"], 40000)
             self.assertEqual(summary["external_wait_time_ms"], 20000)
             self.assertEqual(summary["overhead_time_ms"], 30000)
+            self.assertEqual(summary["overhead_share_percent"], 30.0)
             self.assertEqual(summary["longest_phase"], "PROVIDER_EXECUTION")
             self.assertEqual([item["phase"] for item in summary["top_time_consumers"]], ["PROVIDER_EXECUTION", "EXTERNAL_CI_WAIT", "VALIDATION"])
+
+    def test_nested_validation_remains_measurable_without_reducing_overhead_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            total = start_phase(root, "run-nested", "TOTAL_EXECUTION", monotonic_clock=0)
+            provider = start_phase(root, "run-nested", "PROVIDER_EXECUTION", monotonic_clock=10)
+            validation = start_phase(
+                root, "run-nested", "VALIDATION", parent_phase_id=provider.phase_id, monotonic_clock=20,
+            )
+            complete_phase(root, validation, monotonic_clock=30)
+            complete_phase(root, provider, monotonic_clock=50)
+            complete_phase(root, total, monotonic_clock=100)
+
+            summary = timing_summary(root, "run-nested")
+            self.assertEqual(summary["provider_execution_time_ms"], 40000)
+            self.assertEqual(summary["validation_time_ms"], 10000)
+            self.assertEqual(summary["overhead_time_ms"], 60000)
 
     def test_stale_reconciliation_preserves_completed_spans_and_closes_active(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

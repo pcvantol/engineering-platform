@@ -852,18 +852,25 @@ def generate_terminal_report(
     for phase, duration in timing.get("phase_durations_ms", {}).items():
         timing_lines.append(f"- {phase}: `{duration / 1000:.3f}` s")
     if timing.get("phase_telemetry_available"):
+        occurred = set(timing.get("occurred_phases", ()))
         timing_lines.extend((
             f"- Total wall time: `{timing['total_wall_time_ms'] / 1000:.3f}` s",
             f"- Active EP processing: `{timing['active_ep_processing_time_ms'] / 1000:.3f}` s",
-            f"- Provider execution: `{timing['provider_execution_time_ms'] / 1000:.3f}` s ({timing['provider_share_percent']:.3f}%)",
-            f"- Validation: `{timing['validation_time_ms'] / 1000:.3f}` s ({timing['validation_share_percent']:.3f}%)",
-            f"- External wait: `{timing['external_wait_time_ms'] / 1000:.3f}` s ({timing['external_wait_share_percent']:.3f}%)",
-            f"- Queue wait: `{timing['queue_wait_time_ms'] / 1000:.3f}` s ({timing['queue_share_percent']:.3f}%)",
-            f"- Overhead: `{timing['overhead_time_ms'] / 1000:.3f}` s",
+        ))
+        for phase, label, value, share in (
+            ("PROVIDER_EXECUTION", "Provider execution", "provider_execution_time_ms", "provider_share_percent"),
+            ("VALIDATION", "Validation", "validation_time_ms", "validation_share_percent"),
+            ("EXTERNAL_CI_WAIT", "External wait", "external_wait_time_ms", "external_wait_share_percent"),
+            ("QUEUE_WAIT", "Queue wait", "queue_wait_time_ms", "queue_share_percent"),
+        ):
+            if phase in occurred:
+                timing_lines.append(f"- {label}: `{timing[value] / 1000:.3f}` s ({timing[share]:.3f}%)")
+        timing_lines.extend((
+            f"- Overhead: `{timing['overhead_time_ms'] / 1000:.3f}` s ({timing['overhead_share_percent']:.3f}%)",
             "- Top time consumers: " + ", ".join(
                 f"{item['phase']} ({item['duration_ms'] / 1000:.3f} s)" for item in timing["top_time_consumers"]
             ),
-            "- Aggregation: top-level spans only; nested spans are retained but excluded to prevent double-counting.",
+            "- Aggregation: nested spans remain independently measurable; only outer accounting coverage contributes to overhead.",
         ))
     else:
         timing_lines.append("- Phase-level telemetry: unavailable for this historical run.")

@@ -110,7 +110,10 @@ canonical names are `QUEUE_WAIT`, `SUBMISSION_CLAIM`, `INITIALIZATION`,
 
 Durations are captured from a monotonic clock whenever a phase runs in one
 process; persisted timestamps remain stable UTC wall-clock timestamps.
-Cross-process queue timing uses its persisted submission-to-claim boundary.
+Cross-process queue timing uses an explicit persisted submission-eligibility
+timestamp and closes at the observed execution claim boundary. The
+`TOTAL_EXECUTION` envelope starts at that claim boundary, so queue wait and
+active execution are disjoint.
 Repeated phases remain individual records and nested spans retain their parent.
 Derived category totals suppress only a same-category ancestor, so a nested
 validation wrapper and its individual checks cannot be double-counted while a
@@ -118,8 +121,10 @@ provider span inside repair remains measurable. Critical-path rankings use
 outermost spans only, avoiding an overlapping parent and child being presented
 as two independent bottlenecks.
 The `TOTAL_EXECUTION` envelope and queue wait are excluded from bottleneck
-ranking. `Overhead Time` is `max(0, active EP processing - provider -
-validation)`, with active processing equal to total wall time less explicit
+ranking. `Overhead Time` is `max(0, active EP processing - processing
+coverage)`, where processing coverage includes only outermost provider or
+validation spans; nested validation belongs to its provider coverage and is
+not subtracted twice. Active processing equals total wall time less explicit
 external wait. Validation commands emitted by the runtime provider are timed
 at their direct JSONL command start/complete boundaries; only a bounded
 validation category is persisted, never command text or output. Historical

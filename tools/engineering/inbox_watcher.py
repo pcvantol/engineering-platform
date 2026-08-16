@@ -1157,17 +1157,48 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         # considered.  A rejected candidate is completed with FAILED timing;
         # it is never retroactively assigned to a later submission.
         run_id = child_run_id or _allocate_run_id()
-        total = start_or_resume_phase(repo, run_id, "TOTAL_EXECUTION", category="EXECUTION")
+        # Persist the eligibility boundary before any admission preflight.
+        # Source mtimes are filesystem transport details, not authoritative
+        # queue evidence.  This timestamp is the first observed point at
+        # which the watcher accepted the submission as eligible to claim.
+        eligible_at = datetime.now(timezone.utc)
+        title = _prompt_title(content, source.name)
+        producer = submission.producer
+        try:
+            record_submission(
+                repo,
+                submission_id=submission.submission_id or job_id,
+                producer_id=producer.producer_id,
+                producer_type=producer.producer_type,
+                producer_version=producer.producer_version,
+                contract_version=submission.contract_version or producer.execution_constraint_version,
+                prompt_content=content,
+                prompt_metadata={"filename": source.name, "digest": digest, "title": title},
+                target_identity={"repository": repo.name, "path": str(repo.resolve())},
+                original_envelope=(
+                    raw_submission if not submission.is_legacy
+                    else {"transport": "inbox", "filename": source.name, "content": raw_submission}
+                ),
+                correlation_id=producer.correlation_id,
+                mission_id=producer.mission_id,
+                engineering_action_id=producer.engineering_action_id,
+                link_run_id=run_id,
+                execution_context=submission.execution_context,
+                forge_governance_handoff=submission.forge_governance_handoff,
+                received_at=eligible_at.isoformat(),
+            )
+        except EngineeringStorageError as error:
+            status(repo, "JOB_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.")
+            log_event(logger, logging.ERROR, "submission_persist_failed", run_id=run_id, diagnostic=str(error))
+            return 1
         host_preflight_phase = start_phase(repo, run_id, "HOST_PREFLIGHT", category="ADMISSION")
         try:
             preflight = execute_host_preflight(repo, run_id=run_id)
         except Exception:
             complete_phase(repo, host_preflight_phase, outcome="FAILED")
-            complete_phase(repo, total, outcome="FAILED")
             raise
         complete_phase(repo, host_preflight_phase, outcome="COMPLETE" if preflight.outcome != "FAIL" else "FAILED")
         if preflight.outcome == "FAIL":
-            complete_phase(repo, total, outcome="FAILED")
             status(
                 repo,
                 "HOST_PREFLIGHT_FAILED",
@@ -1190,11 +1221,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             workspace_preflight = execute_workspace_preflight(repo, content, run_id=run_id)
         except Exception:
             complete_phase(repo, workspace_preflight_phase, outcome="FAILED")
-            complete_phase(repo, total, outcome="FAILED")
             raise
         complete_phase(repo, workspace_preflight_phase, outcome="COMPLETE" if workspace_preflight.outcome != "FAIL" else "FAILED")
         if workspace_preflight.outcome == "FAIL":
-            complete_phase(repo, total, outcome="FAILED")
             status(
                 repo,
                 "WORKSPACE_PREFLIGHT_FAILED",
@@ -1217,11 +1246,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             capability_preflight = execute_capability_preflight(repo, content, run_id=run_id)
         except Exception:
             complete_phase(repo, capability_preflight_phase, outcome="FAILED")
-            complete_phase(repo, total, outcome="FAILED")
             raise
         complete_phase(repo, capability_preflight_phase, outcome="COMPLETE" if capability_preflight.outcome != "FAIL" else "FAILED")
         if capability_preflight.outcome == "FAIL":
-            complete_phase(repo, total, outcome="FAILED")
             status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
                    current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
                    diagnostic=drift_summary(capability_preflight.drift_evidence))
@@ -1247,47 +1274,18 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         if background and not child_run_id:
             return _detach_runner(repo, root, candidates, source, content, job_id, run_id, logger)
         claimed = _archive_path(areas["Running"], job_id, source)
-        title = _prompt_title(content, source.name)
-        try:
-            arrived_at = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc)
-        except OSError:
-            arrived_at = datetime.now(timezone.utc)
         status(repo, "JOB_CLAIMED", queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source), job_id=job_id, run_id=run_id, submitted_filename=source.name, prompt_title=title,
                blocking_predecessor_run=None, blocking_predecessor_phase=None, blocking_predecessor_filename=None,
                blocking_predecessor_title=None, predecessor_recovery_action=None)
-        producer = submission.producer
-        try:
-            record_submission(
-                repo,
-                submission_id=submission.submission_id or job_id,
-                producer_id=producer.producer_id,
-                producer_type=producer.producer_type,
-                producer_version=producer.producer_version,
-                contract_version=submission.contract_version or producer.execution_constraint_version,
-                prompt_content=content,
-                prompt_metadata={"filename": source.name, "digest": digest, "title": title},
-                target_identity={"repository": repo.name, "path": str(repo.resolve())},
-                original_envelope=(
-                    raw_submission if not submission.is_legacy
-                    else {"transport": "inbox", "filename": source.name, "content": raw_submission}
-                ),
-                correlation_id=producer.correlation_id,
-                mission_id=producer.mission_id,
-                engineering_action_id=producer.engineering_action_id,
-                link_run_id=run_id,
-                execution_context=submission.execution_context,
-                forge_governance_handoff=submission.forge_governance_handoff,
-                received_at=arrived_at.isoformat(),
-            )
-        except EngineeringStorageError as error:
-            status(repo, "JOB_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.")
-            log_event(logger, logging.ERROR, "submission_persist_failed", run_id=run_id, diagnostic=str(error))
-            return 1
         # The queue boundary ends at the observed claim, rather than after
         # runner initialization or readiness work.  This keeps queue delay
         # distinct from active Execution Host processing.
-        record_queue_wait_from_submission(repo, run_id)
-        claim = start_phase(repo, run_id, "SUBMISSION_CLAIM", category="ADMISSION")
+        claimed_at = datetime.now(timezone.utc)
+        record_queue_wait_from_submission(repo, run_id, claimed_at=claimed_at)
+        start_or_resume_phase(
+            repo, run_id, "TOTAL_EXECUTION", category="EXECUTION", started_at=claimed_at,
+        )
+        claim = start_phase(repo, run_id, "SUBMISSION_CLAIM", category="ADMISSION", started_at=claimed_at)
         log_event(logger, logging.INFO, "job_claimed", run_id=run_id)
         _move(source, claimed)
         local = repo / ".engineering" / "inbox-processing" / job_id
@@ -1424,7 +1422,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 repo,
                 ExecutionTelemetry(
                     run_id=run_id,
-                    arrived_at=arrived_at,
+                    arrived_at=eligible_at,
                     execution_started_at=execution_started_at,
                     execution_finished_at=datetime.now(timezone.utc),
                     terminal_state=terminal_phase,

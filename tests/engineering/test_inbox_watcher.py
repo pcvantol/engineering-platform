@@ -16,6 +16,7 @@ from tools.engineering import inbox_watcher
 from tools.engineering.host_preflight import HostPreflightCheck, HostPreflightResult
 from tools.engineering.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
 from tools.engineering.capability_preflight import CapabilityCheck, CapabilityPreflightResult
+from tools.engineering.execution_timing import phase_spans, timing_summary
 from tools.engineering.storage import open_storage, store_projection
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
@@ -390,6 +391,39 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
         self.assertFalse(old_log.exists())
+
+    def test_queue_wait_uses_persisted_eligibility_and_ends_when_execution_is_claimed(self) -> None:
+        prompt = self.inbox / "timed-job.txt"
+        prompt.write_text("# prompt", encoding="utf-8")
+        run_id = "inbox-queue-timing"
+        checkpoint = self.repo / ".engineering" / "engineering-runs" / f"{run_id}.json"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
+        report = self.repo / ".engineering" / "reports" / f"report_{run_id}.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("- Terminal state: `COMPLETE`\nCOMPLETE — delivered\n", encoding="utf-8")
+        observed_submission = []
+
+        def host_preflight(*_: object, **__: object) -> HostPreflightResult:
+            with open_storage(self.repo) as connection:
+                observed_submission.extend(connection.execute(
+                    "SELECT received_at FROM execution_submissions"
+                ).fetchall())
+            return HostPreflightResult("PASS", "Engineering Platform", "1.5.0", "2026.12", "now", 1, ())
+
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "tools.engineering.inbox_watcher.execute_host_preflight", side_effect=host_preflight
+        ), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess((), 0)
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        self.assertEqual(len(observed_submission), 1)
+        spans = {span["phase_name"]: span for span in phase_spans(self.repo, run_id)}
+        self.assertIn("QUEUE_WAIT", spans)
+        self.assertIn("TOTAL_EXECUTION", spans)
+        self.assertEqual(spans["QUEUE_WAIT"]["completed_at"], spans["TOTAL_EXECUTION"]["started_at"])
+        summary = timing_summary(self.repo, run_id)
+        self.assertEqual(summary["total_wall_time_ms"], spans["TOTAL_EXECUTION"]["duration_ms"])
 
     def test_background_watcher_detaches_runner_and_keeps_admission_active(self) -> None:
         (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")

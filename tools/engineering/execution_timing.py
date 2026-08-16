@@ -270,7 +270,31 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     external = measured("EXTERNAL_CI_WAIT")
     queue = by_phase.get("QUEUE_WAIT", 0)
     active = max(0, total - external)
-    overhead = max(0, active - provider - validation)
+
+    def has_processing_ancestor(span: dict[str, object]) -> bool:
+        """Whether this work is already covered by an enclosing work span.
+
+        Provider command-boundary validation is deliberately nested under the
+        provider process.  It remains independently measurable, but cannot
+        also consume a second portion of overhead.  This ancestry rule keeps
+        the accounting partition deterministic even where the persisted UTC
+        timestamps have the normal small clock-resolution differences from
+        monotonic duration measurement.
+        """
+        parent = span["parent_phase_id"]
+        while isinstance(parent, str) and parent in by_id:
+            if by_id[parent]["phase_name"] in {"PROVIDER_EXECUTION", "VALIDATION"}:
+                return True
+            parent = by_id[parent]["parent_phase_id"]
+        return False
+
+    processing_coverage = sum(
+        int(span["duration_ms"])
+        for span in semantic
+        if span["phase_name"] in {"PROVIDER_EXECUTION", "VALIDATION"}
+        and not has_processing_ancestor(span)
+    )
+    overhead = max(0, active - processing_coverage)
     # Critical-path consumers use only outermost measured work.  Semantic
     # measures below intentionally include a nested provider or validation
     # span, but ranking both it and its enclosing repair/preparation span
@@ -279,13 +303,16 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
         (span for span in top_level if span["phase_name"] not in {"TOTAL_EXECUTION", "QUEUE_WAIT"}),
         key=lambda item: (-int(item["duration_ms"]), int(item["ordinal"])),
     )[:3]
-    share = lambda value: round(value * 100 / total, 3) if total else 0.0
+    def share(value: int) -> float:
+        return round(value * 100 / total, 3) if total else 0.0
     return {"phase_durations_ms": by_phase, "total_wall_time_ms": total,
+            "occurred_phases": tuple(sorted({str(span["phase_name"]) for span in completed})),
             "active_ep_processing_time_ms": active, "provider_execution_time_ms": provider,
             "validation_time_ms": validation, "external_wait_time_ms": external,
             "queue_wait_time_ms": queue, "overhead_time_ms": overhead,
             "provider_share_percent": share(provider), "validation_share_percent": share(validation),
             "external_wait_share_percent": share(external), "queue_share_percent": share(queue),
+            "overhead_share_percent": share(overhead),
             "longest_phase": consumers[0]["phase_name"] if consumers else None,
             "longest_phase_duration_ms": consumers[0]["duration_ms"] if consumers else None,
             "top_time_consumers": [{"phase": item["phase_name"], "duration_ms": item["duration_ms"]} for item in consumers],
