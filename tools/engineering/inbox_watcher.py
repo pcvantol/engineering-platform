@@ -967,6 +967,39 @@ def _publish_operator_merge_wait(repo: Path, state: TransactionState, *, queue_i
     )
 
 
+def _publish_resumed_merge_transition(
+    repo: Path,
+    state: TransactionState,
+    *,
+    queue_items: list[dict[str, object]],
+    queue_depth: int,
+) -> None:
+    """Replace a resolved merge wait with its newly resumed lifecycle state.
+
+    A resumed Execution Host can move the same run into finalization before it
+    returns to the watcher. Re-publishing the previous merge wait afterwards
+    makes the Operations Console reopen an obsolete PR modal on refresh.
+    """
+    try:
+        prior = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
+        prior = {}
+    status(
+        repo,
+        "ENGINEERING_RUN_ACTIVE",
+        job_id=prior.get("job_id") if isinstance(prior.get("job_id"), str) else None,
+        run_id=state.run_id,
+        queued_jobs=queue_depth,
+        queue_items=queue_items,
+        runner_phase=state.phase,
+        current_action=state.next_action,
+        implementation_pr=state.implementation_pull_request,
+        finalization_pr=state.finalization_pull_request,
+        submitted_filename=prior.get("submitted_filename") if isinstance(prior.get("submitted_filename"), str) else None,
+        prompt_title=prior.get("prompt_title") if isinstance(prior.get("prompt_title"), str) else None,
+    )
+
+
 def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "dashboard_operator") -> dict[str, object]:
     """Explicitly stop a durable PR hand-off without claiming a technical failure."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
@@ -1303,6 +1336,17 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                     if waiting_merge is not None and waiting_merge.terminal:
                         _finalize_operator_merge_wait(repo, waiting_merge)
                         return 0 if waiting_merge.phase == "COMPLETE" else 1
+                    if (
+                        waiting_merge is not None
+                        and waiting_merge.phase != OPERATOR_MERGE_WAIT_PHASE
+                    ):
+                        _publish_resumed_merge_transition(
+                            repo,
+                            waiting_merge,
+                            queue_items=_queue_items(candidates),
+                            queue_depth=len(candidates),
+                        )
+                        return 0
                 _publish_operator_merge_wait(
                     repo, waiting_merge, queue_items=_queue_items(candidates), queue_depth=len(candidates),
                 )

@@ -78,6 +78,12 @@ The watcher reconciles that same durable state after a later restart or browser
 session and continues Finalization only after GitHub reports the merge. Review
 invocations remain `read-only`.
 
+When GitHub confirms a merge, the watcher replaces its
+`WAITING_FOR_OPERATOR_MERGE` projection with the resumed execution phase in
+the same reconciliation cycle. It must not publish the earlier merge wait
+again after the run has moved to Finalization; otherwise a dashboard refresh
+could present an obsolete pull-request action modal.
+
 An open pull request with failed required checks is not merge evidence and must
 not be presented as a completed merge. The host enters bounded validation
 repair with `repair_bounded_validation_failure` as its current action. The

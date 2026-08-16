@@ -469,6 +469,59 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue((inbox_watcher.local_folders(self.repo)["Completed"] / "merge-resumed__prompt.md").exists())
         self.assertEqual(json_status(self.repo)["watcher_state"], "JOB_COMPLETED")
 
+    def test_operator_merge_wait_replaces_its_status_after_merge_starts_finalization(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-finalizing"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-finalizing__prompt.md"
+        source.write_text("# Finalize after merge\n", encoding="utf-8")
+        waiting = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE",
+            implementation_pull_request=840,
+        )
+        store = StateStore(self.repo / ".engineering" / "engineering-runs")
+        store.save(waiting)
+        inbox_watcher.status(
+            self.repo,
+            "WAITING_FOR_OPERATOR_MERGE",
+            run_id=run_id,
+            job_id="merge-finalizing",
+            queued_jobs=0,
+            queue_items=[],
+        )
+        with open_storage(self.repo) as connection:
+            store_projection(
+                connection,
+                "watcher_status",
+                {
+                    "run_id": run_id,
+                    "job_id": "merge-finalizing",
+                    "last_update": "2020-01-01T00:00:00+00:00",
+                },
+            )
+
+        def begin_finalization(*_: object) -> None:
+            store.save(replace(
+                waiting,
+                phase="FINALIZE_AGENT",
+                transaction_kind="FINALIZATION",
+                next_action="create_finalization",
+                waiting_for_merge_since=None,
+            ))
+
+        with patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=begin_finalization):
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        published = json_status(self.repo)
+        self.assertEqual(published["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(published["current_phase"], "FINALIZE_AGENT")
+        self.assertEqual(published["current_action"], "create_finalization")
+        self.assertEqual(published["implementation_pr"], 840)
+        self.assertNotEqual(published["watcher_state"], "WAITING_FOR_OPERATOR_MERGE")
+
     def test_operator_merge_wait_rejects_invalid_or_nonwaiting_runs(self) -> None:
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "run-ID is ongeldig"):
             inbox_watcher.abort_operator_merge_wait(self.repo, "invalid")
