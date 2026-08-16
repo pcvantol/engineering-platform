@@ -47,7 +47,7 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
             self.assertEqual(summary["overhead_time_ms"], 30000)
             self.assertEqual(summary["overhead_share_percent"], 30.0)
             self.assertEqual(summary["longest_phase"], "PROVIDER_EXECUTION")
-            self.assertEqual([item["phase"] for item in summary["top_time_consumers"]], ["PROVIDER_EXECUTION", "EXTERNAL_CI_WAIT", "VALIDATION"])
+            self.assertEqual([item["phase"] for item in summary["top_phase_categories"]], ["PROVIDER_EXECUTION", "EXTERNAL_CI_WAIT", "VALIDATION"])
 
     def test_nested_validation_remains_measurable_without_reducing_overhead_twice(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -82,7 +82,7 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             summary = timing_summary(Path(temporary), "legacy-run")
             self.assertFalse(summary["phase_telemetry_available"])
-            self.assertEqual(summary["top_time_consumers"], [])
+            self.assertEqual(summary["top_phase_categories"], [])
 
     def test_historical_runs_preserve_existing_total_without_phase_detail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -116,8 +116,40 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
 
             summary = timing_summary(root, "run-cross-process")
             self.assertEqual(summary["provider_execution_time_ms"], 10000)
-            self.assertEqual(summary["top_time_consumers"], [{"phase": "REPAIR", "duration_ms": 15000}])
+            self.assertEqual(summary["top_phase_categories"], [{"phase": "REPAIR", "duration_ms": 15000}, {"phase": "PROVIDER_EXECUTION", "duration_ms": 10000}])
             self.assertEqual(
                 next(span for span in phase_spans(root, "run-cross-process") if span["phase_id"] == total.phase_id)["outcome"],
                 "COMPLETE",
             )
+
+    def test_category_aggregates_and_individual_spans_are_distinct_and_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, tzinfo=timezone.utc)
+            record_phase(root, "run-aggregate", "PROVIDER_EXECUTION", started_at=started,
+                         completed_at=started + timedelta(seconds=3), attempt=1)
+            record_phase(root, "run-aggregate", "PROVIDER_EXECUTION", started_at=started,
+                         completed_at=started + timedelta(seconds=5), attempt=2)
+            record_phase(root, "run-aggregate", "VALIDATION", started_at=started,
+                         completed_at=started + timedelta(seconds=8))
+            summary = timing_summary(root, "run-aggregate")
+            self.assertEqual(summary["top_phase_categories"], [
+                {"phase": "PROVIDER_EXECUTION", "duration_ms": 8000},
+                {"phase": "VALIDATION", "duration_ms": 8000},
+            ])
+            self.assertEqual([item["phase"] for item in summary["longest_individual_spans"]], [
+                "VALIDATION", "PROVIDER_EXECUTION", "PROVIDER_EXECUTION",
+            ])
+            self.assertIn("attempt 2", summary["longest_individual_spans"][1]["label"])
+
+    def test_terminal_metrics_include_report_and_evidence_spans(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, tzinfo=timezone.utc)
+            record_phase(root, "run-terminal", "REPORT_GENERATION", started_at=started,
+                         completed_at=started + timedelta(seconds=2))
+            record_phase(root, "run-terminal", "EVIDENCE_PERSISTENCE", started_at=started,
+                         completed_at=started + timedelta(seconds=3))
+            summary = timing_summary(root, "run-terminal")
+            self.assertEqual(summary["report_generation_time_ms"], 2000)
+            self.assertEqual(summary["evidence_persistence_time_ms"], 3000)

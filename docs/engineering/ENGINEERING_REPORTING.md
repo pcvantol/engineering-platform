@@ -52,9 +52,20 @@ Every terminal report includes these derived sections:
   repository files → regression tests → validation evidence.
 - **Validation Traceability** — each recorded validation and documentation
   validation with its purpose, result and repository evidence.
+- **Execution Phase Timing** — Total Wall Time, active processing, provider,
+  validation, queue/external wait, overhead, report-generation and
+  evidence-persistence measures. `Top Phase Categories` is aggregate-only;
+  `Longest Individual Spans` is separately ranked. The legacy `Execution
+  Duration` label, where retained for compatibility, explicitly means Provider
+  Execution Time and never Total Wall Time.
+- **Validation Control Results** — one explicit PASS, FAIL, NOT_EXECUTED,
+  NOT_APPLICABLE or UNAVAILABLE result for each required control, with its
+  LOCAL, GITHUB_CI or EXTERNAL source. Qualification remains separate from
+  individual controls; `git diff --check` remains independent of transaction
+  baseline availability.
 - **Execution Statistics** — execution count, evidence-backed engineering
-  actions, Forge mission count, repair iterations, execution duration and
-  validation duration status.
+  actions, Forge mission count, repair iterations, provider execution time and
+  validation time status.
 - **Engineering Evidence Summary** — compact JSON for read-only consumers.
 
 Component and traceability records are generated from repository files,

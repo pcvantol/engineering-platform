@@ -224,7 +224,15 @@ def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
 
 
 def timing_summary(root: Path, run_id: str) -> dict[str, object]:
-    """Project non-double-counted run metrics from completed canonical spans."""
+    """Return the one canonical timing read model for a completed run.
+
+    ``phase_aggregates`` and ``longest_individual_spans`` intentionally answer
+    different questions.  Aggregates suppress only a same-category ancestor,
+    so a category is represented once without inventing a critical path.
+    Individual spans retain every observed occurrence (apart from the total
+    envelope) and are ranked independently.  Consumers must use these fields
+    rather than deriving their own bottleneck order.
+    """
     spans = phase_spans(root, run_id)
     historical_total: int | None = None
     if not spans:
@@ -269,6 +277,9 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     validation = measured("VALIDATION")
     external = measured("EXTERNAL_CI_WAIT")
     queue = by_phase.get("QUEUE_WAIT", 0)
+    report_generation = measured("REPORT_GENERATION")
+    evidence_persistence = measured("EVIDENCE_PERSISTENCE")
+    repository_finalization = measured("REPOSITORY_FINALIZATION")
     active = max(0, total - external)
 
     def has_processing_ancestor(span: dict[str, object]) -> bool:
@@ -295,26 +306,69 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
         and not has_processing_ancestor(span)
     )
     overhead = max(0, active - processing_coverage)
-    # Critical-path consumers use only outermost measured work.  Semantic
-    # measures below intentionally include a nested provider or validation
-    # span, but ranking both it and its enclosing repair/preparation span
-    # would present overlapping elapsed time as separate bottlenecks.
-    consumers = sorted(
-        (span for span in top_level if span["phase_name"] not in {"TOTAL_EXECUTION", "QUEUE_WAIT"}),
-        key=lambda item: (-int(item["duration_ms"]), int(item["ordinal"])),
-    )[:3]
+    # Category aggregates use the same semantic selection as the named
+    # metrics.  The deterministic category-name tie break keeps reports, API
+    # projections and dashboard detail identical.
+    aggregate_by_phase: dict[str, int] = {}
+    for span in semantic:
+        name = str(span["phase_name"])
+        if name != "TOTAL_EXECUTION":
+            aggregate_by_phase[name] = aggregate_by_phase.get(name, 0) + int(span["duration_ms"])
+    phase_aggregates = [
+        {"phase": phase, "duration_ms": duration}
+        for phase, duration in sorted(aggregate_by_phase.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    def span_label(span: dict[str, object]) -> str:
+        """Give repeated spans bounded, typed context without prompt content."""
+        name = str(span["phase_name"])
+        metadata = span.get("metadata")
+        context: str | None = None
+        if isinstance(metadata, dict):
+            for key in ("validation_kind", "operation", "reason"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value:
+                    context = value.replace("_", " ")[:80]
+                    break
+            if context is None and isinstance(metadata.get("iteration"), int):
+                context = f"iteration {metadata['iteration']}"
+        attempt = span.get("attempt")
+        if context:
+            return f"{name} — {context}"
+        if isinstance(attempt, int) and attempt > 1:
+            return f"{name} — attempt {attempt}"
+        return name
+
+    longest_individual_spans = [
+        {
+            "phase_id": item["phase_id"], "phase": item["phase_name"], "label": span_label(item),
+            "duration_ms": item["duration_ms"], "attempt": item["attempt"],
+            "ordinal": item["ordinal"], "outcome": item["outcome"],
+        }
+        for item in sorted(
+            (span for span in completed if span["phase_name"] != "TOTAL_EXECUTION"),
+            key=lambda item: (-int(item["duration_ms"]), str(item["phase_name"]), int(item["ordinal"])),
+        )
+    ]
     def share(value: int) -> float:
         return round(value * 100 / total, 3) if total else 0.0
     return {"phase_durations_ms": by_phase, "total_wall_time_ms": total,
             "occurred_phases": tuple(sorted({str(span["phase_name"]) for span in completed})),
             "active_ep_processing_time_ms": active, "provider_execution_time_ms": provider,
             "validation_time_ms": validation, "external_wait_time_ms": external,
-            "queue_wait_time_ms": queue, "overhead_time_ms": overhead,
+            "queue_wait_time_ms": queue, "report_generation_time_ms": report_generation,
+            "evidence_persistence_time_ms": evidence_persistence,
+            "repository_finalization_time_ms": repository_finalization, "overhead_time_ms": overhead,
             "provider_share_percent": share(provider), "validation_share_percent": share(validation),
             "external_wait_share_percent": share(external), "queue_share_percent": share(queue),
             "overhead_share_percent": share(overhead),
-            "longest_phase": consumers[0]["phase_name"] if consumers else None,
-            "longest_phase_duration_ms": consumers[0]["duration_ms"] if consumers else None,
-            "top_time_consumers": [{"phase": item["phase_name"], "duration_ms": item["duration_ms"]} for item in consumers],
+            "longest_phase": phase_aggregates[0]["phase"] if phase_aggregates else None,
+            "longest_phase_duration_ms": phase_aggregates[0]["duration_ms"] if phase_aggregates else None,
+            "phase_aggregates": phase_aggregates,
+            "top_phase_categories": phase_aggregates[:3],
+            "longest_individual_spans": longest_individual_spans[:3],
+            # Compatibility alias for pre-reconciliation API clients.  It is
+            # intentionally category-only and no longer mixes individual spans.
+            "top_time_consumers": phase_aggregates[:3],
             "phase_telemetry_available": bool(spans),
             "historical_total_available": historical_total is not None}

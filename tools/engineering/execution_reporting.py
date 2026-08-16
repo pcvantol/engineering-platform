@@ -1,10 +1,30 @@
 """Terminal-report persistence coordination for the Execution Host."""
 from __future__ import annotations
 
+# Report formatting is deliberately pure: lifecycle only supplies the persisted
+# transaction and evidence inputs.
+from datetime import datetime, timezone
+import json
 from pathlib import Path
-from typing import Callable
+import re
+from typing import Callable, Mapping
 
+from .agent_state import TransactionState, redact_diagnostic
+from .drift_diagnostics import summary as drift_summary
+from .execution_evidence import TerminalEvidenceBundle
 from .execution_errors import RunnerError
+from .execution_lease import history as lease_history, liveness as lease_liveness
+from .execution_timing import timing_summary
+from .execution_models import PullRequestEvidence, RepositoryEvidence
+from .host_preflight import latest as latest_host_preflight
+from .workspace_preflight import latest as latest_workspace_preflight
+from .capability_preflight import latest as latest_capability_preflight
+from .platform_version import EngineeringPlatformManifest
+from .producer import ProducerMetadata, parse_producer_metadata
+from .providers import GitProvider
+from .qualification import latest_qualification
+from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
 
 
 class ReportingCoordinator:
@@ -24,34 +44,6 @@ class ReportingCoordinator:
             raise RunnerError(f"Engineering Report consistency validation failed: {details}")
         path.write_text(body, encoding="utf-8")
         return path
-
-
-# Report formatting is deliberately pure: lifecycle only supplies the persisted
-# transaction and evidence inputs.
-from datetime import datetime, timezone
-import json
-from pathlib import Path
-import re
-from typing import Mapping
-
-from .agent_state import TransactionState, redact_diagnostic
-from .capability_review import ReviewerResult
-from .drift_diagnostics import summary as drift_summary
-from .execution_evidence import TerminalEvidenceBundle
-from .execution_lease import history as lease_history, liveness as lease_liveness
-from .execution_timing import timing_summary
-from .execution_models import PullRequestEvidence, RepositoryEvidence
-from .execution_readiness import ReadinessDecision
-from .host_preflight import latest as latest_host_preflight
-from .workspace_preflight import latest as latest_workspace_preflight
-from .capability_preflight import latest as latest_capability_preflight
-from .platform_version import EngineeringPlatformManifest
-from .producer import ProducerMetadata, parse_producer_metadata
-from .providers import GitProvider
-from .qualification import latest_qualification
-from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .status_model import build as build_canonical_status, publish as publish_canonical_status
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
 
 RETRY_REPORT_HEADERS = {
     "retry_of": re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"),
@@ -429,6 +421,48 @@ def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBu
     )
 
 
+_VALIDATION_CONTROLS = (
+    ("full_regression", "Full regression suite", "Regression", "LOCAL", ("unittest", "pytest", "regression")),
+    ("ruff", "Ruff", "Lint", "LOCAL", ("ruff",)),
+    ("bandit", "Bandit", "Security", "LOCAL", ("bandit",)),
+    ("dependency_audit", "Dependency audit", "Security", "LOCAL", ("pip-audit", "dependency audit", "safety")),
+    ("codeql", "CodeQL", "Security", "GITHUB_CI", ("codeql",)),
+    ("semgrep", "Semgrep", "Security", "GITHUB_CI", ("semgrep",)),
+    ("dashboard_browser", "Dashboard/browser tests", "Browser", "LOCAL", ("playwright", "browser", "dashboard.spec")),
+    ("git_diff_check", "git diff --check", "Repository", "LOCAL", ("git diff --check",)),
+)
+
+
+def _validation_control_projection(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+    """Render every required control without promoting absent evidence to PASS."""
+    records = tuple(state.validation_evidence) + ({"command": "git diff --check", "result": bundle.diff_check},)
+    lines = ["## Validation Control Results", "- Engineering Platform Qualification is reported separately from these individual controls."]
+    for control_id, name, category, source, markers in _VALIDATION_CONTROLS:
+        match = next((record for record in records if any(marker in record["command"].casefold() for marker in markers)), None)
+        if match is None:
+            result, reference = "NOT_EXECUTED", "not recorded"
+        else:
+            raw = match["result"].casefold()
+            result = (
+                "NOT_APPLICABLE" if "not applicable" in raw else
+                "UNAVAILABLE" if "unavailable" in raw else
+                "FAIL" if any(value in raw for value in ("fail", "error", "blocked")) else "PASS"
+            )
+            reference = match["command"]
+        lines.extend((
+            f"- {name}: `{result}` — `{source}`",
+            f"  - Validation ID: `{control_id}`; Category: `{category}`; Check: `{reference}`.",
+            "  - Start/End/Duration: not separately recorded by the checkpoint." if match is None else
+            "  - Start/End/Duration: bounded by the canonical validation span when recorded.",
+            "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
+        ))
+    lines.extend((
+        f"- Transaction Baseline Availability: `{bundle.transaction_baseline}` (repository evidence; not a validation control).",
+        "- Qualification and individual-control results are intentionally independent.",
+    ))
+    return tuple(lines)
+
+
 def _execution_statistics(
     state: TransactionState, bundle: TerminalEvidenceBundle, timing: Mapping[str, object]
 ) -> tuple[str, ...]:
@@ -442,8 +476,9 @@ def _execution_statistics(
         f"- Engineering Actions: `{len(bundle.changed_files) + len(state.validation_evidence)}` evidence-backed action(s)",
         "- Mission Count (Forge): `0` (Forge is outside this reporting increment)",
         f"- Repair Iterations: `{state.repair_iterations}`",
-        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
-        f"- Validation Duration: {validation_duration} ({len(state.validation_evidence)} recorded validation(s))",
+        f"- Provider Execution Time: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
+        "- Execution Duration (legacy): Provider Execution Time.",
+        f"- Validation Time: {validation_duration} ({len(state.validation_evidence)} recorded validation(s))",
     )
 
 
@@ -454,7 +489,8 @@ def _statistics_projection(state: TransactionState, bundle: TerminalEvidenceBund
         "- Mission Count: `0` (Forge mission state is not inferred by Engineering Platform).",
         "### Execution Statistics",
         "- Execution Count: `1`",
-        f"- Execution Duration: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
+        f"- Provider Execution Time: `{state.agent_execution_seconds if state.agent_execution_seconds is not None else 'not measured'}` seconds",
+        "- Execution Duration (legacy): Provider Execution Time.",
         "### Engineering Action Statistics",
         f"- Evidence-backed actions: `{len(bundle.changed_files) + len(state.validation_evidence)}`",
         "### Runtime Statistics",
@@ -849,34 +885,38 @@ def generate_terminal_report(
     bundle = collect_terminal_evidence(root, state)
     timing = timing_summary(root, state.run_id)
     timing_lines = ["## Execution Phase Timing"]
-    for phase, duration in timing.get("phase_durations_ms", {}).items():
-        timing_lines.append(f"- {phase}: `{duration / 1000:.3f}` s")
     if timing.get("phase_telemetry_available"):
         occurred = set(timing.get("occurred_phases", ()))
         timing_lines.extend((
-            f"- Total wall time: `{timing['total_wall_time_ms'] / 1000:.3f}` s",
-            f"- Active EP processing: `{timing['active_ep_processing_time_ms'] / 1000:.3f}` s",
+            f"- Total Wall Time: `{timing['total_wall_time_ms'] / 1000:.3f}` s",
+            f"- Active EP Processing Time: `{timing['active_ep_processing_time_ms'] / 1000:.3f}` s",
         ))
         for phase, label, value, share in (
-            ("PROVIDER_EXECUTION", "Provider execution", "provider_execution_time_ms", "provider_share_percent"),
-            ("VALIDATION", "Validation", "validation_time_ms", "validation_share_percent"),
-            ("EXTERNAL_CI_WAIT", "External wait", "external_wait_time_ms", "external_wait_share_percent"),
-            ("QUEUE_WAIT", "Queue wait", "queue_wait_time_ms", "queue_share_percent"),
+            ("PROVIDER_EXECUTION", "Provider Execution Time", "provider_execution_time_ms", "provider_share_percent"),
+            ("VALIDATION", "Validation Time", "validation_time_ms", "validation_share_percent"),
+            ("EXTERNAL_CI_WAIT", "External Wait Time", "external_wait_time_ms", "external_wait_share_percent"),
+            ("QUEUE_WAIT", "Queue Wait Time", "queue_wait_time_ms", "queue_share_percent"),
+            ("REPORT_GENERATION", "Report Generation Time", "report_generation_time_ms", None),
+            ("EVIDENCE_PERSISTENCE", "Evidence Persistence Time", "evidence_persistence_time_ms", None),
+            ("REPOSITORY_FINALIZATION", "Repository Finalization Time", "repository_finalization_time_ms", None),
         ):
             if phase in occurred:
-                timing_lines.append(f"- {label}: `{timing[value] / 1000:.3f}` s ({timing[share]:.3f}%)")
+                suffix = f" ({timing[share]:.3f}%)" if share else ""
+                timing_lines.append(f"- {label}: `{timing[value] / 1000:.3f}` s{suffix}")
         timing_lines.extend((
-            f"- Overhead: `{timing['overhead_time_ms'] / 1000:.3f}` s ({timing['overhead_share_percent']:.3f}%)",
-            "- Top time consumers: " + ", ".join(
-                f"{item['phase']} ({item['duration_ms'] / 1000:.3f} s)" for item in timing["top_time_consumers"]
-            ),
-            "- Aggregation: nested spans remain independently measurable; only outer accounting coverage contributes to overhead.",
+            f"- Overhead Time: `{timing['overhead_time_ms'] / 1000:.3f}` s ({timing['overhead_share_percent']:.3f}%)",
+            "### Top Phase Categories",
+            *(f"- {index}. {item['phase']} — `{item['duration_ms'] / 1000:.3f}` s" for index, item in enumerate(timing["top_phase_categories"], 1)),
+            "### Longest Individual Spans",
+            *(f"- {index}. {item['label']} — `{item['duration_ms'] / 1000:.3f}` s" for index, item in enumerate(timing["longest_individual_spans"], 1)),
+            "- Aggregation: category totals suppress only a same-category ancestor; ties sort by canonical phase name. Individual spans are independently retained and ranked by duration, phase name and ordinal.",
+            "- Overhead: Total Wall Time excludes Queue Wait; it subtracts only External Wait and outer provider/validation processing coverage, so nested spans are not double-counted.",
         ))
     else:
         timing_lines.append("- Phase-level telemetry: unavailable for this historical run.")
         if timing.get("historical_total_available"):
             timing_lines.append(
-                f"- Historical total wall time: `{timing['total_wall_time_ms'] / 1000:.3f}` s."
+                f"- Historical Total Wall Time: `{timing['total_wall_time_ms'] / 1000:.3f}` s (phase telemetry incomplete)."
             )
     qualification_status = qualification.get("qualification") if qualification else "not recorded"
     qualification_summary_line = (
@@ -940,6 +980,7 @@ def generate_terminal_report(
         if isinstance(item, dict)
     ]
     liveness = lease_liveness(root, state.run_id)
+    terminal_reconciled = state.phase == "COMPLETE" and liveness.get("lease_state") == "RELEASED"
     recovery = (
         "Resume available under the existing lifecycle policy."
         if liveness.get("reconciliation_outcome") == "RECOVERABLE"
@@ -955,8 +996,12 @@ def generate_terminal_report(
             f"- Run ID: `{state.run_id}`",
             f"- Prompt: `{state.prompt_path}`",
             f"- Terminal state: `{state.phase}`",
+            f"- Terminal Execution State: `{state.phase}`",
             f"- Execution lifecycle: `{state.phase}`",
-            f"- Execution liveness: `{liveness.get('state', 'UNAVAILABLE')}`",
+            f"- Execution liveness: `{liveness.get('state', 'UNAVAILABLE')}` (historical compatibility)",
+            f"- Current / Final Lease State: `{liveness.get('lease_state', 'UNAVAILABLE')}`",
+            f"- Historical Liveness Event: `{'STALE detected and reconciled' if terminal_reconciled and liveness.get('state') == 'STALE' else liveness.get('state', 'UNAVAILABLE')}`",
+            f"- Recovery Required: `{'NO' if terminal_reconciled else 'YES' if liveness.get('reconciliation_outcome') == 'RECOVERABLE' else 'NO'}`",
             f"- Recovery action: {recovery}",
             f"- Objective: {objective}",
             "",
@@ -1129,6 +1174,8 @@ def generate_terminal_report(
             "```",
             "",
             evidence_bundle,
+            *_validation_control_projection(state, bundle),
+            "",
             _reconciliation_evidence(objective, state, bundle),
             "## Validation",
             "Repository validation is recorded by the runner and required GitHub Actions; inspect the linked PR evidence for durations."

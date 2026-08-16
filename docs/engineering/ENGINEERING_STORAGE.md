@@ -115,22 +115,39 @@ timestamp and closes at the observed execution claim boundary. The
 `TOTAL_EXECUTION` envelope starts at that claim boundary, so queue wait and
 active execution are disjoint.
 Repeated phases remain individual records and nested spans retain their parent.
-Derived category totals suppress only a same-category ancestor, so a nested
-validation wrapper and its individual checks cannot be double-counted while a
-provider span inside repair remains measurable. Critical-path rankings use
-outermost spans only, avoiding an overlapping parent and child being presented
-as two independent bottlenecks.
-The `TOTAL_EXECUTION` envelope and queue wait are excluded from bottleneck
-ranking. `Overhead Time` is `max(0, active EP processing - processing
+## Execution timing read-model semantics
+
+An **Individual Span** is one persisted concrete occurrence. It retains its
+phase ID, UTC boundaries, duration, outcome, attempt, parent and bounded typed
+metadata. Repeated provider attempts are therefore always independently
+auditable.
+
+A **Phase Aggregate** is the non-double-counted total for one canonical phase
+name. Derived category totals suppress only a same-category ancestor, so a
+nested validation wrapper and its individual checks cannot be double-counted
+while a provider span inside repair remains measurable. `Top Phase Categories`
+ranks each category once by duration descending and phase name ascending.
+`Longest Individual Spans` is a separate ranking, ordered by duration
+descending, phase name and ordinal; it may contain repeated categories.
+
+**Total Wall Time** is the `TOTAL_EXECUTION` envelope between execution claim
+and terminal reconciliation. The queue boundary ends at claim, so Queue Wait
+is disjoint and is not subtracted from Total Wall Time. The total envelope is
+excluded from category and individual-span rankings. `Overhead Time` is
+`max(0, active EP processing - processing
 coverage)`, where processing coverage includes only outermost provider or
 validation spans; nested validation belongs to its provider coverage and is
 not subtracted twice. Active processing equals total wall time less explicit
-external wait. Validation commands emitted by the runtime provider are timed
+external wait. Report generation and evidence persistence are individual,
+bounded terminal spans; the immutable terminal projection is rendered after
+those spans close and is deliberately not recursively timed. Validation
+commands emitted by the runtime provider are timed
 at their direct JSONL command start/complete boundaries; only a bounded
 validation category is persisted, never command text or output. Historical
 runs retain their prior total duration from `execution_runs` but have no
-fabricated phase spans. Lease reconciliation closes an active span only at the
-actual reconciliation boundary with `STALE`/`INTERRUPTED` outcome.
+fabricated phase spans and must be labelled phase telemetry incomplete. Lease
+reconciliation closes an active span only at the actual reconciliation boundary
+with `STALE`/`INTERRUPTED` outcome.
 
 Execution phase timing belongs solely to Engineering Platform execution
 evidence. Forge remains the authority for Mission and planning intelligence.

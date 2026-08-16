@@ -315,6 +315,8 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
             "provider_duration_ms": measured("provider_execution_time_ms"),
             "validation_duration_ms": measured("validation_time_ms"),
             "external_wait_ms": measured("external_wait_time_ms"),
+            "report_generation_ms": measured("report_generation_time_ms"),
+            "evidence_persistence_ms": measured("evidence_persistence_time_ms"),
             "largest_phase": summary.get("longest_phase") if phase_available else None,
             "producer_type": row[8], "repository": row[9], "provider": row[5],
             "model": row[6], "reasoning_profile": row[7],
@@ -337,19 +339,21 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
         "validation": aggregate(values("validation_time_ms")),
         "external_wait": aggregate(values("external_wait_time_ms")),
         "overhead": aggregate(values("overhead_time_ms")),
+        "report_generation": aggregate(values("report_generation_time_ms")),
+        "evidence_persistence": aggregate(values("evidence_persistence_time_ms")),
     }
     phase_values: dict[str, list[int]] = {phase: [] for phase in _DASHBOARD_PHASES}
     for item in summaries:
-        durations = item.get("phase_durations_ms", {})
-        if isinstance(durations, dict):
-            for phase in _DASHBOARD_PHASES:
-                value = durations.get(phase)
-                if isinstance(value, int):
+        # Use the shared run-level category projection.  The dashboard must
+        # not reconstruct a competing aggregate from raw spans.
+        aggregates = item.get("phase_aggregates", ())
+        if isinstance(aggregates, list):
+            for aggregate_row in aggregates:
+                if not isinstance(aggregate_row, dict):
+                    continue
+                phase, value = aggregate_row.get("phase"), aggregate_row.get("duration_ms")
+                if isinstance(phase, str) and phase in phase_values and isinstance(value, int):
                     phase_values[phase].append(value)
-        for phase, key in (("PROVIDER_EXECUTION", "provider_execution_time_ms"), ("VALIDATION", "validation_time_ms")):
-            value = item.get(key)
-            if isinstance(value, int) and value not in phase_values[phase]:
-                phase_values[phase].append(value)
     phase_rows = [dict({"phase": phase}, **aggregate(items)) for phase, items in phase_values.items() if aggregate(items)]
     total_phase_time = sum(int(item["total_ms"]) for item in phase_rows)
     consumers = sorted(phase_rows, key=lambda item: (-int(item["total_ms"]), str(item["phase"])))[:3]

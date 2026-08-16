@@ -1653,6 +1653,23 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Executed test: `python -m unittest tests.engineering`", body)
         self.assertIn("Result: passed (12 tests)", body)
 
+    def test_complete_report_projects_validation_controls_and_unambiguous_timing(self) -> None:
+        state = TransactionState(
+            "validation-controls", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+            validation_evidence=(
+                {"command": "ruff check tools", "result": "passed"},
+                {"command": "semgrep scan", "result": "not applicable"},
+            ),
+            terminal=True,
+        )
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("## Validation Control Results", body)
+        self.assertIn("Ruff: `PASS` — `LOCAL`", body)
+        self.assertIn("CodeQL: `NOT_EXECUTED` — `GITHUB_CI`", body)
+        self.assertIn("Semgrep: `NOT_APPLICABLE` — `GITHUB_CI`", body)
+        self.assertIn("Transaction Baseline Availability:", body)
+        self.assertIn("Execution Duration (legacy): Provider Execution Time.", body)
+
     def test_engineering_evidence_2_report_is_self_validating_and_traceable(self) -> None:
         self.prompt.write_text(
             "# Engineering Evidence 2.0\n\n## Deliverable\n\n- Produce a self-validating report.\n\n"
