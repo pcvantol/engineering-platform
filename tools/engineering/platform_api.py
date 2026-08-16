@@ -20,6 +20,20 @@ class PlatformConfigurationError(ValueError):
     """Raised for invalid or unsupported platform configuration."""
 
 
+# launchd deliberately starts with a minimal environment.  Preserve the
+# resolved launcher rather than depending on a later child process finding a
+# different PATH.  The value is local host configuration, not product data.
+RUNTIME_EXECUTABLE_ENVIRONMENT = "DJCONNECT_ENGINEERING_CODEX_EXECUTABLE"
+RUNTIME_PATH_FALLBACK = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
+
+
 def shared_workspace_store(root: Path) -> Path:
     """Resolve the private Engineering store shared by every Git worktree.
 
@@ -161,10 +175,28 @@ class ExecutionHostConfigurationResolver:
     def resolve_runtime(self) -> Path:
         if self._configuration.providers["runtime"] != "codex_cli":
             raise PlatformConfigurationError("Configured Execution Host runtime is unsupported.")
+        configured = os.environ.get(RUNTIME_EXECUTABLE_ENVIRONMENT)
+        if configured:
+            executable = Path(configured).expanduser()
+            if executable.is_file() and os.access(executable, os.X_OK):
+                return executable
+            raise PlatformConfigurationError("Configured Execution Host runtime is unavailable.")
         executable = shutil.which("codex")
         if not executable:
             raise PlatformConfigurationError("Configured Execution Host runtime is unavailable.")
-        return Path(executable).resolve()
+        # Do not resolve the Homebrew launcher symlink.  Its directory is the
+        # one that must be retained for launchd's PATH and Node resolution.
+        return Path(executable)
+
+    def runtime_environment(self) -> dict[str, str]:
+        """Return a child-safe environment pinned to the admitted CLI launcher."""
+        executable = self.resolve_runtime()
+        entries = [str(executable.parent), *RUNTIME_PATH_FALLBACK]
+        entries.extend(os.environ.get("PATH", "").split(":"))
+        return {
+            RUNTIME_EXECUTABLE_ENVIRONMENT: str(executable),
+            "PATH": ":".join(dict.fromkeys(entry for entry in entries if entry)),
+        }
 
     def resolve_execution_host_identity(self) -> ExecutionHostIdentity:
         return ExecutionHostIdentity(

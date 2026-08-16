@@ -26,6 +26,18 @@ RunJsonReader = Callable[[Path, str | None], bytes]
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
+def _transient_live_action(root: Path, run_id: object) -> str | None:
+    """Read the non-persistent current action title for its owning live run."""
+    if not isinstance(run_id, str):
+        return None
+    try:
+        current = json.loads((root / ".engineering" / "status" / "current.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    action = current.get("transient_action") if current.get("run_id") == run_id else None
+    return action if isinstance(action, str) and 4 <= len(action) <= 160 else None
+
+
 def _terminal_checkpoint(root: Path, run_id: object) -> bool:
     """Return whether a live-status run has already reached a terminal checkpoint.
 
@@ -123,12 +135,13 @@ def status(root: Path) -> bytes:
         if live is None:
             raise ValueError("No canonical live status")
         live_liveness = lease_liveness(root, live.get("run_id"))
+        transient_action = _transient_live_action(root, live.get("run_id"))
         projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
                 "platform_version": watcher.get("platform_version"),
                 "current_phase": live.get("phase") or "INITIALIZE",
-                "current_action": live.get("current_action") or "Engineeringuitvoering is actief.",
+                "current_action": transient_action or live.get("current_action") or "Engineeringuitvoering is actief.",
                 "run_id": live.get("run_id"),
                 # The watcher owns the queue. A live runner only adds current
                 # execution details, so it must not replace the queued count.

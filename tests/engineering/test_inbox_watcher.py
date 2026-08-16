@@ -28,7 +28,9 @@ class InboxWatcherTest(unittest.TestCase):
         self.root = Path(self.temp.name) / "cloud"
         self.repo = Path(self.temp.name) / "repo"
         (self.repo / "tools/engineering").mkdir(parents=True)
-        (self.repo / "tools/engineering/engineering-execution-host").write_text("#!/bin/sh\n", encoding="utf-8")
+        self.runtime = self.repo / "tools/engineering/engineering-execution-host"
+        self.runtime.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.runtime.chmod(0o700)
         (self.repo / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").write_text(
             (Path(__file__).resolve().parents[2] / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -48,6 +50,14 @@ class InboxWatcherTest(unittest.TestCase):
             return_value=CapabilityPreflightResult("PASS", "now", 1, (), "RETRYABLE", None, "Capability admission passed."),
         )
         self.capability_preflight.start()
+        # CI deliberately has no Codex CLI.  Every watcher fixture receives a
+        # harmless executable so the tests exercise watcher admission rather
+        # than host installation.
+        self.runtime_environment = patch.dict(
+            os.environ,
+            {inbox_watcher.RUNTIME_EXECUTABLE_ENVIRONMENT: str(self.runtime)},
+        )
+        self.runtime_environment.start()
         inbox = inbox_watcher.folders(self.root)["Inbox"]
         self.inbox = inbox
 
@@ -55,6 +65,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.preflight.stop()
         self.workspace_preflight.stop()
         self.capability_preflight.stop()
+        self.runtime_environment.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()
 
@@ -105,6 +116,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn("-lc", rendered)
         self.assertIn("exec", rendered)
         self.assertIn(str(self.repo), rendered)
+        self.assertIn("DJCONNECT_ENGINEERING_CODEX_EXECUTABLE", rendered)
         self.assertNotIn("StandardOutPath", rendered)
         self.assertNotIn("StandardErrorPath", rendered)
 
@@ -886,7 +898,7 @@ class InboxWatcherTest(unittest.TestCase):
     def test_main_install_uninstall_status_and_doctor_are_local_only(self, launchd: object) -> None:
         with tempfile.TemporaryDirectory() as home, patch(
             "tools.engineering.inbox_watcher.Path.home", return_value=Path(home)
-        ), patch("tools.engineering.inbox_watcher.PlatformConfiguration.load"):
+        ):
             (self.repo / ".gitignore").write_text(".engineering/\n", encoding="utf-8")
             self.assertEqual(
                 inbox_watcher.main(["install", "--repo", str(self.repo), "--icloud-root", str(self.root)]),

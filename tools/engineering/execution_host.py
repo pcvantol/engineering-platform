@@ -76,7 +76,10 @@ from .execution_errors import CodexInvocationError, RunnerError
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
 from .execution_executor import format_cli_failure as executor_format_cli_failure
-from .execution_executor import project_codex_activity as executor_project_codex_activity
+from .execution_executor import (
+    project_codex_activity as executor_project_codex_activity,
+    project_codex_live_action_name as executor_project_codex_live_action_name,
+)
 from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
 from .execution_executor import CodexCliClient
@@ -214,6 +217,7 @@ def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
 
 
 project_codex_activity = executor_project_codex_activity
+project_codex_live_action_name = executor_project_codex_live_action_name
 _redacted_cli_tail = executor_redacted_cli_tail
 _format_cli_failure = executor_format_cli_failure
 write_redacted_codex_cli_log = executor_write_redacted_codex_cli_log
@@ -694,6 +698,12 @@ class EngineeringRunner:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
                     lambda activity: (self._heartbeat(), write_live_status(self.root, state, activity))[1]
+                )
+            if hasattr(self.agent, "set_transient_action_callback"):
+                self.agent.set_transient_action_callback(
+                    lambda action: (self._heartbeat(), write_live_status(
+                        self.root, state, state.next_action, transient_action=action
+                    ))[1]
                 )
             if hasattr(self.agent, "set_process_callback"):
                 self.agent.set_process_callback(
@@ -1202,12 +1212,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.admitted_storage_schema is not None
         else RunnerCompatibility()
     )
+    try:
+        runtime = PlatformConfiguration.load(root).resolver(root).resolve_runtime()
+    except PlatformConfigurationError:
+        runtime = None
     runner = EngineeringRunner(
         root,
         StateStore(root / ".engineering" / "engineering-runs"),
         SubprocessRepositoryClient(),
         GhCliClient(),
-        CodexCliClient(),
+        CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
         compatibility=compatibility,
     )
     try:

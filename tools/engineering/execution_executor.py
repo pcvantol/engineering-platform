@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import tempfile
 
 from .agent_state import redact_diagnostic
+
+
+_LIVE_ACTION_NAME_DISALLOWED = re.compile(r"(?:https?://|[/\\\\`]|\b(?:api[_ -]?key|token|secret|password|authorization|bearer)\b)", re.IGNORECASE)
 
 
 def project_codex_activity(event: object) -> str | None:
@@ -23,6 +27,28 @@ def project_codex_activity(event: object) -> str | None:
         "mcp_tool_call": "Codex gebruikt een ontwikkeltool",
         "agent_message": "Codex formuleert het resultaat",
     }.get(item.get("type"))
+
+
+def project_codex_live_action_name(event: object) -> str | None:
+    """Return a short, transient Codex reasoning title when it is safe to show.
+
+    This is intentionally separate from the persisted activity category.  The
+    value is only rendered in the live status file and is removed when the run
+    reaches a terminal phase; reports, history, diagnostics and the database
+    never receive it.
+    """
+    if not isinstance(event, dict) or event.get("type") not in {"item.started", "item.updated"}:
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    text = item.get("text")
+    if not isinstance(text, str):
+        return None
+    title = redact_diagnostic(text, limit=160)
+    if len(title) < 4 or "[REDACTED]" in title or _LIVE_ACTION_NAME_DISALLOWED.search(title):
+        return None
+    return title
 
 
 def project_codex_command_event(event: object) -> tuple[str, str, str] | None:
@@ -114,6 +140,7 @@ class CodexCliClient:
             "codex_commands_executed": 0,
         }
         self._activity_callback: Callable[[str], None] | None = None
+        self._transient_action_callback: Callable[[str], None] | None = None
         self._process_callback: Callable[[dict[str, int] | None], None] | None = None
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
         self._command_callback: Callable[[str, str, str], None] | None = None
@@ -122,6 +149,10 @@ class CodexCliClient:
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
         self._activity_callback = callback
+
+    def set_transient_action_callback(self, callback: Callable[[str], None] | None) -> None:
+        """Set the non-persistent sink for a safe live Codex action name."""
+        self._transient_action_callback = callback
 
     def set_process_callback(self, callback: Callable[[dict[str, int] | None], None] | None) -> None:
         """Set the owned foreground Codex-process sink for runtime metrics."""
@@ -327,6 +358,7 @@ class CodexCliClient:
         }
         if (
             self._activity_callback is None
+            and self._transient_action_callback is None
             and self._command_callback is None
             and self._runtime_metadata_callback is None
             and self._workspace_progress_callback is None
@@ -364,6 +396,9 @@ class CodexCliClient:
                     event = None
                 if activity is not None and self._activity_callback is not None:
                     self._activity_callback(activity)
+                transient_action = project_codex_live_action_name(event)
+                if transient_action is not None and self._transient_action_callback is not None:
+                    self._transient_action_callback(transient_action)
                 if self._command_callback is not None:
                     command_event = project_codex_command_event(event)
                     if command_event is not None:

@@ -1030,6 +1030,11 @@ def import_legacy_projection_once(root: Path, name: str, path: Path) -> dict[str
     if legacy is None:
         return None
     payload, digest = legacy
+    # A transient Codex action title belongs only to the current local status
+    # file.  It must never be promoted into canonical storage during a legacy
+    # projection import.
+    if name == "live_status":
+        payload.pop("transient_action", None)
     connection = open_storage(root)
     try:
         prior = connection.execute(

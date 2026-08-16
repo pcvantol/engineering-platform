@@ -22,7 +22,7 @@ import uuid
 
 from .platform_version import EngineeringPlatformManifest
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
-from .platform_api import PlatformConfiguration, PlatformConfigurationError, execution_host_configuration
+from .platform_api import PlatformConfigurationError, RUNTIME_EXECUTABLE_ENVIRONMENT, execution_host_configuration
 from .platform_bootstrap import provision_workspace
 from .providers import GitProvider, LaunchdProvider, LocalProcessProvider
 from .status_model import build, publish
@@ -1194,6 +1194,7 @@ def _detach_runner(
         current_action="De Engineering-runner is los gestart; de watcher blijft de Inbox volgen.",
     )
     environment = dict(os.environ)
+    environment.update(execution_host_configuration(repo).runtime_environment())
     environment[BACKGROUND_RUN_ID_ENVIRONMENT] = run_id
     environment[BACKGROUND_JOB_ID_ENVIRONMENT] = job_id
     try:
@@ -1681,12 +1682,14 @@ def launch_agent(repo: Path) -> Path:
     launcher = [sys.executable, "-m", "tools.engineering.inbox_watcher", "run", "--repo", str(repo)]
     command = f"cd {shlex.quote(str(repo))} && exec " + " ".join(shlex.quote(value) for value in launcher)
     arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
-    environment = launch_path()
+    runtime_environment = execution_host_configuration(repo).runtime_environment()
+    environment = runtime_environment["PATH"]
+    runtime_executable = runtime_environment[RUNTIME_EXECUTABLE_ENVIRONMENT]
     log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
     if log_level not in VALID_LEVELS:
         log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{repo}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>{environment}</string><key>{RUNTIME_EXECUTABLE_ENVIRONMENT}</key><string>{runtime_executable}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
         encoding="utf-8",
     )
     return destination

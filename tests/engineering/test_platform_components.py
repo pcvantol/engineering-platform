@@ -59,6 +59,17 @@ class ProviderContractTest(unittest.TestCase):
         self.assertFalse(TailscaleProvider().status().qualified)
 
     @patch("tools.engineering.providers.subprocess.run")
+    def test_codex_provider_uses_the_admitted_launcher_instead_of_path_lookup(self, run: object) -> None:
+        executable = "/opt/homebrew/bin/codex"
+        run.return_value = __import__("subprocess").CompletedProcess((executable, "--version"), 0, "codex", "")
+
+        CodexCliProvider(executable).command("--version")
+        CodexCliProvider(executable).invoke(Path("/repository"), ("codex", "exec", "status"))
+
+        self.assertEqual(run.call_args_list[0].args[0], (executable, "--version"))
+        self.assertEqual(run.call_args_list[1].args[0], (executable, "exec", "status"))
+
+    @patch("tools.engineering.providers.subprocess.run")
     @patch("tools.engineering.providers.shutil.which", return_value="/usr/local/bin/tailscale")
     def test_tailscale_accepts_only_its_routable_ipv4_range(self, _: object, run: object) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(

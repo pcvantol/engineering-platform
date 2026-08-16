@@ -21,6 +21,7 @@ def write_live_status(
     reviewer_agents: list[dict[str, object]] | None = None,
     runtime_metadata: Mapping[str, str] | None = None,
     workspace_progress: Mapping[str, int] | None = None,
+    transient_action: str | None = None,
 ) -> Path:
     """Atomically publish the advisory current transaction state."""
     directory = root / ".engineering" / "status"
@@ -41,6 +42,13 @@ def write_live_status(
         prompt_characters = None
     previous_reviewers: list[dict[str, object]] = []
     previous_runtime: dict[str, str] = {}
+    previous_transient_action: str | None = None
+    try:
+        previous_file = json.loads(path.read_text(encoding="utf-8"))
+        if previous_file.get("run_id") == state.run_id and isinstance(previous_file.get("transient_action"), str):
+            previous_transient_action = redact_diagnostic(previous_file["transient_action"], limit=160)
+    except (OSError, json.JSONDecodeError):
+        pass
     try:
         previous = load_projection(root, "live_status") or {}
     except EngineeringStorageError:
@@ -97,6 +105,8 @@ def write_live_status(
         "runtime_metadata": safe_runtime,
         "workspace_progress": safe_progress,
     }
+    terminal_phase = state.phase in {"COMPLETE", "BLOCKED", "FAILED"}
+    transient = None if state.terminal or terminal_phase else transient_action or previous_transient_action
     try:
         payload["execution_context"] = load_execution_context_snapshot(root, state.run_id)
         payload["forge_governance_handoff"] = load_forge_governance_handoff_snapshot(root, state.run_id)
@@ -108,10 +118,15 @@ def write_live_status(
         store_projection(connection, "live_status", payload)
     finally:
         connection.close()
+    # This action title is intentionally absent from the stored projection.
+    # It is a short-lived UI hint sourced from Codex reasoning metadata only.
+    file_payload = dict(payload)
+    if transient:
+        file_payload["transient_action"] = transient
     descriptor, temporary = tempfile.mkstemp(prefix=".current.", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
+            json.dump(file_payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())

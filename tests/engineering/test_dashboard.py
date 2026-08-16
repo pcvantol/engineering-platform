@@ -751,6 +751,7 @@ class DashboardStatusTest(unittest.TestCase):
                         "run_id": "inbox-123",
                         "phase": "INITIALIZE",
                         "current_action": "Capability selection",
+                        "transient_action": "Integrating runtime resolution",
                         "repository_state": "ACTIVE",
                         "workspace_state": "ACTIVE",
                         "prompt_characters": 4321,
@@ -769,6 +770,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(status["current_phase"], "INITIALIZE")
         self.assertEqual(status["run_id"], "inbox-123")
         self.assertEqual(status["prompt_characters"], 4321)
+        self.assertEqual(status["current_action"], "Integrating runtime resolution")
 
     def test_active_runner_status_wins_over_previous_terminal_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

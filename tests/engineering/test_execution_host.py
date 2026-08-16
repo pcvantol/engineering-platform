@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import call, patch
 
 from tools.engineering.agent_state import StateError, StateStore, TransactionState, redact_diagnostic
+from tools.engineering.storage import load_projection
 from tools.engineering.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -34,6 +35,7 @@ from tools.engineering.execution_host import (
     collect_terminal_evidence,
     generate_terminal_report,
     project_codex_activity,
+    project_codex_live_action_name,
     write_redacted_codex_cli_log,
     write_codex_usage,
     write_live_status,
@@ -744,6 +746,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIsNone(project_codex_activity({"type": "item.completed", "item": {"type": "agent_message"}}))
         self.assertIsNone(project_codex_activity({"type": "item.started", "item": {"type": "unknown", "prompt": "secret"}}))
 
+    def test_codex_live_action_name_is_bounded_and_rejects_sensitive_or_path_content(self) -> None:
+        self.assertEqual(
+            project_codex_live_action_name(
+                {"type": "item.updated", "item": {"type": "reasoning", "text": "Integrating runtime resolution"}}
+            ),
+            "Integrating runtime resolution",
+        )
+        self.assertIsNone(project_codex_live_action_name(
+            {"type": "item.started", "item": {"type": "reasoning", "text": "Read /Users/example/.env"}}
+        ))
+        self.assertIsNone(project_codex_live_action_name(
+            {"type": "item.started", "item": {"type": "reasoning", "text": "token=private-value"}}
+        ))
+
     @patch("tools.engineering.execution_host.os.getpgid", return_value=4321)
     @patch("tools.engineering.execution_host.subprocess.Popen")
     def test_codex_client_streams_only_safe_activity_labels(self, popen: object, _: object) -> None:
@@ -771,6 +787,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(observed, ["Codex plant de volgende stap", "Codex voert een opdracht uit"])
         self.assertNotIn("secret", " ".join(observed))
 
+    @patch("tools.engineering.execution_host.os.getpgid", return_value=4321)
+    @patch("tools.engineering.execution_host.subprocess.Popen")
+    def test_codex_client_streams_a_safe_transient_action_name_separately(self, popen: object, _: object) -> None:
+        class Process:
+            pid = 1234
+            stdout = iter((
+                '{"type":"item.updated","item":{"type":"reasoning","text":"Integrating runtime resolution"}}\n',
+                '{"type":"item.started","item":{"type":"command_execution","command":"git status"}}\n',
+            ))
+
+            def wait(self) -> int:
+                return 0
+
+        popen.return_value = Process()
+        activity: list[str] = []
+        transient: list[str] = []
+        client = CodexCliClient()
+        client.set_activity_callback(activity.append)
+        client.set_transient_action_callback(transient.append)
+
+        client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertEqual(activity, ["Codex plant de volgende stap", "Codex voert een opdracht uit"])
+        self.assertEqual(transient, ["Integrating runtime resolution"])
+
     def test_live_status_records_execution_context(self) -> None:
         state = TransactionState(
             "genesis-context",
@@ -790,6 +831,17 @@ class LocalAgentRunnerTest(unittest.TestCase):
         write_live_status(self.root, state, "Codex voert een opdracht uit")
         preserved = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(preserved["reviewer_agents"], reviewers)
+
+    def test_live_action_name_is_filesystem_only_and_clears_when_terminal(self) -> None:
+        state = TransactionState("live-action", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        write_live_status(self.root, state, "Codex plant de volgende stap", transient_action="Integrating runtime resolution")
+        status_file = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
+        self.assertEqual(status_file["transient_action"], "Integrating runtime resolution")
+        self.assertNotIn("transient_action", load_projection(self.root, "live_status"))
+
+        terminal = TransactionState("live-action", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        write_live_status(self.root, terminal, "Uitvoering voltooid")
+        self.assertNotIn("transient_action", json.loads((self.root / ".engineering" / "status" / "current.json").read_text()))
 
     def test_live_status_preserves_safe_workspace_progress(self) -> None:
         state = TransactionState("workspace-progress", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")

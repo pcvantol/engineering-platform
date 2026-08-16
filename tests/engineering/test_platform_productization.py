@@ -10,6 +10,7 @@ import unittest
 from tools.engineering.platform_api import (
     PlatformConfiguration,
     PlatformConfigurationError,
+    RUNTIME_EXECUTABLE_ENVIRONMENT,
     execution_host_configuration,
     capabilities,
     provider_registry,
@@ -71,6 +72,25 @@ class PlatformProductizationTest(unittest.TestCase):
             self.assertEqual(resolver.resolve_runtime(), Path("/usr/local/bin/codex"))
             identity = resolver.resolve_execution_host_identity()
             self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
+
+    def test_runtime_environment_pins_the_resolved_launcher_for_child_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "tools" / "engineering"
+            target.mkdir(parents=True)
+            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            executable = root / "bin" / "codex"
+            executable.parent.mkdir()
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+            with patch.dict(os.environ, {RUNTIME_EXECUTABLE_ENVIRONMENT: str(executable)}, clear=False):
+                environment = execution_host_configuration(root).runtime_environment()
+
+        self.assertEqual(environment[RUNTIME_EXECUTABLE_ENVIRONMENT], str(executable))
+        self.assertEqual(environment["PATH"].split(":")[0], str(executable.parent))
 
     def test_execution_host_configuration_fails_closed_for_missing_or_invalid_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

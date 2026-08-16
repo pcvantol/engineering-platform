@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -74,17 +75,31 @@ class PrivateRemoteAccessProvider(Protocol):
 
 
 class CodexCliProvider(LocalProcessProvider):
+    """Codex process adapter pinned to the host-admitted launcher when present."""
+
+    def __init__(self, executable: str | None = None) -> None:
+        self._executable = executable or os.environ.get("DJCONNECT_ENGINEERING_CODEX_EXECUTABLE") or "codex"
+
+    def _arguments(self, arguments: Sequence[str]) -> tuple[str, ...]:
+        if arguments and arguments[0] == "codex":
+            return (self._executable, *arguments[1:])
+        return tuple(arguments)
+
     def status(self) -> ProviderStatus:
-        available = shutil.which("codex") is not None
+        available = (
+            bool(shutil.which("codex"))
+            if self._executable == "codex"
+            else Path(self._executable).is_file() and os.access(self._executable, os.X_OK)
+        )
         return ProviderStatus("codex_cli", "configured", available, "available" if available else "codex unavailable")
 
     def command(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(("codex", *args), text=True, capture_output=True, check=False)
+        return subprocess.run((self._executable, *args), text=True, capture_output=True, check=False)
 
     def app_server(self) -> subprocess.Popen[str]:
         """Open the provider-owned interactive Codex app-server channel."""
         return subprocess.Popen(
-            ("codex", "app-server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            (self._executable, "app-server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
         )
 
@@ -101,12 +116,13 @@ class CodexCliProvider(LocalProcessProvider):
 
     def invoke(self, root: Path, arguments: tuple[str, ...], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
-        if timeout is None:
-            return self.execute(root, arguments)
-        try:
-            return subprocess.run(arguments, cwd=root, text=True, capture_output=True, check=False, timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            raise OSError("Codex provider invocation timed out") from error
+        command = self._arguments(arguments)
+        # Execution remains behind the provider boundary.  The current
+        # Engineering callers stream long-running work through ``spawn`` and
+        # do not supply a timeout here; retaining the argument preserves the
+        # public provider contract for compatible callers.
+        del timeout
+        return self.execute(root, command)
 
 
 class GitProvider(LocalProcessProvider):
