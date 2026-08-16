@@ -1142,33 +1142,38 @@ async function loadInitialDashboardStatus() {
     setUpdateMode("refresh.failed_reconnecting");
   }
 }
-void loadInitialDashboardStatus();
-let e = new EventSource("/api/events");
 let promptHistoryTerminalRun = null;
-e.addEventListener("dashboard", (x) => {
-  if (!$("autoRefresh").checked) return;
-  try {
-    let snapshot = JSON.parse(x.data);
-    receivedDashboardServerPush = true;
-    dashboardStatusStore.update(snapshot.status, snapshot);
-    const terminalRun = snapshot.status?.last_executed_run;
-    if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
-      promptHistoryTerminalRun = terminalRun;
-      void refreshPromptHistory();
+function startDashboardUpdates() {
+  // Establish the data streams only after the page's controls and section
+  // state have been initialized.  A fast local snapshot or SSE event must not
+  // render into a partially constructed dashboard.
+  void loadInitialDashboardStatus();
+  const events = new EventSource("/api/events");
+  events.addEventListener("dashboard", (x) => {
+    if (!$("autoRefresh").checked) return;
+    try {
+      let snapshot = JSON.parse(x.data);
+      receivedDashboardServerPush = true;
+      dashboardStatusStore.update(snapshot.status, snapshot);
+      const terminalRun = snapshot.status?.last_executed_run;
+      if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
+        promptHistoryTerminalRun = terminalRun;
+        void refreshPromptHistory();
+      }
+      humanize();
+      checkBuild(snapshot.build_commit);
+      setUpdateMode("refresh.connected");
+    } catch {
+      dashboardStatusStore.update(fallback);
+      humanize();
+      setUpdateMode("refresh.invalid");
     }
-    humanize();
-    checkBuild(snapshot.build_commit);
-    setUpdateMode("refresh.connected");
-  } catch {
-    dashboardStatusStore.update(fallback);
-    humanize();
-    setUpdateMode("refresh.invalid");
-  }
-});
-e.onerror = () => {
-  $("autoRefresh").checked &&
-    setUpdateMode("refresh.reconnecting");
-};
+  });
+  events.onerror = () => {
+    $("autoRefresh").checked &&
+      setUpdateMode("refresh.reconnecting");
+  };
+}
 $("loadComponentLogs").addEventListener("click", loadComponentLogs);
 $("chatSend").addEventListener("click", askCodex);
 $("chatInput").addEventListener("keydown", (event) => {
@@ -2358,7 +2363,11 @@ document.addEventListener("copy", (event) => {
 function filteredComponentLogEntries(component) {
   const needle = locale.lower($("logFilter").value.trim()),
     level = $("logLevelFilter").value,
-    events = new Set([...$("logEventFilter").selectedOptions].map((option) => option.value)),
+    events = new Set(
+      [...($("logEventFilter")?.selectedOptions || [])].map(
+        (option) => option.value,
+      ),
+    ),
     state = independentLogSortStates[component];
   return componentLogEntries[component]
     .filter((entry) => !level || entry.level === level)
@@ -2391,7 +2400,9 @@ function visibleComponentLogEntries(component) {
 function updateLogValueFilters() {
   const entries = [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
   for (const [id, key] of [["logEventFilter", "event"]]) {
-    const select = $(id), selected = new Set([...select.selectedOptions].map((option) => option.value));
+    const select = $(id);
+    if (!select) continue;
+    const selected = new Set([...select.selectedOptions].map((option) => option.value));
     select.replaceChildren();
     [...new Set(entries.map((entry) => String(entry[key] || "")).filter(Boolean))].sort((a, b) => locale.compare(logEventLabel(a), logEventLabel(b))).forEach((value) => {
       const option = new Option(logEventLabel(value), value, false, selected.has(value)); select.add(option);
@@ -2498,7 +2509,7 @@ resetLogFiltersButton.setAttribute("aria-label", resetLogFiltersLabel);
 resetLogFiltersButton.addEventListener("click", () => {
   $("logFilter").value = "";
   $("logLevelFilter").value = "";
-  [...$("logEventFilter").options].forEach((option) => { option.selected = false; });
+  [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
   independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
   clearAllComponentLogSelections();
   renderComponentLogs();
@@ -4384,3 +4395,6 @@ for (const binding of [
     set: binding[2],
   });
 }
+
+// Start after every DOM-dependent dashboard feature has completed setup.
+startDashboardUpdates();

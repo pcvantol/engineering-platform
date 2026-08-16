@@ -1767,6 +1767,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
   });
 
+  test("finishes dashboard startup without browser errors", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("body")).toHaveClass(/dashboard-ready/);
+    expect(errors).toEqual([]);
+  });
+
   test("uses the house-style orange for an active execution spinner", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.route("**/api/events", (route) => route.abort());
