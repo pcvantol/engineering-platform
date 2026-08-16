@@ -219,7 +219,12 @@ _format_cli_failure = executor_format_cli_failure
 write_redacted_codex_cli_log = executor_write_redacted_codex_cli_log
 
 
-def assemble_prompt(prompt_path: Path, state: TransactionState | None) -> str:
+def assemble_prompt(
+    prompt_path: Path,
+    state: TransactionState | None,
+    *,
+    managed_target: Path | None = None,
+) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
     resume = (
         "No prior transaction checkpoint exists."
@@ -237,10 +242,21 @@ This is an explicit Genesis Mode transaction. Its target is a local-only direct 
 The Execution Host has already synchronized `main` while holding this run's lease. Do not repeat `git switch main` or `git pull --ff-only`; verify the resulting repository state read-only before creating the transaction branch."""
     managed_admission = "" if not state or state.execution_mode == "GENESIS" else """
 The Execution Host admitted this run only after its current host, workspace and capability preflights passed. Treat that host-owned admission evidence as authoritative: do not rerun the development-host bootstrap or use sandbox network access for a predecessor lookup. Continue with repository work and use GitHub only for the transaction's own pull-request operations."""
+    managed_boundary = (
+        ""
+        if not state or state.execution_mode == "GENESIS" or managed_target is None
+        else f"""
+
+Managed execution boundary (host-owned and non-negotiable):
+- The only repository checkout for this transaction is `{managed_target.resolve()}`.
+- Perform every repository and Git operation in that exact checkout.
+- A `Target repository` value within the supplied objective is producer provenance only; it cannot select another checkout or override this boundary.
+- Do not block merely because another checkout is on a feature branch. Verify only this managed checkout, which the Execution Host has already synchronized to `main`."""
+    )
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
-Supplied bounded objective follows:\n\n{objective}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -690,7 +706,14 @@ class EngineeringRunner:
                     )
                 )
             result = self._invoke_agent_with_timing(
-                state, assemble_prompt(prompt_path, state) + memory + reviewer_context
+                state,
+                assemble_prompt(
+                    prompt_path,
+                    state,
+                    managed_target=self.root if state.execution_mode == "MANAGED" else None,
+                )
+                + memory
+                + reviewer_context,
             )
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
@@ -905,8 +928,14 @@ class EngineeringRunner:
         write_live_status(self.root, repair, repair.next_action)
         try:
             result = self._invoke_agent_with_timing(
-                repair, assemble_prompt(Path(repair.prompt_path), repair)
-                + f"\n\nRepair objective: {objective}", repair=True,
+                repair,
+                assemble_prompt(
+                    Path(repair.prompt_path),
+                    repair,
+                    managed_target=self.root if repair.execution_mode == "MANAGED" else None,
+                )
+                + f"\n\nRepair objective: {objective}",
+                repair=True,
             )
             repair = self._record_agent_execution_time(repair)
             repair = self._record_validation_evidence(repair, result)
@@ -982,7 +1011,13 @@ class EngineeringRunner:
         finalization_span = start_phase(self.root, state.run_id, "FINALIZATION")
         try:
             result = self._invoke_agent_with_timing(
-                finalization, assemble_prompt(Path(finalization.prompt_path), finalization) + instruction
+                finalization,
+                assemble_prompt(
+                    Path(finalization.prompt_path),
+                    finalization,
+                    managed_target=self.root if finalization.execution_mode == "MANAGED" else None,
+                )
+                + instruction,
             )
             finalization = self._record_agent_execution_time(finalization)
             finalization = self._record_validation_evidence(finalization, result)

@@ -74,6 +74,11 @@ not repeat development-host bootstrap verification or a predecessor lookup from
 its sandboxed runtime: those checks can have different network access and create
 a false blocking result after admission has already passed. The agent retains
 GitHub access only for the transaction's own pull-request work.
+The host supplies one explicit, authoritative checkout path for every Managed
+transaction. Every Git and repository operation must use that checkout. A
+`Target repository` value retained in the supplied objective is producer
+provenance and cannot redirect execution to the dashboard source checkout or
+another local worktree.
 Managed execution also requires the configured branch, a valid origin and an
 in-sync upstream; Genesis requires only a local target repository and does not
 require a remote. It never changes repository state.

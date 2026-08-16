@@ -107,9 +107,10 @@ class FakeGitHub:
 
 class FakeAgent:
     def __init__(self, result: AgentResult) -> None:
-        self.result, self.prompts = result, []
+        self.result, self.prompts, self.roots = result, [], []
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
+        self.roots.append(root)
         self.prompts.append(prompt)
         return self.result
 
@@ -663,7 +664,32 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Execution Host has already synchronized `main`", agent.prompts[0])
         self.assertIn("host, workspace and capability preflights passed", agent.prompts[0])
         self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
+        self.assertIn(f"The only repository checkout for this transaction is `{self.root.resolve()}`", agent.prompts[0])
+        self.assertIn("producer provenance only", agent.prompts[0])
+        self.assertEqual(agent.roots, [self.root])
         self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_managed_run_keeps_a_producer_target_from_overriding_host_checkout(self) -> None:
+        producer_checkout = self.root / "producer-checkout"
+        self.prompt.write_text(
+            f"# bounded objective\n\nTarget repository:\n\n{producer_checkout}\n",
+            encoding="utf-8",
+        )
+        agent = FakeAgent(AgentResult("COMPLETE"))
+
+        EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+        ).run(self.prompt, run_id="managed-target-boundary")
+
+        self.assertEqual(agent.roots, [self.root])
+        self.assertIn(
+            f"The only repository checkout for this transaction is `{self.root.resolve()}`",
+            agent.prompts[0],
+        )
+        self.assertIn(
+            "A `Target repository` value within the supplied objective is producer provenance only",
+            agent.prompts[0],
+        )
 
     def test_runtime_validation_commands_are_timed_at_direct_boundaries(self) -> None:
         agent = CommandTimingFakeAgent(AgentResult("COMPLETE"))
