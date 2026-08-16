@@ -752,6 +752,11 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
    but they must never replace the selected-control border. */
 :where(input,select,textarea):is(:focus,:focus-visible){border-color:var(--dashboard-input-focus-border)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
 :where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+/* A dialog shell can receive programmatic focus when it opens. It is a
+   container, not an interactive control: its child controls retain the shared
+   focus ring above, while the shell itself must never draw a viewport-sized
+   selected border. This applies to every current and future modal shell. */
+.dashboard-modal-shell:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
 /* Categories are navigation surfaces, not selected inputs. Their disclosure
    state is already communicated by the open/closed glyph and header surface. */
 :is(.workspace-card,.inbox-queue,.prompt-history,#currentRun,#rateLimits,.platform-health,.telemetry,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs))>summary:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}

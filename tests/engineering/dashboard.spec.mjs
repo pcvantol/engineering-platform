@@ -667,6 +667,24 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("never draws a selected focus border around a modal shell", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    const shells = page.locator("dialog.dashboard-modal-shell");
+    expect(await shells.count()).toBeGreaterThan(0);
+    for (let index = 0; index < await shells.count(); index += 1) {
+      const shell = shells.nth(index);
+      await shell.evaluate((element) => {
+        element.showModal();
+        element.focus();
+      });
+      await expect(shell).toHaveCSS("outline-width", "0px");
+      await expect(shell).toHaveCSS("outline-style", "none");
+      await expect(shell).toHaveCSS("box-shadow", "none");
+      await shell.evaluate((element) => element.close());
+    }
+  });
+
   test("applies the compact header and standard action scale to every modal", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 760 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
