@@ -2091,9 +2091,9 @@ function executionTelemetry(rows) {
     table.setAttribute("aria-label", t("telemetry.table_label"));
     for (const label of [
       "telemetry.day", "telemetry.prompts", "telemetry.average_execution",
-      "telemetry.average_wait", "telemetry.input", "telemetry.output",
-      "telemetry.total", "telemetry.complete", "telemetry.blocked",
-      "telemetry.failed",
+      "telemetry.provider", "telemetry.validation", "telemetry.average_wait",
+      "telemetry.input", "telemetry.output", "telemetry.total", "telemetry.complete",
+      "telemetry.blocked", "telemetry.failed",
     ].map((key) => t(key))) {
       const cell = document.createElement("th");
       cell.scope = "col";
@@ -2114,10 +2114,21 @@ function executionTelemetry(rows) {
   for (const row of Array.isArray(rows) ? rows : []) {
     if (!row || typeof row !== "object") continue;
     const line = document.createElement("tr");
+    line.className = "telemetry-row";
+    line.tabIndex = 0;
+    line.setAttribute("role", "button");
+    line.setAttribute("aria-label", t("telemetry.open_details", { date: telemetryDate(row.date) }));
+    const open = () => openTelemetryDetail(row.date, line);
+    line.addEventListener("click", open);
+    line.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+    });
     for (const value of [
       telemetryDate(row.date),
       row.prompt_count,
       telemetryDuration(row.average_execution_seconds),
+      telemetryDuration(row.average_provider_execution_seconds),
+      telemetryDuration(row.average_validation_seconds),
       telemetryDuration(row.average_queue_wait_seconds),
       row.input_tokens ?? "—",
       row.output_tokens ?? "—",
@@ -2135,13 +2146,57 @@ function executionTelemetry(rows) {
   if (!body.children.length) {
     const line = document.createElement("tr"),
       cell = document.createElement("td");
-    cell.colSpan = 10;
+    cell.colSpan = 12;
     cell.className = "telemetry-empty";
     cell.textContent = t("telemetry.empty");
     line.append(cell);
     body.append(line);
   }
 }
+let telemetryDetailTrigger = null;
+function telemetryMs(value) { return typeof value === "number" && value >= 0 ? telemetryDuration(value / 1000) : t("format.unavailable"); }
+function telemetryMetric(label, value) {
+  const field = document.createElement("div"); field.className = "field";
+  field.append(Object.assign(document.createElement("span"), { className: "label", textContent: label }), Object.assign(document.createElement("strong"), { textContent: telemetryMs(value) }));
+  return field;
+}
+function telemetryLabel(phase) { return t("telemetry.phase." + String(phase || "").toLowerCase(), {}, String(phase || t("format.unavailable"))); }
+function closeTelemetryDetail() { const modal = $("telemetryDetailModal"); if (modal.open) modal.close(); }
+function openTelemetryDetail(date, trigger) {
+  if (!date) return;
+  telemetryDetailTrigger = trigger || document.activeElement;
+  const modal = $("telemetryDetailModal"), content = $("telemetryDetailContent");
+  $("telemetryDetailTitle").textContent = t("telemetry.detail_title", { date: telemetryDate(date) });
+  $("telemetryDetailDescription").textContent = t("telemetry.detail_description");
+  content.textContent = t("format.loading");
+  if (!modal.open) modal.showModal(); modal.focus();
+  fetch("/api/telemetry/" + encodeURIComponent(date), { cache: "no-store" })
+    .then((response) => response.ok ? response.json() : Promise.reject())
+    .then((detail) => renderTelemetryDetail(detail, content))
+    .catch(() => { content.textContent = t("telemetry.details_unavailable"); });
+}
+function renderTelemetryDetail(detail, content) {
+  content.replaceChildren(); const summary = detail?.summary || {};
+  const metrics = document.createElement("section"); metrics.className = "telemetry-detail-metrics";
+  metrics.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.summary") }));
+  const grid = document.createElement("div"); grid.className = "technical-grid";
+  for (const [label, value] of [[t("telemetry.executions"), summary.executions], [t("telemetry.complete"), summary.completed], [t("telemetry.blocked"), summary.blocked], [t("telemetry.failed"), summary.failed]]) grid.append(Object.assign(document.createElement("div"), { className: "field", textContent: `${label}: ${value ?? 0}` }));
+  for (const [label, key] of [["telemetry.average_total", "total_wall_time"], ["telemetry.median_total", "total_wall_time"], ["telemetry.average_wait", "queue_wait"], ["telemetry.provider", "provider_execution"], ["telemetry.validation", "validation"], ["telemetry.external_wait", "external_wait"], ["telemetry.overhead", "overhead"]]) grid.append(telemetryMetric(t(label), key === "total_wall_time" && label === "telemetry.median_total" ? summary[key]?.median_ms : summary[key]?.average_ms));
+  metrics.append(grid); content.append(metrics);
+  const phases = Array.isArray(detail?.phases) ? detail.phases : [];
+  const phaseSection = document.createElement("section"); phaseSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.phase_timing") }));
+  if (!phases.length) phaseSection.append(Object.assign(document.createElement("p"), { textContent: detail?.phase_telemetry_available ? t("telemetry.not_executed") : t("telemetry.not_recorded") }));
+  else { const table = document.createElement("table"); table.className = "telemetry-table"; table.innerHTML = `<thead><tr>${["telemetry.phase", "telemetry.average", "telemetry.median", "telemetry.accumulated", "telemetry.runs"].map((key) => `<th>${t(key)}</th>`).join("")}</tr></thead>`; const body = document.createElement("tbody"); for (const phase of phases) { const row = document.createElement("tr"); [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), phase.runs].forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value) }))); body.append(row); } table.append(body); phaseSection.append(table); } content.append(phaseSection);
+  const bottlenecks = document.createElement("section"), top = detail?.bottlenecks?.top_time_consumers || [];
+  bottlenecks.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.bottlenecks") }));
+  const list = document.createElement("ol"); for (const item of top) list.append(Object.assign(document.createElement("li"), { textContent: `${telemetryLabel(item.phase)} — ${item.share_percent ?? "—"}%` })); bottlenecks.append(list); content.append(bottlenecks);
+  const runSection = document.createElement("section"), runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  runSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.runs") }));
+  const runTable = document.createElement("table"); runTable.className = "telemetry-table"; runTable.innerHTML = `<thead><tr>${["telemetry.run_id", "telemetry.status", "telemetry.average_total", "telemetry.average_wait", "telemetry.provider", "telemetry.validation", "telemetry.external_wait", "telemetry.largest_phase"].map((key) => `<th>${t(key)}</th>`).join("")}</tr></thead>`; const runBody = document.createElement("tbody");
+  for (const run of runs) { const row = document.createElement("tr"), id = document.createElement("button"); id.type = "button"; id.className = "dashboard-action"; id.textContent = run.run_id; id.addEventListener("click", () => openPromptHistoryDetail({ run_id: run.run_id, title: run.run_id })); const values = [id, run.status, telemetryMs(run.total_duration_ms), telemetryMs(run.queue_wait_ms), telemetryMs(run.provider_duration_ms), telemetryMs(run.validation_duration_ms), telemetryMs(run.external_wait_ms), telemetryLabel(run.largest_phase)]; values.forEach((value) => { const cell = document.createElement("td"); if (value instanceof Element) cell.append(value); else cell.textContent = String(value); row.append(cell); }); runBody.append(row); } runTable.append(runBody); runSection.append(runTable); content.append(runSection);
+}
+$("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
+$("telemetryDetailModal").addEventListener("close", () => { telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; });
 const renderTelemetryInOrder = executionTelemetry;
 executionTelemetry = (rows) => {
   renderTelemetryInOrder(rows);

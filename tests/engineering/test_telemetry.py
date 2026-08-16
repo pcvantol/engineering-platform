@@ -12,6 +12,7 @@ from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_s
 from tools.engineering.telemetry import (
     ExecutionTelemetry,
     daily_statistics,
+    daily_timing_detail,
     execution_timing,
     comparable_duration_estimate,
     persist_execution,
@@ -19,6 +20,7 @@ from tools.engineering.telemetry import (
     wait_for_pending_telemetry,
 )
 from tools.engineering.producer import ProducerMetadata
+from tools.engineering.execution_timing import record_phase
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
@@ -72,6 +74,8 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                         "input_tokens": 240,
                         "output_tokens": 60,
                         "total_tokens": 300,
+                        "average_provider_execution_seconds": None,
+                        "average_validation_seconds": None,
                     }
                 ],
             )
@@ -91,6 +95,24 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 },
             )
 
+    def test_daily_timing_detail_projects_canonical_phase_spans_without_double_counting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, 10, tzinfo=timezone.utc)
+            persist_execution(root, self._record("run-phase", "COMPLETE", started))
+            record_phase(root, "run-phase", "QUEUE_WAIT", started_at=started - timedelta(seconds=12), completed_at=started)
+            record_phase(root, "run-phase", "PROVIDER_EXECUTION", started_at=started, completed_at=started + timedelta(seconds=40))
+            record_phase(root, "run-phase", "VALIDATION", started_at=started + timedelta(seconds=40), completed_at=started + timedelta(seconds=50))
+            record_phase(root, "run-phase", "EXTERNAL_CI_WAIT", started_at=started + timedelta(seconds=50), completed_at=started + timedelta(seconds=70))
+            record_phase(root, "run-phase", "TOTAL_EXECUTION", started_at=started - timedelta(seconds=12), completed_at=started + timedelta(seconds=90))
+            detail = daily_timing_detail(root, "2026-08-15")
+        self.assertEqual(detail["summary"]["provider_execution"]["average_ms"], 40_000)
+        self.assertEqual(detail["summary"]["validation"]["average_ms"], 10_000)
+        self.assertEqual(detail["summary"]["queue_wait"]["average_ms"], 12_000)
+        self.assertEqual(detail["summary"]["external_wait"]["average_ms"], 20_000)
+        self.assertEqual(detail["summary"]["overhead"]["average_ms"], 32_000)
+        self.assertEqual(detail["runs"][0]["model"], "gpt-5.6-terra")
+        self.assertEqual(detail["bottlenecks"]["top_time_consumers"][0]["phase"], "PROVIDER_EXECUTION")
     def test_async_telemetry_failure_is_isolated_from_engineering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             observed = Event()

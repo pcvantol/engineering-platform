@@ -13,10 +13,11 @@ from pathlib import Path
 from threading import Lock, Thread, current_thread
 from time import monotonic
 from typing import Callable
-from statistics import mean
+from statistics import mean, median
 
 from .storage import open_storage
 from .producer import ProducerMetadata
+from .execution_timing import timing_summary
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -244,7 +245,124 @@ def daily_statistics(root: Path, *, days: int = 7) -> list[dict[str, object]]:
         "average_execution_seconds", "average_total_execution_seconds", "average_queue_wait_seconds", "input_tokens",
         "output_tokens", "total_tokens",
     )
-    return [dict(zip(keys, row, strict=True)) for row in rows]
+    result = [dict(zip(keys, row, strict=True)) for row in rows]
+    # The compact trend deliberately exposes only two additional phase metrics.
+    # Each selected UTC day is bounded by the same seven-day query limit above.
+    for row in result:
+        detail = daily_timing_detail(root, str(row["date"]))
+        summary = detail["summary"]
+        row["average_provider_execution_seconds"] = (
+            float(summary["provider_execution"]["average_ms"]) / 1000
+            if detail["phase_telemetry_available"] and isinstance(summary.get("provider_execution"), dict) else None
+        )
+        row["average_validation_seconds"] = (
+            float(summary["validation"]["average_ms"]) / 1000
+            if detail["phase_telemetry_available"] and isinstance(summary.get("validation"), dict) else None
+        )
+    return result
+
+
+_DASHBOARD_PHASES = (
+    "QUEUE_WAIT", "SUBMISSION_CLAIM", "INITIALIZATION", "HOST_PREFLIGHT",
+    "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT", "EXECUTION_PREPARATION",
+    "PROVIDER_EXECUTION", "VALIDATION", "REPAIR", "REPOSITORY_FINALIZATION",
+    "PR_OR_MERGE", "FINALIZATION", "REPORT_GENERATION", "EVIDENCE_PERSISTENCE",
+    "REPOSITORY_CLEANUP", "RECONCILIATION", "EXTERNAL_CI_WAIT",
+)
+
+
+def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
+    """Return a bounded, read-only UTC-day timing projection for the dashboard.
+
+    This deliberately composes ``timing_summary`` per persisted run, keeping
+    the browser a renderer and preserving the canonical non-double-counting
+    timing rules.  ``execution_date`` is the UTC terminal-date already used by
+    the seven-day trend projection; the client only formats that stable value
+    in the local-user date style.
+    """
+    try:
+        datetime.strptime(execution_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise ValueError("execution date is invalid") from None
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(
+            """SELECT run_id, execution_started_at, terminal_state, total_execution_seconds,
+                      queue_wait_seconds, runtime_provider, runtime_model, reasoning_profile,
+                      producer_type, repository
+                 FROM execution_runs WHERE execution_date=?
+                 ORDER BY execution_started_at DESC LIMIT 250""",
+            (execution_date,),
+        ).fetchall()
+    finally:
+        connection.close()
+    run_rows: list[dict[str, object]] = []
+    summaries: list[dict[str, object]] = []
+    for row in rows:
+        run_id = str(row[0])
+        summary = timing_summary(root, run_id)
+        summaries.append(summary)
+        phase_available = bool(summary.get("phase_telemetry_available"))
+        total = summary.get("total_wall_time_ms") if phase_available else (
+            round(float(row[3]) * 1000) if isinstance(row[3], (int, float)) else None
+        )
+        def measured(name: str) -> int | None:
+            value = summary.get(name)
+            return int(value) if phase_available and isinstance(value, int) else None
+        run_rows.append({
+            "run_id": run_id, "started_at": row[1], "status": row[2],
+            "total_duration_ms": total, "queue_wait_ms": measured("queue_wait_time_ms"),
+            "provider_duration_ms": measured("provider_execution_time_ms"),
+            "validation_duration_ms": measured("validation_time_ms"),
+            "external_wait_ms": measured("external_wait_time_ms"),
+            "largest_phase": summary.get("longest_phase") if phase_available else None,
+            "producer_type": row[8], "repository": row[9], "provider": row[5],
+            "model": row[6], "reasoning_profile": row[7],
+            "phase_telemetry": "RECORDED" if phase_available else "NOT_RECORDED",
+        })
+    def values(key: str) -> list[int]:
+        return [int(item[key]) for item in summaries if isinstance(item.get(key), int)]
+    def aggregate(items: list[int]) -> dict[str, int] | None:
+        return {"average_ms": round(mean(items)), "median_ms": round(median(items)), "total_ms": sum(items), "runs": len(items)} if items else None
+    totals = [int(row["total_duration_ms"]) for row in run_rows if isinstance(row["total_duration_ms"], int)]
+    summary = {
+        "executions": len(run_rows),
+        "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
+        "blocked": sum(row["status"] == "BLOCKED" for row in run_rows),
+        "failed": sum(row["status"] == "FAILED" for row in run_rows),
+        "total_wall_time": aggregate(totals),
+        "active_processing_time": aggregate(values("active_ep_processing_time_ms")),
+        "queue_wait": aggregate(values("queue_wait_time_ms")),
+        "provider_execution": aggregate(values("provider_execution_time_ms")),
+        "validation": aggregate(values("validation_time_ms")),
+        "external_wait": aggregate(values("external_wait_time_ms")),
+        "overhead": aggregate(values("overhead_time_ms")),
+    }
+    phase_values: dict[str, list[int]] = {phase: [] for phase in _DASHBOARD_PHASES}
+    for item in summaries:
+        durations = item.get("phase_durations_ms", {})
+        if isinstance(durations, dict):
+            for phase in _DASHBOARD_PHASES:
+                value = durations.get(phase)
+                if isinstance(value, int):
+                    phase_values[phase].append(value)
+        for phase, key in (("PROVIDER_EXECUTION", "provider_execution_time_ms"), ("VALIDATION", "validation_time_ms")):
+            value = item.get(key)
+            if isinstance(value, int) and value not in phase_values[phase]:
+                phase_values[phase].append(value)
+    phase_rows = [dict({"phase": phase}, **aggregate(items)) for phase, items in phase_values.items() if aggregate(items)]
+    total_phase_time = sum(int(item["total_ms"]) for item in phase_rows)
+    consumers = sorted(phase_rows, key=lambda item: (-int(item["total_ms"]), str(item["phase"])))[:3]
+    for item in consumers:
+        item["share_percent"] = round(int(item["total_ms"]) * 100 / total_phase_time, 3) if total_phase_time else None
+    return {
+        "date": execution_date, "timezone": "UTC", "summary": summary, "phases": phase_rows,
+        "bottlenecks": {"longest_average_phase": max(phase_rows, key=lambda item: int(item["average_ms"]), default=None),
+                        "largest_accumulated_phase": max(phase_rows, key=lambda item: int(item["total_ms"]), default=None),
+                        "top_time_consumers": consumers,
+                        "shares": {key: (round(mean(values(key)) * 100 / mean(totals), 3) if values(key) and totals and mean(totals) else None) for key in ("queue_wait_time_ms", "provider_execution_time_ms", "validation_time_ms", "external_wait_time_ms", "overhead_time_ms")}},
+        "runs": run_rows, "phase_telemetry_available": any(bool(item.get("phase_telemetry_available")) for item in summaries),
+    }
 
 
 def execution_timing(root: Path, run_id: str) -> dict[str, float | str]:
