@@ -350,6 +350,7 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
 /* Main sections */
 .dashboard-grid{gap:var(--dashboard-section-gap)}
 .execution-context--primary{background:#1f3140!important;border-color:#65c5d9!important;grid-column:1 / -1}.execution-context--primary strong{color:#8de1f2!important}.execution-context--primary .field{border-top:1px solid #65c5d955;padding-top:8px}.execution-context--primary .field:first-of-type{border-top:0;padding-top:0}.execution-context__phase{border:1px solid currentColor;border-radius:999px;display:inline-block;font-weight:700;padding:4px 8px}
+.execution-mode-field__value{align-items:center;display:flex;gap:10px;justify-content:space-between;min-width:0}.execution-mode-field__value>span{min-width:0;overflow-wrap:anywhere}.execution-mode-info{color:#65c5d9;flex:none;grid-area:auto}.execution-mode-info:hover{background:#65c5d9!important;border-color:#65c5d9!important;color:#162832!important}
 .workspace-card{margin-bottom:0}
 .workspace-card,.inbox-queue,.prompt-history,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),.telemetry,.platform-health,.current-run{box-shadow:none}
 #currentRun>.current-run__title{border-bottom-color:var(--category-color)}
@@ -592,6 +593,7 @@ html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff
 .dashboard-modal-shell--component{--modal-accent:#a3e635}
 .dashboard-modal-shell--confirmation{--modal-accent:var(--house-style)}
 .dashboard-modal-shell--evidence{--modal-accent:#8dc7ff;--category-color:var(--modal-accent)}
+.execution-mode-modal{max-width:min(680px,calc(100vw - 36px));padding:0;width:min(680px,calc(100vw - 36px))}.execution-mode-modal[open]{display:grid;place-items:center}.execution-mode-modal__panel{border:2px solid var(--modal-accent);border-radius:var(--dashboard-modal-radius);box-sizing:border-box;max-height:min(700px,calc(100dvh - 36px));overflow:auto;padding:var(--dashboard-modal-panel-padding);width:100%}.execution-mode-modal__content{display:grid;gap:16px;padding-top:18px}.execution-mode-modal__content>p{color:var(--dashboard-modal-muted);line-height:1.5;margin:0}.execution-mode-modal__definition{background:color-mix(in srgb,var(--modal-accent) 8%,var(--modal-surface));border:1px solid color-mix(in srgb,var(--modal-accent) 55%,transparent);border-radius:12px;padding:14px}.execution-mode-modal__definition h3{color:var(--modal-accent);font-size:16px;margin:0 0 7px}.execution-mode-modal__definition p{line-height:1.5;margin:0}
 
 /* Operations Console chrome: the blue title bar distinguishes the persistent
    application controls from the execution cards below it in both themes. */
@@ -666,7 +668,7 @@ html[data-theme="light"] .dashboard-action--copy:hover:not(:disabled){background
 html[data-theme="light"] .dashboard-action--destructive{background:#fff1f4!important;border-color:#ff718f!important;color:#b32649!important}
 
 /* Keep late modal-family rules from drifting the shared title scale. */
-.dashboard-modal-shell :is(.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2){font-size:clamp(18px,2vw,20px)!important;line-height:1.2}
+.dashboard-modal-shell :is(.component-modal h2,.execution-mode-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2){font-size:clamp(18px,2vw,20px)!important;line-height:1.2}
 
 /* Scrollbars use the same quiet chrome as the dashboard surfaces instead of
    the browser's high-contrast default rail. */

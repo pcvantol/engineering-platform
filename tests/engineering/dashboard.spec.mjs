@@ -579,6 +579,36 @@ test.describe("Engineering Status browser smoke", () => {
     expect(styles).not.toContain(".execution-context--primary>strong{column-span:all}");
   });
 
+  test("explains the managed and Genesis execution modes from the active execution", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: {
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "inbox-execution-mode",
+        prompt_title: "Execution mode fixture",
+        execution_mode: "MANAGED",
+        target_repository: "pcvantol/djconnect",
+        checkout_path: "/Users/example/Documents/GitHub/djconnect",
+        active_branch: "main",
+      } },
+    }));
+    const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await statusLoaded;
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const modeField = page.locator("#executionContext .execution-mode-field");
+    await expect(modeField).toContainText("MANAGED");
+    const info = modeField.locator(".execution-mode-info");
+    await expect(info).toHaveAttribute("aria-label", DASHBOARD_MESSAGES.nl["execution_mode_info.open"]);
+    await info.click();
+    const modal = page.locator("#executionModeModal");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["execution_mode_info.managed_body"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["execution_mode_info.genesis_body"]);
+    await page.locator("#executionModeModalClose").click();
+    await expect(modal).not.toBeVisible();
+  });
+
   test("keeps selected sortable headers within a thin cell edge", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
@@ -621,6 +651,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     for (const [selector, modifier, accent] of [
       ["#componentModal", "dashboard-modal-shell--component", "rgb(163, 230, 53)"],
+      ["#executionModeModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#confirmationModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
       ["#dashboardErrorModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
       ["#promptHistoryReportModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
@@ -643,6 +674,7 @@ test.describe("Engineering Status browser smoke", () => {
     const titles = [];
     for (const selector of [
       "#componentModal",
+      "#executionModeModal",
       "#confirmationModal",
       "#dashboardErrorModal",
       "#promptHistoryReportModal",

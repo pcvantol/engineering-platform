@@ -919,13 +919,35 @@ function executionContextField(label, value, badge = false) {
   field.append(caption, content);
   return field;
 }
+function openExecutionModeModal() {
+  const modal = $("executionModeModal");
+  if (!modal) return;
+  if (!modal.open) modal.showModal();
+  modal.focus();
+}
+function executionModeField(value) {
+  const field = executionContextField(t("field.execution_mode"), value);
+  const content = field.lastElementChild;
+  const row = document.createElement("span"), info = document.createElement("button");
+  row.className = "execution-mode-field__value";
+  info.className = "component-info execution-mode-info";
+  info.type = "button";
+  info.setAttribute("aria-label", t("execution_mode_info.open"));
+  info.title = t("execution_mode_info.open");
+  info.innerHTML = '<span aria-hidden="true">i</span>';
+  info.addEventListener("click", openExecutionModeModal);
+  content.replaceWith(row);
+  row.append(content, info);
+  field.classList.add("execution-mode-field");
+  return field;
+}
 function renderExecutionContext(context, execution = {}) {
   const card = $("executionContext");
   if (!card) return;
   card.hidden = false;
   card.classList.add("execution-context--primary");
   const hostFields = [
-    [t("field.execution_mode"), execution.execution_mode],
+    [t("field.execution_mode"), execution.execution_mode, true],
     [t("field.repository"), execution.target_repository],
     [t("detail.target_checkout"), execution.checkout_path],
     [t("ui.active_branch"), execution.active_branch],
@@ -933,7 +955,7 @@ function renderExecutionContext(context, execution = {}) {
   if (!context || typeof context !== "object") {
     card.replaceChildren(
       Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-      ...hostFields.map(([label, value]) => executionContextField(label, value)),
+      ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value)),
       Object.assign(document.createElement("p"), { textContent: t("execution_context.not_supplied") }),
     );
     return;
@@ -960,7 +982,7 @@ function renderExecutionContext(context, execution = {}) {
   ];
   card.replaceChildren(
     Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-    ...hostFields.map(([label, value]) => executionContextField(label, value)),
+    ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value)),
     ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)),
   );
 }
@@ -1830,6 +1852,12 @@ $("componentModal").addEventListener("click", (event) => {
   if (event.target === $("componentModal")) $("componentModal").close();
 });
 $("componentModal").addEventListener("close", stopComponentDetailsRefresh);
+$("executionModeModalClose").addEventListener("click", () =>
+  $("executionModeModal").close(),
+);
+$("executionModeModal").addEventListener("click", (event) => {
+  if (event.target === $("executionModeModal")) $("executionModeModal").close();
+});
 function renderPlatformHealth(payload) {
   const container = $("platformHealthComponents");
   if (!container) return;
