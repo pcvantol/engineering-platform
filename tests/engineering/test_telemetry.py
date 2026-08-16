@@ -236,6 +236,34 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 {},
             )
 
+    def test_duration_estimate_uses_comparable_phase_timings_for_remaining_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 1, 10, tzinfo=timezone.utc)
+            for run_id, provider_seconds in (("phase-one", 60), ("phase-two", 70), ("phase-three", 80), ("phase-four", 100)):
+                persist_execution(root, self._record(run_id, "COMPLETE", started))
+                record_phase(root, run_id, "PROVIDER_EXECUTION", started_at=started, completed_at=started + timedelta(seconds=provider_seconds))
+                record_phase(root, run_id, "FINALIZATION", started_at=started + timedelta(seconds=provider_seconds), completed_at=started + timedelta(seconds=provider_seconds + 20))
+                record_phase(root, run_id, "REPOSITORY_CLEANUP", started_at=started + timedelta(seconds=provider_seconds + 20), completed_at=started + timedelta(seconds=provider_seconds + 30))
+
+            estimate = comparable_duration_estimate(
+                root,
+                prompt_characters=1_000,
+                runtime_metadata={
+                    "runtime_provider": "codex_cli",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_profile": "medium",
+                    "configuration_profile": "workspace-write",
+                },
+                current_phase="EXECUTE_AGENT",
+                execution_mode="MANAGED",
+            )
+
+            self.assertTrue(estimate["phase_aware"])
+            self.assertEqual(estimate["phase_sample_count"], 4)
+            self.assertEqual(estimate["remaining_lower_seconds"], 90.0)
+            self.assertEqual(estimate["remaining_upper_seconds"], 110.0)
+
     def test_async_telemetry_never_recreates_a_removed_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"

@@ -50,6 +50,41 @@ test("stores the normalized snapshot before invoking one renderer", () => {
   });
 });
 
+test("keeps the latest revision when dashboard snapshots arrive out of order", () => {
+  const renders = [], store = createDashboardStatusStore({
+    fallback: { watcher_state: "DEGRADED" },
+    render: (status, snapshot) => renders.push({ status, snapshot }),
+  });
+
+  store.update({ lifecycle: { current_step: "WAIT_FOR_OPERATOR_MERGE" } }, {
+    snapshot_source: "dashboard-instance-a", snapshot_revision: 8,
+  });
+  store.update({ lifecycle: { current_step: "REPAIR_AGENT" } }, {
+    snapshot_source: "dashboard-instance-a", snapshot_revision: 7,
+  });
+
+  assert.equal(renders.length, 1);
+  assert.equal(store.status.lifecycle.current_step, "WAIT_FOR_OPERATOR_MERGE");
+  assert.equal(store.snapshot.snapshot_revision, 8);
+});
+
+test("accepts a fresh dashboard process after restart", () => {
+  const renders = [], store = createDashboardStatusStore({
+    fallback: { watcher_state: "DEGRADED" },
+    render: (status) => renders.push(status),
+  });
+
+  store.update({ current_phase: "WAIT_FOR_OPERATOR_MERGE" }, {
+    snapshot_source: "dashboard-instance-a", snapshot_revision: 8,
+  });
+  store.update({ current_phase: "FINALIZE_AGENT" }, {
+    snapshot_source: "dashboard-instance-b", snapshot_revision: 1,
+  });
+
+  assert.equal(renders.length, 2);
+  assert.equal(store.status.current_phase, "FINALIZE_AGENT");
+});
+
 test("requires one renderer and falls back safely on malformed updates", () => {
   assert.throws(
     () => createDashboardStatusStore({ fallback: {}, render: null }),

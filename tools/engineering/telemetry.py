@@ -285,6 +285,85 @@ _DASHBOARD_PHASES = (
     "REPOSITORY_CLEANUP", "RECONCILIATION", "EXTERNAL_CI_WAIT",
 )
 
+# These are timing categories, not lifecycle authority.  They let the
+# advisory estimator reuse persisted phase evidence without altering the
+# runner's state machine or inventing a path from incomplete history.
+_LIFECYCLE_STEP_PHASES = {
+    "INITIALIZE": frozenset({"INITIALIZATION", "HOST_PREFLIGHT", "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT"}),
+    "EXECUTE_AGENT": frozenset({"EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION"}),
+    "REPAIR_AGENT": frozenset({"REPAIR"}),
+    "FINALIZE_AGENT": frozenset({"REPOSITORY_FINALIZATION", "FINALIZATION", "REPORT_GENERATION", "EVIDENCE_PERSISTENCE", "RECONCILIATION"}),
+    "REPOSITORY_CLEANUP": frozenset({"REPOSITORY_CLEANUP"}),
+}
+_MANAGED_ESTIMATE_PATH = ("INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "REPOSITORY_CLEANUP")
+_GENESIS_ESTIMATE_PATH = ("INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP")
+
+
+def _remaining_steps(current_phase: object, execution_mode: object) -> tuple[str, ...]:
+    if not isinstance(current_phase, str):
+        return ()
+    path = _GENESIS_ESTIMATE_PATH if execution_mode == "GENESIS" else _MANAGED_ESTIMATE_PATH
+    if current_phase not in path:
+        return ()
+    remaining = tuple(step for step in path[path.index(current_phase):] if step in _LIFECYCLE_STEP_PHASES)
+    # Repair is conditional. Include it only after the runner has actually
+    # entered repair; otherwise a healthy run is not priced as a repair run.
+    return remaining if current_phase == "REPAIR_AGENT" else tuple(step for step in remaining if step != "REPAIR_AGENT")
+
+
+def _phase_step_durations(root: Path, run_id: str) -> dict[str, float]:
+    """Return non-overlapping visible-step durations for one completed run."""
+    phase_to_step = {phase: step for step, phases in _LIFECYCLE_STEP_PHASES.items() for phase in phases}
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(
+            "SELECT phase_id,phase_name,parent_phase_id,duration_ms,outcome FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal",
+            (run_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    by_id = {str(phase_id): (str(name), parent) for phase_id, name, parent, _, _ in rows}
+    totals: dict[str, float] = {}
+    for phase_id, name, parent, duration, outcome in rows:
+        if outcome == "ACTIVE" or not isinstance(duration, int) or duration < 0:
+            continue
+        step = phase_to_step.get(str(name))
+        if step is None:
+            continue
+        ancestor = parent
+        while isinstance(ancestor, str) and ancestor in by_id:
+            ancestor_name, ancestor = by_id[ancestor]
+            if phase_to_step.get(ancestor_name) == step:
+                break
+        else:
+            totals[step] = totals.get(step, 0.0) + duration / 1000
+    return totals
+
+
+def _active_phase_elapsed_seconds(root: Path, run_id: object, current_phase: object, now: datetime) -> float:
+    if not isinstance(run_id, str) or not run_id or not isinstance(current_phase, str):
+        return 0.0
+    phase_names = _LIFECYCLE_STEP_PHASES.get(current_phase, frozenset())
+    if not phase_names:
+        return 0.0
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(
+            "SELECT phase_name,started_at FROM execution_phase_spans WHERE run_id=? AND outcome='ACTIVE' ORDER BY ordinal DESC",
+            (run_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    for phase_name, started_at in rows:
+        if phase_name not in phase_names or not isinstance(started_at, str):
+            continue
+        try:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return max(0.0, (_utc(now) - _utc(started)).total_seconds())
+    return 0.0
+
 
 def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
     """Return a bounded, read-only UTC-day timing projection for the dashboard.
@@ -410,7 +489,11 @@ def comparable_duration_estimate(
     *,
     prompt_characters: object,
     runtime_metadata: object,
-) -> dict[str, float | int | str]:
+    run_id: object = None,
+    current_phase: object = None,
+    execution_mode: object = None,
+    now: datetime | None = None,
+) -> dict[str, float | int | str | bool]:
     """Return a robust size-adjusted estimate from one exact runtime profile.
 
     This is intentionally advisory: it never affects scheduling or engineering
@@ -426,21 +509,23 @@ def comparable_duration_estimate(
     )
     if any(value is None for value in signature):
         return {}
-    connection = open_storage(root)
-    try:
-        rows = connection.execute(
-            """
-            SELECT execution_seconds, prompt_characters
+    mode = _runtime_value(execution_mode)
+    query = """
+            SELECT run_id, execution_seconds, prompt_characters
             FROM execution_runs
             WHERE terminal_state = 'COMPLETE'
               AND runtime_provider = ? AND runtime_model = ?
               AND reasoning_profile = ? AND configuration_profile = ?
               AND execution_seconds IS NOT NULL AND prompt_characters > 0
-            ORDER BY execution_finished_at DESC
-            LIMIT 20
-            """,
-            signature,
-        ).fetchall()
+        """
+    parameters: tuple[object, ...] = signature
+    if mode:
+        query += " AND execution_mode = ?"
+        parameters += (mode,)
+    query += " ORDER BY execution_finished_at DESC LIMIT 20"
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(query, parameters).fetchall()
     finally:
         connection.close()
     # A linear character ratio turns a modestly larger prompt into an
@@ -448,11 +533,7 @@ def comparable_duration_estimate(
     # validation and reporting work.  Use a bounded square-root factor instead:
     # it still reflects substantial input differences without letting sparse
     # historical samples dominate the operator-facing indication.
-    scaled = [
-        float(seconds) * min(1.6, max(0.7, sqrt(characters / int(size))))
-        for seconds, size in rows
-        if seconds >= 0
-    ]
+    scaled = [float(seconds) * min(1.6, max(0.7, sqrt(characters / int(size)))) for _, seconds, size in rows if seconds >= 0]
     if len(scaled) < 2:
         return {}
     ordered = sorted(scaled)
@@ -461,7 +542,7 @@ def comparable_duration_estimate(
     # as transparent diagnostic evidence for a fixed input and sample set.
     lower = ordered[max(0, (len(ordered) - 1) // 4)]
     upper = ordered[min(len(ordered) - 1, (len(ordered) - 1) * 3 // 4)]
-    return {
+    result: dict[str, float | int | str | bool] = {
         "sample_count": len(scaled),
         "average_seconds": round(mean(scaled), 3),
         "lower_seconds": round(min(lower, upper), 3),
@@ -469,3 +550,28 @@ def comparable_duration_estimate(
         "runtime_provider": signature[0],
         "model": signature[1],
     }
+    remaining_steps = _remaining_steps(current_phase, execution_mode)
+    if not remaining_steps:
+        return result
+    phase_samples: list[float] = []
+    active_elapsed = _active_phase_elapsed_seconds(root, run_id, current_phase, now or datetime.now(timezone.utc))
+    for historical_run_id, _, size in rows:
+        durations = _phase_step_durations(root, str(historical_run_id))
+        phase_seconds = sum(durations.get(step, 0.0) for step in remaining_steps)
+        if phase_seconds <= 0:
+            continue
+        scale = min(1.6, max(0.7, sqrt(characters / int(size))))
+        phase_samples.append(max(0.0, phase_seconds * scale - active_elapsed))
+    if len(phase_samples) < 2:
+        return result
+    ordered_phase_samples = sorted(phase_samples)
+    lower_phase = ordered_phase_samples[max(0, (len(ordered_phase_samples) - 1) // 4)]
+    upper_phase = ordered_phase_samples[min(len(ordered_phase_samples) - 1, (len(ordered_phase_samples) - 1) * 3 // 4)]
+    result.update({
+        "phase_aware": True,
+        "phase_sample_count": len(phase_samples),
+        "remaining_lower_seconds": round(min(lower_phase, upper_phase), 3),
+        "remaining_upper_seconds": round(max(lower_phase, upper_phase), 3),
+        "active_phase_elapsed_seconds": round(active_elapsed, 3),
+    })
+    return result

@@ -47,7 +47,7 @@ html[data-theme="light"]{
   --operations-console-blue-ink:#182230;
 }
 .log-controls label:has(#logSort){display:none}.log-table th.log-sortable{cursor:pointer;user-select:none}.log-table th.log-sortable::after{color:#8dc7ff;content:attr(data-sort-indicator);font-size:11px;margin-left:6px}.log-table th.log-sortable:focus-visible{outline:2px solid #8dc7ff;outline-offset:-2px}
-.component-log-row,.prompt-history-row{cursor:pointer}.component-log-row>td,.prompt-history-row>td{user-select:none}.prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}.component-log-row[aria-selected="true"]>td{background:color-mix(in srgb,var(--category-color,#f0b66a) 18%,transparent)}.prompt-history-row:is([data-selected="true"],:focus,:focus-visible)>td{background:color-mix(in srgb,var(--house-style) 18%,transparent)}.component-log-row[aria-selected="true"]>td:first-child{box-shadow:inset 2px 0 0 var(--category-color,#f0b66a)}.prompt-history-row:is([data-selected="true"],:focus,:focus-visible)>td:first-child{box-shadow:inset 2px 0 0 var(--house-style)}.component-log-row:focus-visible>td{outline:1px solid var(--category-color,#f0b66a);outline-offset:-1px}
+.component-log-row,.prompt-history-row{cursor:pointer}.component-log-row{--dashboard-selected-row-color:var(--category-color,#f0b66a)}.prompt-history-row{--dashboard-selected-row-color:var(--category-color,#f29ab2)}.component-log-row>td,.prompt-history-row>td{box-shadow:none!important;outline:0!important;user-select:none}.prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}
 .current-run .card:has(#indicator){background:#2a2530;border-left:3px solid #c7a6ff}.current-run .card:has(#predecessorRun),#currentDiagnostic,.technical-details--diagnostic{background:#302a24;border-left:3px solid #f0b66a}.current-run .card:has(#queueList),.current-run .card:has(#runId),.current-run .card:has(#executionMode){background:#28263a;border-left:3px solid #a78bfa}.current-run .card:has(#currentTime),.current-run .card:has(#executionEstimate){background:#202b34;border-left:3px solid #65c5d9}#processMetrics,#usage,#rateLimits{background:#20332f;border-left:3px solid #54d6a0}#commits{background:#202a36;border-left:3px solid #8dc7ff}#codexChat{background:#292336;border-left:3px solid #d0a4ff}
 body{margin:0;background:#121217;color:#f7f3ee;font:14px system-ui;padding:max(18px,env(safe-area-inset-top)) calc(28px + env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) calc(28px + env(safe-area-inset-left))}.dashboard-grid{display:grid;gap:10px}h1{font-size:28px;line-height:1.1;margin:0 0 18px}.card,.technical-details{background:#24242d;border-left:3px solid #c7a6ff;border-radius:14px;padding:14px;box-shadow:0 4px 18px #0005}.card p{margin:7px 0}.card--operation{background:#2a2530;border-left:3px solid #c7a6ff}.card--monitoring{background:#202b34;border-left:3px solid #65c5d9}.card--context{background:#28263a;border-left:3px solid #a78bfa}.card--resource{background:#20332f;border-left:3px solid #54d6a0}.card--evidence{background:#202a36;border-left:3px solid #8dc7ff}.card--diagnostic,.technical-details--diagnostic{background:#302a24;border-left:3px solid #f0b66a}.card--conversation{background:#292336;border-left:3px solid #d0a4ff}.current-run{background:#1d1d25;border:1px solid #3d3651;border-left:3px solid #c7a6ff;border-radius:18px;padding:14px;box-shadow:0 5px 24px #0006}.current-run__title{border-bottom:1px solid #3d3651;padding:2px 2px 13px}.current-run__title h2{font-size:18px;line-height:1.25;margin:3px 0 0}.current-run__grid{display:grid;gap:10px;margin-top:10px}.current-run .card{box-shadow:none}.field{margin:8px 0 0}.label{display:block;color:#c7a6ff;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:2px}.estimate-primary{font-size:18px;font-weight:650;margin:8px 0 0}.estimate-meta{color:#b9b6c0;font-size:12px;line-height:1.35;margin:6px 0 0}.final-status{align-items:center;display:flex;gap:7px;margin:0 0 8px}.final-status .label{margin-bottom:0}.indicator--small{height:9px;width:9px}.footer{color:#b9b6c0;font-size:12px;margin:14px 0 4px;text-align:center}.copy,.chat-send{background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:6px 9px;font:13px system-ui}.copy{float:right}.technical-details{cursor:pointer}.technical-details summary{list-style:none}.technical-details summary::-webkit-details-marker{display:none}.technical-details summary::before{content:"▸ ";color:#c7a6ff;display:inline-block;font-size:20px;line-height:1;vertical-align:-2px}.technical-details[open] summary::before{content:"▾ "}.technical-grid{display:grid;gap:10px;margin-top:12px}.codex-chat{grid-column:1 / -1}.chat-messages{display:grid;gap:9px;max-height:420px;overflow:auto;margin:12px 0;padding:2px}.chat-message{border-radius:9px;font-family:"Unispace",ui-monospace,monospace;max-width:min(880px,92%);padding:9px 10px;white-space:pre-wrap}.chat-message--user{background:#353541;justify-self:end}.chat-message--assistant{background:#202a36;border:1px solid #37506a;justify-self:start}.chat-message__role{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:4px;text-transform:uppercase}.chat-message--user .chat-message__role{color:#c7a6ff}.chat-message--assistant .chat-message__role{color:#8dc7ff}.chat-message__body{line-height:1.4}.chat-input{box-sizing:border-box;width:100%;min-height:110px;border:1px solid #57576a;border-radius:8px;background:#18181f;color:#f7f3ee;padding:8px;font:13px "Unispace",ui-monospace,monospace}.chat-status{color:#b9b6c0;font-size:12px}
 strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:8px}.queue-list{display:grid;gap:7px;list-style:none;margin:10px 0 0;padding:0;padding-inline-start:0}.queue-item{align-items:start;border-top:1px solid #3d3651;display:grid;gap:6px;grid-template-columns:1.25rem minmax(0,1fr);padding-left:0;padding-top:7px}.queue-item:first-child{border-top:0;padding-top:0}.queue-item__number{color:var(--category-color);font:700 12px ui-monospace,monospace;padding-top:1px;text-align:left}.queue-item__title{display:block;font-weight:600}.queue-item__meta{color:#b9b6c0;font:12px ui-monospace,monospace;margin-top:2px}.queue-empty{color:#b9b6c0;font-size:12px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff6b6b;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
@@ -63,7 +63,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 #codexChat .chat-input,#codexChat .chat-send{border-color:#d0a4ff}
 #codexChat .codex-chat__details{position:relative}#codexChat .codex-chat__details>.estimate-meta{padding-right:52px}
 .component-info{align-items:center;background:transparent;border:1px solid var(--category-color);border-radius:50%;color:var(--category-color);cursor:pointer;display:grid;font:700 15px/1 system-ui;height:32px;justify-items:center;padding:0;width:32px}.component-info:hover{background:color-mix(in srgb,var(--category-color) 16%,transparent)}.platform-health__component{grid-template-columns:auto 1fr auto}.platform-health__component-detail{grid-column:2}.component-modal{background:#15151de8;border:0;height:100dvh;max-height:none;max-width:none;padding:18px;width:100vw}.component-modal[open]{display:grid;place-items:center}.component-modal__panel{border:2px solid var(--modal-accent);box-sizing:border-box;max-height:min(700px,calc(100dvh - 36px));max-width:680px;overflow:auto;padding:20px;position:relative;width:min(680px,calc(100vw - 36px))}.component-modal dl{display:grid;gap:10px;margin:0}.component-modal dt{color:var(--modal-accent);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.component-modal dd{margin:3px 0 0;overflow-wrap:anywhere}.component-modal__restart{background:#253b17;border:1px solid var(--modal-accent);border-radius:8px;color:#e6ffc0;cursor:pointer;font:14px system-ui;margin-top:18px;padding:9px 12px}.component-modal__restart:disabled{cursor:wait;opacity:.7}.component-modal__status{color:#d4ddc7;font-size:13px;margin:10px 0 0}
-#chatInput:focus-visible{outline:2px solid #d0a4ff;outline-offset:2px;box-shadow:0 0 0 4px #292336}
+#chatInput:focus-visible{outline:2px solid var(--house-style);outline-offset:2px;box-shadow:0 0 0 4px var(--dashboard-input-focus-ring)}
 :where(input,select,textarea):focus-visible{outline:2px solid var(--category-color);outline-offset:2px;box-shadow:0 0 0 4px color-mix(in srgb,var(--category-color) 24%,transparent)}
 #reportContent{max-height:50dvh;overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}.technical-details>summary>strong,.codex-chat>summary>strong,#rateLimits>summary>strong,.workspace-card>summary>strong{font-size:17px}
 #rateLimits>summary>strong{color:var(--category-color)}
@@ -242,7 +242,10 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 .prompt-detail-status{align-items:center;display:inline-flex;gap:7px}.prompt-detail-status .indicator{display:block;flex:none}
 
 /* Historical execution evidence is opened from its table row, not duplicated as a dashboard section. */
-.prompt-history-row{cursor:pointer}.prompt-history-lineage{color:#b9b6c0;display:block;font:11px/1.35 system-ui;margin-top:4px;white-space:normal}.prompt-detail-modal{background:transparent;border:0;height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);padding:0;width:min(1000px,94vw)}.prompt-detail-modal::backdrop{background:#0d1018cc}.prompt-detail-modal__panel{--category-color:#8dc7ff;--prompt-detail-surface:var(--dashboard-surface-base,#24242d);background:var(--prompt-detail-surface);border:2px solid var(--category-color);border-radius:18px;box-sizing:border-box;color:#f7f3ee;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden;padding:24px}.prompt-detail-modal__header{align-items:start;background:var(--prompt-detail-surface);border-bottom:1px solid var(--category-color);display:grid;gap:18px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}.prompt-detail-modal__header h2{color:var(--category-color);font-size:24px;margin:0;min-width:0}.prompt-detail-modal__header .report-view-modal__close{grid-column:2;grid-row:1;justify-self:end;position:static}.prompt-detail-modal__description{color:#c9d5e4;font-size:16px;line-height:1.5;margin:16px 0}.prompt-detail-modal__content{align-items:start;box-sizing:border-box;display:grid;gap:18px;grid-template-columns:minmax(0,1fr) minmax(280px,.82fr);min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 10px;scrollbar-gutter:stable both-edges}.prompt-detail-sidebar{align-content:start;align-items:start;display:grid;gap:18px}.prompt-detail-card{background:#24242d;border:1px solid var(--category-color);border-radius:14px;padding:18px}.prompt-detail-card--wide{grid-column:1/-1}.prompt-detail-card h3{color:var(--category-color);font-size:18px;margin:0 0 14px}.prompt-detail-card .field{margin:0 0 14px}.prompt-detail-card .field:last-child{margin-bottom:0}.prompt-detail-card pre{overflow-wrap:anywhere;white-space:pre-wrap}@media (max-width:620px){.prompt-detail-modal{height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);width:min(1000px,94vw)}.prompt-detail-modal__panel{border-radius:18px;padding:18px}.prompt-detail-modal__content{grid-template-columns:1fr;padding-inline:8px}.prompt-detail-modal__header h2{font-size:20px}}html[data-theme="light"] .prompt-detail-modal__panel{--prompt-detail-surface:var(--dashboard-surface-light,#fff);color:#182230}html[data-theme="light"] .prompt-detail-modal__description{color:#415168}html[data-theme="light"] .prompt-detail-card{background:#fff}
+.prompt-history-row{cursor:pointer}.prompt-history-lineage{color:#b9b6c0;display:block;font:11px/1.35 system-ui;margin-top:4px;white-space:normal}
+/* The shared modal shell owns the prompt-detail frame and header. This
+   component owns only its evidence layout and its inner document cards. */
+.prompt-detail-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-detail-modal__content{align-items:start;box-sizing:border-box;display:grid;gap:18px;grid-template-columns:minmax(0,1fr) minmax(280px,.82fr);min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px 10px;scrollbar-gutter:stable both-edges}.prompt-detail-sidebar{align-content:start;align-items:start;display:grid;gap:18px}.prompt-detail-card{border:1px solid var(--category-color);border-radius:14px;padding:18px}.prompt-detail-card--wide{grid-column:1/-1}.prompt-detail-card h3{color:var(--category-color);font-size:18px;margin:0 0 14px}.prompt-detail-card .field{margin:0 0 14px}.prompt-detail-card .field:last-child{margin-bottom:0}.prompt-detail-card pre{overflow-wrap:anywhere;white-space:pre-wrap}@media (max-width:620px){.prompt-detail-modal__content{grid-template-columns:1fr;padding-inline:8px}}
 
 /* Dialog shells may receive programmatic focus, but only their controls need a visible ring. */
 :where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus,:where(.component-modal,.confirmation-modal,.report-view-modal,.prompt-detail-modal,.prompt-chat-modal):focus-visible{box-shadow:none;outline:none}
@@ -258,6 +261,14 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 
 /* AI-answer copy is part of the advisory conversation, so it fills purple instead of the generic blue. */
 .chat-message--assistant .chat-message__copy:hover{background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important;opacity:1}
+
+/* One run has one fixed horizontal lifecycle.  Narrow screens scroll this
+   container only, preserving the page width and topology. */
+.execution-lifecycle{--lifecycle-neutral:#9a9aa3;--lifecycle-blue:var(--category-color,#65c5d9);--lifecycle-complete:#51d88a;--lifecycle-blocked:#ff9f43;--lifecycle-failed:#ff6b6b;background:color-mix(in srgb,var(--category-color,#65c5d9) 10%,var(--dashboard-surface-base));border:1px solid var(--category-color,#65c5d9);border-radius:14px;grid-column:1/-1;padding:14px}.execution-lifecycle h3{color:var(--category-color,#65c5d9);font-size:14px;margin:0 0 10px}.execution-lifecycle__scroll{max-width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}.execution-lifecycle__path{align-items:flex-start;display:flex;list-style:none;margin:0;min-width:max-content;padding:8px 12px 4px}.execution-lifecycle__item{align-items:center;display:flex;flex:0 0 126px;position:relative}.execution-lifecycle__item:not(:last-child)::after{background:var(--lifecycle-neutral);content:"";height:3px;left:74px;position:absolute;top:30px;width:74px;z-index:0}.execution-lifecycle__item--completed:not(:last-child)::after,.execution-lifecycle__item--active:not(:last-child)::after{background:var(--lifecycle-blue)}.execution-lifecycle__node{-webkit-appearance:none;appearance:none;align-items:center;background:none!important;border:0!important;border-radius:0!important;box-shadow:none!important;color:inherit;cursor:default;display:flex;flex-direction:column;font:12px/1.25 system-ui;gap:7px;min-height:76px;min-width:62px;padding:0;position:relative;z-index:1}.execution-lifecycle__node>span:first-child{align-items:center;background:var(--lifecycle-neutral);border:3px solid var(--lifecycle-neutral);border-radius:50%;box-sizing:border-box;color:#172331;display:flex;font-weight:800;height:52px;justify-content:center;width:52px}.execution-lifecycle__item--completed .execution-lifecycle__node>span:first-child{background:var(--lifecycle-blue);border-color:var(--lifecycle-blue)}.execution-lifecycle__item--active .execution-lifecycle__node>span:first-child{background:var(--dashboard-surface-base);border-color:var(--lifecycle-blue);color:var(--lifecycle-blue)}.execution-lifecycle__item--complete .execution-lifecycle__node>span:first-child{background:var(--lifecycle-complete);border-color:var(--lifecycle-complete)}.execution-lifecycle__item--blocked .execution-lifecycle__node>span:first-child{background:var(--lifecycle-blocked);border-color:var(--lifecycle-blocked)}.execution-lifecycle__item--failed .execution-lifecycle__node>span:first-child{background:var(--lifecycle-failed);border-color:var(--lifecycle-failed)}.execution-lifecycle__node--active>span:first-child{animation:lifecycle-pulse 2s ease-in-out infinite;box-shadow:0 0 0 0 color-mix(in srgb,var(--lifecycle-blue) 55%,transparent)}@keyframes lifecycle-pulse{50%{box-shadow:0 0 0 7px transparent}}.execution-lifecycle__badge{background:var(--house-style);border:2px solid var(--dashboard-surface-base);border-radius:999px;color:var(--button-ink);font-size:11px;font-weight:800;line-height:18px;min-width:18px;position:absolute;right:4px;top:0}.execution-lifecycle__summary,.execution-lifecycle__unavailable{color:#c9d5e4;font-size:13px;margin:12px 0 0}.execution-lifecycle__node:focus-visible{cursor:pointer;outline:3px solid var(--house-style);outline-offset:4px}@media (prefers-reduced-motion:reduce){.execution-lifecycle__node--active>span:first-child{animation:none}}@media (max-width:620px){.execution-lifecycle{padding:12px;min-width:0}.execution-lifecycle__scroll{margin-inline:-4px;padding-inline:4px}.execution-lifecycle__item{flex-basis:118px}.execution-lifecycle__item:not(:last-child)::after{width:66px}.execution-lifecycle__path{padding-inline:8px}}html[data-theme="light"] .execution-lifecycle{background:color-mix(in srgb,var(--category-color,#65c5d9) 8%,#fff);color:#182230}.execution-lifecycle--historical{margin:0}
+
+/* Lifecycle geometry, interaction and touch safeguards live beside the state
+   tokens above. Long labels cannot affect the fixed circle/connector rhythm. */
+.execution-lifecycle__item{flex:0 0 126px;isolation:isolate;min-width:126px;width:126px}.execution-lifecycle__node,.execution-lifecycle__node:is(:focus,:focus-visible,:active){-webkit-appearance:none!important;appearance:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;background:transparent!important;background-image:none!important;border:0!important;border-radius:0!important;box-shadow:none!important;cursor:pointer;filter:none!important;min-width:0;outline:0!important;transform:none!important;transition:none;width:100%;will-change:auto;z-index:4}.execution-lifecycle__node>span:last-child{color:inherit;font-weight:inherit;max-width:100%;overflow-wrap:anywhere;text-align:center}.execution-lifecycle__item:not(:last-child)::after{content:none}.execution-lifecycle__connector{background:var(--lifecycle-blue);display:block;height:4px;left:calc(50% + 26px);opacity:1;pointer-events:none;position:absolute;top:24px;width:74px;z-index:3}.execution-lifecycle__item--active .execution-lifecycle__node>span:first-child{background:var(--house-style);border-color:var(--house-style);color:var(--button-ink)}.execution-lifecycle__node--active>span:first-child{box-shadow:0 0 0 0 color-mix(in srgb,var(--house-style) 55%,transparent)}@media (max-width:620px){.execution-lifecycle__item{flex-basis:118px;min-width:118px;width:118px}.execution-lifecycle__connector{left:calc(50% + 26px);width:66px}}
 
 /* A user-authored message is evidence-blue, unlike the advisory AI response. */
 .chat-message--user .chat-message__copy:hover{background:#8dc7ff!important;border-color:#8dc7ff!important;color:#17151a!important;opacity:1}
@@ -416,6 +427,18 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
   .dashboard-titlebar__options-content>.theme-toggle .theme-toggle__label,.dashboard-titlebar__options-content>.section-state-toggle .section-state-toggle__label,.dashboard-titlebar__options-content>.auto-refresh-toggle span{display:block}
   .dashboard-titlebar__options-content>.auto-refresh-toggle{flex-direction:row-reverse;gap:12px;white-space:normal}
   .dashboard-titlebar__options-content>.auto-refresh-toggle input{flex:none}
+  /* Option rows are flat navigation controls, not raised cards. A direct-touch
+     browser may otherwise apply the generic glass shadow to a full-width row
+     or locale picker. The switch thumbs keep their own compact elevation. */
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.theme-toggle,.section-state-toggle,.auto-refresh-toggle),
+  .dashboard-titlebar__options-content .dashboard-locale__button{
+    -webkit-backdrop-filter:none!important;
+    backdrop-filter:none!important;
+    background-image:none!important;
+    box-shadow:none!important;
+    filter:none!important;
+  }
+  .dashboard-titlebar__options-content>:is(.theme-toggle,.section-state-toggle):active{transform:none!important}
 }
 
 /* Log controls */
@@ -436,7 +459,10 @@ html[data-theme="light"] .log-level--error{color:#b42340!important}html[data-the
 html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;color:#182230}
 
 /* Run-scoped AI conversation is opened from Prompt History, alongside evidence actions. */
-.prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}.prompt-chat-modal{background:transparent;border:0;height:min(94vh,1100px);max-width:min(1500px,96vw);padding:0;width:min(1500px,96vw)}.prompt-chat-modal::backdrop{background:#0d1018cc}.prompt-chat-modal__panel{--category-color:#d0a4ff;--prompt-chat-surface:var(--dashboard-surface-base,#24242d);background:var(--prompt-chat-surface);border:2px solid var(--category-color);border-radius:18px;box-sizing:border-box;color:#f7f3ee;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden;padding:24px}.prompt-chat-modal__header{align-items:start;background:var(--prompt-chat-surface);border-bottom:1px solid var(--category-color);display:grid;gap:18px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}.prompt-chat-modal__header h2{color:var(--category-color);font-size:24px;margin:0;min-width:0}.prompt-chat-modal__header .report-view-modal__close{grid-column:2;grid-row:1;justify-self:end;position:static}.prompt-chat-modal__description{color:#dacbe6;font-size:16px;line-height:1.5;margin:16px 0}.prompt-chat-modal #codexChat{align-self:stretch;background:transparent;border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}@media (max-width:620px){.prompt-chat-modal{height:min(90vh,calc(100dvh - 36px));max-width:min(1000px,94vw);width:min(1000px,94vw)}.prompt-chat-modal__panel{border-radius:18px;padding:18px}.prompt-chat-modal__header h2{font-size:20px}}html[data-theme="light"] .prompt-chat-modal__panel{--prompt-chat-surface:var(--dashboard-surface-light,#fff);color:#182230}html[data-theme="light"] .prompt-chat-modal__description{color:#58677b}html[data-theme="light"] .prompt-chat-modal #codexChat{background:transparent}
+.prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}
+/* The shared modal shell owns the chat frame, header and safe-area sizing.
+   Conversation-specific rules begin at the chat surface inside that frame. */
+.prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:transparent;border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
 .prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
@@ -445,7 +471,7 @@ html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;co
 /* Keep the fixed close control above long detail content on every viewport. */
 
 /* The modal footer remains visible even after a visitor enlarges the question box. */
-.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{box-sizing:border-box;grid-template-rows:auto minmax(0,1fr) auto auto auto;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-question-label{margin-bottom:6px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-meta{align-items:end;display:flex;gap:16px;justify-content:space-between;min-height:2.5rem}.prompt-chat-modal .chat-meta .chat-status{margin:0 0 2px;min-height:1.25em;overflow-wrap:anywhere;text-align:right}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
+.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{border-top:0;box-sizing:border-box;grid-template-rows:auto minmax(0,1fr) auto auto auto;margin-top:0;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-question-label{margin-bottom:6px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-meta{align-items:end;display:flex;gap:16px;justify-content:space-between;min-height:2.5rem}.prompt-chat-modal .chat-meta .chat-status{margin:0 0 2px;min-height:1.25em;overflow-wrap:anywhere;text-align:right}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
 .prompt-chat-modal .chat-meta{align-items:start}.prompt-chat-modal .chat-meta .chat-status{align-self:start;margin:6px 0 0}
 /* iOS Safari zooms the document when a control uses text below 16px. Keep
    every editable dashboard control at that threshold in every renderer. */
@@ -494,8 +520,10 @@ html[data-theme="light"] #currentRun>.current-run__title>.label{color:color-mix(
    monitoring-cyan; static technical evidence is operation-pink. */
 #currentRun{--category-color:#65c5d9;--category-secondary:#a7e7f2;background:#1e2b33}
 #currentRun .card,#currentRun .card:has(#currentTime),#currentRun .card:has(#executionEstimate),#currentRun .card:has(#runId),#currentRun .card:has(#executionMode){--category-color:#65c5d9;--category-secondary:#a7e7f2;background:#1b2931;border-color:#65c5d9}
+#currentRun :is(.execution-lifecycle,.execution-context--primary){background:#1b2931!important}
 #engineering-dashboard-content>#technicalDetails{--category-color:var(--house-style);--section-secondary:#ffd59b;background:#302a24;border-color:var(--house-style)}
 html[data-theme="light"] #currentRun{background:#effbfe}
+html[data-theme="light"] #currentRun :is(.execution-lifecycle,.execution-context--primary){background:#fff!important}
 html[data-theme="light"] #engineering-dashboard-content>#technicalDetails{background:#fff6e9}
 
 /* Health remains an accent-led status surface: neutral graphite carries the
@@ -536,14 +564,6 @@ html[data-theme="light"] #pullRefresh{background:var(--house-style-surface);bord
 /* Modal components ---------------------------------------------------------
    All modal families consume this shared surface contract.  Individual
    components below only define their geometry and contextual accent. */
-:is(.component-modal__panel,.confirmation-modal__panel,.report-view-modal__panel,.prompt-detail-modal__panel,.prompt-chat-modal__panel){
-  background:var(--dashboard-modal-surface);
-  border-radius:var(--dashboard-modal-radius);
-  box-shadow:var(--dashboard-modal-shadow);
-  color:var(--dashboard-modal-ink);
-}
-:is(.report-view-modal,.prompt-detail-modal,.prompt-chat-modal)::backdrop{background:var(--dashboard-modal-backdrop)}
-:is(.report-view-modal__content,.prompt-detail-card){background:var(--dashboard-modal-surface)}
 :is(.prompt-detail-modal__description,.prompt-chat-modal__description){border-bottom:1px solid var(--category-color);color:var(--dashboard-modal-muted);margin:16px 0 18px;padding-bottom:18px}
 
 /* Report modal: a fixed header with one scrolling document surface. */
@@ -553,14 +573,8 @@ html[data-theme="light"] .report-view-modal__panel{--report-modal-surface:var(--
 .report-view-modal__content,.report-view-modal :is(#reportContent,#reportAnalysisContent){background:var(--report-modal-surface);box-shadow:none}
 html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .report-view-modal :is(#reportContent,#reportAnalysisContent){background:var(--report-modal-surface);box-shadow:none}
 
-/* Historical execution detail: evidence cards share the report surface. */
-.prompt-detail-modal__panel{--prompt-detail-surface:var(--dashboard-modal-surface);padding:var(--dashboard-modal-panel-padding)}
-.prompt-detail-card{background:var(--dashboard-modal-surface)}
-
 /* Run-scoped advisory conversation: the dialog stays neutral; only replies
    carry the purple conversation tint. */
-.prompt-chat-modal__panel{--prompt-chat-surface:var(--dashboard-modal-surface);padding:var(--dashboard-modal-panel-padding)}
-html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff}
 @media (max-height:600px) and (orientation:landscape){
   /* One compact landscape contract for iPhone dialogs. Safe-area anchoring,
      component sizing and the single-line chat composer stay together so a
@@ -589,11 +603,11 @@ html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff
    Report, execution detail and AI chat use the same structural contract.
    Their modifiers intentionally supply only the contextual accent; geometry
    and modal-surface behaviour live here once. */
-.dashboard-modal-shell{--modal-accent:#8dc7ff;--modal-surface:var(--dashboard-modal-surface);background:transparent;border:0;color:var(--dashboard-modal-ink);padding:0}
-.dashboard-modal-shell--component{--modal-accent:#a3e635}
-.dashboard-modal-shell--confirmation{--modal-accent:var(--house-style)}
-.dashboard-modal-shell--evidence{--modal-accent:#8dc7ff;--category-color:var(--modal-accent)}
-.execution-mode-modal{max-width:min(680px,calc(100vw - 36px));padding:0;width:min(680px,calc(100vw - 36px))}.execution-mode-modal[open]{display:grid;place-items:center}.execution-mode-modal__panel{border:2px solid var(--modal-accent);border-radius:var(--dashboard-modal-radius);box-sizing:border-box;max-height:min(700px,calc(100dvh - 36px));overflow:auto;padding:var(--dashboard-modal-panel-padding);width:100%}.execution-mode-modal__content{display:grid;gap:16px;padding-top:18px}.execution-mode-modal__content>p{color:var(--dashboard-modal-muted);line-height:1.5;margin:0}.execution-mode-modal__definition{background:color-mix(in srgb,var(--modal-accent) 8%,var(--modal-surface));border:1px solid color-mix(in srgb,var(--modal-accent) 55%,transparent);border-radius:12px;padding:14px}.execution-mode-modal__definition h3{color:var(--modal-accent);font-size:16px;margin:0 0 7px}.execution-mode-modal__definition p{line-height:1.5;margin:0}
+.dashboard-modal-shell{--modal-default-accent:#8dc7ff;--modal-accent:var(--modal-parent-accent,var(--modal-default-accent));--modal-surface:var(--dashboard-modal-surface);--modal-header-inset:24px;--modal-header-bottom:var(--modal-header-inset);--modal-header-surface:color-mix(in srgb,var(--modal-accent) 12%,var(--modal-surface));--modal-outer-gutter:16px;--modal-shell-inset:0px;--modal-shell-padding:max(var(--modal-outer-gutter),env(safe-area-inset-top)) max(var(--modal-outer-gutter),env(safe-area-inset-right)) max(var(--modal-outer-gutter),env(safe-area-inset-bottom)) max(var(--modal-outer-gutter),env(safe-area-inset-left));background:transparent;border:0;box-sizing:border-box;color:var(--dashboard-modal-ink);height:calc(100dvh - (var(--modal-shell-inset) * 2));inset:var(--modal-shell-inset);margin:0;max-height:none;max-width:none;padding:var(--modal-shell-padding);position:fixed;width:calc(100vw - (var(--modal-shell-inset) * 2))}
+.dashboard-modal-shell--component{--modal-default-accent:#a3e635}
+.dashboard-modal-shell--confirmation{--modal-default-accent:var(--house-style)}
+.dashboard-modal-shell--evidence{--modal-default-accent:#8dc7ff;--category-color:var(--modal-accent)}
+.execution-mode-modal__panel{max-height:min(700px,100%);overflow:auto;width:min(680px,100%)}.execution-mode-modal__content{display:grid;gap:16px;padding-top:18px}.execution-mode-modal__content>p{color:var(--dashboard-modal-muted);line-height:1.5;margin:0}.execution-mode-modal__definition{background:color-mix(in srgb,var(--modal-accent) 8%,var(--modal-surface));border:1px solid color-mix(in srgb,var(--modal-accent) 55%,transparent);border-radius:12px;padding:14px}.execution-mode-modal__definition h3{color:var(--modal-accent);font-size:16px;margin:0 0 7px}.execution-mode-modal__definition p{line-height:1.5;margin:0}
 
 /* Operations Console chrome: the blue title bar distinguishes the persistent
    application controls from the execution cards below it in both themes. */
@@ -612,11 +626,11 @@ html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff
 .auto-refresh-toggle input:checked::after{background:var(--operations-console-blue);color:#fff}
 .theme-toggle[aria-checked="false"]::after{color:var(--house-style)}
 .theme-toggle[aria-checked="true"]::after{color:#fff}
-.dashboard-modal-shell--chat{--modal-accent:#d0a4ff;--category-color:var(--modal-accent)}
-.dashboard-modal-shell--destructive{--modal-accent:#ff718f}
+.dashboard-modal-shell--chat{--modal-default-accent:#d0a4ff;--category-color:var(--modal-accent)}
+.dashboard-modal-shell--destructive{--modal-default-accent:#ff718f}
 .dashboard-modal-shell::backdrop{background:var(--dashboard-modal-backdrop)}
-.dashboard-modal-shell__panel{background:var(--modal-surface);border-color:var(--modal-accent);box-shadow:var(--dashboard-modal-shadow);color:var(--dashboard-modal-ink)}
-.dashboard-modal-shell__header{align-items:start;border-bottom:1px solid var(--modal-accent);display:grid;gap:16px;grid-template-columns:minmax(0,1fr) max-content;padding:0 0 14px;position:relative;z-index:2}
+.dashboard-modal-shell__panel{background:var(--modal-surface);border:2px solid var(--modal-accent);border-radius:var(--dashboard-modal-radius);box-shadow:var(--dashboard-modal-shadow);box-sizing:border-box;color:var(--dashboard-modal-ink);max-height:min(90dvh,100%);max-width:calc(100vw - max(var(--modal-outer-gutter),env(safe-area-inset-left)) - max(var(--modal-outer-gutter),env(safe-area-inset-right)))!important;min-height:0;padding:var(--dashboard-modal-panel-padding)}
+.dashboard-modal-shell__header{align-items:start;background:var(--modal-header-surface);border-bottom:1px solid var(--modal-accent);display:grid;gap:16px;grid-template-columns:minmax(0,1fr) max-content;margin:calc(-1 * var(--modal-header-inset)) calc(-1 * var(--modal-header-inset)) 0;padding:var(--modal-header-bottom) var(--modal-header-inset);position:relative;z-index:2}
 .dashboard-modal-shell__header h2{color:var(--modal-accent);margin:0;min-width:0}
 .dashboard-modal-shell__close{align-items:center;background:#24242d!important;border:1px solid #92919b!important;border-radius:50%;color:#f7f3ee!important;cursor:pointer;display:inline-flex;font:18px/1 system-ui;grid-column:2;grid-row:1;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;position:static;width:32px}
 .dashboard-modal-shell__close:hover{background:#4a4a55!important;border-color:#b9b6c0!important;color:#fff!important}
@@ -626,7 +640,7 @@ html[data-theme="light"] .prompt-chat-modal{--prompt-chat-answer-surface:#f3ebff
 .dashboard-modal-shell__action:hover:not(:disabled){background:var(--modal-accent)!important;border-color:var(--modal-accent)!important;color:#201812!important}
 html[data-theme="light"] .dashboard-modal-shell{--modal-surface:var(--dashboard-modal-document-surface);color:#182230}
 html[data-theme="light"] .dashboard-modal-shell__panel{color:#182230}
-html[data-theme="light"] .dashboard-modal-shell__close{background:#fff!important;border-color:#728197!important;color:#415168!important}
+html[data-theme="light"] .dashboard-modal-shell__close{background:#f7fbff!important;border-color:#728197!important;color:#27364a!important}
 html[data-theme="light"] .dashboard-modal-shell__close:hover{background:#e9eef6!important;border-color:#58677b!important;color:#182230!important}
 /* Closing a panel is a product-level action, so every close control shares
    the house-style orange hover rather than its surrounding category colour. */
@@ -634,11 +648,14 @@ html[data-theme="light"] .dashboard-modal-shell__close:hover{background:#e9eef6!
 html[data-theme="light"] :is(.component-modal__close,.report-view-modal__close,.dashboard-modal-shell__close):hover{background:var(--house-style)!important;border-color:var(--house-style)!important;color:var(--button-ink)!important}
 html[data-theme="light"] .dashboard-modal-shell__action{background:#fff!important;color:#7a4912!important}
 html[data-theme="light"] .dashboard-modal-shell__action--primary{background:color-mix(in srgb,var(--modal-accent) 16%,#fff)!important}
+
+/* Waiting for a merge is an operator action, not evidence content: its two
+   actions therefore use the shared orange action language rather than blue. */
+#operatorMergeWaitModal .dashboard-modal-shell__action{text-decoration:none}
+#operatorMergeWaitModal .dashboard-modal-shell__action{border-color:#f0b66a!important;color:#fff0dc!important}#operatorMergeWaitModal .dashboard-modal-shell__action--primary{background:#3b281b!important;border-color:#f0b66a!important;color:#fff0dc!important}#operatorMergeWaitModal .dashboard-modal-shell__action--destructive{background:#3a2028!important;border-color:#ff718f!important;color:#ffd9e1!important}#operatorMergeWaitModal .dashboard-modal-shell__action--primary:hover:not(:disabled){background:var(--house-style)!important;border-color:var(--house-style)!important;color:var(--button-ink)!important}#operatorMergeWaitModal .dashboard-modal-shell__action--destructive:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}html[data-theme="light"] #operatorMergeWaitModal .dashboard-modal-shell__action{background:#fff!important;border-color:#d68b23!important;color:#643a13!important}html[data-theme="light"] #operatorMergeWaitModal .dashboard-modal-shell__action--primary{background:#fff8ef!important}html[data-theme="light"] #operatorMergeWaitModal .dashboard-modal-shell__action--destructive{background:#fff1f4!important;border-color:#ff718f!important;color:#b32649!important}
 /* Every modal uses a header tint derived from its own accent.  The component
    modal retains the same structure, with extra space below its ruler. */
-.dashboard-modal-shell{--modal-header-bottom:var(--modal-header-inset);--modal-header-inset:24px;--modal-header-surface:color-mix(in srgb,var(--modal-accent) 12%,var(--modal-surface))}
 html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:color-mix(in srgb,var(--modal-accent) 18%,var(--modal-surface))}
-.dashboard-modal-shell__header{background:var(--modal-header-surface);margin:calc(-1 * var(--modal-header-inset)) calc(-1 * var(--modal-header-inset)) 0;padding:var(--modal-header-bottom) var(--modal-header-inset)}
 .component-modal__panel{--modal-header-inset:20px}
 .confirmation-modal__panel{--modal-header-inset:22px}
 .confirmation-modal__panel{overflow:hidden}
@@ -662,7 +679,14 @@ html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:col
 .dashboard-action--copy:hover:not(:disabled){background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
 .dashboard-action--destructive{background:#3a2028!important;border-color:#ff718f!important;color:#ffd9e1!important}
 .dashboard-action--destructive:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}
+.operator-merge-wait__actions{align-items:stretch;display:flex;flex-wrap:wrap;gap:10px}.operator-merge-wait__actions .dashboard-action{border-radius:10px;flex:1 1 15rem;font:700 15px/1.25 system-ui;height:auto;justify-content:center;min-height:44px;min-width:0;padding:10px 14px;text-align:center;text-decoration:none;width:auto}.operator-merge-wait__actions .dashboard-action--primary{background:#3b281b!important;border-color:#f0b66a!important;color:#fff0dc!important}.operator-merge-wait__actions .dashboard-action--primary:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}
+.operator-merge-wait__actions :is(.dashboard-action--primary,.dashboard-action--destructive),#operatorMergeWaitModal :is(.dashboard-modal-shell__action--primary,.dashboard-modal-shell__action--destructive){align-items:center;display:inline-flex;font-weight:400!important;justify-content:center;text-align:center}.operator-merge-wait__actions :is(.dashboard-action--primary,.dashboard-action--destructive)::before,#operatorMergeWaitModal :is(.dashboard-modal-shell__action--primary,.dashboard-modal-shell__action--destructive)::before{display:block;flex:0 0 auto;font-size:1.15em;font-weight:800;line-height:1;margin-right:9px}.operator-merge-wait__actions .dashboard-action--primary::before,#operatorMergeWaitModal .dashboard-modal-shell__action--primary::before{content:"↗"}.operator-merge-wait__actions .dashboard-action--destructive::before,#operatorMergeWaitModal .dashboard-modal-shell__action--destructive::before{content:"⊘"}
 html[data-theme="light"] .dashboard-action--download{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}
+html[data-theme="light"] .operator-merge-wait__actions .dashboard-action--primary{background:#fff8ef!important;border-color:#d68b23!important;color:#643a13!important}
+/* Some system fonts draw the prohibition symbol much lighter than its declared
+   weight. Give that destructive glyph a tiny symmetric stroke so it remains
+   optically as bold as the neighbouring arrow. */
+.operator-merge-wait__actions .dashboard-action--destructive::before,#operatorMergeWaitModal .dashboard-modal-shell__action--destructive::before{text-shadow:.35px 0 currentColor,-.35px 0 currentColor}
 html[data-theme="light"] .dashboard-action--copy{background:#fff7ff!important;border-color:#b99ae5!important;color:#68498a!important}
 html[data-theme="light"] .dashboard-action--copy:hover:not(:disabled){background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
 html[data-theme="light"] .dashboard-action--destructive{background:#fff1f4!important;border-color:#ff718f!important;color:#b32649!important}
@@ -690,7 +714,7 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
    immediate tactile confirmation without changing desktop pointer behaviour. */
 @media (hover:none) and (pointer:coarse){
   .dashboard-titlebar :is(.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.auto-refresh-toggle input){touch-action:manipulation}
-  button:not(:disabled),[role="button"]:not([aria-disabled="true"]){
+  button:not(:disabled):not(.execution-lifecycle__node),[role="button"]:not([aria-disabled="true"]):not(.execution-lifecycle__node){
     -webkit-tap-highlight-color:transparent;
     -webkit-backdrop-filter:blur(12px) saturate(150%);
     backdrop-filter:blur(12px) saturate(150%);
@@ -699,7 +723,7 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
     transition:transform 120ms ease-out,box-shadow 120ms ease-out,filter 120ms ease-out;
     will-change:transform;
   }
-  button:not(:disabled):active,[role="button"]:not([aria-disabled="true"]):active{
+  button:not(:disabled):not(.execution-lifecycle__node):active,[role="button"]:not([aria-disabled="true"]):not(.execution-lifecycle__node):active{
     filter:brightness(1.08) saturate(1.08);
     transform:translateY(-1px) scale(1.045);
     box-shadow:0 10px 20px rgb(15 23 42 / .34),0 3px 6px rgb(15 23 42 / .22),inset 0 1px 0 rgb(255 255 255 / .58);
@@ -732,6 +756,21 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
     backdrop-filter:none;
     background-image:none;
   }
+  /* Telemetry run IDs are text links in a data table, never glass controls.
+     Otherwise Mobile Safari gives each ID a bright rectangular shadow. */
+  .telemetry-detail-modal .telemetry-run-link{
+    -webkit-backdrop-filter:none;
+    backdrop-filter:none;
+    background-image:none;
+    box-shadow:none;
+    filter:none;
+    will-change:auto;
+  }
+  .telemetry-detail-modal .telemetry-run-link:active{
+    box-shadow:none;
+    filter:none;
+    transform:none;
+  }
   /* Sortable table headers are part of the scrolling document, not floating
      controls. Keeping them opaque avoids Safari compositing the glass layer
      as a vertical gradient while an iOS table is scrolled. */
@@ -751,19 +790,39 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* Keep the input contract last: individual cards may colour their content,
    but they must never replace the selected-control border. */
 :where(input,select,textarea):is(:focus,:focus-visible){border-color:var(--dashboard-input-focus-border)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
-:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
-/* A dialog shell can receive programmatic focus when it opens. It is a
-   container, not an interactive control: its child controls retain the shared
-   focus ring above, while the shell itself must never draw a viewport-sized
-   selected border. This applies to every current and future modal shell. */
+:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node)):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+/* Every dialog owns a full-viewport, safe-area-aware shell. The visible panel
+   is therefore always separated from iPhone edges, including modal families
+   added after the original report/detail implementations. */
+.dashboard-modal-shell[open]{display:grid;place-items:center}
+
+/* A dialog shell is not a selected input. Its heading is the neutral focus
+   target; controls retain the visible keyboard focus treatment. */
 .dashboard-modal-shell:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
-.telemetry-row{cursor:pointer}.telemetry-row:hover td,.telemetry-row:focus-visible td{background:color-mix(in srgb,var(--category-color,#f29ab2) 16%,transparent)}.telemetry-row:focus-visible td{outline:1px solid var(--dashboard-input-focus-border);outline-offset:-1px}.telemetry-detail-modal__panel{max-width:min(1120px,94vw)}.telemetry-detail-modal__content{display:grid;gap:18px;max-height:72vh;overflow:auto}.telemetry-detail-modal__content section{min-width:0}.telemetry-detail-modal__content h3{color:var(--category-color,#8dc7ff);font-size:16px;margin:0 0 10px}.telemetry-detail-modal__content .telemetry-table{min-width:700px}.telemetry-detail-modal__content .technical-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}@media(max-width:620px){.telemetry-detail-modal__panel{max-width:100vw;width:100vw}.telemetry-detail-modal__content{max-height:78vh}.telemetry-detail-modal__content section{overflow-x:auto}.telemetry-table{font-size:12px}}
+.telemetry-row{--dashboard-selected-row-color:var(--category-color,#f29ab2);cursor:pointer}.telemetry-row>td{box-shadow:none!important;outline:0!important}.telemetry-row:hover>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)}.telemetry-detail-modal__panel{max-width:min(1120px,94vw)}.telemetry-detail-modal__content{display:grid;gap:18px;max-height:72vh;overflow:auto}.telemetry-detail-modal__content section{min-width:0}.telemetry-detail-modal__content h3{color:var(--category-color,#8dc7ff);font-size:16px;margin:0 0 10px}.telemetry-detail-modal__content .telemetry-table{min-width:700px}.telemetry-detail-modal__content .technical-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}@media(max-width:620px){.telemetry-detail-modal__panel{max-width:100vw;width:100vw}.telemetry-detail-modal__content{max-height:78vh}.telemetry-detail-modal__content section{overflow-x:auto}.telemetry-table{font-size:12px}}
+/* Telemetry can contain multiple long tables. Keep its outer dialog within
+   the visual viewport and scroll only its evidence body on small screens. */
+.telemetry-detail-modal{--modal-accent:#fb7185;--category-color:var(--modal-accent);--modal-outer-gutter:24px;--modal-shell-inset:24px;--modal-shell-padding:0}.telemetry-detail-modal__panel{--modal-header-inset:var(--dashboard-modal-panel-padding);display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;max-height:100%;overflow:hidden;width:min(1120px,100%)}.telemetry-detail-modal__content{max-height:none;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 4px 4px}@media(max-width:620px){.telemetry-detail-modal__panel{--modal-header-inset:18px;padding:18px}.telemetry-detail-modal__content{padding-inline:2px}}
+.lifecycle-detail-modal{--modal-accent:#65c5d9;--modal-secondary-accent:#a7e7f2}.lifecycle-detail-modal__panel{background:var(--modal-surface);border:2px solid var(--modal-accent);border-radius:var(--dashboard-modal-radius);box-sizing:border-box;color:var(--dashboard-modal-ink);display:grid;grid-template-rows:auto minmax(0,1fr);max-width:min(680px,calc(100vw - 32px));overflow:hidden;padding:var(--dashboard-modal-panel-padding);width:100%}.lifecycle-detail-modal__content{color:var(--dashboard-modal-ink);display:grid;gap:18px;max-height:none;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px}.lifecycle-detail-modal__content .field>span:last-child{color:var(--dashboard-modal-ink)}.lifecycle-detail-modal__content h3{color:var(--modal-accent);font-size:16px;margin:0 0 8px}.lifecycle-detail-modal :is(.label,.lifecycle-detail-modal__phase-list strong){color:var(--modal-secondary-accent)}.lifecycle-detail-modal__phase-list{display:grid;gap:8px;list-style:none;margin:0;padding:0}.lifecycle-detail-modal__phase-list li{align-items:baseline;border-bottom:1px solid color-mix(in srgb,var(--modal-accent) 32%,transparent);display:flex;gap:12px;justify-content:space-between;padding:8px 0}.lifecycle-detail-modal__phase-list span{color:var(--dashboard-modal-muted);text-align:end}html[data-theme="light"] .lifecycle-detail-modal :is(.label,.lifecycle-detail-modal__phase-list strong){color:color-mix(in srgb,var(--modal-secondary-accent) 76%,#182230)}@media(max-width:620px){.lifecycle-detail-modal__panel{max-width:calc(100vw - 32px);padding:18px}.lifecycle-detail-modal__phase-list li{align-items:flex-start;flex-direction:column;gap:4px}.lifecycle-detail-modal__phase-list span{text-align:start}}
+.telemetry-run-link{-webkit-appearance:none;appearance:none;background:transparent;border:0;color:var(--modal-accent);cursor:pointer;font:inherit;line-height:inherit;min-height:0;min-width:0;padding:0;text-align:left;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}.telemetry-run-link:hover{color:var(--house-style)}.telemetry-run-link:focus-visible{outline:1px solid var(--dashboard-input-focus-border);outline-offset:2px}
+/* A glyph is visual control language, not body copy. Keep all icon-only
+   actions and disclosure markers at one deliberate, legible weight. */
+:is(.category-icon,.page-refresh>span,.dashboard-action,.component-info,.prompt-history-report,.prompt-history-analysis,.prompt-history-details,.prompt-history-chat,.dashboard-modal-shell__close,.report-view-modal__close,.chat-send>span){font-weight:700}:is(.technical-details,.codex-chat,.telemetry,.platform-health,#currentRun,.inbox-queue,.prompt-history)>summary::before,:is(.copy.copy--glyph,.download.download--glyph,.component-modal__restart,.rate-limit-reset,.predecessor-retry,.execution-dismiss,.operator-merge-wait__actions :is(.dashboard-action--primary,.dashboard-action--destructive),#operatorMergeWaitModal :is(.dashboard-modal-shell__action--primary,.dashboard-modal-shell__action--destructive),.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-detail-modal__header h2,.prompt-chat-modal__header h2)::before{font-weight:700}
 /* Categories are navigation surfaces, not selected inputs. Their disclosure
    state is already communicated by the open/closed glyph and header surface. */
 :is(.workspace-card,.inbox-queue,.prompt-history,#currentRun,#rateLimits,.platform-health,.telemetry,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs))>summary:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
-/* Table rows cannot reliably paint an outline over a collapsed table header.
-   Paint the complete, thin selection edge on the cells instead. */
-#promptHistoryRows .prompt-history-row:is([data-selected="true"],:focus,:focus-visible){box-shadow:none!important;outline:0!important}
+/* A table row is a selection surface, not a focused control.  Keep the
+   category tint continuous across cells and use just one leading marker. */
+:where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
+:where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)!important;box-shadow:none!important;outline:0!important}
+:where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td:first-child{box-shadow:inset 2px 0 0 var(--dashboard-selected-row-color)!important}
 /* Sort headers stay within their own cell, even when sticky at the top of a
    scroll container. This matches the thin selected-table-row edge. */
 #engineering-dashboard-content .log-table th.log-sortable:focus,#engineering-dashboard-content .log-table th.log-sortable:focus-visible{box-shadow:none!important;outline:1px solid var(--dashboard-input-focus-border)!important;outline-offset:-1px!important;z-index:2}
+/* Native dialog autofocus must never become a visible selected border. */
+dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
+/* Focus is product-wide navigation language, never a category accent.  Keep
+   every visible interactive focus treatment in the house-style orange,
+   including anchor actions inside dialogs. Deliberately non-focusing shells,
+   table-row selection surfaces and lifecycle geometry remain excluded above. */
+:where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}

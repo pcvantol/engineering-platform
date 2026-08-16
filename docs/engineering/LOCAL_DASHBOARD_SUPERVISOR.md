@@ -419,6 +419,11 @@ npm run test:engineering-dashboard
 npm run test:engineering-dashboard-logic
 ```
 
+The dashboard suite also covers the managed PR hand-off semantics: a failed
+required PR check leaves Merge blocked without a completion checkmark and
+renders the localized “Fix pull request checks” current action. This guards
+against presenting a reached PR wait as an already completed merge.
+
 CI runs the browser suite with four isolated workers. Each worker starts its
 own temporary dashboard root and local server, so status fixtures, browser
 preferences and retry projections never leak between tests. Local runs retain

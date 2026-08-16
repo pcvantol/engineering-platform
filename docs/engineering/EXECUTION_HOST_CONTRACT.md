@@ -78,6 +78,15 @@ The watcher reconciles that same durable state after a later restart or browser
 session and continues Finalization only after GitHub reports the merge. Review
 invocations remain `read-only`.
 
+An open pull request with failed required checks is not merge evidence and must
+not be presented as a completed merge. The host enters bounded validation
+repair with `repair_bounded_validation_failure` as its current action. The
+Operations Console presents that action as “Fix pull request checks” in the
+selected UI language, keeps the Merge lifecycle node blocked without a
+checkmark, and returns it to active only when the PR is again awaiting an
+operator merge. A Merge completion is projected only from subsequent
+finalization evidence or a successful terminal outcome.
+
 `workspace-write` is intentionally not used for managed transactions because
 it denies Git index writes. It is suitable for edit-only work, but would leave
 a completed implementation without the commit and repository evidence required

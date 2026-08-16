@@ -53,7 +53,8 @@ near-duplicates in a component.
 ### Category accents
 
 The accent belongs to the information domain and is used consistently for the
-category border, heading/glyph, divider and focus treatment.
+category border, heading/glyph and divider. Keyboard focus is always
+house-style orange; a category accent never becomes a competing focus colour.
 
 | Domain | Accent | Typical surface |
 | --- | --- | --- |
@@ -116,10 +117,11 @@ orange border for actual inputs, selects and text areas.
 
 Cards group one coherent evidence type. Tables retain headers, sortable states
 and horizontal scrolling at narrow widths; they are not squeezed into
-illegible columns. Selected history rows and sortable table headers show a
-thin, unbroken `1px` selected edge inside their own cells. This keeps the
-first row directly under the table header and sticky headers fully bounded
-without drawing across adjacent cells.
+illegible columns. A selected data row is one contiguous treatment: a shared
+tinted row surface with only its leading selection marker. Never draw a
+separate focus or selection border around individual cells. Sortable headers
+may use their own thin focus edge because they are independently interactive;
+that edge must remain contained inside the sticky header cell.
 
 Repeated compact evidence, such as specialist reviewer status, uses an
 auto-fitting grid of at least `180px` tiles. It fills a row when space permits
@@ -146,6 +148,76 @@ count and never report a live Codex-progress or token signal it does not have.
 Log copy means the **currently visible result set**: after filtering, sorting
 and current-page pagination. It includes headers and no hidden rows.
 
+Percentages are locale-formatted with exactly **one fractional digit**. This
+applies to live metrics, limits and telemetry alike, so precision does not
+vary by panel or by refresh.
+
+Estimated execution time is advisory. When at least two completed runs share
+the exact reported runtime profile, the dashboard may use their persisted
+phase timings for the current and remaining operational phases. Operator merge
+and external-check waiting are excluded; the result remains a range, never a
+promise or scheduler input.
+
+### Execution lifecycle flow
+
+In the active-execution card, identify the run first: **Execution title** and
+**Filename** precede the **Execution** identity card (Run-ID and start time).
+The lifecycle flow follows identity, then execution status, execution context
+and local Codex processes, keeping the sequence adjacent to the artifact it
+explains.
+
+Within the active-execution container, the lifecycle and execution-context
+blocks use the same card surface as status and operational blocks. Their
+turquoise border and headings provide the distinction; a lighter inner fill is
+not used.
+
+Lifecycle steps use fixed-width slots, a visible connector element on a layer
+behind the circular nodes, and equal connector length between every adjacent
+pair. The connector centre aligns exactly with the circle centre. Long labels
+wrap within their own slot rather than changing the topology. Labels always
+inherit the standard interface text colour and weight; only the active circle
+uses house-style orange, with a dark glyph, so state is clear without turning
+ordinary step names into status colour.
+
+The flow is part of its enclosing category, not an independent blue surface.
+Its title, border, non-terminal completed circles and connector lines inherit
+the containing category accent. In the active-execution container this is its
+monitoring cyan (`#65c5d9`). Terminal success, blocked and failed states keep
+their dedicated semantic colours; the active circle alone remains
+house-style orange. Lifecycle state, connector geometry, node interaction and
+the touch-safe no-glass treatment are maintained as one stylesheet bundle.
+The lifecycle step-detail modal uses that same monitoring-cyan accent for its
+header, divider and border. Its field labels and phase names use the related
+light-turquoise secondary accent, never the default purple label colour; it is
+not a generic blue evidence modal. In dark mode, factual field values use the
+shared modal ink, so they remain clearly readable against the dark surface.
+
+The flow renders the server lifecycle projection as one coherent update: the
+server-reported current step is the sole active circle. During an operator
+merge wait, **Merge** is the active circle and the summary states the same
+current step. Snapshots carry a source-scoped monotone revision; the client
+must apply them atomically and discard an older revision from the same source,
+so it cannot retain a completed-state glyph from an older snapshot. Until GitHub
+reports the pull request as merged and the Execution Host advances, an open
+operator merge wait therefore renders **Merge** as the orange active circle,
+never as a completed check. This remains true while GitHub checks are queued
+or running: internal `WAIT_FOR_TERMINAL_EVIDENCE` polling is presented as
+`WAIT_FOR_OPERATOR_MERGE`, and the persistent handoff card, **Open pull
+request** and **Abort execution** controls must not disappear or flicker
+between status updates. The handoff modal may open once per run and may be
+dismissed by the operator; that does not hide the persistent card or controls.
+
+Each lifecycle node is an accessible detail control, not a glass or raised
+card. Its modal presents only
+persisted, run-scoped evidence: lifecycle state, observed start and finish
+timestamps, repair iterations where recorded, and a split of the recorded
+Execution Host phase durations. Repeated runtime spans are compacted to one
+row per phase, with the accumulated duration and final recorded outcome; raw
+span evidence remains available to telemetry and audits. Missing evidence is
+explicitly shown as unavailable; the console never derives an end time or
+duration from prompt content, polling cadence or UI state. Repair iterations
+appear in this detail modal, never as a floating badge on the flow itself.
+
 ## 5. Controls
 
 ### Size and form
@@ -161,6 +233,20 @@ There are only three circular control sizes:
 All round controls have the shared elevation shadow. Glyphs and button text
 are non-selectable. A button uses a semantic class (`--download`, `--copy`,
 `--destructive`, etc.) rather than a one-off colour override.
+
+### Glyphs
+
+Glyphs are a shared control language, not ordinary body text. Every
+icon-only action, close control, category glyph, disclosure arrow and
+decorative modal-title glyph uses the shared **bold** glyph weight. This makes
+compact controls equally legible in both themes and at phone scale.
+
+Keep the glyph weight scoped to the glyph itself: the adjacent action label
+stays at its normal text weight. When an action has both a glyph and a label,
+they form one horizontally and vertically centred group; the glyph may create
+only the small leading gap required for recognition. Do not use a glyph alone
+for a non-obvious action, and never make a text label bold merely because it
+sits next to a glyph.
 
 ### Meaning and interaction
 
@@ -192,6 +278,11 @@ Use the shared modal shell and contextual panel. Modal rules are:
 
 1. The header is a tinted category surface with equal top and bottom visual
    padding, a category divider and the standard close control.
+   A modal launched from a category must use that category's accent through
+   the shared `--modal-parent-accent` contract. Dialogs are promoted outside
+   their source DOM, so they cannot rely on CSS inheritance; the opening
+   control resolves and supplies the source accent. A modal without a source
+   retains its contextual default accent.
 2. The document/content surface exactly matches the modal content surface;
    no contrasting “padding frame” may appear around an otherwise white or dark
    document.
@@ -199,15 +290,26 @@ Use the shared modal shell and contextual panel. Modal rules are:
    header divider, not against the modal top edge.
 4. A state-changing action uses the shared confirmation dialog. Its copy says
    what changes, what remains, and any safe recovery path.
-5. On an iPhone, the modal stays within safe areas and its actions cannot fall
-   below browser chrome. Background scrolling is locked while open.
-6. User-facing errors use the shared dashboard error dialog. Do not use a
+5. On an iPhone, every modal shell supplies at least `16px` outer padding
+   (or the larger safe-area inset), its panel stays inside that area and its
+   actions cannot fall below browser chrome. A family may widen that outer
+   gutter only through a shell token (telemetry uses `24px`); it must not
+   recreate a separate viewport, panel or header implementation. Background
+   scrolling is locked while open.
+6. Opening an evidence-only modal puts no control in focus. Only an available
+   primary action may receive initial programmatic focus; close controls,
+   titles and dialog shells never do. The orange selected-control treatment is
+   reserved for actual form inputs, selects and text areas.
+7. User-facing errors use the shared dashboard error dialog. Do not use a
    browser-native `alert`, `confirm` or `prompt`: those surfaces are not
    themed, localizable or consistent with the operational focus contract.
    The dialog provides a localized title, error and recovery text, plus a
    standard dismiss control. Known preflight failures are translated by their
    meaning; unexpected redacted diagnostics use the generic localized error
    template.
+8. An AI conversation modal has one purple divider beneath its descriptive
+   copy. The embedded conversation component must not reintroduce its generic
+   dark top border, margin or secondary ruler inside that modal.
 
 ## 7. Responsive and accessibility contract
 
@@ -215,6 +317,9 @@ At narrow widths (the implementation breakpoint is generally `620px`):
 
 - Preserve readable labels and at least 44px touch targets for primary
   actions; use the mobile title-bar options disclosure for global settings.
+- The expanded mobile title-bar options are flat rows. They and the locale
+  picker never receive the generic direct-touch glass/card shadow; only the
+  switch thumb retains its compact control elevation.
 - Tables use a deliberate horizontal scroll region with styled scrollbars,
   rather than collapsing identifiers or action columns beyond recognition.
 - Avoid fixed viewport-height panels that hide action buttons. Modals must
@@ -296,6 +401,22 @@ Add or extend Playwright coverage for the changed state and, when applicable:
 - sorting/filtering/pagination semantics for tables and logs.
 - the prompt-history page with its longest rendered status, ensuring the
   status column fits and the title contracts before it overlaps.
+- selected rows in every affected table: verify the contiguous row treatment,
+  the single leading marker and the absence of per-cell focus/selection
+  outlines;
+- all modal close controls and title/disclosure glyphs: verify the shared bold
+  glyph weight in both themes;
+- lifecycle flow geometry: verify connector visibility, its layer behind the
+  node, fixed connector length, exact vertical centre alignment, inherited
+  containing-category accent, standard label colour and a coherent
+  active/completed/pending projection, including that an open operator merge
+  wait renders Merge as active rather than completed, retains its handoff
+  controls while checks are queued or running, and lifecycle nodes stay free
+  of generic touch glass/transitions;
+- AI conversation modals: verify the purple descriptive divider remains and
+  no inherited secondary divider is rendered;
+- numeric precision: verify locale-aware percentage output with exactly one
+  fractional digit.
 
 For a visual change, capture and review at minimum: desktop dark, desktop
 light, iPhone dark expanded, and iPhone light expanded. A passing test suite

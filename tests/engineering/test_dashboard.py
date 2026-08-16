@@ -326,8 +326,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('href="/assets/dashboard.css"', page)
         self.assertIn('src="/assets/dashboard.js" type="module"', page)
         self.assertIn('id="pageRefresh"', page)
-        self.assertLess(page.index('id="currentFile"'), page.index('id="executionContext"'))
-        self.assertLess(page.index('id="executionContext"'), page.index('id="indicator"'))
+        self.assertLess(page.index('id="currentFile"'), page.index('id="executionIdentity"'))
+        self.assertLess(page.index('id="executionIdentity"'), page.index('id="indicator"'))
+        self.assertLess(page.index('id="indicator"'), page.index('id="executionContext"'))
+        self.assertLess(page.index('id="executionContext"'), page.index('id="processMetrics"'))
 
         for identifier in (
             "dashboardSplash",
@@ -848,6 +850,8 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(snapshot["status"]["watcher_state"], "WATCHER_IDLE")
         self.assertIn("build_commit", snapshot)
+        self.assertIsInstance(snapshot["snapshot_source"], str)
+        self.assertGreater(snapshot["snapshot_revision"], 0)
         self.assertEqual(snapshot["prompt_started"], {})
         self.assertEqual(snapshot["usage"], {})
         self.assertEqual(snapshot["rate_limits"], {})
