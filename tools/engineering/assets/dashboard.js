@@ -1028,6 +1028,13 @@ function renderHealthStatus(x, snapshot = {}) {
   $("action").textContent = translate(
     x.current_action || t("ui.no_active_action"),
   );
+  const workspaceProgress = x.workspace_progress || {};
+  $("workspaceProgress").hidden = !x.workspace_progress;
+  $("workspaceProgressValue").textContent = [
+    t("workspace_progress.modified", { count: Number(workspaceProgress.modified) || 0 }),
+    t("workspace_progress.created", { count: Number(workspaceProgress.created) || 0 }),
+    t("workspace_progress.deleted", { count: Number(workspaceProgress.deleted) || 0 }),
+  ].join(" · ");
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || t("format.not_available");
   $("executionHostVersion").textContent = executionHost.version || t("format.not_available");

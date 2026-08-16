@@ -20,6 +20,7 @@ def write_live_status(
     action: str,
     reviewer_agents: list[dict[str, object]] | None = None,
     runtime_metadata: Mapping[str, str] | None = None,
+    workspace_progress: Mapping[str, int] | None = None,
 ) -> Path:
     """Atomically publish the advisory current transaction state."""
     directory = root / ".engineering" / "status"
@@ -62,6 +63,15 @@ def write_live_status(
         if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
         and isinstance(value, str)
     }
+    previous_progress = previous.get("workspace_progress") if previous.get("run_id") == state.run_id else None
+    safe_progress = previous_progress if workspace_progress is None else workspace_progress
+    if not isinstance(safe_progress, Mapping):
+        safe_progress = {"modified": 0, "created": 0, "deleted": 0}
+    safe_progress = {
+        key: max(0, int(safe_progress.get(key, 0)))
+        for key in ("modified", "created", "deleted")
+        if isinstance(safe_progress.get(key, 0), int)
+    }
     payload = {
         "run_id": state.run_id,
         "phase": state.phase,
@@ -83,6 +93,7 @@ def write_live_status(
         "active_branch": observed_branch or state.branch or "unavailable",
         "reviewer_agents": reviewer_agents if reviewer_agents is not None else previous_reviewers,
         "runtime_metadata": safe_runtime,
+        "workspace_progress": safe_progress,
     }
     try:
         payload["execution_context"] = load_execution_context_snapshot(root, state.run_id)

@@ -53,6 +53,7 @@ from tools.engineering.capability_review import (
 )
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
+from tools.engineering.execution_executor import workspace_change_summary
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 
 
@@ -789,6 +790,66 @@ class LocalAgentRunnerTest(unittest.TestCase):
         write_live_status(self.root, state, "Codex voert een opdracht uit")
         preserved = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(preserved["reviewer_agents"], reviewers)
+
+    def test_live_status_preserves_safe_workspace_progress(self) -> None:
+        state = TransactionState("workspace-progress", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        write_live_status(
+            self.root,
+            state,
+            "Codex bewerkt bestanden",
+            workspace_progress={"modified": 3, "created": 2, "deleted": 1},
+        )
+        payload = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
+        self.assertEqual(payload["workspace_progress"], {"modified": 3, "created": 2, "deleted": 1})
+        self.assertNotIn("path", json.dumps(payload["workspace_progress"]))
+
+    def test_workspace_change_summary_counts_only_change_categories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(("git", "init", "-q"), cwd=root, check=True)
+            (root / "modified.txt").write_text("before", encoding="utf-8")
+            (root / "deleted.txt").write_text("delete", encoding="utf-8")
+            subprocess.run(("git", "add", "."), cwd=root, check=True)
+            subprocess.run(
+                ("git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "baseline"),
+                cwd=root,
+                check=True,
+            )
+            (root / "modified.txt").write_text("after", encoding="utf-8")
+            (root / "deleted.txt").unlink()
+            (root / "created.txt").write_text("new", encoding="utf-8")
+            self.assertEqual(workspace_change_summary(root), {"modified": 1, "created": 1, "deleted": 1})
+
+    @patch("tools.engineering.execution_executor.workspace_change_summary")
+    @patch("tools.engineering.execution_host.subprocess.Popen")
+    def test_codex_client_publishes_only_changed_aggregate_workspace_progress(
+        self, popen: object, summary: object
+    ) -> None:
+        class Process:
+            pid = 1234
+            stdout = iter((
+                '{"type":"item.started","item":{"type":"reasoning"}}\n',
+                '{"type":"item.updated","item":{"type":"file_change"}}\n',
+            ))
+
+            def wait(self) -> int:
+                return 0
+
+        popen.return_value = Process()
+        summary.side_effect = (
+            {"modified": 0, "created": 0, "deleted": 0},
+            {"modified": 1, "created": 2, "deleted": 0},
+        )
+        observed: list[dict[str, int]] = []
+        client = CodexCliClient()
+        client.set_workspace_progress_callback(observed.append)
+
+        client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertEqual(observed, [
+            {"modified": 0, "created": 0, "deleted": 0},
+            {"modified": 1, "created": 2, "deleted": 0},
+        ])
 
     def test_genesis_mode_requires_an_explicit_execution_mode_declaration(self) -> None:
         self.assertEqual(execution_mode_for("Introduce Genesis Mode documentation."), "MANAGED")

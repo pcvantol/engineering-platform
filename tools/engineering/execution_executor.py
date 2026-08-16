@@ -108,6 +108,7 @@ class CodexCliClient:
         self._process_callback: Callable[[dict[str, int] | None], None] | None = None
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
         self._command_callback: Callable[[str, str, str], None] | None = None
+        self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
 
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
@@ -126,6 +127,12 @@ class CodexCliClient:
     def set_command_callback(self, callback: Callable[[str, str, str], None] | None) -> None:
         """Set a direct JSONL command-boundary sink for execution telemetry."""
         self._command_callback = callback
+
+    def set_workspace_progress_callback(
+        self, callback: Callable[[dict[str, int]], None] | None
+    ) -> None:
+        """Set a bounded, filename-free workspace change counter sink."""
+        self._workspace_progress_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -303,7 +310,12 @@ class CodexCliClient:
         self, command: tuple[str, ...], root: Path
     ) -> subprocess.CompletedProcess[str]:
         """Run Codex, streaming only the approved activity projection when enabled."""
-        if self._activity_callback is None and self._command_callback is None and self._runtime_metadata_callback is None:
+        if (
+            self._activity_callback is None
+            and self._command_callback is None
+            and self._runtime_metadata_callback is None
+            and self._workspace_progress_callback is None
+        ):
             return self.provider.invoke(root, command)
         process = self.provider.spawn(root, command)
         if self._process_callback is not None:
@@ -312,10 +324,16 @@ class CodexCliClient:
             except OSError:
                 self._process_callback(None)
         lines: list[str] = []
+        last_workspace_progress: dict[str, int] | None = None
         try:
             assert process.stdout is not None
             for line in process.stdout:
                 lines.append(line)
+                if self._workspace_progress_callback is not None:
+                    progress = workspace_change_summary(root)
+                    if progress != last_workspace_progress:
+                        self._workspace_progress_callback(progress)
+                        last_workspace_progress = progress
                 observed_metadata = extract_codex_runtime_metadata(line)
                 if len(observed_metadata) > 1:
                     self.last_runtime_metadata.update(observed_metadata)
@@ -327,7 +345,7 @@ class CodexCliClient:
                 except json.JSONDecodeError:
                     activity = None
                     event = None
-                if activity is not None:
+                if activity is not None and self._activity_callback is not None:
                     self._activity_callback(activity)
                 if self._command_callback is not None:
                     command_event = project_codex_command_event(event)
@@ -337,3 +355,29 @@ class CodexCliClient:
         finally:
             if self._process_callback is not None:
                 self._process_callback(None)
+
+
+def workspace_change_summary(root: Path) -> dict[str, int]:
+    """Return only aggregate Git worktree changes for the live status surface."""
+    try:
+        completed = subprocess.run(
+            ("git", "status", "--porcelain=v1", "--untracked-files=all"),
+            cwd=root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return {"modified": 0, "created": 0, "deleted": 0}
+    if completed.returncode:
+        return {"modified": 0, "created": 0, "deleted": 0}
+    summary = {"modified": 0, "created": 0, "deleted": 0}
+    for line in completed.stdout.splitlines():
+        status = line[:2]
+        if status == "??" or "A" in status:
+            summary["created"] += 1
+        elif "D" in status:
+            summary["deleted"] += 1
+        elif status.strip():
+            summary["modified"] += 1
+    return summary

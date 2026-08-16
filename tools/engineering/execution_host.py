@@ -705,6 +705,18 @@ class EngineeringRunner:
                         self.root, state, state.next_action, runtime_metadata=metadata
                     )
                 )
+            if hasattr(self.agent, "set_workspace_progress_callback"):
+                self.agent.set_workspace_progress_callback(
+                    lambda progress: (
+                        self._heartbeat(),
+                        write_live_status(
+                            self.root,
+                            state,
+                            state.next_action,
+                            workspace_progress=progress,
+                        ),
+                    )[1]
+                )
             result = self._invoke_agent_with_timing(
                 state,
                 assemble_prompt(
