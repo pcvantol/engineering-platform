@@ -40,6 +40,27 @@ class PromptHistoryTest(unittest.TestCase):
 
             self.assertEqual(prompt_history(root)[0]["total_execution_seconds"], 125.0)
 
+    def test_persists_aggregate_execution_metadata_from_terminal_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / ".engineering" / "reports" / "execution.md"
+            report.parent.mkdir(parents=True)
+            report.write_text(
+                "\n".join((
+                    "# Engineering Report", "", "- Run ID: `inbox-metadata`",
+                    "- Terminal state: `COMPLETE`", "", "## Execution Metadata",
+                    "- Files Modified: `3`", "- Files Created: `2`",
+                    "- Files Deleted: `1`", "- Codex Commands Executed: `17`", "",
+                )),
+                encoding="utf-8",
+            )
+
+            record_terminal_report(root, report)
+
+            self.assertEqual(prompt_history(root)[0]["execution_metadata"], {
+                "modified": 3, "created": 2, "deleted": 1, "codex_commands_executed": 17,
+            })
+
     def test_projects_total_execution_duration_from_run_bound_component_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -141,7 +162,8 @@ class PromptHistoryTest(unittest.TestCase):
                         "target_checkout_path": None,
                         "tracked_file_count": None,
                         "target_branch": None,
-                        "execution_mode": None,
+                    "execution_metadata": {},
+                    "execution_mode": None,
                         "repository": None,
                         "total_execution_seconds": None,
                         "producer_id": "legacy",

@@ -1225,6 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner.detected_codex_cli,
                 runner.reviewer_records,
                 getattr(runner.agent, "last_runtime_metadata", None),
+                getattr(runner.agent, "last_execution_metadata", None),
             )
             if state.terminal
             else None

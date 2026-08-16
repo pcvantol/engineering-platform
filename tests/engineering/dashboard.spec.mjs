@@ -1997,14 +1997,14 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "activity-run",
       prompt_title: "Veilige voortgang",
       submitted_filename: "activity.md",
-      workspace_progress: { modified: 3, created: 2, deleted: 1 },
+      workspace_progress: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 },
     }, {}));
 
     await expect(page.locator("#currentRun")).toBeVisible();
     await expect(page.locator("#platformVersion")).toHaveText("1.5.0");
     await expect(page.locator("#action")).toHaveText("Codex bewerkt bestanden");
     await expect(page.locator("#action")).toHaveCSS("font-style", "italic");
-    await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd");
+    await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 Codex-opdrachten uitgevoerd");
   });
 
   test("keeps specialist reviewer titles blue in light mode", async ({ page }) => {
@@ -3344,7 +3344,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
-        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence" },
+        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
         usage: { input_tokens: 120, output_tokens: 45 },
@@ -3364,6 +3364,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("/Users/example/Documents/GitHub/forge");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Getrackte bestanden");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("1655");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Bestanden gewijzigd");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Codex-opdrachten uitgevoerd");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("17");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Uitvoeringsmodus");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("GENESIS");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Actieve branch");

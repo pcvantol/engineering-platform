@@ -22,6 +22,12 @@ REPORT_COMMIT = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 REPORT_TARGET_BRANCH = re.compile(r"^- Target Branch: `([^`\n]{1,255})`$", re.MULTILINE)
+REPORT_EXECUTION_METADATA = {
+    "modified": re.compile(r"^- Files Modified: `(\d{1,9})`$", re.MULTILINE),
+    "created": re.compile(r"^- Files Created: `(\d{1,9})`$", re.MULTILINE),
+    "deleted": re.compile(r"^- Files Deleted: `(\d{1,9})`$", re.MULTILINE),
+    "codex_commands_executed": re.compile(r"^- Codex Commands Executed: `(\d{1,9})`$", re.MULTILINE),
+}
 RETRY_OF = re.compile(r"^- Retry Of: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
 ORIGINAL_RUN = re.compile(r"^- Original Run: `([a-z0-9][a-z0-9-]{0,63})`$", re.MULTILINE)
 RETRY_GENERATION = re.compile(r"^- Retry Generation: `(\d+)`$", re.MULTILINE)
@@ -78,6 +84,33 @@ def _safe_target_branch(value: object) -> str | None:
     return branch
 
 
+def safe_execution_metadata(value: object) -> dict[str, int]:
+    """Keep only bounded, aggregate execution counters for presentation."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key in ("modified", "created", "deleted", "codex_commands_executed")
+        for item in (value.get(key),)
+        if isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 1_000_000
+    }
+
+
+def execution_metadata_from_terminal_report(report: Path | None) -> dict[str, int]:
+    """Read only aggregate execution counters from an authoritative report."""
+    if report is None:
+        return {}
+    try:
+        content = report.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return safe_execution_metadata({
+        key: int(match.group(1))
+        for key, pattern in REPORT_EXECUTION_METADATA.items()
+        if (match := pattern.search(content)) is not None
+    })
+
+
 def record_prompt_execution(
     root: Path,
     *,
@@ -94,6 +127,7 @@ def record_prompt_execution(
     target_checkout_path: object = None,
     tracked_file_count: object = None,
     target_branch: object = None,
+    execution_metadata: object = None,
 ) -> None:
     """Upsert a terminal prompt projection without changing execution authority."""
     safe_run_id = _safe_run_id(run_id)
@@ -108,6 +142,7 @@ def record_prompt_execution(
     checkout_path = _safe_checkout_path(target_checkout_path)
     tracked_files = _safe_tracked_file_count(tracked_file_count)
     branch = _safe_target_branch(target_branch)
+    metadata = safe_execution_metadata(execution_metadata) or execution_metadata_from_terminal_report(report)
     if parent is None:
         original = generation = timestamp = None
     elif original is None:
@@ -122,8 +157,8 @@ def record_prompt_execution(
             INSERT INTO prompt_execution_history(
                 run_id, terminal_state, prompt_title, executed_at, git_commit, report_path, retry_of,
                 original_run_id, retry_generation, retry_timestamp, target_checkout_path,
-                tracked_file_count, target_branch, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tracked_file_count, target_branch, execution_metadata, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 terminal_state=excluded.terminal_state,
                 prompt_title=excluded.prompt_title,
@@ -137,6 +172,7 @@ def record_prompt_execution(
                 target_checkout_path=COALESCE(excluded.target_checkout_path, prompt_execution_history.target_checkout_path),
                 tracked_file_count=COALESCE(excluded.tracked_file_count, prompt_execution_history.tracked_file_count),
                 target_branch=COALESCE(excluded.target_branch, prompt_execution_history.target_branch),
+                execution_metadata=CASE WHEN excluded.execution_metadata != '{}' THEN excluded.execution_metadata ELSE prompt_execution_history.execution_metadata END,
                 updated_at=excluded.updated_at
             """,
             (
@@ -153,6 +189,7 @@ def record_prompt_execution(
                 checkout_path,
                 tracked_files,
                 branch,
+                json.dumps(metadata, separators=(",", ":"), sort_keys=True),
                 now,
             ),
         )
@@ -201,6 +238,7 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
         "retry_generation": int(retry_generation.group(1)) if retry_generation else None,
         "retry_timestamp": retry_timestamp.group(1) if retry_timestamp else None,
         "target_branch": target_branch.group(1) if target_branch else None,
+        "execution_metadata": execution_metadata_from_terminal_report(report),
     }
 
 
@@ -355,7 +393,9 @@ def prompt_history(
             SELECT history.run_id, history.terminal_state, history.prompt_title, history.executed_at,
                 history.git_commit, history.report_path, history.retry_of, history.original_run_id,
                 history.retry_generation, history.retry_timestamp, history.target_checkout_path,
-                history.tracked_file_count, history.target_branch, runs.execution_mode, runs.repository,
+                history.tracked_file_count, history.target_branch,
+                COALESCE(NULLIF(history.execution_metadata, '{}'), runs.execution_metadata, '{}'),
+                runs.execution_mode, runs.repository,
                 COALESCE(
                     runs.total_execution_seconds,
                     ROUND((
@@ -410,26 +450,27 @@ def prompt_history(
             "target_checkout_path": row[10],
             "tracked_file_count": row[11],
             "target_branch": row[12],
-            "execution_mode": row[13],
-            "repository": row[14],
-            "total_execution_seconds": row[15],
-            "producer_id": row[16] or "legacy",
-            "producer_type": row[17] or "HUMAN",
-            "producer_version": row[18],
-            "correlation_id": row[19],
-            "mission_id": row[20],
-            "engineering_action_id": row[21],
-            "execution_constraint_version": row[22],
-            "submission_id": row[23],
-            "producer_submission_contract_version": row[24],
-            "execution_context_version": row[25],
-            "execution_context": json.loads(row[26]) if isinstance(row[26], str) else None,
-            "forge_governance_handoff_version": row[27],
-            "forge_governance_handoff": json.loads(row[28]) if isinstance(row[28], str) else None,
-            "dismissed": row[29] is not None,
-            "handling_state": row[30] or "OPEN",
-            "dismissed_at": row[31],
-            "dismissed_by": row[32],
+            "execution_metadata": safe_execution_metadata(json.loads(row[13])) if isinstance(row[13], str) else {},
+            "execution_mode": row[14],
+            "repository": row[15],
+            "total_execution_seconds": row[16],
+            "producer_id": row[17] or "legacy",
+            "producer_type": row[18] or "HUMAN",
+            "producer_version": row[19],
+            "correlation_id": row[20],
+            "mission_id": row[21],
+            "engineering_action_id": row[22],
+            "execution_constraint_version": row[23],
+            "submission_id": row[24],
+            "producer_submission_contract_version": row[25],
+            "execution_context_version": row[26],
+            "execution_context": json.loads(row[27]) if isinstance(row[27], str) else None,
+            "forge_governance_handoff_version": row[28],
+            "forge_governance_handoff": json.loads(row[29]) if isinstance(row[29], str) else None,
+            "dismissed": row[30] is not None,
+            "handling_state": row[31] or "OPEN",
+            "dismissed_at": row[32],
+            "dismissed_by": row[33],
         }
         for row in rows
     ]

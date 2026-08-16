@@ -69,6 +69,9 @@ changes execution semantics.
   log tail only when its server-pushed revision changes.
 - Terminal runs are indexed in local SQLite prompt history with their status,
   title, completed timestamp, available commit and delivered-report reference.
+  Each terminal record also retains a bounded execution-metadata snapshot:
+  aggregate modified, created and deleted file counts plus the number of
+  Codex commands executed. It never stores command text, paths or output.
   The private dashboard renders this evidence projection as a searchable,
   sortable, paginated Promptgeschiedenis table; reports remain downloadable
   only when local delivery succeeded.

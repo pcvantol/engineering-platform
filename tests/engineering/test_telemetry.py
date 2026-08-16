@@ -95,6 +95,29 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 },
             )
 
+    def test_persists_only_aggregate_execution_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            telemetry = ExecutionTelemetry(
+                **{
+                    **self._record("run-metadata", "COMPLETE", datetime.now(timezone.utc)).__dict__,
+                    "execution_metadata": {
+                        "modified": 3, "created": 2, "deleted": 1,
+                        "codex_commands_executed": 17, "command": "must-not-persist",
+                    },
+                }
+            )
+            persist_execution(root, telemetry)
+
+            with open_storage(root) as connection:
+                stored = connection.execute(
+                    "SELECT execution_metadata FROM execution_runs WHERE run_id='run-metadata'"
+                ).fetchone()[0]
+            self.assertEqual(
+                stored,
+                '{"codex_commands_executed":17,"created":2,"deleted":1,"modified":3}',
+            )
+
     def test_daily_timing_detail_projects_canonical_phase_spans_without_double_counting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

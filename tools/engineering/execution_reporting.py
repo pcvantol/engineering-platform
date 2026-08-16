@@ -854,6 +854,7 @@ def generate_terminal_report(
     detected_cli: str | None = None,
     reviewer_records: tuple[dict[str, object], ...] = (),
     runtime_metadata: Mapping[str, str] | None = None,
+    execution_metadata: Mapping[str, int] | None = None,
 ) -> Path:
     """Write one immutable, local-only report for a terminal transaction."""
     reports = root / ".engineering" / "reports"
@@ -882,6 +883,13 @@ def generate_terminal_report(
     reported_model = runtime_metadata.get("model", "not reported")
     reported_reasoning = runtime_metadata.get("reasoning_profile", "not reported")
     reported_configuration = runtime_metadata.get("configuration_profile", "not reported")
+    raw_execution_metadata = execution_metadata or {}
+    safe_execution_metadata = {
+        key: max(0, value)
+        for key in ("modified", "created", "deleted", "codex_commands_executed")
+        for value in (raw_execution_metadata.get(key, 0),)
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
     bundle = collect_terminal_evidence(root, state)
     timing = timing_summary(root, state.run_id)
     timing_lines = ["## Execution Phase Timing"]
@@ -1048,6 +1056,12 @@ def generate_terminal_report(
             f"- Reasoning Profile: `{reported_reasoning}`",
             f"- Configuration Profile: `{reported_configuration}`",
             f"- Codex CLI Version: `{detected_cli or 'unavailable'}`",
+            "",
+            "## Execution Metadata",
+            f"- Files Modified: `{safe_execution_metadata.get('modified', 0)}`",
+            f"- Files Created: `{safe_execution_metadata.get('created', 0)}`",
+            f"- Files Deleted: `{safe_execution_metadata.get('deleted', 0)}`",
+            f"- Codex Commands Executed: `{safe_execution_metadata.get('codex_commands_executed', 0)}`",
             "",
             "## Engineering Platform Qualification",
             qualification_summary,

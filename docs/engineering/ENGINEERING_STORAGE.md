@@ -208,6 +208,14 @@ and its Git tracked-file count when a run reaches a terminal state. The
 Promptgeschiedenis detail dialog presents that immutable workspace snapshot;
 it never substitutes a later live repository count for historical evidence.
 
+Schema `21` adds an immutable `execution_metadata` snapshot to both terminal
+prompt history and execution telemetry. It contains only non-negative,
+bounded aggregates: modified, created and deleted file counts and the number
+of Codex commands executed. The live dashboard may show the same counters for
+an active run, and the prompt-history detail dialog shows the stored terminal
+snapshot. Command text, output, arguments, file paths and file names are never
+stored in this field.
+
 ## Canonical workspace migration
 
 `.engineering/` is the sole canonical local location for status projections,

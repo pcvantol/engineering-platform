@@ -37,7 +37,7 @@ from .component_logging import (
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .telemetry import ExecutionTelemetry, persist_execution_async
-from .prompt_history import backfill_prompt_history, record_prompt_execution
+from .prompt_history import backfill_prompt_history, execution_metadata_from_terminal_report, record_prompt_execution
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
@@ -1588,6 +1588,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         evidence_phase = start_phase(repo, run_id, "EVIDENCE_PERSISTENCE")
         try:
             target_checkout_path, tracked_file_count, target_branch = _terminal_workspace_snapshot(repo, run_id)
+            execution_metadata = execution_metadata_from_terminal_report(delivered)
             record_prompt_execution(
                 repo,
                 run_id=run_id,
@@ -1599,6 +1600,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 target_checkout_path=target_checkout_path,
                 tracked_file_count=tracked_file_count,
                 target_branch=target_branch,
+                execution_metadata=execution_metadata,
                 **retry_metadata(content),
             )
             record_artifact(
@@ -1648,6 +1650,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                     retry_generation=lineage["retry_generation"],
                     retry_timestamp=lineage["retry_timestamp"],
                     prompt_characters=len(content),
+                    execution_metadata=execution_metadata_from_terminal_report(delivered),
                     producer=producer,
                     **runtime_metadata,
                 ),

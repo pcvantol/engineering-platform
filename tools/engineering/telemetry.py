@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from math import sqrt
 from pathlib import Path
 from threading import Lock, Thread, current_thread
@@ -49,6 +50,7 @@ class ExecutionTelemetry:
     runtime_model: str | None = None
     reasoning_profile: str | None = None
     configuration_profile: str | None = None
+    execution_metadata: dict[str, int] | None = None
     producer: ProducerMetadata = ProducerMetadata()
 
 
@@ -72,6 +74,18 @@ def _runtime_value(value: object) -> str | None:
     if not normalized or normalized.casefold() in {"not reported", "unavailable"}:
         return None
     return normalized[:120]
+
+
+def _execution_metadata(value: object) -> str:
+    if not isinstance(value, dict):
+        return "{}"
+    safe = {
+        key: item
+        for key in ("modified", "created", "deleted", "codex_commands_executed")
+        for item in (value.get(key),)
+        if isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 1_000_000
+    }
+    return json.dumps(safe, separators=(",", ":"), sort_keys=True)
 
 
 def persist_execution(
@@ -102,8 +116,8 @@ def persist_execution(
                 original_run_id, retry_generation, retry_timestamp, prompt_characters,
                 runtime_provider, runtime_model, reasoning_profile, configuration_profile
                 , producer_id, producer_type, producer_version, correlation_id, mission_id,
-                engineering_action_id, execution_constraint_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                engineering_action_id, execution_constraint_version, execution_metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 telemetry.run_id,
@@ -138,6 +152,7 @@ def persist_execution(
                 telemetry.producer.mission_id,
                 telemetry.producer.engineering_action_id,
                 telemetry.producer.execution_constraint_version,
+                _execution_metadata(telemetry.execution_metadata),
             ),
         )
         connection.execute(

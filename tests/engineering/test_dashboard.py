@@ -16,7 +16,7 @@ from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _cl
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
-from tools.engineering.storage import open_storage, store_projection
+from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire
 
@@ -827,7 +827,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
         self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], "20")
+        self.assertEqual(details["schema_version"], str(ENGINEERING_STORAGE_SCHEMA_VERSION))
 
     @patch("tools.engineering.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:

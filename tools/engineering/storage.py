@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 20
+ENGINEERING_STORAGE_SCHEMA_VERSION = 21
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -642,6 +642,15 @@ def _schema_v20(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _schema_v21(connection: sqlite3.Connection) -> None:
+    """Persist safe aggregate execution counters with terminal evidence."""
+    for statement in (
+        "ALTER TABLE prompt_execution_history ADD COLUMN execution_metadata TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE execution_runs ADD COLUMN execution_metadata TEXT NOT NULL DEFAULT '{}'",
+    ):
+        connection.execute(statement)
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -709,6 +718,7 @@ MIGRATIONS: dict[int, Migration] = {
     18: _schema_v18,
     19: _schema_v19,
     20: _schema_v20,
+    21: _schema_v21,
 }
 
 

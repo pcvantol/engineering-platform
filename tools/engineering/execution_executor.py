@@ -104,6 +104,15 @@ class CodexCliClient:
         self.last_usage: dict[str, int | float | str] = {}
         self.last_execution_seconds: float | None = None
         self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
+        # This deliberately contains only aggregate counters.  Command text,
+        # paths and command output are never retained in live or terminal
+        # execution metadata.
+        self.last_execution_metadata: dict[str, int] = {
+            "modified": 0,
+            "created": 0,
+            "deleted": 0,
+            "codex_commands_executed": 0,
+        }
         self._activity_callback: Callable[[str], None] | None = None
         self._process_callback: Callable[[dict[str, int] | None], None] | None = None
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
@@ -310,6 +319,12 @@ class CodexCliClient:
         self, command: tuple[str, ...], root: Path
     ) -> subprocess.CompletedProcess[str]:
         """Run Codex, streaming only the approved activity projection when enabled."""
+        self.last_execution_metadata = {
+            "modified": 0,
+            "created": 0,
+            "deleted": 0,
+            "codex_commands_executed": 0,
+        }
         if (
             self._activity_callback is None
             and self._command_callback is None
@@ -325,14 +340,16 @@ class CodexCliClient:
                 self._process_callback(None)
         lines: list[str] = []
         last_workspace_progress: dict[str, int] | None = None
+        observed_command_ids: set[str] = set()
         try:
             assert process.stdout is not None
             for line in process.stdout:
                 lines.append(line)
                 if self._workspace_progress_callback is not None:
                     progress = workspace_change_summary(root)
+                    self.last_execution_metadata.update(progress)
                     if progress != last_workspace_progress:
-                        self._workspace_progress_callback(progress)
+                        self._workspace_progress_callback(dict(self.last_execution_metadata))
                         last_workspace_progress = progress
                 observed_metadata = extract_codex_runtime_metadata(line)
                 if len(observed_metadata) > 1:
@@ -350,6 +367,11 @@ class CodexCliClient:
                 if self._command_callback is not None:
                     command_event = project_codex_command_event(event)
                     if command_event is not None:
+                        if command_event[0] == "started" and command_event[1] not in observed_command_ids:
+                            observed_command_ids.add(command_event[1])
+                            self.last_execution_metadata["codex_commands_executed"] += 1
+                            if self._workspace_progress_callback is not None:
+                                self._workspace_progress_callback(dict(self.last_execution_metadata))
                         self._command_callback(*command_event)
             return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
         finally:

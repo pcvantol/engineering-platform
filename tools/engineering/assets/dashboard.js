@@ -1057,6 +1057,7 @@ function renderHealthStatus(x, snapshot = {}) {
     t("workspace_progress.modified", { count: Number(workspaceProgress.modified) || 0 }),
     t("workspace_progress.created", { count: Number(workspaceProgress.created) || 0 }),
     t("workspace_progress.deleted", { count: Number(workspaceProgress.deleted) || 0 }),
+    t("workspace_progress.codex_commands", { count: Number(workspaceProgress.codex_commands_executed) || 0 }),
   ].join(" · ");
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || t("format.not_available");
@@ -3834,6 +3835,10 @@ function promptDetailExecutionSection(history) {
     detailField(t("ui.active_branch"), history.target_branch || t("detail.not_recorded"), true),
     detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true),
     detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
+    detailField(t("detail.files_modified"), history.execution_metadata?.modified ?? t("detail.not_recorded")),
+    detailField(t("detail.files_created"), history.execution_metadata?.created ?? t("detail.not_recorded")),
+    detailField(t("detail.files_deleted"), history.execution_metadata?.deleted ?? t("detail.not_recorded")),
+    detailField(t("detail.codex_commands"), history.execution_metadata?.codex_commands_executed ?? t("detail.not_recorded")),
     ...contextFields,
   ]);
 }

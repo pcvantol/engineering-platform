@@ -800,7 +800,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             workspace_progress={"modified": 3, "created": 2, "deleted": 1},
         )
         payload = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
-        self.assertEqual(payload["workspace_progress"], {"modified": 3, "created": 2, "deleted": 1})
+        self.assertEqual(payload["workspace_progress"], {
+            "modified": 3, "created": 2, "deleted": 1, "codex_commands_executed": 0,
+        })
         self.assertNotIn("path", json.dumps(payload["workspace_progress"]))
 
     def test_workspace_change_summary_counts_only_change_categories(self) -> None:
@@ -847,9 +849,35 @@ class LocalAgentRunnerTest(unittest.TestCase):
         client._run_invocation(("codex", "exec", "--json"), self.root)
 
         self.assertEqual(observed, [
-            {"modified": 0, "created": 0, "deleted": 0},
-            {"modified": 1, "created": 2, "deleted": 0},
+            {"modified": 0, "created": 0, "deleted": 0, "codex_commands_executed": 0},
+            {"modified": 1, "created": 2, "deleted": 0, "codex_commands_executed": 0},
         ])
+
+    @patch("tools.engineering.execution_executor.workspace_change_summary")
+    @patch("tools.engineering.execution_host.subprocess.Popen")
+    def test_codex_client_counts_only_distinct_started_commands(self, popen: object, summary: object) -> None:
+        class Process:
+            pid = 1234
+            stdout = iter((
+                '{"type":"item.started","item":{"type":"command_execution","id":"command-1","command":"pytest"}}\n',
+                '{"type":"item.completed","item":{"type":"command_execution","id":"command-1"}}\n',
+                '{"type":"item.started","item":{"type":"command_execution","id":"command-2","command":"git status"}}\n',
+            ))
+
+            def wait(self) -> int:
+                return 0
+
+        popen.return_value = Process()
+        summary.return_value = {"modified": 1, "created": 0, "deleted": 0}
+        client = CodexCliClient()
+        client.set_command_callback(lambda *_: None)
+        client.set_workspace_progress_callback(lambda _: None)
+
+        client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertEqual(client.last_execution_metadata, {
+            "modified": 1, "created": 0, "deleted": 0, "codex_commands_executed": 2,
+        })
 
     def test_genesis_mode_requires_an_explicit_execution_mode_declaration(self) -> None:
         self.assertEqual(execution_mode_for("Introduce Genesis Mode documentation."), "MANAGED")

@@ -69,7 +69,7 @@ def write_live_status(
         safe_progress = {"modified": 0, "created": 0, "deleted": 0}
     safe_progress = {
         key: max(0, int(safe_progress.get(key, 0)))
-        for key in ("modified", "created", "deleted")
+        for key in ("modified", "created", "deleted", "codex_commands_executed")
         if isinstance(safe_progress.get(key, 0), int)
     }
     payload = {
