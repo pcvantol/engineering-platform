@@ -9,7 +9,7 @@ import tempfile
 from threading import Thread
 import unittest
 from contextlib import contextmanager, nullcontext
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 from tools.engineering import dashboard
 from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, binding_addresses
@@ -22,6 +22,12 @@ from tools.engineering.execution_lease import acquire
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_browser_dashboard_validation_uses_eight_parallel_ci_workers(self) -> None:
+        config = (Path(__file__).parents[2] / "playwright.config.mjs").read_text(encoding="utf-8")
+
+        self.assertIn("fullyParallel: true", config)
+        self.assertIn("workers: process.env.CI ? 8 : undefined", config)
+
     def test_workspace_card_shows_free_space_on_its_volume(self) -> None:
         with patch(
             "tools.engineering.dashboard.shutil.disk_usage",
@@ -145,6 +151,51 @@ class DashboardStatusTest(unittest.TestCase):
         ]
         with self.assertRaisesRegex(RuntimeError, "geen lokale wijzigingen"):
             dashboard._restore_managed_main_branch(root)
+
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_managed_branch_synchronization_only_fast_forwards_a_clean_expected_branch(
+        self, git_provider: object, launchd: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        git_provider.return_value.execute.side_effect = [
+            __import__("subprocess").CompletedProcess(("git",), 0, "", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "main\n", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "origin/main\n", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "1\t0\n", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "0\t0\n", ""),
+        ]
+
+        self.assertEqual(
+            dashboard._synchronize_managed_branch_with_upstream(root),
+            {"branch": "main", "upstream": "origin/main", "watcher": "restarted"},
+        )
+        self.assertEqual(
+            git_provider.return_value.command.call_args_list,
+            [
+                call(root, "git", "fetch", "--quiet", "origin"),
+                call(root, "git", "merge", "--ff-only", "@{upstream}"),
+            ],
+        )
+        launchd.return_value.restart.assert_called_once_with(dashboard.WATCHER_LABEL)
+
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_managed_branch_synchronization_refuses_local_commits(
+        self, git_provider: object, launchd: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        git_provider.return_value.execute.side_effect = [
+            __import__("subprocess").CompletedProcess(("git",), 0, "", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "main\n", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "origin/main\n", ""),
+            __import__("subprocess").CompletedProcess(("git",), 0, "0\t1\n", ""),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "lokale commits"):
+            dashboard._synchronize_managed_branch_with_upstream(root)
+        git_provider.return_value.command.assert_called_once_with(root, "git", "fetch", "--quiet", "origin")
+        launchd.return_value.restart.assert_not_called()
 
     @patch("tools.engineering.dashboard.LocalProcessProvider")
     @patch("tools.engineering.dashboard.shutil.which", return_value="/usr/sbin/lsof")
@@ -1463,6 +1514,17 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 409)
                 self.assertEqual(json.loads(response.read()), {"error": "De werkmap kon niet veilig naar main worden hersteld."})
+            synchronization = {"branch": "main", "upstream": "origin/main", "watcher": "restarted"}
+            with patch("tools.engineering.dashboard._synchronize_managed_branch_with_upstream", return_value=synchronization):
+                connection.request("POST", "/api/managed-branch-synchronization", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), synchronization)
+            with patch("tools.engineering.dashboard._synchronize_managed_branch_with_upstream", side_effect=RuntimeError("busy")):
+                connection.request("POST", "/api/managed-branch-synchronization", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "De verwachte branch kon niet veilig worden gesynchroniseerd."})
             with patch("tools.engineering.dashboard._recover_stale_workspace_git_lock", return_value={"recovered": True}):
                 connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()

@@ -2071,6 +2071,112 @@ Object.assign(DASHBOARD_MESSAGES.de, {"execution_context.mission_title":"Mission
 Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.mission_title":"Titre de la mission","execution_context.mission_lifecycle":"Cycle de vie de la mission","execution_context.business_summary":"Résumé métier","execution_context.engineering_summary":"Résumé d’ingénierie","execution_context.current_intent":"Intention actuelle","execution_context.current_engineering_action":"Action d’ingénierie actuelle","execution_context.execution_phase":"Phase d’exécution","execution_context.planning_confidence":"Confiance de planification","execution_context.current_iteration":"Itération actuelle","execution_context.last_runtime_update":"Dernière mise à jour runtime","execution_context.version":"Version du contexte d’exécution"});
 Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.mission_title":"Título de la misión","execution_context.mission_lifecycle":"Ciclo de vida de la misión","execution_context.business_summary":"Resumen de negocio","execution_context.engineering_summary":"Resumen de ingeniería","execution_context.current_intent":"Intención actual","execution_context.current_engineering_action":"Acción de ingeniería actual","execution_context.execution_phase":"Fase de ejecución","execution_context.planning_confidence":"Confianza de planificación","execution_context.current_iteration":"Iteración actual","execution_context.last_runtime_update":"Última actualización de runtime","execution_context.version":"Versión del contexto de ejecución"});
 
+Object.assign(DASHBOARD_MESSAGES.en, {
+  "logs.event_fallback":"System event: {event}",
+  "log_event.watcher_started":"Inbox watcher started", "log_event.watcher_shutdown_completed":"Inbox watcher stopped", "log_event.watcher_cycle_failed":"Inbox watcher cycle failed", "log_event.watcher_idle":"Inbox watcher is idle",
+  "log_event.runner_started":"Execution runner started", "log_event.runner_detached":"Execution runner detached", "log_event.job_claimed":"Execution claimed", "log_event.job_completed":"Execution completed", "log_event.job_failed":"Execution failed",
+  "log_event.workspace_preflight_failed":"Workspace preflight failed", "log_event.host_preflight_failed":"Execution Host preflight failed", "log_event.capability_preflight_failed":"Capability preflight failed",
+  "log_event.stale_git_lock_recovered":"Stale Git lock recovered", "log_event.managed_branch_recovery_completed":"Workspace branch restored", "log_event.execution_retry_triggered":"Execution retry requested", "log_event.execution_dismissed":"Execution dismissed", "log_event.queue_item_deferred":"Queue item deferred", "log_event.queue_recovery_triggered":"Queue recovery requested",
+  "log_event.component_restart_trigger_received":"Component restart requested", "log_event.component_restart_failed":"Component restart failed", "log_event.component_shutdown_trigger_received":"Component shutdown requested", "log_event.component_log_cleared":"Component log cleared",
+  "log_event.dashboard_started":"Status dashboard started", "log_event.dashboard_shutdown_completed":"Status dashboard stopped", "log_event.dashboard_start_failed":"Status dashboard failed to start",
+  "log_event.producer_submission_invalid":"Producer submission rejected", "log_event.duplicate_job_ignored":"Duplicate execution ignored", "log_event.duplicate_watcher_refused":"Duplicate watcher refused", "log_event.duplicate_dashboard_refused":"Duplicate dashboard refused",
+  "log_event.submission_persist_failed":"Submission could not be saved", "log_event.prompt_history_reconciliation_failed":"Execution history reconciliation failed", "log_event.prompt_history_persist_failed":"Execution history could not be saved", "log_event.telemetry_persist_failed":"Telemetry could not be saved", "log_event.telemetry_schedule_failed":"Telemetry scheduling failed",
+  "log_event.terminal_report_corrected":"Terminal report corrected", "log_event.active_run_lease_reconciled":"Active execution lease reconciled", "log_event.detached_runner_job_missing":"Detached execution job is missing", "log_event.inbox_scan":"Inbox scanned", "log_event.active_transaction_queue_refreshed":"Active execution queue refreshed",
+  "log_event.inbox_log_unavailable":"Inbox watcher log unavailable", "log_event.dashboard_log_unavailable":"Status dashboard log unavailable"
+});
+Object.assign(DASHBOARD_MESSAGES.nl, {
+  "logs.event_fallback":"Systeemgebeurtenis: {event}",
+  "log_event.watcher_started":"Inbox-watcher gestart", "log_event.watcher_shutdown_completed":"Inbox-watcher gestopt", "log_event.watcher_cycle_failed":"Cyclus van Inbox-watcher mislukt", "log_event.watcher_idle":"Inbox-watcher is inactief",
+  "log_event.runner_started":"Uitvoeringsrunner gestart", "log_event.runner_detached":"Uitvoeringsrunner losgekoppeld", "log_event.job_claimed":"Uitvoering opgepakt", "log_event.job_completed":"Uitvoering voltooid", "log_event.job_failed":"Uitvoering mislukt",
+  "log_event.workspace_preflight_failed":"Werkruimte-preflight mislukt", "log_event.host_preflight_failed":"Preflight van Execution Host mislukt", "log_event.capability_preflight_failed":"Capability-preflight mislukt",
+  "log_event.stale_git_lock_recovered":"Verouderde Git-vergrendeling hersteld", "log_event.managed_branch_recovery_completed":"Werkruimtebranch hersteld", "log_event.execution_retry_triggered":"Opnieuw proberen aangevraagd", "log_event.execution_dismissed":"Uitvoering afgesloten", "log_event.queue_item_deferred":"Wachtrij-item uitgesteld", "log_event.queue_recovery_triggered":"Wachtrijherstel aangevraagd",
+  "log_event.component_restart_trigger_received":"Herstart van component aangevraagd", "log_event.component_restart_failed":"Herstart van component mislukt", "log_event.component_shutdown_trigger_received":"Afsluiten van component aangevraagd", "log_event.component_log_cleared":"Componentlog gewist",
+  "log_event.dashboard_started":"Statusdashboard gestart", "log_event.dashboard_shutdown_completed":"Statusdashboard gestopt", "log_event.dashboard_start_failed":"Statusdashboard kon niet starten",
+  "log_event.producer_submission_invalid":"Producerinzending afgewezen", "log_event.duplicate_job_ignored":"Dubbele uitvoering genegeerd", "log_event.duplicate_watcher_refused":"Dubbele watcher geweigerd", "log_event.duplicate_dashboard_refused":"Dubbel dashboard geweigerd",
+  "log_event.submission_persist_failed":"Inzending kon niet worden opgeslagen", "log_event.prompt_history_reconciliation_failed":"Afstemming van uitvoeringsgeschiedenis mislukt", "log_event.prompt_history_persist_failed":"Uitvoeringsgeschiedenis kon niet worden opgeslagen", "log_event.telemetry_persist_failed":"Telemetrie kon niet worden opgeslagen", "log_event.telemetry_schedule_failed":"Inplannen van telemetrie mislukt",
+  "log_event.terminal_report_corrected":"Eindrapport gecorrigeerd", "log_event.active_run_lease_reconciled":"Lease van actieve uitvoering afgestemd", "log_event.detached_runner_job_missing":"Losgekoppelde uitvoeringstaak ontbreekt", "log_event.inbox_scan":"Inbox gescand", "log_event.active_transaction_queue_refreshed":"Wachtrij met actieve uitvoering ververst",
+  "log_event.inbox_log_unavailable":"Log van Inbox-watcher niet beschikbaar", "log_event.dashboard_log_unavailable":"Log van statusdashboard niet beschikbaar"
+});
+Object.assign(DASHBOARD_MESSAGES.de, {
+  "logs.event_fallback":"Systemereignis: {event}",
+  "log_event.watcher_started":"Inbox-Watcher gestartet", "log_event.watcher_shutdown_completed":"Inbox-Watcher angehalten", "log_event.watcher_cycle_failed":"Inbox-Watcher-Zyklus fehlgeschlagen", "log_event.watcher_idle":"Inbox-Watcher ist inaktiv",
+  "log_event.runner_started":"Ausführungsrunner gestartet", "log_event.runner_detached":"Ausführungsrunner getrennt", "log_event.job_claimed":"Ausführung übernommen", "log_event.job_completed":"Ausführung abgeschlossen", "log_event.job_failed":"Ausführung fehlgeschlagen",
+  "log_event.workspace_preflight_failed":"Arbeitsbereich-Vorprüfung fehlgeschlagen", "log_event.host_preflight_failed":"Vorprüfung des Execution Host fehlgeschlagen", "log_event.capability_preflight_failed":"Fähigkeitsvorprüfung fehlgeschlagen",
+  "log_event.stale_git_lock_recovered":"Veraltete Git-Sperre wiederhergestellt", "log_event.managed_branch_recovery_completed":"Arbeitsbereichsbranch wiederhergestellt", "log_event.execution_retry_triggered":"Ausführungswiederholung angefordert", "log_event.execution_dismissed":"Ausführung abgeschlossen", "log_event.queue_item_deferred":"Warteschlangeneintrag zurückgestellt", "log_event.queue_recovery_triggered":"Warteschlangenwiederherstellung angefordert",
+  "log_event.component_restart_trigger_received":"Komponentenneustart angefordert", "log_event.component_restart_failed":"Komponentenneustart fehlgeschlagen", "log_event.component_shutdown_trigger_received":"Komponentenstopp angefordert", "log_event.component_log_cleared":"Komponentenprotokoll gelöscht",
+  "log_event.dashboard_started":"Status-Dashboard gestartet", "log_event.dashboard_shutdown_completed":"Status-Dashboard angehalten", "log_event.dashboard_start_failed":"Status-Dashboard konnte nicht gestartet werden",
+  "log_event.producer_submission_invalid":"Producer-Übermittlung abgelehnt", "log_event.duplicate_job_ignored":"Doppelte Ausführung ignoriert", "log_event.duplicate_watcher_refused":"Doppelter Watcher abgelehnt", "log_event.duplicate_dashboard_refused":"Doppeltes Dashboard abgelehnt",
+  "log_event.submission_persist_failed":"Übermittlung konnte nicht gespeichert werden", "log_event.prompt_history_reconciliation_failed":"Abgleich des Ausführungsverlaufs fehlgeschlagen", "log_event.prompt_history_persist_failed":"Ausführungsverlauf konnte nicht gespeichert werden", "log_event.telemetry_persist_failed":"Telemetrie konnte nicht gespeichert werden", "log_event.telemetry_schedule_failed":"Telemetrieplanung fehlgeschlagen",
+  "log_event.terminal_report_corrected":"Abschlussbericht korrigiert", "log_event.active_run_lease_reconciled":"Lease der aktiven Ausführung abgeglichen", "log_event.detached_runner_job_missing":"Getrennte Ausführungsaufgabe fehlt", "log_event.inbox_scan":"Inbox gescannt", "log_event.active_transaction_queue_refreshed":"Warteschlange der aktiven Ausführung aktualisiert",
+  "log_event.inbox_log_unavailable":"Inbox-Watcher-Protokoll nicht verfügbar", "log_event.dashboard_log_unavailable":"Status-Dashboard-Protokoll nicht verfügbar"
+});
+Object.assign(DASHBOARD_MESSAGES.fr, {
+  "logs.event_fallback":"Événement système : {event}",
+  "log_event.watcher_started":"Surveillant de boîte de réception démarré", "log_event.watcher_shutdown_completed":"Surveillant de boîte de réception arrêté", "log_event.watcher_cycle_failed":"Cycle du surveillant échoué", "log_event.watcher_idle":"Surveillant de boîte de réception inactif",
+  "log_event.runner_started":"Exécuteur d’exécution démarré", "log_event.runner_detached":"Exécuteur d’exécution détaché", "log_event.job_claimed":"Exécution prise en charge", "log_event.job_completed":"Exécution terminée", "log_event.job_failed":"Exécution échouée",
+  "log_event.workspace_preflight_failed":"Précontrôle de l’espace de travail échoué", "log_event.host_preflight_failed":"Précontrôle de l’hôte d’exécution échoué", "log_event.capability_preflight_failed":"Précontrôle de capacité échoué",
+  "log_event.stale_git_lock_recovered":"Verrou Git obsolète récupéré", "log_event.managed_branch_recovery_completed":"Branche de l’espace de travail restaurée", "log_event.execution_retry_triggered":"Nouvelle tentative d’exécution demandée", "log_event.execution_dismissed":"Exécution clôturée", "log_event.queue_item_deferred":"Élément de file différé", "log_event.queue_recovery_triggered":"Récupération de file demandée",
+  "log_event.component_restart_trigger_received":"Redémarrage du composant demandé", "log_event.component_restart_failed":"Redémarrage du composant échoué", "log_event.component_shutdown_trigger_received":"Arrêt du composant demandé", "log_event.component_log_cleared":"Journal du composant effacé",
+  "log_event.dashboard_started":"Tableau de bord d’état démarré", "log_event.dashboard_shutdown_completed":"Tableau de bord d’état arrêté", "log_event.dashboard_start_failed":"Le tableau de bord d’état n’a pas pu démarrer",
+  "log_event.producer_submission_invalid":"Soumission du producteur rejetée", "log_event.duplicate_job_ignored":"Exécution en double ignorée", "log_event.duplicate_watcher_refused":"Surveillant en double refusé", "log_event.duplicate_dashboard_refused":"Tableau de bord en double refusé",
+  "log_event.submission_persist_failed":"La soumission n’a pas pu être enregistrée", "log_event.prompt_history_reconciliation_failed":"Rapprochement de l’historique d’exécution échoué", "log_event.prompt_history_persist_failed":"L’historique d’exécution n’a pas pu être enregistré", "log_event.telemetry_persist_failed":"La télémétrie n’a pas pu être enregistrée", "log_event.telemetry_schedule_failed":"Planification de télémétrie échouée",
+  "log_event.terminal_report_corrected":"Rapport final corrigé", "log_event.active_run_lease_reconciled":"Bail de l’exécution active rapproché", "log_event.detached_runner_job_missing":"Tâche d’exécution détachée manquante", "log_event.inbox_scan":"Boîte de réception analysée", "log_event.active_transaction_queue_refreshed":"File d’exécution active actualisée",
+  "log_event.inbox_log_unavailable":"Journal du surveillant de boîte de réception indisponible", "log_event.dashboard_log_unavailable":"Journal du tableau de bord d’état indisponible"
+});
+Object.assign(DASHBOARD_MESSAGES.es, {
+  "logs.event_fallback":"Evento del sistema: {event}",
+  "log_event.watcher_started":"Monitor de bandeja de entrada iniciado", "log_event.watcher_shutdown_completed":"Monitor de bandeja de entrada detenido", "log_event.watcher_cycle_failed":"Ciclo del monitor fallido", "log_event.watcher_idle":"Monitor de bandeja de entrada inactivo",
+  "log_event.runner_started":"Ejecutor de ejecución iniciado", "log_event.runner_detached":"Ejecutor de ejecución desconectado", "log_event.job_claimed":"Ejecución tomada", "log_event.job_completed":"Ejecución completada", "log_event.job_failed":"Ejecución fallida",
+  "log_event.workspace_preflight_failed":"Comprobación previa del espacio de trabajo fallida", "log_event.host_preflight_failed":"Comprobación previa del host de ejecución fallida", "log_event.capability_preflight_failed":"Comprobación previa de capacidades fallida",
+  "log_event.stale_git_lock_recovered":"Bloqueo Git obsoleto recuperado", "log_event.managed_branch_recovery_completed":"Rama del espacio de trabajo restaurada", "log_event.execution_retry_triggered":"Reintento de ejecución solicitado", "log_event.execution_dismissed":"Ejecución cerrada", "log_event.queue_item_deferred":"Elemento de cola aplazado", "log_event.queue_recovery_triggered":"Recuperación de cola solicitada",
+  "log_event.component_restart_trigger_received":"Reinicio de componente solicitado", "log_event.component_restart_failed":"Reinicio de componente fallido", "log_event.component_shutdown_trigger_received":"Detención de componente solicitada", "log_event.component_log_cleared":"Registro del componente borrado",
+  "log_event.dashboard_started":"Panel de estado iniciado", "log_event.dashboard_shutdown_completed":"Panel de estado detenido", "log_event.dashboard_start_failed":"El panel de estado no pudo iniciarse",
+  "log_event.producer_submission_invalid":"Envío del productor rechazado", "log_event.duplicate_job_ignored":"Ejecución duplicada ignorada", "log_event.duplicate_watcher_refused":"Monitor duplicado rechazado", "log_event.duplicate_dashboard_refused":"Panel duplicado rechazado",
+  "log_event.submission_persist_failed":"No se pudo guardar el envío", "log_event.prompt_history_reconciliation_failed":"Conciliación del historial de ejecuciones fallida", "log_event.prompt_history_persist_failed":"No se pudo guardar el historial de ejecuciones", "log_event.telemetry_persist_failed":"No se pudo guardar la telemetría", "log_event.telemetry_schedule_failed":"Programación de telemetría fallida",
+  "log_event.terminal_report_corrected":"Informe final corregido", "log_event.active_run_lease_reconciled":"Arrendamiento de ejecución activa conciliado", "log_event.detached_runner_job_missing":"Falta la tarea de ejecución desconectada", "log_event.inbox_scan":"Bandeja de entrada analizada", "log_event.active_transaction_queue_refreshed":"Cola de ejecución activa actualizada",
+  "log_event.inbox_log_unavailable":"Registro del monitor de bandeja de entrada no disponible", "log_event.dashboard_log_unavailable":"Registro del panel de estado no disponible"
+});
+Object.assign(DASHBOARD_MESSAGES.en, {
+  "action.recover": "Recover",
+  "preflight.sync": "Preflight failed: {reason}\nRecovery: {recovery}",
+  "preflight.sync_reason": "Managed target is not synchronized with its upstream.",
+  "preflight.sync_recovery": "Synchronize the expected branch with its configured upstream.",
+  "preflight.sync_failed": "The expected branch could not be synchronized safely.",
+  "log_event.managed_branch_synchronization_completed": "Workspace branch synchronized"
+});
+Object.assign(DASHBOARD_MESSAGES.nl, {
+  "action.recover": "Herstel",
+  "preflight.sync": "Preflight mislukt: {reason}\nHerstel: {recovery}",
+  "preflight.sync_reason": "Het beheerde doel is niet gesynchroniseerd met de upstream.",
+  "preflight.sync_recovery": "Synchroniseer de verwachte branch met de geconfigureerde upstream.",
+  "preflight.sync_failed": "De verwachte branch kon niet veilig worden gesynchroniseerd.",
+  "log_event.managed_branch_synchronization_completed": "Werkruimtebranch gesynchroniseerd"
+});
+Object.assign(DASHBOARD_MESSAGES.de, {
+  "action.recover": "Wiederherstellen",
+  "preflight.sync": "Preflight fehlgeschlagen: {reason}\nWiederherstellung: {recovery}",
+  "preflight.sync_reason": "Das verwaltete Ziel ist nicht mit seinem Upstream synchronisiert.",
+  "preflight.sync_recovery": "Synchronisieren Sie den erwarteten Branch mit seinem konfigurierten Upstream.",
+  "preflight.sync_failed": "Der erwartete Branch konnte nicht sicher synchronisiert werden.",
+  "log_event.managed_branch_synchronization_completed": "Arbeitsbereichsbranch synchronisiert"
+});
+Object.assign(DASHBOARD_MESSAGES.fr, {
+  "action.recover": "Corriger",
+  "preflight.sync": "Pré-vérification échouée : {reason}\nCorrectif : {recovery}",
+  "preflight.sync_reason": "La cible gérée n’est pas synchronisée avec sa branche amont.",
+  "preflight.sync_recovery": "Synchronisez la branche attendue avec sa branche amont configurée.",
+  "preflight.sync_failed": "La branche attendue n’a pas pu être synchronisée en toute sécurité.",
+  "log_event.managed_branch_synchronization_completed": "Branche de l’espace de travail synchronisée"
+});
+Object.assign(DASHBOARD_MESSAGES.es, {
+  "action.recover": "Recuperar",
+  "preflight.sync": "La comprobación previa falló: {reason}\nRecuperación: {recovery}",
+  "preflight.sync_reason": "El destino gestionado no está sincronizado con su rama ascendente.",
+  "preflight.sync_recovery": "Sincroniza la rama esperada con su rama ascendente configurada.",
+  "preflight.sync_failed": "La rama esperada no se pudo sincronizar de forma segura.",
+  "log_event.managed_branch_synchronization_completed": "Rama del espacio de trabajo sincronizada"
+});
+
 const messages = DASHBOARD_MESSAGES;
 
 export function normalizeLocale(value) {

@@ -638,6 +638,14 @@ function structuredLogEntries(text) {
       }
     });
 }
+function logEventLabel(value) {
+  const event = String(value || "").trim();
+  if (!event) return t("logs.unknown_event");
+  const readable = event
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+  return t(`log_event.${event}`, {}, t("logs.event_fallback", { event: readable }));
+}
 function logTimestamp(entry) {
   const value = Date.parse(entry.timestamp);
   return Number.isFinite(value) ? value : 0;
@@ -2268,7 +2276,7 @@ function filteredComponentLogEntries(component) {
     .filter(
       (entry) =>
         !needle ||
-        locale.lower(Object.values(entry).join(" ")).includes(needle),
+        locale.lower([...Object.values(entry), logEventLabel(entry.event)].join(" ")).includes(needle),
     )
     .sort((left, right) => {
       const first = logValue(left, state.key),
@@ -2295,8 +2303,8 @@ function updateLogValueFilters() {
   for (const [id, key] of [["logEventFilter", "event"]]) {
     const select = $(id), selected = new Set([...select.selectedOptions].map((option) => option.value));
     select.replaceChildren();
-    [...new Set(entries.map((entry) => String(entry[key] || "")).filter(Boolean))].sort((a, b) => locale.compare(a, b)).forEach((value) => {
-      const option = new Option(value, value, false, selected.has(value)); select.add(option);
+    [...new Set(entries.map((entry) => String(entry[key] || "")).filter(Boolean))].sort((a, b) => locale.compare(logEventLabel(a), logEventLabel(b))).forEach((value) => {
+      const option = new Option(logEventLabel(value), value, false, selected.has(value)); select.add(option);
     });
   }
 }
@@ -2369,7 +2377,7 @@ function renderComponentLogs() {
               locale.lower(entry.level).replaceAll(" ", "-"),
             entry.level,
           ],
-          ["", entry.event],
+          ["", logEventLabel(entry.event)],
           ["", entry.runId || "—"],
           ["", entry.details || "—"],
         ]) {
@@ -4058,17 +4066,55 @@ function localizedDashboardError(message, fallback) {
       reason: t("preflight.branch_reason", { branch: branch[1] }),
       recovery: t("preflight.branch_recovery", { branch: branch[1] }),
     });
+  if (/^Managed target is not synchronized with its upstream\.?$/iu.test(reason))
+    return t("preflight.sync", {
+      reason: t("preflight.sync_reason"),
+      recovery: t("preflight.sync_recovery"),
+    });
   return t("preflight.generic", { reason, recovery });
 }
+function dashboardErrorRecovery(message) {
+  const raw = String(message || "").trim();
+  return /^Preflight (?:mislukt|failed):\s*Managed target is not synchronized with its upstream\.?\s+(?:Herstel|Recovery):/iu.test(raw)
+    ? "managed_branch_synchronization"
+    : null;
+}
 function showDashboardError(message, fallback) {
-  const modal = $("dashboardErrorModal"), close = $("dashboardErrorModalClose"), dismiss = $("dashboardErrorModalDismiss");
+  const modal = $("dashboardErrorModal"),
+    close = $("dashboardErrorModalClose"),
+    dismiss = $("dashboardErrorModalDismiss"),
+    recover = $("dashboardErrorModalRecover"),
+    recovery = dashboardErrorRecovery(message);
   $("dashboardErrorModalTitle").textContent = t("ui.action_failed");
   $("dashboardErrorModalText").textContent = localizedDashboardError(message, fallback);
+  recover.hidden = !recovery;
+  recover.disabled = false;
+  recover.textContent = t("action.recover");
   const finish = () => {
     if (modal.open) modal.close();
-    close.onclick = dismiss.onclick = null;
+    close.onclick = dismiss.onclick = recover.onclick = null;
   };
   close.onclick = dismiss.onclick = finish;
+  recover.onclick = recovery === "managed_branch_synchronization"
+    ? () => {
+      recover.disabled = true;
+      fetch("/api/managed-branch-synchronization", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+        .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+        .then((result) => {
+          if (!result.ok) throw Error(result.body.error || t("preflight.sync_failed"));
+          finish();
+          return refreshAfterOperatorAction();
+        })
+        .catch(() => {
+          $("dashboardErrorModalText").textContent = t("preflight.sync_failed");
+          recover.disabled = false;
+        });
+    }
+    : null;
   modal.addEventListener("cancel", (event) => {
     event.preventDefault();
     finish();
@@ -4182,6 +4228,7 @@ Object.assign(window, {
   enumLabel,
   executionTelemetry,
   formatTimestamp,
+  logEventLabel,
   queueItems,
   r,
   rateLimits,

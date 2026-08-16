@@ -15,6 +15,40 @@ let dashboard;
 let dashboardRoot;
 let dashboardUrl;
 
+async function startDashboard(root) {
+  return new Promise((resolve, reject) => {
+    const process = spawn(
+      "python3",
+      [
+        "-c",
+        "from pathlib import Path; import sys; from tools.engineering.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
+        root,
+      ],
+      { cwd: repository, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let output = "";
+    const timeout = setTimeout(() => {
+      process.kill("SIGTERM");
+      reject(new Error("Engineering Status test server did not report a port in time."));
+    }, 10_000);
+    process.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    process.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`Engineering Status test server exited before startup (code ${code}).`));
+    });
+    process.stdout.on("data", (chunk) => {
+      output += chunk;
+      const port = Number.parseInt(output, 10);
+      if (!Number.isInteger(port) || port <= 0) return;
+      clearTimeout(timeout);
+      resolve({ process, url: `http://127.0.0.1:${port}` });
+    });
+  });
+}
+
 async function waitForDashboard() {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
@@ -27,25 +61,16 @@ async function waitForDashboard() {
   throw new Error("Engineering Status did not become healthy in time.");
 }
 
-test.beforeAll(async ({}, testInfo) => {
-  const port = 8876 + testInfo.workerIndex;
-  dashboardUrl = `http://127.0.0.1:${port}`;
+test.beforeAll(async () => {
   dashboardRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-test-"));
   const engineeringDirectory = path.join(dashboardRoot, "tools/engineering");
   mkdirSync(engineeringDirectory, { recursive: true });
   for (const filename of ["ENGINEERING_PLATFORM_CONFIG.json", "ENGINEERING_PLATFORM_VERSION.json"]) {
     copyFileSync(path.join(repository, "tools/engineering", filename), path.join(engineeringDirectory, filename));
   }
-  dashboard = spawn(
-    "python3",
-    [
-      "-c",
-      "from pathlib import Path; import sys; from tools.engineering.dashboard import DashboardHTTPServer, handler; DashboardHTTPServer(('127.0.0.1', int(sys.argv[2])), handler(Path(sys.argv[1]))).serve_forever()",
-      dashboardRoot,
-      String(port),
-    ],
-    { cwd: repository, stdio: "ignore" },
-  );
+  const server = await startDashboard(dashboardRoot);
+  dashboard = server.process;
+  dashboardUrl = server.url;
   await waitForDashboard();
 });
 
@@ -125,6 +150,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses catalogued copy for every UI label in every supported language", async ({ page }) => {
+    test.slow();
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
@@ -653,6 +679,26 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toBeVisible();
   });
 
+  test("offers a safe branch synchronization recovery in a preflight error", async ({ page }) => {
+    let recoveryRequested = false;
+    await page.route("**/api/managed-branch-synchronization", async (route) => {
+      recoveryRequested = true;
+      await route.fulfill({ json: { branch: "main", upstream: "origin/main", watcher: "restarted" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => window.showDashboardError(
+      "Preflight failed: Managed target is not synchronized with its upstream. Recovery: Synchronize the expected branch with its configured upstream.",
+    ));
+    const modal = page.locator("#dashboardErrorModal");
+    await expect(modal).toBeVisible();
+    await expect(page.locator("#dashboardErrorModalText")).toContainText("gesynchroniseerd met de upstream");
+    await expect(page.locator("#dashboardErrorModalRecover")).toBeVisible();
+    await expect(page.locator("#dashboardErrorModalRecover")).toHaveText(DASHBOARD_MESSAGES.nl["action.recover"]);
+    await page.locator("#dashboardErrorModalRecover").click();
+    await expect.poll(() => recoveryRequested).toBe(true);
+    await expect(modal).not.toBeVisible();
+  });
+
   test("keeps the site-wide scrollbar and action-size tokens explicit", () => {
     const styles = readFileSync(
       path.join(repository, "tools/engineering/assets/dashboard.css"),
@@ -991,6 +1037,46 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await expect(page.locator("#componentLogs .log-card-header strong").first()).toHaveText(title);
       await expect(page.locator("#inboxComponentLog").locator("xpath=preceding-sibling::thead[1]/tr/th")).toHaveText(headers);
+    }
+  });
+
+  test("uses human-friendly localized event labels in component logs and their filter", async ({ page }) => {
+    await page.route("**/api/logs/**", (route) => route.fulfill({
+      contentType: "application/x-ndjson",
+      body: "",
+    }));
+    const expectations = [
+      ["en", "Inbox watcher started", "Stale Git lock recovered"],
+      ["nl", "Inbox-watcher gestart", "Verouderde Git-vergrendeling hersteld"],
+      ["de", "Inbox-Watcher gestartet", "Veraltete Git-Sperre wiederhergestellt"],
+      ["fr", "Surveillant de boîte de réception démarré", "Verrou Git obsolète récupéré"],
+      ["es", "Monitor de bandeja de entrada iniciado", "Bloqueo Git obsoleto recuperado"],
+    ];
+    for (const [language, watcherStarted, staleLockRecovered] of expectations) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      const localeReload = page.waitForEvent(
+        "framenavigated",
+        (frame) => frame === page.mainFrame(),
+      );
+      await page.locator("#dashboardLocale").selectOption(language);
+      await localeReload;
+      await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+      await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+      await page.waitForFunction(() => componentLogsLoaded);
+      await page.locator("#autoRefresh").uncheck();
+      await page.evaluate(() => {
+        refreshComponentLogs = async () => {};
+        componentLogEntries.inbox = [
+          { line: 1, timestamp: "2026-08-16T09:00:00Z", level: "INFO", event: "watcher_started", runId: "run-1", details: "" },
+          { line: 2, timestamp: "2026-08-16T09:01:00Z", level: "INFO", event: "stale_git_lock_recovered", runId: "run-2", details: "" },
+        ];
+        componentLogEntries.dashboard = [];
+        renderComponentLogs();
+      });
+      await expect(page.locator("#inboxComponentLog")).toContainText(watcherStarted);
+      await expect(page.locator("#inboxComponentLog")).toContainText(staleLockRecovered);
+      await expect(page.locator("#logEventFilter option[value=watcher_started]")).toHaveText(watcherStarted);
+      await expect(page.locator("#logEventFilter option[value=stale_git_lock_recovered]")).toHaveText(staleLockRecovered);
     }
   });
 
@@ -3397,8 +3483,12 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("retains terminal status colours in the light prompt-history table", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#themeToggle").click();
     await page.evaluate(() => {
       promptHistoryEntries = [

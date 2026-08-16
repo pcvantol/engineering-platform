@@ -727,6 +727,54 @@ def _restore_managed_main_branch(root: Path) -> dict[str, str]:
     return {"previous_branch": previous_branch, "branch": "main", "watcher": "restarted"}
 
 
+def _synchronize_managed_branch_with_upstream(root: Path) -> dict[str, str]:
+    """Fast-forward the configured managed branch, without overwriting work."""
+    provider = GitProvider()
+    expected_branch = PlatformConfiguration.load(root).workspace.default_branch
+    try:
+        status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
+        branch = provider.execute(root, "git", "branch", "--show-current")
+        upstream = provider.execute(root, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    except OSError as error:
+        raise RuntimeError("De werkmap kon niet worden gecontroleerd.") from error
+    if status.returncode or branch.returncode or upstream.returncode:
+        raise RuntimeError("De werkmap kon niet veilig worden gecontroleerd.")
+    if status.stdout.strip():
+        raise RuntimeError("Herstel is alleen mogelijk wanneer de werkmap geen lokale wijzigingen bevat.")
+    if branch.stdout.strip() != expected_branch:
+        raise RuntimeError("Herstel is alleen mogelijk op de verwachte branch.")
+    upstream_ref = upstream.stdout.strip()
+    remote, separator, _ = upstream_ref.partition("/")
+    if not separator or not remote:
+        raise RuntimeError("De upstream van de verwachte branch is niet beschikbaar.")
+    try:
+        provider.command(root, "git", "fetch", "--quiet", remote)
+    except RuntimeError as error:
+        raise RuntimeError("De upstream van de verwachte branch kon niet worden opgehaald.") from error
+    divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+    if divergence.returncode:
+        raise RuntimeError("De synchronisatiestatus van de verwachte branch is niet beschikbaar.")
+    try:
+        behind, ahead = (int(value) for value in divergence.stdout.split())
+    except ValueError as error:
+        raise RuntimeError("De synchronisatiestatus van de verwachte branch is ongeldig.") from error
+    if ahead:
+        raise RuntimeError("De verwachte branch bevat lokale commits en kan niet veilig worden hersteld.")
+    if behind:
+        try:
+            provider.command(root, "git", "merge", "--ff-only", "@{upstream}")
+        except RuntimeError as error:
+            raise RuntimeError("De verwachte branch kon niet veilig worden gesynchroniseerd.") from error
+    final = provider.execute(root, "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+    if final.returncode or final.stdout.strip() != "0\t0":
+        raise RuntimeError("De verwachte branch is niet gesynchroniseerd met de upstream.")
+    try:
+        LaunchdProvider().restart(WATCHER_LABEL)
+    except OSError as error:
+        raise RuntimeError("De branch is gesynchroniseerd, maar de Inbox-watcher kon niet worden herstart.") from error
+    return {"branch": expected_branch, "upstream": upstream_ref, "watcher": "restarted"}
+
+
 def _workspace_git_lock(root: Path, *, now: float | None = None) -> dict[str, object]:
     """Describe the index lock without offering recovery unless it is provably stale."""
     lock_path = root / ".git" / "index.lock"
@@ -1170,7 +1218,7 @@ def _dashboard_html(
 <details class="platform-health" id="platformHealth" data-testid="platform-health"><summary><strong data-i18n="section.platform_components"></strong></summary><p class="category-description" data-i18n="description.platform_components"></p><div class="platform-health__components" id="platformHealthComponents" aria-live="polite"><p class="platform-health__empty" data-i18n="ui.component_health_loading"></p></div></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--component component-modal" id="componentModal" aria-labelledby="componentModalTitle"><section class="dashboard-modal-shell__panel component-modal__panel"><header class="dashboard-modal-shell__header component-modal__header"><h2 id="componentModalTitle" data-i18n="ui.component_information"></h2><button class="dashboard-modal-shell__close component-modal__close" id="componentModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="componentModalContent"></div><button class="component-modal__restart" id="componentModalRestart" type="button" hidden data-i18n="ui.component_restart"></button><p class="component-modal__status" id="componentModalStatus" aria-live="polite"></p></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="confirmationModal" aria-labelledby="confirmationModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="confirmationModalTitle" data-i18n="ui.confirm_action"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="confirmationModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="confirmationModalText"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="confirmationModalCancel" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="confirmationModalConfirm" type="button" data-i18n="action.confirm"></button></div></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="dashboardErrorModalRecover" type="button" hidden></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--chat prompt-chat-modal" id="promptHistoryChatModal" aria-labelledby="promptHistoryChatTitle"><section class="dashboard-modal-shell__panel prompt-chat-modal__panel"><header class="dashboard-modal-shell__header prompt-chat-modal__header"><h2 id="promptHistoryChatTitle" data-i18n="section.ai_conversation"></h2><button class="dashboard-modal-shell__close prompt-chat-modal__close" id="promptHistoryChatClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-chat-modal__description" id="promptHistoryChatDescription"></p><section class="codex-chat" id="codexChat"><div class="codex-chat__details"><div class="chat-actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="downloadChat" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy" id="copyChat" type="button" hidden data-i18n-title="chat.copy_title" data-i18n-aria-label="chat.copy_title">⧉</button><button class="dashboard-action dashboard-action--destructive" id="clearChat" type="button" hidden>⌫</button></div><div class="chat-messages" id="chatMessages" aria-live="polite" data-i18n-aria-label="section.ai_conversation"></div><label class="label chat-question-label" for="chatInput" data-i18n="section.new_ai_question"></label><div class="chat-compose"><textarea id="chatInput" class="chat-input" rows="5" maxlength="2000" autocomplete="off" data-sanitize="multiline" data-i18n-placeholder="history.chat_placeholder"></textarea><button class="chat-send" id="chatSend" type="button" data-i18n-aria-label="action.confirm"><span aria-hidden="true">➤</span></button></div><div class="chat-meta"><p class="field"><span class="label" data-i18n="detail.model"></span><span id="chatModel">$CHAT_MODEL</span></p><p class="chat-status" id="chatStatus"></p></div></div></section></section></dialog>
@@ -1360,6 +1408,27 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 except (RuntimeError, ValueError):
                     self._send(
                         b'{"error":"De werkmap kon niet veilig naar main worden hersteld."}',
+                        "application/json; charset=utf-8",
+                        409,
+                    )
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/managed-branch-synchronization":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = _synchronize_managed_branch_with_upstream(root)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "managed_branch_synchronization_completed",
+                        diagnostic=f"branch={outcome['branch']}; upstream={outcome['upstream']}; watcher=restarted",
+                    )
+                except (RuntimeError, ValueError):
+                    self._send(
+                        b'{"error":"De verwachte branch kon niet veilig worden gesynchroniseerd."}',
                         "application/json; charset=utf-8",
                         409,
                     )
