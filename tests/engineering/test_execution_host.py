@@ -1209,7 +1209,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.diagnostic, "[REDACTED] [REDACTED]")
         self.assertEqual(redact_diagnostic("Bearer private-token"), "[REDACTED]")
 
-    def test_pending_ci_is_not_completion(self) -> None:
+    def test_green_open_pr_waits_for_operator_merge(self) -> None:
         state = TransactionState("pending-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=12, terminal_condition="open_pr_checks_terminal")
         pending = PullRequestEvidence(12, "OPEN", False, False)
         passed = PullRequestEvidence(12, "OPEN", True, True)
@@ -1217,7 +1217,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
         result = runner._poll(state)
         self.assertEqual(github.calls, 2)
-        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(result.next_action, "await_operator_pr_merge")
+        self.assertFalse(result.terminal)
+        self.assertEqual(self.store.load("pending-run").phase, "WAIT_FOR_OPERATOR_MERGE")
 
     def test_agent_cannot_reuse_main_or_an_unbranched_pr_as_transaction_evidence(self) -> None:
         state = TransactionState(
@@ -1322,13 +1325,35 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.phase, "BLOCKED")
         self.assertEqual(result.next_action, "historical_pull_request_evidence")
 
-    def test_owner_authorization_merges_green_finalization_pr(self) -> None:
+    def test_owner_authorization_does_not_merge_green_finalization_pr(self) -> None:
         state = TransactionState("authorized-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=14, transaction_kind="FINALIZATION", owner_authorized=True)
         github = FakeGitHub([PullRequestEvidence(14, "OPEN", True, True), PullRequestEvidence(14, "MERGED", True, True, "b" * 40)])
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
         result = runner._poll(state)
-        self.assertEqual(github.merge_calls, [14])
+        self.assertEqual(github.merge_calls, [])
+        self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
+
+    def test_merged_operator_handoff_resumes_on_a_later_poll(self) -> None:
+        state = TransactionState(
+            "later-merge", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_OPERATOR_MERGE", branch="codex/implementation", pull_request=21,
+            owner_authorized=True, waiting_for_merge_since="2026-08-15T09:00:00+00:00",
+        )
+        github = FakeGitHub([
+            PullRequestEvidence(21, "MERGED", True, True, "b" * 40),
+            PullRequestEvidence(22, "OPEN", True, True),
+            PullRequestEvidence(22, "MERGED", True, True, "c" * 40),
+        ])
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), github,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)]), lambda _: None,
+        )
+
+        result = runner._poll(state)
+
         self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(result.implementation_merge_commit, "b" * 40)
+        self.assertEqual(result.finalization_merge_commit, "c" * 40)
 
     def test_merged_implementation_starts_and_reconciles_finalization(self) -> None:
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)

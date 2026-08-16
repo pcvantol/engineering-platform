@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html import escape
 import hashlib
@@ -21,7 +21,7 @@ import time
 import uuid
 
 from .platform_version import EngineeringPlatformManifest
-from .agent_state import redact_diagnostic
+from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, execution_host_configuration
 from .platform_bootstrap import provision_workspace
 from .providers import GitProvider, LaunchdProvider, LocalProcessProvider
@@ -51,6 +51,7 @@ LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+OPERATOR_MERGE_WAIT_PHASE = "WAIT_FOR_OPERATOR_MERGE"
 BACKGROUND_RUN_ID_ENVIRONMENT = "DJCONNECT_ENGINEERING_BACKGROUND_RUN_ID"
 BACKGROUND_JOB_ID_ENVIRONMENT = "DJCONNECT_ENGINEERING_BACKGROUND_JOB_ID"
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
@@ -60,6 +61,7 @@ RETRY_GENERATION_PATTERN = re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s
 RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$")
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 RUNNER_START_GRACE_SECONDS = 90
+OPERATOR_MERGE_POLL_SECONDS = 60
 
 
 class RetrySubmissionError(ValueError):
@@ -786,6 +788,11 @@ def _active_transaction(repo: Path) -> bool:
         checkpoint_phase, _ = _runner_result(repo, run_id)
         if checkpoint_phase in TERMINAL_PHASES:
             return False
+        # Waiting for an approved PR merge is intentionally durable and does
+        # not have a live process lease.  It still owns the queue until the
+        # merge is observed or an operator explicitly aborts it.
+        if checkpoint_phase == OPERATOR_MERGE_WAIT_PHASE:
+            return True
         # A transaction lifecycle checkpoint is not liveness evidence. Once
         # the Execution Host has persisted the transaction, only its canonical
         # lease may keep later Inbox work gated. This prevents a crashed host
@@ -905,6 +912,169 @@ def _runner_result(repo: Path, run_id: str) -> tuple[str | None, str | None]:
     except (TypeError, json.JSONDecodeError):
         return None, None
     return row[0], payload.get("diagnostic") if isinstance(payload, dict) else None
+
+
+def _operator_merge_wait(repo: Path) -> TransactionState | None:
+    """Return the one durable operator merge hand-off, if present."""
+    try:
+        connection = open_storage(repo)
+        try:
+            row = connection.execute(
+                "SELECT payload FROM engineering_transactions WHERE phase=? ORDER BY updated_at DESC LIMIT 1",
+                (OPERATOR_MERGE_WAIT_PHASE,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return TransactionState.from_dict(json.loads(row[0])) if row else None
+    except (EngineeringStorageError, TypeError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _operator_merge_poll_due(repo: Path, run_id: str) -> bool:
+    """Rate-limit GitHub reconciliation without tying it to a browser session."""
+    try:
+        watcher = load_projection(repo, "watcher_status") or {}
+        observed = watcher.get("last_update") if watcher.get("run_id") == run_id else None
+        when = datetime.fromisoformat(observed.replace("Z", "+00:00")) if isinstance(observed, str) else None
+    except (EngineeringStorageError, ValueError):
+        return True
+    return when is None or (datetime.now(timezone.utc) - when).total_seconds() >= OPERATOR_MERGE_POLL_SECONDS
+
+
+def _publish_operator_merge_wait(repo: Path, state: TransactionState, *, queue_items: list[dict[str, object]] | None = None, queue_depth: int = 0, job_id: str | None = None, filename: str | None = None, title: str | None = None) -> None:
+    """Project a PR hand-off as active operational state, never as failure."""
+    if job_id is None or filename is None or title is None:
+        try:
+            prior = load_projection(repo, "watcher_status") or {}
+        except EngineeringStorageError:
+            prior = {}
+        job_id = job_id or (prior.get("job_id") if isinstance(prior.get("job_id"), str) else None)
+        filename = filename or (prior.get("submitted_filename") if isinstance(prior.get("submitted_filename"), str) else None)
+        title = title or (prior.get("prompt_title") if isinstance(prior.get("prompt_title"), str) else None)
+    status(
+        repo,
+        "WAITING_FOR_OPERATOR_MERGE",
+        job_id=job_id,
+        run_id=state.run_id,
+        queued_jobs=queue_depth,
+        queue_items=queue_items or [],
+        runner_phase=state.phase,
+        current_action="Wacht op de operator om de pull request te mergen.",
+        implementation_pr=state.implementation_pull_request,
+        finalization_pr=state.finalization_pull_request,
+        submitted_filename=filename,
+        prompt_title=title,
+    )
+
+
+def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "dashboard_operator") -> dict[str, object]:
+    """Explicitly stop a durable PR hand-off without claiming a technical failure."""
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    with _lock(repo):
+        state = _operator_merge_wait(repo)
+        if state is None or state.run_id != run_id:
+            raise RetrySubmissionError("Deze uitvoering wacht niet op een pull request-merge.")
+        aborted = replace(
+            state,
+            phase="FAILED",
+            terminal=True,
+            next_action="operator_cancelled_merge_wait",
+            terminal_condition="operator_cancelled",
+            diagnostic="De operator heeft deze uitvoering gestopt terwijl de pull request op merge wachtte.",
+        )
+        StateStore(repo / ".engineering" / "engineering-runs").save(aborted)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        try:
+            watcher = load_projection(repo, "watcher_status") or {}
+        except EngineeringStorageError:
+            watcher = {}
+        job_id = watcher.get("job_id") if isinstance(watcher.get("job_id"), str) else None
+        running = local_folders(repo)["Running"]
+        source = next(running.glob(f"{job_id}__*"), None) if job_id else None
+        if source is not None:
+            original = Path(source.name.removeprefix(f"{job_id}__"))
+            _move(source, _archive_path(local_folders(repo)["Failed"], job_id or run_id, original))
+        try:
+            record_prompt_execution(
+                repo,
+                run_id=run_id,
+                terminal_state="FAILED",
+                prompt_title=Path(state.prompt_path).stem,
+                executed_at=timestamp,
+            )
+            record = record_execution_dismissal(
+                repo, run_id=run_id, terminal_state="FAILED", dismissed_at=timestamp,
+                dismissed_by=dismissed_by,
+            )
+        except EngineeringStorageError as error:
+            raise RetrySubmissionError("De afsluiting kon niet veilig worden vastgelegd.") from error
+        complete_active_phase(repo, run_id, "TOTAL_EXECUTION", outcome="FAILED")
+        status(
+            repo,
+            "JOB_FAILED",
+            job_id=job_id,
+            run_id=run_id,
+            queued_jobs=0,
+            queue_items=[],
+            runner_phase="FAILED",
+            diagnostic=aborted.diagnostic,
+            last_executed_filename=source.name if source is not None else None,
+            last_executed_title=Path(state.prompt_path).stem,
+            last_executed_run=run_id,
+            last_executed_phase="FAILED",
+        )
+        return record
+
+
+def _finalize_operator_merge_wait(repo: Path, state: TransactionState) -> None:
+    """Archive a reconciled waiting run after its resumed host becomes terminal."""
+    try:
+        watcher = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
+        watcher = {}
+    job_id = watcher.get("job_id") if isinstance(watcher.get("job_id"), str) else None
+    running = local_folders(repo)["Running"]
+    source = next(running.glob(f"{job_id}__*"), None) if job_id else None
+    if source is not None:
+        target = local_folders(repo)["Completed" if state.phase == "COMPLETE" else "Failed"]
+        original = Path(source.name.removeprefix(f"{job_id}__"))
+        _move(source, _archive_path(target, job_id or state.run_id, original))
+    report = _report(repo, state.run_id)
+    title = watcher.get("prompt_title") if isinstance(watcher.get("prompt_title"), str) else Path(state.prompt_path).stem
+    try:
+        record_prompt_execution(
+            repo,
+            run_id=state.run_id,
+            terminal_state=state.phase,
+            prompt_title=title,
+            executed_at=datetime.now(timezone.utc),
+            report=report,
+            git_commit=_terminal_git_commit(repo, state.run_id),
+        )
+        if report is not None:
+            record_artifact(
+                repo, report, artifact_id=f"report:{state.run_id}", artifact_type="TERMINAL_REPORT",
+                content_type="text/markdown", created_at=datetime.now(timezone.utc).isoformat(), run_id=state.run_id,
+            )
+    except EngineeringStorageError:
+        pass
+    complete_active_phase(repo, state.run_id, "TOTAL_EXECUTION", outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED")
+    status(
+        repo,
+        "JOB_COMPLETED" if state.phase == "COMPLETE" else "JOB_FAILED",
+        job_id=job_id,
+        run_id=state.run_id,
+        queued_jobs=0,
+        queue_items=[],
+        runner_phase=state.phase,
+        report=str(report) if report else None,
+        diagnostic=state.diagnostic,
+        last_executed_filename=source.name if source else None,
+        last_executed_title=title,
+        last_executed_run=state.run_id,
+        last_executed_phase=state.phase,
+    )
 
 
 def _report(repo: Path, run_id: str) -> Path | None:
@@ -1119,6 +1289,26 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             log_event(logger, logging.WARNING, "active_run_lease_reconciled", diagnostic=f"reconciled_runs={len(reconciled)}")
         candidates = _scan_queue(root, interval)
         log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
+        waiting_merge = _operator_merge_wait(repo)
+        if waiting_merge is not None:
+            if _operator_merge_poll_due(repo, waiting_merge.run_id):
+                prompt = Path(waiting_merge.prompt_path)
+                if prompt.is_file():
+                    _execute_runner_command(repo, prompt, waiting_merge.run_id)
+                    try:
+                        waiting_merge = StateStore(repo / ".engineering" / "engineering-runs").load(waiting_merge.run_id)
+                    except StateError:
+                        waiting_merge = None
+                    if waiting_merge is not None and waiting_merge.terminal:
+                        _finalize_operator_merge_wait(repo, waiting_merge)
+                        return 0 if waiting_merge.phase == "COMPLETE" else 1
+                _publish_operator_merge_wait(
+                    repo, waiting_merge, queue_items=_queue_items(candidates), queue_depth=len(candidates),
+                )
+            # The previous projection remains authoritative between bounded
+            # reconciliation polls.  Do not rewrite its timestamp each cycle,
+            # otherwise the poll would never become due.
+            return 0
         child_run_id = os.environ.get(BACKGROUND_RUN_ID_ENVIRONMENT)
         child_job_id = os.environ.get(BACKGROUND_JOB_ID_ENVIRONMENT)
         if _active_transaction(repo) and not child_run_id:
@@ -1315,6 +1505,23 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
         execution_started_at, completed = _execute_runner_command(repo, prompt, run_id)
         phase, diagnostic = _runner_result(repo, run_id)
+        if phase == OPERATOR_MERGE_WAIT_PHASE:
+            try:
+                waiting_state = StateStore(repo / ".engineering" / "engineering-runs").load(run_id)
+            except StateError:
+                waiting_state = None
+            if waiting_state is not None:
+                _publish_operator_merge_wait(
+                    repo,
+                    waiting_state,
+                    queue_items=_queue_items(candidates, source),
+                    queue_depth=len(candidates) - 1,
+                    job_id=job_id,
+                    filename=source.name,
+                    title=title,
+                )
+                log_event(logger, logging.INFO, "operator_merge_wait_started", run_id=run_id)
+                return 0
         terminal_phase = phase if phase in TERMINAL_PHASES else "FAILED"
         reason = diagnostic or (
             _runner_failure_detail(completed)

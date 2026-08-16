@@ -680,7 +680,7 @@ def format_management_summary(state: TransactionState) -> str:
             f"Repair iterations: {state.repair_iterations}.",
             f"Finalization: branch={state.finalization_branch}; PR={state.finalization_pull_request}; merge={state.finalization_merge_commit}.",
             "Repository Cleanup: fetched and pruned; local main synchronized; transaction branches removed or already absent; workspace clean.",
-            "Authority: owner-authorized bounded lifecycle; ready-for-review, merge and Finalization automated.",
+            "Authority: owner-authorized bounded lifecycle; ready-for-review and Finalization automated, pull-request merge operator-owned.",
             "No release, deployment or publication performed. Rolling Horizon unchanged.",
         )
     )

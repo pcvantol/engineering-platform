@@ -136,6 +136,8 @@ def status(root: Path) -> bytes:
                 "queue_items": watcher.get("queue_items", []),
                 "implementation_pr": live.get("implementation_pr"),
                 "finalization_pr": live.get("finalization_pr"),
+                "pull_request": live.get("pull_request"),
+                "waiting_for_merge_since": live.get("waiting_for_merge_since"),
                 "repository_state": live.get("repository_state") or "ACTIVE",
                 "workspace_state": live.get("workspace_state") or "ACTIVE",
                 "prompt_characters": live.get("prompt_characters"),
@@ -169,6 +171,21 @@ def status(root: Path) -> bytes:
         ).encode()
     except (ValueError, TypeError):
         live, projection = None, None
+    if (
+        live
+        and live.get("phase") == "WAIT_FOR_OPERATOR_MERGE"
+        and not _terminal_checkpoint(root, live.get("run_id"))
+    ):
+        waiting_projection = json.loads(projection or b"{}")
+        waiting_projection.update(
+            {
+                "watcher_state": "WAITING_FOR_OPERATOR_MERGE",
+                "current_action": "Waiting for the operator to merge the pull request.",
+                "pull_request": live.get("pull_request"),
+                "waiting_for_merge_since": live.get("waiting_for_merge_since"),
+            }
+        )
+        return json.dumps(waiting_projection, separators=(",", ":")).encode()
     if (
         live
         and live.get("phase") not in TERMINAL_PHASES

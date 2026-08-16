@@ -35,6 +35,13 @@ receives its path or any dashboard, launchd or local-storage detail.
 
 ## Operator actions
 
+- **Pull-request merge hand-off** is shown as a persistent, dashboard-native
+  wait state with a direct GitHub link once required checks are green. Closing
+  the browser does not cancel it: the watcher polls the persisted run and
+  resumes it after the operator merges, even on a later day. **Abort
+  execution** is the only explicit way to end this hand-off without merging;
+  it records the dismissal and archives the execution as failed, without
+  deleting its evidence.
 - **Retry Execution** creates a new execution from a terminal `BLOCKED` or
   `FAILED` run and records immutable retry lineage.
 - **Queue Recovery** is a separate explicit retry for a blocked predecessor

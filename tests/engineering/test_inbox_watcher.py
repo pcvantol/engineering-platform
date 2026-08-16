@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 import json
 import logging
 import os
@@ -254,6 +255,213 @@ class InboxWatcherTest(unittest.TestCase):
         )
 
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_operator_merge_wait_holds_inbox_and_can_be_explicitly_aborted(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-wait"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-wait__prompt.md"
+        source.write_text("# Merge wait\n", encoding="utf-8")
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(
+            TransactionState(
+                run_id=run_id,
+                repository="pcvantol/djconnect",
+                prompt_path=str(source),
+                phase="WAIT_FOR_OPERATOR_MERGE",
+                pull_request=832,
+                waiting_for_merge_since="2026-08-16T09:00:00+00:00",
+            )
+        )
+        inbox_watcher.status(
+            self.repo,
+            "WAITING_FOR_OPERATOR_MERGE",
+            run_id=run_id,
+            job_id="merge-wait",
+            queued_jobs=0,
+            queue_items=[],
+        )
+        with open_storage(self.repo) as connection:
+            store_projection(
+                connection,
+                "live_status",
+                {"run_id": run_id, "phase": "WAIT_FOR_OPERATOR_MERGE"},
+            )
+
+        self.assertTrue(inbox_watcher._active_transaction(self.repo))
+        outcome = inbox_watcher.abort_operator_merge_wait(self.repo, run_id)
+
+        self.assertTrue(outcome["dismissed"])
+        state = StateStore(self.repo / ".engineering" / "engineering-runs").load(run_id)
+        self.assertEqual(state.phase, "FAILED")
+        self.assertTrue(state.terminal)
+        self.assertFalse(source.exists())
+        self.assertTrue((inbox_watcher.local_folders(self.repo)["Failed"] / "merge-wait__prompt.md").exists())
+        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+
+    def test_operator_merge_wait_is_rate_limited_and_projects_prior_job_context(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-poll"
+        state = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path="/tmp/merge-poll.md",
+            phase="WAIT_FOR_OPERATOR_MERGE",
+            implementation_pull_request=832,
+            waiting_for_merge_since="2026-08-16T09:00:00+00:00",
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        inbox_watcher.status(
+            self.repo,
+            "RUNNER_STARTING",
+            run_id=run_id,
+            job_id="merge-poll",
+            submitted_filename="merge-poll.md",
+            prompt_title="Merge poll",
+        )
+
+        self.assertEqual(inbox_watcher._operator_merge_wait(self.repo), state)
+        self.assertFalse(inbox_watcher._operator_merge_poll_due(self.repo, run_id))
+        with open_storage(self.repo) as connection:
+            store_projection(
+                connection,
+                "watcher_status",
+                {
+                    "run_id": run_id,
+                    "last_update": "2020-01-01T00:00:00+00:00",
+                    "job_id": "merge-poll",
+                    "submitted_filename": "merge-poll.md",
+                    "prompt_title": "Merge poll",
+                },
+            )
+        self.assertTrue(inbox_watcher._operator_merge_poll_due(self.repo, run_id))
+
+        inbox_watcher._publish_operator_merge_wait(self.repo, state, queue_items=[{"filename": "later.md"}], queue_depth=1)
+
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "WAITING_FOR_OPERATOR_MERGE")
+        self.assertEqual(snapshot["job_id"], "merge-poll")
+        self.assertEqual(snapshot["submitted_filename"], "merge-poll.md")
+        self.assertEqual(snapshot["prompt_title"], "Merge poll")
+        self.assertEqual(snapshot["implementation_pr"], 832)
+        self.assertEqual(snapshot["queue_depth"], 1)
+
+    def test_operator_merge_wait_finalization_archives_completed_prompt_and_report(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-complete"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-complete__prompt.md"
+        source.write_text("# Merge complete\n", encoding="utf-8")
+        state = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path=str(source),
+            phase="COMPLETE",
+            terminal=True,
+            implementation_pull_request=832,
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        report = self.repo / ".engineering" / "reports" / f"report_{run_id}.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("# Completed\n", encoding="utf-8")
+        inbox_watcher.status(
+            self.repo,
+            "WAITING_FOR_OPERATOR_MERGE",
+            run_id=run_id,
+            job_id="merge-complete",
+            prompt_title="Merged prompt",
+        )
+
+        inbox_watcher._finalize_operator_merge_wait(self.repo, state)
+
+        self.assertFalse(source.exists())
+        self.assertTrue((inbox_watcher.local_folders(self.repo)["Completed"] / "merge-complete__prompt.md").exists())
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
+        self.assertEqual(snapshot["last_executed_run"], run_id)
+        self.assertEqual(snapshot["last_executed_title"], "Merged prompt")
+
+    def test_operator_merge_wait_remains_queue_owner_until_its_poll_is_due(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-held"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-held__prompt.md"
+        source.write_text("# Waiting for a merge\n", encoding="utf-8")
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(
+            TransactionState(
+                run_id=run_id,
+                repository="pcvantol/djconnect",
+                prompt_path=str(source),
+                phase="WAIT_FOR_OPERATOR_MERGE",
+                implementation_pull_request=832,
+            )
+        )
+        inbox_watcher.status(
+            self.repo,
+            "WAITING_FOR_OPERATOR_MERGE",
+            run_id=run_id,
+            job_id="merge-held",
+            queued_jobs=0,
+            queue_items=[],
+        )
+
+        with patch("tools.engineering.inbox_watcher._execute_runner_command") as execute_runner:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        execute_runner.assert_not_called()
+        self.assertEqual(json_status(self.repo)["watcher_state"], "WAITING_FOR_OPERATOR_MERGE")
+        self.assertTrue(source.exists())
+
+    def test_operator_merge_wait_poll_resumes_and_finalizes_the_merged_run(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-merge-resumed"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-resumed__prompt.md"
+        source.write_text("# Resume after merge\n", encoding="utf-8")
+        waiting = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE",
+            implementation_pull_request=832,
+        )
+        store = StateStore(self.repo / ".engineering" / "engineering-runs")
+        store.save(waiting)
+        inbox_watcher.status(
+            self.repo,
+            "WAITING_FOR_OPERATOR_MERGE",
+            run_id=run_id,
+            job_id="merge-resumed",
+            queued_jobs=0,
+            queue_items=[],
+        )
+        with open_storage(self.repo) as connection:
+            store_projection(
+                connection,
+                "watcher_status",
+                {
+                    "run_id": run_id,
+                    "job_id": "merge-resumed",
+                    "last_update": "2020-01-01T00:00:00+00:00",
+                },
+            )
+
+        def mark_complete(*_: object) -> None:
+            store.save(replace(waiting, phase="COMPLETE", terminal=True))
+
+        with patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=mark_complete) as execute_runner:
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        execute_runner.assert_called_once_with(self.repo, source, run_id)
+        self.assertFalse(source.exists())
+        self.assertTrue((inbox_watcher.local_folders(self.repo)["Completed"] / "merge-resumed__prompt.md").exists())
+        self.assertEqual(json_status(self.repo)["watcher_state"], "JOB_COMPLETED")
+
+    def test_operator_merge_wait_rejects_invalid_or_nonwaiting_runs(self) -> None:
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "run-ID is ongeldig"):
+            inbox_watcher.abort_operator_merge_wait(self.repo, "invalid")
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "wacht niet"):
+            inbox_watcher.abort_operator_merge_wait(self.repo, "inbox-not-waiting")
 
     def test_dead_detached_runner_does_not_hold_the_inbox(self) -> None:
         run_id = "inbox-abandoned"

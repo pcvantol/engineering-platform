@@ -232,7 +232,7 @@ def assemble_prompt(
         else json.dumps(state.to_dict(), sort_keys=True)
     )
     authority = (
-        """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner alone marks it ready and merges it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
+        """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner may mark that pull request ready for review, but only the human operator may merge it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
         if state and state.owner_authorized
         else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
     )
@@ -910,24 +910,19 @@ class EngineeringRunner:
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
                     return self._cleanup(state)
-            if not state.owner_authorized and state.terminal_condition == "open_pr_checks_terminal":
-                return self._save_terminal(state, "COMPLETE", "open_pr_checks_terminal")
-            if state.owner_authorized:
-                merge = start_phase(self.root, state.run_id, "PR_OR_MERGE", metadata={"operation": "merge"})
-                try:
-                    self.github.merge(pr.number)
-                finally:
-                    complete_phase(self.root, merge)
-                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "merge_visibility"})
-                self.sleep(2)
-                complete_phase(self.root, wait)
-                continue
-            return self._save_terminal(
+            # A green PR is an explicit hand-off to the operator.  The runner
+            # must not turn that durable waiting state into a synthetic failure
+            # merely because its foreground process has ended.
+            waiting = replace(
                 state,
-                "BLOCKED",
-                "external_merge_authorization_required",
-                "Merge requires explicit authorization.",
+                phase="WAIT_FOR_OPERATOR_MERGE",
+                next_action="await_operator_pr_merge",
+                terminal_condition="operator_merge_required",
+                diagnostic=None,
+                waiting_for_merge_since=state.waiting_for_merge_since
+                or datetime.now(timezone.utc).isoformat(),
             )
+            return self._save_operator_merge_wait(waiting)
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
         repair = replace(
@@ -1006,6 +1001,7 @@ class EngineeringRunner:
             next_action="create_finalization",
             implementation_pull_request=implementation_pr or state.implementation_pull_request,
             latest_repository_evidence=_repository_summary(evidence),
+            waiting_for_merge_since=None,
         )
         self.store.save(finalization)
         write_live_status(self.root, finalization, finalization.next_action)
@@ -1095,6 +1091,23 @@ class EngineeringRunner:
         print(f"[{terminal.phase}] {action}")
         return terminal
 
+    def _save_operator_merge_wait(self, state: TransactionState) -> TransactionState:
+        """Persist a PR hand-off and release the foreground lease.
+
+        The wait is deliberately durable, but there is no running agent to
+        own a liveness lease while the human reviews or merges the pull
+        request. The watcher recognises this checkpoint as queue-owning.
+        """
+        self.store.save(state)
+        if self.active_lease is not None and self.active_lease.run_id == state.run_id:
+            if self.lease_heartbeat is not None:
+                self.active_lease = self.lease_heartbeat.stop()
+                self.lease_heartbeat = None
+            release_lease(self.root, self.active_lease)
+            self.active_lease = None
+        write_live_status(self.root, state, state.next_action)
+        return state
+
     def _cleanup(self, state: TransactionState) -> TransactionState:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
         cleanup = start_phase(self.root, state.run_id, "REPOSITORY_CLEANUP")
@@ -1155,7 +1168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--owner-authorized",
         action="store_true",
-        help="record and use the owner's bounded autonomous PR authorization",
+        help="record the owner's bounded branch and pull-request authorization; merges remain operator-owned",
     )
     return parser
 

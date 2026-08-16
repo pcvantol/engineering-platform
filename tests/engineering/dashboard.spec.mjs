@@ -94,6 +94,7 @@ test.beforeEach(async ({ page }, testInfo) => {
     if (![
       "puts every mobile title-bar setting in a labelled expandable panel",
       "only starts pull-to-refresh from the scroll region's top edge",
+      "keeps a green pull request visible until the operator merges or aborts it",
     ].includes(testInfo.title)) {
       await openTitlebarOptions(page);
     }
@@ -609,6 +610,38 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toBeVisible();
   });
 
+  test("keeps a green pull request visible until the operator merges or aborts it", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: {
+        watcher_state: "WAITING_FOR_OPERATOR_MERGE",
+        current_phase: "WAIT_FOR_OPERATOR_MERGE",
+        run_id: "inbox-merge-wait",
+        pull_request: 832,
+        target_repository: "pcvantol/djconnect",
+        prompt_title: "Merge wait fixture",
+      } },
+    }));
+    let abortRequested = false;
+    await page.route("**/api/execution-merge-wait-abort", async (route) => {
+      abortRequested = route.request().method() === "POST" &&
+        (await route.request().postDataJSON()).run_id === "inbox-merge-wait";
+      await route.fulfill({ json: { run_id: "inbox-merge-wait", dismissed: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const wait = page.locator("#operatorMergeWait");
+    await expect(wait).toBeVisible();
+    await expect(wait.locator("a")).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
+    await expect(page.locator("#operatorMergeWaitModal")).toBeVisible();
+    await expect(page.locator("#operatorMergeWaitModalPullRequest")).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
+    await page.locator("#operatorMergeWaitModalClose").click();
+    await wait.getByRole("button", { name: DASHBOARD_MESSAGES.nl["action.abort_execution"] }).click();
+    await expect(page.locator("#confirmationModal")).toBeVisible();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => abortRequested).toBe(true);
+  });
+
   test("keeps selected sortable headers within a thin cell edge", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
@@ -654,6 +687,7 @@ test.describe("Engineering Status browser smoke", () => {
       ["#executionModeModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#confirmationModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
       ["#dashboardErrorModal", "dashboard-modal-shell--confirmation", "rgb(240, 182, 106)"],
+      ["#operatorMergeWaitModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryReportModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryDetailModal", "dashboard-modal-shell--evidence", "rgb(141, 199, 255)"],
       ["#promptHistoryChatModal", "dashboard-modal-shell--chat", "rgb(208, 164, 255)"],
@@ -832,7 +866,9 @@ test.describe("Engineering Status browser smoke", () => {
     const placement = await actions.evaluateAll((buttons) => ({
       viewportHeight: window.visualViewport?.height ?? window.innerHeight,
       bottoms: buttons.map((button) => button.getBoundingClientRect().bottom),
-      panelBottom: document.querySelector(".confirmation-modal__panel").getBoundingClientRect().bottom,
+      // The operator merge-wait dialog shares this panel class but is closed
+      // here. Scope the measurement to the open confirmation dialog.
+      panelBottom: buttons[0].closest("#confirmationModal").querySelector(".confirmation-modal__panel").getBoundingClientRect().bottom,
     }));
     expect(Math.max(...placement.bottoms)).toBeLessThanOrEqual(placement.viewportHeight);
     expect(Math.max(...placement.bottoms)).toBeLessThanOrEqual(placement.panelBottom);

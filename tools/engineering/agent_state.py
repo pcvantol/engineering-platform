@@ -13,7 +13,7 @@ from .storage import EngineeringStorageError, open_storage
 
 
 SCHEMA_VERSION = 1
-PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
+PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
@@ -64,6 +64,7 @@ class TransactionState:
     agent_execution_seconds: float | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
+    waiting_for_merge_since: str | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -83,6 +84,7 @@ class TransactionState:
             "agent_execution_seconds": None,
             "validation_evidence": (),
             "repair_iterations": 0,
+            "waiting_for_merge_since": None,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
@@ -122,6 +124,11 @@ class TransactionState:
             raise StateError("checkpoint lifecycle pull request is invalid")
         if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:
             raise StateError("checkpoint repair iteration count is invalid")
+        if state.waiting_for_merge_since is not None and (
+            not isinstance(state.waiting_for_merge_since, str)
+            or len(state.waiting_for_merge_since) > 80
+        ):
+            raise StateError("checkpoint merge wait timestamp is invalid")
         for value in (state.latest_repository_evidence, state.latest_github_evidence):
             if value is not None and (not isinstance(value, str) or len(value) > MAX_DIAGNOSTIC_LENGTH or value != redact_diagnostic(value)):
                 raise StateError("checkpoint evidence is invalid or unsafe")

@@ -79,6 +79,8 @@ def write_live_status(
         "objective": state.prompt_path,
         "implementation_pr": state.implementation_pull_request,
         "finalization_pr": state.finalization_pull_request,
+        "pull_request": state.pull_request,
+        "waiting_for_merge_since": state.waiting_for_merge_since,
         "repair_iteration": state.repair_iterations,
         "repository_state": "MERGED_RECONCILED" if state.phase == "COMPLETE" else "ACTIVE",
         "workspace_state": "WORKSPACE_READY" if state.phase == "COMPLETE" else "ACTIVE",

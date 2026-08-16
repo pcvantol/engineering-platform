@@ -38,7 +38,8 @@ const $ = (id) => document.getElementById(id),
     workspace_state: "UNKNOWN",
     diagnostic: t("dashboard.status_unavailable"),
   };
-let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDurationEstimate;
+let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDurationEstimate,
+  shownOperatorMergeWaitRun;
 function formatTimestamp(value, fallback = t("format.timestamp_unavailable")) {
   const timestamp = Date.parse(String(value || ""));
   return Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : fallback;
@@ -135,7 +136,7 @@ function tone(x) {
   if (phase === "COMPLETE" || watcher === "JOB_COMPLETED") return "green";
   if (
     phase === "WAIT_FOR_TERMINAL_EVIDENCE" ||
-    ["WAITING_FOR_REPOSITORY", "WAITING_FOR_PREDECESSOR"].includes(watcher)
+    ["WAITING_FOR_REPOSITORY", "WAITING_FOR_PREDECESSOR", "WAITING_FOR_OPERATOR_MERGE"].includes(watcher)
   )
     return "yellow";
   if (
@@ -244,7 +245,7 @@ function renderEstimate(x, durationEstimate = latestDurationEstimate) {
   $("executionEstimateMeta").hidden = !value.context;
 }
 function isActiveRun(x = {}) {
-  return x.watcher_state === "ENGINEERING_RUN_ACTIVE" && Boolean(x.run_id);
+  return ["ENGINEERING_RUN_ACTIVE", "WAITING_FOR_OPERATOR_MERGE"].includes(x.watcher_state) && Boolean(x.run_id);
 }
 function checkBuild(build) {
   if (build === DASHBOARD_BUILD) {
@@ -986,6 +987,27 @@ function renderExecutionContext(context, execution = {}) {
     ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)),
   );
 }
+function renderOperatorMergeWait(x) {
+  const card = $("operatorMergeWait"), pullRequest = Number(x.pull_request);
+  if (!card) return;
+  const waiting = x.current_phase === "WAIT_FOR_OPERATOR_MERGE" && Number.isInteger(pullRequest) && pullRequest > 0;
+  card.hidden = !waiting;
+  if (!waiting) return;
+  const repository = String(x.target_repository || "").trim();
+  const href = repository ? `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/pull/${pullRequest}` : "#";
+  const link = $("operatorMergePullRequest");
+  link.href = href;
+  link.textContent = t("merge_wait.open_pull_request", { number: pullRequest });
+  $("operatorMergeWaitDescription").textContent = t("merge_wait.description", { number: pullRequest });
+  const modal = $("operatorMergeWaitModal");
+  $("operatorMergeWaitModalDescription").textContent = t("merge_wait.description", { number: pullRequest });
+  $("operatorMergeWaitModalPullRequest").href = href;
+  $("operatorMergeWaitModalPullRequest").textContent = t("merge_wait.open_pull_request", { number: pullRequest });
+  if (shownOperatorMergeWaitRun !== x.run_id) {
+    shownOperatorMergeWaitRun = x.run_id;
+    if (!modal.open) modal.showModal();
+  }
+}
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
   clock();
@@ -1014,6 +1036,7 @@ function renderHealthStatus(x, snapshot = {}) {
   $("predecessorAction").textContent =
     x.predecessor_recovery_action || t("format.not_available");
   renderExecutionContext(x.execution_context, x);
+  renderOperatorMergeWait(x);
   indicator.className =
     "indicator indicator--" +
     statusTone +
@@ -1869,6 +1892,12 @@ $("executionModeModalClose").addEventListener("click", () =>
 );
 $("executionModeModal").addEventListener("click", (event) => {
   if (event.target === $("executionModeModal")) $("executionModeModal").close();
+});
+$("operatorMergeWaitModalClose").addEventListener("click", () =>
+  $("operatorMergeWaitModal").close(),
+);
+$("operatorMergeWaitModal").addEventListener("click", (event) => {
+  if (event.target === $("operatorMergeWaitModal")) $("operatorMergeWaitModal").close();
 });
 function renderPlatformHealth(payload) {
   const container = $("platformHealthComponents");
@@ -4129,7 +4158,29 @@ function dismissExecution(entry) {
       .catch((error) => showDashboardError(error.message, t("dismiss.failed")));
   });
 }
+function abortOperatorMergeWait() {
+  const runId = latestStatus?.run_id;
+  if (!runId) return;
+  if ($("operatorMergeWaitModal").open) $("operatorMergeWaitModal").close();
+  confirmDashboardAction(
+    t("merge_wait.abort_title"),
+    t("merge_wait.abort_description", { run_id: runId }),
+    t("action.abort_execution"),
+    { destructive: true },
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    fetch("/api/execution-merge-wait-abort", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: runId }) })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body.error || t("merge_wait.abort_failed"));
+        return refreshAfterOperatorAction({ dismissedRunId: runId });
+      })
+      .catch((error) => showDashboardError(error.message, t("merge_wait.abort_failed")));
+  });
+}
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
+$("operatorMergeAbort").addEventListener("click", abortOperatorMergeWait);
+$("operatorMergeWaitModalAbort").addEventListener("click", abortOperatorMergeWait);
 function confirmDashboardAction(title, text, confirmLabel, { destructive = false } = {}) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),

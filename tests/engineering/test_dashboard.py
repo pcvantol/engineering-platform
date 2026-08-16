@@ -1600,6 +1600,27 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(response.read()), {"error": "De uitvoering kan nu niet veilig worden bevestigd."})
+            aborted = {"run_id": "inbox-merge-wait", "dismissed": True}
+            with (
+                patch("tools.engineering.dashboard.abort_operator_merge_wait", return_value=aborted) as abort,
+                patch("tools.engineering.dashboard.log_event") as abort_log_event,
+            ):
+                connection.request("POST", "/api/execution-merge-wait-abort", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), aborted)
+                abort.assert_called_once_with(root, "inbox-merge-wait")
+                abort_log_event.assert_any_call(ANY, logging.INFO, "operator_merge_wait_aborted", run_id="inbox-merge-wait")
+            with patch("tools.engineering.dashboard.abort_operator_merge_wait", side_effect=dashboard.RetrySubmissionError("Deze uitvoering wacht niet op een pull request-merge.")):
+                connection.request("POST", "/api/execution-merge-wait-abort", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Deze uitvoering wacht niet op een pull request-merge."})
+            for body in ("{}", "[]", '{"run_id":1}', '{"run_id":"inbox-merge-wait","extra":true}'):
+                connection.request("POST", "/api/execution-merge-wait-abort", body=body, headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                self.assertEqual(json.loads(response.read()), {"error": "De wachtende uitvoering kon niet veilig worden afgebroken."})
             connection.request("POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
