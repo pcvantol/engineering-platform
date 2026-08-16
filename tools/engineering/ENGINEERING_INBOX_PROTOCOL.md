@@ -17,6 +17,9 @@ reports, status or prompt archive after a job is claimed.
 
 The private presentation contract for the dashboard is defined in
 [`OPERATIONS_CONSOLE_DESIGN_SYSTEM.md`](OPERATIONS_CONSOLE_DESIGN_SYSTEM.md).
+Prompt wording is governed separately by the producer-neutral
+[`EP_PROMPT_AUTHORING_CONTRACT.md`](../../docs/engineering/EP_PROMPT_AUTHORING_CONTRACT.md);
+this protocol governs transport and admission, not prompt structure.
 
 ## Producer Contract
 
