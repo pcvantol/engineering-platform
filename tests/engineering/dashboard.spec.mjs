@@ -502,11 +502,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("dialog[open]")).toHaveCount(1);
   });
 
-  test("uses the orange selected-row treatment for prompt history", async ({ page }) => {
+  test("keeps the orange selected-row treatment visible for prompt history on touch devices", async ({ page }) => {
     // Keep the client-side fixture stable: the initial history refresh can
     // otherwise replace this row after it has been rendered in CI.
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [] } }));
+    await page.route("**/api/prompt-history/inbox-row-focus/details", (route) => route.fulfill({
+      json: { history: { run_id: "inbox-row-focus", status: "COMPLETE", title: "Focused row" } },
+    }));
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await historyLoaded;
@@ -523,8 +526,8 @@ test.describe("Engineering Status browser smoke", () => {
       renderPromptHistory();
     });
     const row = page.locator("#promptHistoryRows .prompt-history-row");
-    await row.focus();
-    await expect(row).toBeFocused();
+    await row.click();
+    await expect(row).toHaveAttribute("data-selected", "true");
     const selection = await row.locator("td").evaluateAll((cells) => [
       getComputedStyle(cells[0]).boxShadow,
       getComputedStyle(cells[Math.floor(cells.length / 2)]).boxShadow,
@@ -535,6 +538,9 @@ test.describe("Engineering Status browser smoke", () => {
     expect(selection[1]).toBe("none");
     expect(selection[2]).toBe("none");
     expect(selection[3]).not.toBe("rgba(0, 0, 0, 0)");
+    await page.locator("#promptHistoryDetailClose").click();
+    await page.locator("#promptHistoryFilter").fill("Focused");
+    await expect(row).toHaveAttribute("data-selected", "false");
   });
 
   test("prevents iOS long-press selection on prompt-history rows", () => {
@@ -542,7 +548,13 @@ test.describe("Engineering Status browser smoke", () => {
       path.join(repository, "tools/engineering/assets/dashboard.css"),
       "utf8",
     );
-    expect(styles).toContain(".prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}");
+    const script = readFileSync(
+      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      "utf8",
+    );
+    expect(styles).toContain(".prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}");
+    expect(script).toContain('row.addEventListener("contextmenu", (event) => event.preventDefault());');
+    expect(script).toContain('row.addEventListener("selectstart", (event) => event.preventDefault());');
   });
 
   test("keeps sortable table headers opaque on iOS", () => {

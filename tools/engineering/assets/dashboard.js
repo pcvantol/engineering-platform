@@ -2661,6 +2661,7 @@ setTimeout(hideDashboardSplash, 8e3);
 const PROMPT_HISTORY_PAGE_SIZE = 10;
 let promptHistoryEntries = [],
   promptHistoryPage = 1,
+  promptHistorySelectedRunId = null,
   promptHistorySort = { key: "executed_at", direction: "desc" };
 function promptHistoryValue(entry, key) {
   const value = entry?.[key];
@@ -2813,9 +2814,17 @@ function renderPromptHistory() {
       row.className = "prompt-history-row";
       row.tabIndex = 0;
       row.setAttribute("role", "button");
+      row.dataset.selected = String(entry.run_id === promptHistorySelectedRunId);
       row.setAttribute("aria-label", t("history.open_details", { title: entry.title || entry.run_id }));
+      row.addEventListener("contextmenu", (event) => event.preventDefault());
+      row.addEventListener("selectstart", (event) => event.preventDefault());
       const openDetails = (event) => {
         if (event?.target?.closest("button,a")) return;
+        promptHistorySelectedRunId = entry.run_id || null;
+        body.querySelectorAll(".prompt-history-row[data-selected='true']").forEach((selectedRow) => {
+          selectedRow.dataset.selected = "false";
+        });
+        row.dataset.selected = "true";
         openPromptHistoryDetail(entry);
       };
       row.addEventListener("click", openDetails);
@@ -2954,10 +2963,12 @@ function renderPromptHistory() {
   previous.disabled = promptHistoryPage <= 1;
   next.disabled = promptHistoryPage >= pageCount;
   previous.addEventListener("click", () => {
+    promptHistorySelectedRunId = null;
     promptHistoryPage--;
     renderPromptHistory();
   });
   next.addEventListener("click", () => {
+    promptHistorySelectedRunId = null;
     promptHistoryPage++;
     renderPromptHistory();
   });
@@ -3014,6 +3025,7 @@ async function refreshAfterOperatorAction({ dismissedRunId = null } = {}) {
   await refreshPromptHistory();
 }
 $("promptHistoryFilter").addEventListener("input", () => {
+  promptHistorySelectedRunId = null;
   promptHistoryPage = 1;
   renderPromptHistory();
 });
@@ -3026,6 +3038,7 @@ document
         promptHistorySort.direction =
           promptHistorySort.direction === "asc" ? "desc" : "asc";
       else promptHistorySort = { key: key, direction: "asc" };
+      promptHistorySelectedRunId = null;
       promptHistoryPage = 1;
       renderPromptHistory();
     };
