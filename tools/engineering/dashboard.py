@@ -27,7 +27,7 @@ from .platform_bootstrap import provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, submit_execution_retry, submit_predecessor_retry
+from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -41,6 +41,7 @@ from .component_logging import (
     shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
+from .agent_state import redact_diagnostic
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
 from .telemetry import daily_statistics, daily_timing_detail, execution_timing
 from .prompt_history import prompt_history, report_for_prompt_history
@@ -175,6 +176,10 @@ def _sse_snapshot(root: Path) -> bytes:
     if not isinstance(payload, dict):
         return snapshot
     payload["workspace_git_lock"] = _workspace_git_lock(root)
+    # Git state is deliberately projected with the SSE payload instead of
+    # being fixed in the initial HTML response. A managed execution can switch
+    # to its transaction branch after the operator opens the dashboard.
+    payload["workspace_git"] = _workspace_git_projection(root)
     fingerprint = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     # HTTP refreshes and SSE delivery can complete out of order in a browser.
     # Attach one process-scoped monotone revision to every changed projection,
@@ -274,6 +279,34 @@ def _project_prompt_history_detail(
     ).encode()
 
 
+def _terminal_run_diagnostic(root: Path, run_id: str | None) -> str | None:
+    """Return the latest bounded failure detail only when its log owns this run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return None
+    try:
+        connection = open_storage(root)
+        try:
+            rows = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='inbox' ORDER BY id DESC LIMIT 200"
+            ).fetchall()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        return None
+    for row in rows:
+        try:
+            event = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("run_id") != run_id or event.get("event") != "job_failed":
+            continue
+        diagnostic = event.get("diagnostic")
+        if isinstance(diagnostic, str) and diagnostic.strip():
+            return redact_diagnostic(diagnostic, limit=500)
+    return None
+
+
 def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
     """Return private, immutable operational evidence for one history row."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
@@ -306,6 +339,8 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         report = _report_for_run(root, run_id).decode("utf-8")
     except UnicodeDecodeError:
         pass
+    if diagnostic := _terminal_run_diagnostic(root, run_id):
+        entry["execution_diagnostic"] = diagnostic
     return _project_prompt_history_detail(
         entry,
         execution=execution,
@@ -1316,6 +1351,35 @@ def _workspace_free_disk_space(root: Path) -> str:
     return f"{free_gigabytes:.1f} GB"
 
 
+def _workspace_git_projection(root: Path) -> dict[str, object]:
+    """Return the small, read-only Git projection shown in Workspace."""
+    unavailable = "Niet beschikbaar"
+    try:
+        provider = GitProvider()
+        branch = provider.execute(root, "git", "branch", "--show-current")
+        revisions = provider.execute(root, "git", "rev-parse", "HEAD", "origin/main")
+    except OSError:
+        return {
+            "branch": unavailable,
+            "commit": unavailable,
+            "origin_main_commit": unavailable,
+            "origin_main_available": False,
+            "main_action_available": False,
+        }
+    branch_name = branch.stdout.strip() if branch.returncode == 0 and branch.stdout.strip() else unavailable
+    revision_lines = revisions.stdout.splitlines() if revisions.returncode == 0 else []
+    commit = revision_lines[0][:12] if revision_lines else unavailable
+    origin_main_commit = revision_lines[1][:12] if len(revision_lines) == 2 else unavailable
+    origin_main_available = len(revision_lines) == 2
+    return {
+        "branch": branch_name,
+        "commit": commit,
+        "origin_main_commit": origin_main_commit,
+        "origin_main_available": origin_main_available,
+        "main_action_available": origin_main_available and commit != origin_main_commit,
+    }
+
+
 def _engineering_database_details(root: Path) -> dict[str, str]:
     """Return read-only local SQLite identity details without creating storage."""
     database = root.resolve() / ".engineering" / "engineering.db"
@@ -1392,6 +1456,7 @@ def _dashboard_html(
 <div class="card execution-context" id="executionContext" hidden><strong data-i18n="ui.execution_context"></strong><p class="field"><span class="label" data-i18n="field.execution_mode"></span><span id="executionMode"></span></p><p class="field"><span class="label" data-i18n="field.repository"></span><span id="targetRepository"></span></p><div class="field"><span class="label" data-i18n="detail.target_checkout"></span><pre id="checkoutPath"></pre></div><p class="field"><span class="label" data-i18n="ui.active_branch"></span><span id="activeBranch"></span></p></div>
 <div class="card" id="processMetrics" hidden><strong data-i18n="ui.local_ai_processes"></strong><p class="field"><span class="label">CPU</span><span id="codexCpu" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.process_count"></span><span id="codexProcesses" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.gpu_usage"></span><span id="codexGpu" data-i18n="format.loading"></span></p></div>
 <div class="card operator-merge-wait" id="operatorMergeWait" hidden><strong data-i18n="merge_wait.title"></strong><p id="operatorMergeWaitDescription"></p><div class="operator-merge-wait__actions"><a class="dashboard-action dashboard-action--primary" id="operatorMergePullRequest" target="_blank" rel="noopener noreferrer"></a><button class="dashboard-action dashboard-action--destructive" id="operatorMergeAbort" type="button" data-i18n="action.abort_execution"></button></div></div>
+<div class="card status-reconciliation-card" id="statusReconciliation" hidden><strong data-i18n="status_reconciliation.title"></strong><p data-i18n="status_reconciliation.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--primary" id="statusReconciliationStart" type="button" data-i18n="status_reconciliation.action"></button></div><p id="statusReconciliationResult" role="status" aria-live="polite"></p></div>
 <div class="card" id="workspaceProgress"><strong data-i18n="detail.workspace_changes"></strong><p class="field"><span id="workspaceProgressValue" data-i18n="format.loading"></span></p></div>
 <div class="card" id="predecessorGate" hidden><strong data-i18n="status.blocked"></strong><p class="field"><span class="label" data-i18n="detail.run_id"></span><code id="predecessorRun"></code></p><p class="field"><span class="label" data-i18n="ui.preceding_prompt"></span><span id="predecessorPrompt"></span></p><p class="field"><span class="label" data-i18n="field.terminal_state"></span><span id="predecessorPhase"></span></p><div class="field"><span class="label" data-i18n="ui.recovery_action"></span><pre id="predecessorAction"></pre></div><button class="predecessor-retry" id="predecessorRetry" type="button" data-i18n="action.resume_queue"></button><p class="predecessor-retry-status" id="predecessorRetryStatus" role="status" aria-live="polite"></p></div>
 <div class="card"><strong data-i18n="ui.estimated_execution_time"></strong><p class="estimate-primary" id="executionEstimate" data-i18n="estimate.not_available"></p><p class="estimate-meta" id="executionEstimateMeta" hidden></p></div>
@@ -1422,7 +1487,7 @@ def _dashboard_html(
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-i18n="workspace.current_branch"></span><code>$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-i18n="workspace.current_commit"></span><code>$WORKSPACE_COMMIT</code></p><p class="field" $ORIGIN_MAIN_HIDDEN><span class="label" data-i18n="workspace.origin_main_commit"></span><code>$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
@@ -1716,6 +1781,31 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
+            if request_path == "/api/status-reconciliation-preview":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
+                        raise ValueError
+                    outcome = status_reconciliation_preview(root, payload["run_id"])
+                except (RetrySubmissionError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    self._send(json.dumps({"error": str(error) or "Statusherstel is niet veilig beschikbaar."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
+                return
+            if request_path == "/api/status-reconciliation":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
+                        raise ValueError
+                    outcome = submit_status_reconciliation(root, cloud_root(repo=root), payload["run_id"])
+                    log_event(logger, logging.INFO, "status_reconciliation_requested", run_id=payload["run_id"])
+                except (RetrySubmissionError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    self._send(json.dumps({"error": str(error) or "Statusherstel kon niet veilig worden aangevraagd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
             if request_path == "/api/execution-dismiss":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -2003,15 +2093,8 @@ def handler(root: Path, logger: logging.Logger | None = None):
             if request.path == "/":
                 engineering_database = _engineering_database_details(root)
                 workspace_free_disk_space = _workspace_free_disk_space(root)
-                branch = GitProvider().execute(root, "git", "branch", "--show-current")
-                workspace_branch = branch.stdout.strip() if branch.returncode == 0 and branch.stdout.strip() else "Niet beschikbaar"
-                revisions = GitProvider().execute(root, "git", "rev-parse", "HEAD", "origin/main")
-                revision_lines = revisions.stdout.splitlines() if revisions.returncode == 0 else []
-                workspace_commit = revision_lines[0][:12] if revision_lines else "Niet beschikbaar"
-                origin_main_commit = revision_lines[1][:12] if len(revision_lines) == 2 else "Niet beschikbaar"
-                origin_main_available = len(revision_lines) == 2
+                workspace_git = _workspace_git_projection(root)
                 workspace_open_pull_requests = _workspace_open_pull_requests(root)
-                workspace_main_action_hidden = len(revision_lines) != 2 or revision_lines[0] == revision_lines[1]
                 return self._send(
                     _dashboard_html(
                         title,
@@ -2023,12 +2106,12 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         engineering_database["path"],
                         engineering_database["size"],
                         engineering_database["schema_version"],
-                        workspace_branch,
-                        workspace_commit,
-                        origin_main_commit,
-                        origin_main_available,
+                        str(workspace_git["branch"]),
+                        str(workspace_git["commit"]),
+                        str(workspace_git["origin_main_commit"]),
+                        bool(workspace_git["origin_main_available"]),
                         workspace_open_pull_requests,
-                        workspace_main_action_hidden,
+                        not bool(workspace_git["main_action_available"]),
                         platform_version,
                     ),
                     "text/html; charset=utf-8",

@@ -56,6 +56,9 @@ BACKGROUND_RUN_ID_ENVIRONMENT = "DJCONNECT_ENGINEERING_BACKGROUND_RUN_ID"
 BACKGROUND_JOB_ID_ENVIRONMENT = "DJCONNECT_ENGINEERING_BACKGROUND_JOB_ID"
 BLOCKING_PREDECESSOR_PHASES = frozenset({"BLOCKED", "FAILED"})
 RETRY_OF_PATTERN = re.compile(r"(?mi)^retry[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
+STATUS_RECONCILIATION_OF_PATTERN = re.compile(
+    r"(?mi)^status[ _-]reconciliation[ _-]of\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$"
+)
 ORIGINAL_RUN_ID_PATTERN = re.compile(r"(?mi)^original[ _-]run[ _-]id\s*:\s*(inbox-[a-z0-9-]{6,64})\s*$")
 RETRY_GENERATION_PATTERN = re.compile(r"(?mi)^retry[ _-]generation\s*:\s*(\d+)\s*$")
 RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,80})\s*$")
@@ -744,6 +747,75 @@ def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recover
                 "retry_timestamp": timestamp, "filename": filename, "retry_run_id": retry_run_id}
 
 
+def status_reconciliation_preview(repo: Path, run_id: str) -> dict[str, str]:
+    """Prove one blocked run needs a governance-only status reconciliation."""
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    try:
+        state = StateStore(repo / ".engineering" / "engineering-runs").load(run_id)
+    except StateError as error:
+        raise RetrySubmissionError("De geblokkeerde uitvoering is niet beschikbaar.") from error
+    diagnostic = state.diagnostic or ""
+    if not (
+        state.phase == "BLOCKED"
+        and state.terminal_condition == "external_blocked"
+        and state.implementation_pull_request is None
+        and state.finalization_pull_request is None
+        and "rolling status records" in diagnostic.lower()
+    ):
+        raise RetrySubmissionError("Deze uitvoering komt niet in aanmerking voor veilig statusherstel.")
+    return {"run_id": run_id, "reason": "merged_status_records_stale"}
+
+
+def _is_verified_status_reconciliation(
+    repo: Path, content: str, predecessor_run_id: str
+) -> bool:
+    """Allow only the narrowly proved reconciliation past its own predecessor gate.
+
+    The marker alone is deliberately insufficient: an Inbox author must not be
+    able to bypass the predecessor gate by adding a lookalike header.  The
+    referenced run must still satisfy the same immutable, governance-only
+    status-drift proof used by the dashboard action.
+    """
+    marker = STATUS_RECONCILIATION_OF_PATTERN.search(content)
+    if marker is None or marker.group(1) != predecessor_run_id:
+        return False
+    try:
+        status_reconciliation_preview(repo, predecessor_run_id)
+    except RetrySubmissionError:
+        return False
+    return True
+
+
+def submit_status_reconciliation(repo: Path, root: Path, run_id: str) -> dict[str, str]:
+    """Queue exactly one dedicated Finalization prompt after a verified preview."""
+    preview = status_reconciliation_preview(repo, run_id)
+    with _lock(repo):
+        marker = f"Status-Reconciliation-Of: {run_id}"
+        if any(content is not None and marker in content for _, content in ((path, stable_prompt(path, 0.0)) for path in discover(root, 0.0))):
+            raise RetrySubmissionError("Een statusherstel staat al in de wachtrij.")
+        content = (
+            f"{marker}\n\n"
+            "# Engineering Platform — Reconcile merged status records\n\n"
+            "Required Engineering Platform: >= 1.5.0\n\n"
+            "Execute only the dedicated governance-only Finalization reconciliation for the "
+            "verified merged predecessor of the referenced blocked run. Reconcile the four "
+            "rolling records required by PROMPT_INITIALIZATION.md with current main. Do not "
+            "rewrite Prompt History or change product, execution, validation, retry, merge, "
+            "or lifecycle semantics. Create one reviewable Finalization pull request.\n"
+        )
+        inbox = folders(root)["Inbox"]
+        filename = f"status-reconciliation-{run_id}-{uuid.uuid4().hex[:8]}.md"
+        destination, temporary = inbox / filename, inbox / f".{filename}.tmp"
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            os.replace(temporary, destination)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            raise RetrySubmissionError("De Finalization-herstelopdracht kon niet veilig in de Inbox worden geplaatst.") from error
+    return {**preview, "filename": filename}
+
+
 def submit_predecessor_retry(repo: Path, root: Path) -> dict[str, str]:
     """Explicitly resubmit the current blocking prompt through the Inbox transport.
 
@@ -1182,6 +1254,15 @@ def _admit_queue_candidate(
     ]
     if retries:
         source, content = retries[0]
+        return QueueAdmission(source, content)
+
+    reconciliations = [
+        (candidate, prompt)
+        for candidate, prompt in candidates
+        if _is_verified_status_reconciliation(repo, prompt, predecessor["run_id"])
+    ]
+    if reconciliations:
+        source, content = reconciliations[0]
         return QueueAdmission(source, content)
 
     status(

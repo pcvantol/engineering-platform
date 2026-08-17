@@ -50,6 +50,11 @@ near-duplicates in a component.
 | Console blue | `--operations-console-blue: #0a6b9d` | Header/identity accent, not a replacement for semantic category colour |
 | Mark blue | `--operations-console-mark-blue: #00b8f4` | Product mark only |
 
+The hover state of a queue action is an operational affordance, not a category
+accent: **Defer execution** uses house-style orange in both themes. A generic
+button hover rule must never recolour it with the surrounding queue/context
+purple.
+
 ### Category accents
 
 The accent belongs to the information domain and is used consistently for the

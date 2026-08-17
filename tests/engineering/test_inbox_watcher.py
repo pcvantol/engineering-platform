@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import ANY, patch
 
 from tools.engineering import inbox_watcher
+from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.host_preflight import HostPreflightCheck, HostPreflightResult
 from tools.engineering.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
 from tools.engineering.capability_preflight import CapabilityCheck, CapabilityPreflightResult
@@ -76,6 +77,91 @@ class InboxWatcherTest(unittest.TestCase):
             inbox_watcher._runner_failure_detail(completed),
             "BLOCKED: working tree is not clean",
         )
+
+    def test_status_reconciliation_only_queues_a_verified_finalization_request(self) -> None:
+        run_id = "inbox-status-drift"
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            terminal_condition="external_blocked",
+            diagnostic="Pre-flight is NO-GO: rolling status records still describe Finalization as in progress.",
+        ))
+
+        self.assertEqual(
+            inbox_watcher.status_reconciliation_preview(self.repo, run_id),
+            {"run_id": run_id, "reason": "merged_status_records_stale"},
+        )
+        outcome = inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
+        self.assertEqual(outcome["run_id"], run_id)
+        prompt = (self.inbox / outcome["filename"]).read_text(encoding="utf-8")
+        self.assertIn(f"Status-Reconciliation-Of: {run_id}", prompt)
+        self.assertIn("governance-only Finalization", prompt)
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
+            inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
+
+    def test_verified_status_reconciliation_can_pass_its_blocked_predecessor_gate(self) -> None:
+        run_id = "inbox-status-drift"
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            terminal_condition="external_blocked",
+            diagnostic="Pre-flight is NO-GO: rolling status records still describe Finalization as in progress.",
+        ))
+        status_directory = self.repo / ".engineering" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
+            json.dumps(
+                {
+                    "last_executed_run": run_id,
+                    "last_executed_phase": "BLOCKED",
+                    "last_executed_filename": "blocked.txt",
+                    "last_executed_title": "Blocked predecessor",
+                }
+            ),
+            encoding="utf-8",
+        )
+        outcome = inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
+        reconciliation = self.inbox / outcome["filename"]
+        content = reconciliation.read_text(encoding="utf-8")
+
+        admission = inbox_watcher._admit_queue_candidate(
+            self.repo,
+            [(reconciliation, content)],
+            child_run_id=None,
+            child_job_id=None,
+            logger=logging.getLogger("test"),
+        )
+
+        self.assertEqual(admission.source, reconciliation)
+        self.assertEqual(admission.content, content)
+
+    def test_status_reconciliation_marker_without_verified_drift_stays_blocked(self) -> None:
+        run_id = "inbox-blocked123"
+        reconciliation = self.inbox / "unverified-reconciliation.md"
+        content = f"Status-Reconciliation-Of: {run_id}\n\n# Unverified request"
+        reconciliation.write_text(content, encoding="utf-8")
+        status_directory = self.repo / ".engineering" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
+            json.dumps(
+                {
+                    "last_executed_run": run_id,
+                    "last_executed_phase": "BLOCKED",
+                    "last_executed_filename": "blocked.txt",
+                    "last_executed_title": "Blocked predecessor",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        admission = inbox_watcher._admit_queue_candidate(
+            self.repo,
+            [(reconciliation, content)],
+            child_run_id=None,
+            child_job_id=None,
+            logger=logging.getLogger("test"),
+        )
+
+        self.assertIsNone(admission.source)
+        self.assertEqual(json_status(self.repo)["watcher_state"], "WAITING_FOR_PREDECESSOR")
 
     def test_watcher_run_logs_lifecycle_identity_on_orderly_shutdown(self) -> None:
         lifecycle_context = {

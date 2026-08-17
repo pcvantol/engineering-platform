@@ -63,6 +63,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.mission_not_created": "Mission not created",
     "detail.executed_at": "Executed at",
     "detail.execution": "Execution",
+    "detail.execution_diagnostic": "Execution diagnostic",
     "detail.execution_evidence": "Execution evidence",
     "detail.execution_mode": "Execution mode",
     "detail.producer": "Producer",
@@ -553,6 +554,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.mission_not_created": "Missie niet aangemaakt",
     "detail.executed_at": "Uitgevoerd op",
     "detail.execution": "Uitvoering",
+    "detail.execution_diagnostic": "Uitvoeringsdiagnose",
     "detail.execution_evidence": "Uitvoeringsbewijs",
     "detail.execution_mode": "Uitvoeringsmodus",
     "detail.producer": "Producent",
@@ -1043,6 +1045,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.mission_not_created": "Mission nicht erstellt",
     "detail.executed_at": "Ausgeführt am",
     "detail.execution": "Ausführung",
+    "detail.execution_diagnostic": "Ausführungsdiagnose",
     "detail.execution_evidence": "Ausführungsnachweis",
     "detail.execution_mode": "Ausführungsmodus",
     "detail.producer": "Erzeuger",
@@ -1468,6 +1471,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.mission_not_created": "Mission non créée",
     "detail.executed_at": "Exécuté le",
     "detail.execution": "Exécution",
+    "detail.execution_diagnostic": "Diagnostic d’exécution",
     "detail.execution_evidence": "Preuve d’exécution",
     "detail.execution_mode": "Mode d’exécution",
     "detail.producer": "Producteur",
@@ -1893,6 +1897,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.mission_not_created": "Misión no creada",
     "detail.executed_at": "Ejecutado el",
     "detail.execution": "Ejecución",
+    "detail.execution_diagnostic": "Diagnóstico de ejecución",
     "detail.execution_evidence": "Evidencia de ejecución",
     "detail.execution_mode": "Modo de ejecución",
     "detail.producer": "Productor",
@@ -2454,6 +2459,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.state.waiting_for_operator_merg
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.state.waiting_for_operator_merge":"warten auf Operator-Merge"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.state.waiting_for_operator_merge":"en attente de la fusion par l’opérateur"});
 Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.state.waiting_for_operator_merge":"esperando la fusión del operador"});
+Object.assign(DASHBOARD_MESSAGES.en, {"status_reconciliation.title":"Restore execution status","status_reconciliation.description":"The repository already contains the recorded merge, but its rolling status records are stale. This is not waiting for an operator merge.","status_reconciliation.action":"Restore execution status","status_reconciliation.confirmation":"A dedicated Finalization reconciliation will be placed in the Engineering Inbox. It changes no product or execution behavior.","status_reconciliation.queued":"Finalization reconciliation requested.","status_reconciliation.failed":"Status reconciliation could not be requested safely."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"status_reconciliation.title":"Uitvoeringsstatus herstellen","status_reconciliation.description":"De repository bevat de vastgelegde merge al, maar de rolling statusrecords zijn verouderd. Dit wacht niet op een operator-merge.","status_reconciliation.action":"Uitvoeringsstatus herstellen","status_reconciliation.confirmation":"Er wordt een gerichte Finalization-reconciliatie in de Engineering Inbox geplaatst. Dit wijzigt geen product- of uitvoeringsgedrag.","status_reconciliation.queued":"Finalization-reconciliatie aangevraagd.","status_reconciliation.failed":"Statusherstel kon niet veilig worden aangevraagd."});
+Object.assign(DASHBOARD_MESSAGES.de, {"status_reconciliation.title":"Ausführungsstatus wiederherstellen","status_reconciliation.description":"Das Repository enthält den dokumentierten Merge bereits, aber seine fortlaufenden Statusdaten sind veraltet. Es wartet nicht auf einen Operator-Merge.","status_reconciliation.action":"Ausführungsstatus wiederherstellen","status_reconciliation.confirmation":"Eine gezielte Finalisierungsabstimmung wird in der Engineering-Inbox abgelegt. Produkt- und Ausführungsverhalten bleiben unverändert.","status_reconciliation.queued":"Finalisierungsabstimmung angefordert.","status_reconciliation.failed":"Der Statusabgleich konnte nicht sicher angefordert werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"status_reconciliation.title":"Restaurer le statut d’exécution","status_reconciliation.description":"Le dépôt contient déjà la fusion enregistrée, mais ses enregistrements d’état continus sont obsolètes. Il n’attend pas une fusion par l’opérateur.","status_reconciliation.action":"Restaurer le statut d’exécution","status_reconciliation.confirmation":"Un rapprochement de finalisation dédié sera placé dans la boîte de réception Engineering. Aucun comportement produit ou d’exécution ne change.","status_reconciliation.queued":"Rapprochement de finalisation demandé.","status_reconciliation.failed":"Le rapprochement du statut ne peut pas être demandé en toute sécurité."});
+Object.assign(DASHBOARD_MESSAGES.es, {"status_reconciliation.title":"Restaurar el estado de ejecución","status_reconciliation.description":"El repositorio ya contiene la fusión registrada, pero sus registros de estado continuos están obsoletos. No está esperando una fusión del operador.","status_reconciliation.action":"Restaurar el estado de ejecución","status_reconciliation.confirmation":"Se colocará una conciliación de finalización específica en la bandeja de entrada de Engineering. No cambia el comportamiento del producto ni de la ejecución.","status_reconciliation.queued":"Conciliación de finalización solicitada.","status_reconciliation.failed":"No se pudo solicitar la conciliación de estado de forma segura."});
 Object.assign(DASHBOARD_MESSAGES.en, {"merge_wait.context_label":"Merge context","merge_wait.context_intro":"This hand-off is the {merge} for pull request #{number}.","merge_wait.context_run":"Run ID","merge_wait.context_prompt":"Prompt"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"merge_wait.context_label":"Mergecontext","merge_wait.context_intro":"Deze hand-off is de {merge} voor pull request #{number}.","merge_wait.context_run":"Run-ID","merge_wait.context_prompt":"Opdracht"});
 Object.assign(DASHBOARD_MESSAGES.de, {"merge_wait.context_label":"Merge-Kontext","merge_wait.context_intro":"Diese Übergabe ist der {merge} für Pull Request #{number}.","merge_wait.context_run":"Run-ID","merge_wait.context_prompt":"Auftrag"});

@@ -14,7 +14,6 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("minimum = 80.01", workflow)
-        self.assertIn('minimum >80%', workflow)
+        self.assertIn("minimum = 80.20", workflow)
+        self.assertIn('minimum 80.20%', workflow)
         self.assertIn("covered is None or covered < minimum", workflow)
-

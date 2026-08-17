@@ -491,6 +491,7 @@ test.describe("Engineering Status browser smoke", () => {
           status: "COMPLETE",
           title: "Modal prompt",
           executed_at: "2026-08-04T08:00:00Z",
+          execution_diagnostic: "The verified execution diagnostic belongs to this run.",
         },
         execution: { seconds: 42, total_seconds: 61 },
         evidence: ["Execution Host: Engineering Platform"],
@@ -511,7 +512,39 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__header")).toHaveClass(/dashboard-modal-shell__header/);
     await expect(page.locator("#promptHistoryDetailDescription")).toHaveCSS("border-bottom-color", "rgb(141, 199, 255)");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("The verified execution diagnostic belongs to this run.");
     await expect(page.locator("dialog[open]")).toHaveCount(1);
+  });
+
+  test("renders terminal status recovery as a historical detail card", async ({ page }) => {
+    const runId = "inbox-status-recovery";
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: runId, status: "BLOCKED", title: "Status recovery", executed_at: "2026-08-17T05:42:00Z",
+    }] } }));
+    await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+      history: { run_id: runId, status: "BLOCKED", title: "Status recovery" },
+      lifecycle: {
+        run_id: runId,
+        available: true,
+        terminal_state: "BLOCKED",
+        recovery: { kind: "status_reconciliation", run_id: runId },
+        steps: [],
+      },
+    } }));
+
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    await page.locator("#promptHistoryRows .prompt-history-row").click();
+
+    const card = page.locator("#promptHistoryDetailContent .status-reconciliation-card");
+    await expect(card).toBeVisible();
+    await expect(card).toHaveClass(/prompt-detail-card/);
+    await expect(card).not.toHaveClass(/operator-merge-wait/);
+    await expect(card.locator("h3")).toHaveText(DASHBOARD_MESSAGES.nl["status_reconciliation.title"]);
+    const lifecycle = page.locator("#promptHistoryDetailContent .execution-lifecycle--historical");
+    await expect(lifecycle).toHaveCSS("background-color", "rgb(36, 36, 45)");
+    await expect(lifecycle.locator("h3")).toHaveCSS("font-size", "18px");
   });
 
   test("opens, closes and navigates prompt-history deeplinks without reloading", async ({ page }) => {
@@ -2043,11 +2076,13 @@ test.describe("Engineering Status browser smoke", () => {
     const hoverBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
     expect(new Set(hoverBackgrounds).size).toBe(1);
     expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
-    await runRow.click();
+    const runId = runRow.locator(".telemetry-run-link");
+    const promptDetailLoaded = page.waitForResponse("**/api/prompt-history/inbox-telemetry-row/details");
+    await runId.click();
+    await promptDetailLoaded;
     await expect(runRow).toHaveAttribute("data-selected", "true");
     const selectedBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
     expect(new Set(selectedBackgrounds).size).toBe(1);
-    const runId = runRow.locator(".telemetry-run-link");
     await runId.focus();
     await expect(runId).toHaveCSS("outline-style", "none");
     await expect(runId).toHaveCSS("box-shadow", "none");
@@ -3436,12 +3471,25 @@ test.describe("Engineering Status browser smoke", () => {
       blocking_predecessor_title: "Geblokkeerde voorganger",
       blocking_predecessor_phase: "BLOCKED",
       predecessor_recovery_action: "Dien de herstelde prompt opnieuw in.",
+      lifecycle: {
+        available: true,
+        run_id: "blocked-run",
+        terminal_state: "BLOCKED",
+        steps: [
+          { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+          { id: "terminal", presentation_key: "lifecycle.step.terminal", state: "BLOCKED" },
+        ],
+      },
     }, {}));
 
     await expect(page.locator("#currentRun")).toBeVisible();
     await expect(page.locator("#currentRun")).toHaveAttribute("open", "");
     await expect(page.locator("#predecessorGate")).toBeVisible();
+    await expect(page.locator("#predecessorGate")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    await expect(page.locator("#predecessorGate")).toHaveCSS("border-right-color", "rgb(240, 182, 106)");
     await expect(page.locator("#predecessorRun")).toHaveText("blocked-run");
+    await expect(page.locator("#currentRun .execution-lifecycle")).toHaveAttribute("data-run-id", "blocked-run");
+    await expect(page.locator("#currentRun .execution-lifecycle__item--blocked")).toHaveCount(1);
   });
 
   test("keeps a terminal blocked run out of Active Prompt", async ({ page }) => {
@@ -5382,7 +5430,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#queueItems").evaluate((element) => { element.open = true; });
 
-    await page.getByRole("button", { name: "Stel uit" }).first().click();
+    const deferButton = page.getByRole("button", { name: "Stel uit" }).first();
+    await deferButton.hover();
+    await expect(deferButton).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    await expect(deferButton).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+
+    await deferButton.click();
     await expect(page.locator("#confirmationModalTitle")).toHaveText("Uitvoering uitstellen");
     await expect(page.locator("#confirmationModalText")).toContainText("Inbox/_deferred");
     await page.locator("#confirmationModalConfirm").click();

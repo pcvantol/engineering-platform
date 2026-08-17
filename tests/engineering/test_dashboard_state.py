@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.engineering import dashboard_state
 from tools.engineering.agent_state import StateStore, TransactionState
@@ -103,6 +104,35 @@ class DashboardStateTest(unittest.TestCase):
             payload = json.loads(dashboard_state.status(root))
 
         self.assertEqual(payload, watcher)
+
+    def test_status_includes_blocking_predecessor_lifecycle_while_queue_waits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {
+                "watcher_state": "WAITING_FOR_PREDECESSOR",
+                "run_id": None,
+                "blocking_predecessor_run": "blocked-run",
+                "blocking_predecessor_phase": "BLOCKED",
+            }
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+            (status / "current.json").write_text(json.dumps({}), encoding="utf-8")
+            predecessor_lifecycle = {
+                "run_id": "blocked-run",
+                "available": True,
+                "terminal_state": "BLOCKED",
+                "steps": [{"id": "TERMINAL", "state": "BLOCKED"}],
+                "recovery": {"kind": "status_reconciliation", "run_id": "blocked-run"},
+            }
+
+            with patch("tools.engineering.dashboard_state.lifecycle_projection", return_value=predecessor_lifecycle):
+                payload = json.loads(dashboard_state.status(root))
+
+        self.assertIsNone(payload["run_id"])
+        self.assertEqual(payload["lifecycle"]["run_id"], "blocked-run")
+        self.assertEqual(payload["lifecycle"]["terminal_state"], "BLOCKED")
+        self.assertIsNone(payload["lifecycle"]["recovery"])
 
     def test_status_projects_stale_liveness_without_claiming_an_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

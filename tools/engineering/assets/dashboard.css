@@ -694,7 +694,7 @@ html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:col
 .predecessor-retry::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
 .execution-dismiss::before{content:"⊘"}
 #componentLogs .log-table{table-layout:auto;width:100%}#componentLogs .log-table th:last-child,#componentLogs .log-table td:last-child{width:100%}
-#queueList .queue-item{grid-template-columns:1.25rem minmax(0,1fr) auto}.queue-defer{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;font:600 12px system-ui;min-height:32px;padding:5px 9px}.queue-defer:hover:not(:disabled){background:#f0b66a;color:#201812}.queue-defer:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-defer{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .queue-defer:hover:not(:disabled){background:#f0b66a;color:#201812}
+#queueList .queue-item{grid-template-columns:1.25rem minmax(0,1fr) auto}.queue-defer{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;font:600 12px system-ui;min-height:32px;padding:5px 9px}.queue-defer:hover:not(:disabled){background:var(--house-style)!important;border-color:var(--house-style)!important;color:#201812!important}.queue-defer:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-defer{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .queue-defer:hover:not(:disabled){background:var(--house-style)!important;border-color:var(--house-style)!important;color:#201812!important}
 
 /* Shared semantic action variants prevent individual surfaces from drifting. */
 .dashboard-action{align-items:center;border:1px solid;border-radius:50%;box-sizing:border-box;display:inline-flex;font:18px/1 system-ui;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;width:32px}
@@ -862,3 +862,14 @@ dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visib
    focus rules have been applied. */
 #telemetryDetailContent .telemetry-run-link{-webkit-tap-highlight-color:transparent;user-select:none}
 #telemetryDetailContent .telemetry-run-link:is(:focus,:focus-visible,:active){border-color:transparent!important;box-shadow:none!important;outline:0!important}
+
+/* Historical lifecycle evidence belongs to the same neutral card family as
+   the other prompt-detail evidence. The active execution lifecycle keeps its
+   separate monitoring surface above. */
+.prompt-detail-modal__content .execution-lifecycle--historical{background:var(--dashboard-surface-base);padding:18px}
+.prompt-detail-modal__content .execution-lifecycle--historical h3{font-size:18px;margin:0 0 14px}
+html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--historical{background:#fff}
+
+/* A blocked predecessor is a terminal warning, not a monitoring-cyan active
+   execution card. Its amber boundary must stay continuous on all four sides. */
+#currentRun #predecessorGate{--category-color:var(--house-style);border-color:var(--house-style)}

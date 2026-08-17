@@ -309,6 +309,23 @@ def status(root: Path) -> bytes:
         # must not be hidden by that older watcher projection.
         return projection
     if watcher:
+        # A queued prompt can be held before it receives its own run ID when
+        # its predecessor is terminally blocked.  Keep that predecessor's
+        # persisted lifecycle visible in the operational card so the operator
+        # can see the exact blocking flow, without misrepresenting it as a
+        # live execution of the queued prompt.
+        predecessor_run = watcher.get("blocking_predecessor_run")
+        if (
+            watcher.get("watcher_state") == "WAITING_FOR_PREDECESSOR"
+            and isinstance(predecessor_run, str)
+            and predecessor_run
+        ):
+            watcher = dict(watcher)
+            lifecycle = dict(lifecycle_projection(root, predecessor_run))
+            # Recovery belongs to the predecessor detail view. The queue wait
+            # card only presents its immutable lifecycle evidence.
+            lifecycle["recovery"] = None
+            watcher["lifecycle"] = lifecycle
         return json.dumps(watcher, separators=(",", ":")).encode()
     return projection or unavailable_status()
 

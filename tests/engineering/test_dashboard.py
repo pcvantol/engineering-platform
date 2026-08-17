@@ -12,7 +12,7 @@ from contextlib import contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
@@ -42,6 +42,56 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("12.3 GB", page)
         self.assertIn("Engineering Platform 1.5.0", page)
 
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_workspace_git_projection_is_safe_and_sse_ready(self, git_provider: object) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "codex/live-branch\n", ""),
+            completed(("git",), 0, "123456789abcde\nabcdef12345678\n", ""),
+        ]
+
+        projection = _workspace_git_projection(Path("/workspace"))
+
+        self.assertEqual(projection, {
+            "branch": "codex/live-branch",
+            "commit": "123456789abc",
+            "origin_main_commit": "abcdef123456",
+            "origin_main_available": True,
+            "main_action_available": True,
+        })
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_workspace_git_projection_hides_main_action_when_origin_is_unavailable(self, git_provider: object) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "123456789abcde\n", ""),
+        ]
+
+        projection = _workspace_git_projection(Path("/workspace"))
+
+        self.assertEqual(projection, {
+            "branch": "main",
+            "commit": "123456789abc",
+            "origin_main_commit": "Niet beschikbaar",
+            "origin_main_available": False,
+            "main_action_available": False,
+        })
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_workspace_git_projection_is_safe_when_git_cannot_start(self, git_provider: object) -> None:
+        git_provider.return_value.execute.side_effect = OSError("Git unavailable")
+
+        projection = _workspace_git_projection(Path("/workspace"))
+
+        self.assertEqual(projection, {
+            "branch": "Niet beschikbaar",
+            "commit": "Niet beschikbaar",
+            "origin_main_commit": "Niet beschikbaar",
+            "origin_main_available": False,
+            "main_action_available": False,
+        })
+
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]
         catalog = (root / "tools/engineering/assets/dashboard_locales.mjs").read_text(encoding="utf-8")
@@ -57,7 +107,7 @@ class DashboardStatusTest(unittest.TestCase):
             "detail.recommended_next_mission", "detail.recommendation_status", "detail.mission_origin",
             "detail.business_value", "detail.confidence", "detail.dependencies", "detail.alternatives",
             "detail.decision_evidence", "detail.projection_incomplete", "technical.git_lock",
-            "technical.git_lock_recovery_action",
+            "technical.git_lock_recovery_action", "detail.execution_diagnostic",
         ):
             self.assertEqual(catalog.count(f'"{key}"'), 5)
         self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
@@ -1049,6 +1099,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["component_versions"]["dashboard"], DASHBOARD_VERSION)
         self.assertEqual(snapshot["component_versions"]["worker"], WATCHER_VERSION)
         self.assertEqual(snapshot["workspace_git_lock"], {"state": "free", "active": False, "stale": False})
+        self.assertEqual(snapshot["workspace_git"]["branch"], "Niet beschikbaar")
 
     def test_latest_codex_log_is_local_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1234,6 +1285,50 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(payload["history"]["title"], "Detail prompt")
             self.assertEqual(payload["usage"], {})
             self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
+
+    def test_prompt_history_detail_includes_only_its_own_terminal_failure_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_id = "inbox-diagnostic"
+            record_prompt_execution(
+                root,
+                run_id=run_id,
+                terminal_state="BLOCKED",
+                prompt_title="Blocked prompt",
+                executed_at="2026-08-17T05:42:43Z",
+            )
+            with open_storage(root) as connection:
+                connection.execute(
+                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                    (
+                        "inbox",
+                        json.dumps({
+                            "event": "job_failed",
+                            "run_id": run_id,
+                            "diagnostic": "Pre-flight is NO-GO: rolling status records are stale.",
+                        }),
+                        "2026-08-17T05:42:43Z",
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                    (
+                        "inbox",
+                        json.dumps({
+                            "event": "job_failed",
+                            "run_id": "inbox-other-run",
+                            "diagnostic": "This diagnostic belongs to another run.",
+                        }),
+                        "2026-08-17T05:42:44Z",
+                    ),
+                )
+
+            payload = json.loads(_prompt_history_detail(root, run_id))
+
+            self.assertEqual(
+                payload["history"]["execution_diagnostic"],
+                "Pre-flight is NO-GO: rolling status records are stale.",
+            )
 
     def test_prompt_history_detail_projector_owns_evidence_and_presentation(self) -> None:
         entry = {"run_id": "inbox-projector", "target_repository": "stored/repository"}
@@ -1774,6 +1869,39 @@ class DashboardStatusTest(unittest.TestCase):
             connection.request("POST", "/api/execution-retry", body="{}", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
+            response.read()
+            reconciliation_preview = {"run_id": "inbox-status-drift", "reason": "merged_status_records_stale"}
+            with patch("tools.engineering.dashboard.status_reconciliation_preview", return_value=reconciliation_preview) as preview:
+                connection.request("POST", "/api/status-reconciliation-preview", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read()), reconciliation_preview)
+                preview.assert_called_once_with(root, "inbox-status-drift")
+            with patch("tools.engineering.dashboard.status_reconciliation_preview", side_effect=dashboard.RetrySubmissionError("Geen veilige statusreconciliatie.")):
+                connection.request("POST", "/api/status-reconciliation-preview", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Geen veilige statusreconciliatie."})
+            reconciliation_outcome = {**reconciliation_preview, "filename": "status-reconciliation-inbox-status-drift.md"}
+            with (
+                patch("tools.engineering.dashboard.cloud_root", return_value=root),
+                patch("tools.engineering.dashboard.submit_status_reconciliation", return_value=reconciliation_outcome) as submit_reconciliation,
+                patch("tools.engineering.dashboard.log_event") as reconciliation_log,
+            ):
+                connection.request("POST", "/api/status-reconciliation", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), reconciliation_outcome)
+                submit_reconciliation.assert_called_once_with(root, root, "inbox-status-drift")
+                reconciliation_log.assert_any_call(ANY, logging.INFO, "status_reconciliation_requested", run_id="inbox-status-drift")
+            with patch("tools.engineering.dashboard.submit_status_reconciliation", side_effect=dashboard.RetrySubmissionError("Statusherstel is niet beschikbaar.")):
+                connection.request("POST", "/api/status-reconciliation", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Statusherstel is niet beschikbaar."})
+            connection.request("POST", "/api/status-reconciliation", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409)
             response.read()
             deferred = {"filename": "later.md", "deferred_filename": "later.md", "deferred_at": "2026-08-07T16:00:00+00:00"}
             with (

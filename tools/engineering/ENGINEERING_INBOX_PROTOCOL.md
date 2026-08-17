@@ -183,6 +183,28 @@ recorded. Neither action bypasses watcher ownership, bootstrap or runner
 checks. This deliberately supplies sequential safety before a future
 Engineering Intent `depends_on` model can express finer-grained rules.
 
+### Verified execution-status reconciliation
+
+**Restore execution status** is not a generic queue bypass or a retry. It is
+available only for a terminal `BLOCKED` run when immutable state proves all of
+the following: the terminal condition is `external_blocked`, neither an
+implementation nor a Finalization pull request is recorded for that run, and
+the bounded diagnostic identifies stale rolling status records. The dashboard
+first performs this proof before it creates one dedicated governance-only
+Finalization prompt with:
+
+```text
+Status-Reconciliation-Of: inbox-<blocked-run-id>
+```
+
+While that same run is the current blocking predecessor, the watcher admits
+this marker only after repeating the immutable proof. A matching marker alone
+is insufficient, and a marker for another predecessor stays queued at
+`WAITING_FOR_PREDECESSOR`. The reconciliation then remains subject to normal
+watcher ownership, preflight, runner and Finalization review. It reconciles
+the required rolling status records with current `main`; it must not recreate
+product implementation, rewrite Prompt History or alter retry semantics.
+
 ### Retry lineage and merged pull-request evidence
 
 A retry may reconcile a previously merged implementation pull request only

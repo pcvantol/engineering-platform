@@ -33,9 +33,11 @@ changes execution semantics.
   run and never infers unavailable values.
 - Strict sequential Inbox safety: a `BLOCKED` or `FAILED` predecessor holds
   later submissions at `WAITING_FOR_PREDECESSOR` until **Resume Queue** creates
-  a corrective `Retry-Of` replacement. **Retry Execution** remains separately
-  available for every terminal `BLOCKED` or `FAILED` run and records immutable
-  lineage.
+  a corrective `Retry-Of` replacement. The sole narrow exception is a verified
+  **Restore execution status** reconciliation: it may pass its own predecessor
+  gate only when immutable execution evidence qualifies the block as stale
+  rolling status records. **Retry Execution** remains separately available for
+  every terminal `BLOCKED` or `FAILED` run and records immutable lineage.
   This is the safe default until a future
   Engineering Intent dependency model can express finer-grained ordering.
 - Execution Host Preflight Levels 1 and 2 run before every Inbox claim. Level 1 validates
@@ -51,6 +53,8 @@ changes execution semantics.
 - Advisory Engineering Memory.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.
+- Engineering Platform CI enforces at least **80.20%** branch coverage for its
+  protected dashboard, bootstrap, provider and Inbox watcher modules.
 - Provider-neutral runtime, repository, service, submission and private-access
   configuration, with Codex CLI, GitHub, launchd, iCloud Inbox and Tailscale as
   current configured providers.
