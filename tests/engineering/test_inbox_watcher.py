@@ -113,6 +113,22 @@ class InboxWatcherTest(unittest.TestCase):
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
 
+    def test_status_reconciliation_requeue_gets_a_new_job_identity_after_archive(self) -> None:
+        run_id = "inbox-status-requeue"
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            terminal_condition="external_blocked",
+            diagnostic="Rolling status records are stale.",
+        ))
+        first = inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
+        first_prompt = self.inbox / first["filename"]
+        first_content = first_prompt.read_text(encoding="utf-8")
+        first_prompt.unlink()
+        second = inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
+        second_content = (self.inbox / second["filename"]).read_text(encoding="utf-8")
+        self.assertNotEqual(first_content, second_content)
+        self.assertIn("Status-Reconciliation-Request:", second_content)
+
     def test_verified_status_reconciliation_can_pass_its_blocked_predecessor_gate(self) -> None:
         run_id = "inbox-status-drift"
         StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(

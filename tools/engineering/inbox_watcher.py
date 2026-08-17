@@ -794,8 +794,9 @@ def submit_status_reconciliation(repo: Path, root: Path, run_id: str) -> dict[st
         marker = f"Status-Reconciliation-Of: {run_id}"
         if any(content is not None and marker in content for _, content in ((path, stable_prompt(path, 0.0)) for path in discover(root, 0.0))):
             raise RetrySubmissionError("Een statusherstel staat al in de wachtrij.")
+        request_id = uuid.uuid4().hex
         content = (
-            f"{marker}\n\n"
+            f"{marker}\nStatus-Reconciliation-Request: {request_id}\n\n"
             "# Engineering Platform — Reconcile merged status records\n\n"
             "Required Engineering Platform: >= 1.5.0\n\n"
             "Execute only the dedicated governance-only Finalization reconciliation for the "

@@ -1000,6 +1000,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
       available: true,
       run_id: "lifecycle-touch-contract",
@@ -2100,10 +2101,9 @@ test.describe("Engineering Status browser smoke", () => {
       complete_count: 1, blocked_count: 0, failed_count: 0,
     }]));
     await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
-    const telemetryDetailLoaded = page.waitForResponse("**/api/telemetry/2026-08-16");
     await page.locator("#executionTelemetryRows tr").click();
-    await telemetryDetailLoaded;
     const modal = page.locator("#telemetryDetailModal");
+    await expect(modal).toBeVisible();
     await expect(modal.locator("#telemetryDetailTitle")).toHaveCSS("color", "rgb(251, 113, 133)");
     expect(await modal.locator("#telemetryDetailTitle").evaluate(
       (title) => getComputedStyle(title, "::before").content,
