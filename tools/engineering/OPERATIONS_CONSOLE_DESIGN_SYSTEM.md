@@ -64,6 +64,13 @@ and panel padding share one token, so a modal family cannot leave an unfilled
 rim beside its title bar. Browser coverage verifies that alignment for every
 shared modal family.
 
+Modal shells fill the viewport only to provide a safe backdrop and outer
+padding; their panels use a capped content width. The default is `680px` for
+compact information, component and lifecycle-step dialogs. Confirmations cap
+at `30rem`; AI conversation at `960px`; reports at `1000px`; execution detail
+at `1100px`; and telemetry at `1120px`. At any smaller viewport, the panel
+uses the available width inside the shell's safe outer padding instead.
+
 Title glyphs describe purpose rather than severity: historical details use a
 circled information glyph, AI analysis uses a circled sparkle, ordinary action
 confirmations use a circled question mark, and destructive confirmations use a

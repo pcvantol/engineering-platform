@@ -2818,6 +2818,28 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("uses documented content-width caps for modal families on desktop", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+
+    for (const [selector, maximumWidth] of [
+      ["#confirmationModal", 480],
+      ["#lifecycleDetailModal", 680],
+      ["#promptHistoryChatModal", 960],
+      ["#promptHistoryReportModal", 1000],
+      ["#promptHistoryDetailModal", 1100],
+      ["#telemetryDetailModal", 1120],
+    ]) {
+      const modal = page.locator(selector);
+      await modal.evaluate((element) => element.showModal());
+      await expect(modal.locator(".dashboard-modal-shell__panel")).toHaveCSS(
+        "width",
+        `${maximumWidth}px`,
+      );
+      await modal.evaluate((element) => element.close());
+    }
+  });
+
   test("uses only the chat category divider inside the prompt-history AI modal", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
