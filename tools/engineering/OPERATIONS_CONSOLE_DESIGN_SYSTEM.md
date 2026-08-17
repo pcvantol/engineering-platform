@@ -56,6 +56,20 @@ The accent belongs to the information domain and is used consistently for the
 category border, heading/glyph and divider. Keyboard focus is always
 house-style orange; a category accent never becomes a competing focus colour.
 
+### Modal geometry and glyphs
+
+Every modal header is a full-width inner panel surface: its background and
+divider begin and end exactly at the panel's inner border edge. Header inset
+and panel padding share one token, so a modal family cannot leave an unfilled
+rim beside its title bar. Browser coverage verifies that alignment for every
+shared modal family.
+
+Title glyphs describe purpose rather than severity: historical details use a
+circled information glyph, AI analysis uses a circled sparkle, ordinary action
+confirmations use a circled question mark, and destructive confirmations use a
+warning triangle. Errors retain their close/error glyph. These glyphs are
+decorative; the localized title remains the accessible name.
+
 | Domain | Accent | Typical surface |
 | --- | --- | --- |
 | Active execution | pink `#f472b6` | `#321d2d` |
@@ -69,7 +83,9 @@ house-style orange; a category accent never becomes a competing focus colour.
 | Platform health | lime `#a3e635` | `#29331d` |
 
 Terminal status remains distinct from category colour: success green, warning
-yellow/orange, failure red/rose and activity as the orange animated ring.
+yellow/orange and failure red/rose. Ordinary lifecycle activity uses the
+containing turquoise accent and its animated ring; orange is reserved there
+for an operator action or blocked/waiting condition.
 
 ## 3. Typography, spacing and geometry
 
@@ -123,10 +139,30 @@ separate focus or selection border around individual cells. Sortable headers
 may use their own thin focus edge because they are independently interactive;
 that edge must remain contained inside the sticky header cell.
 
+The **Operationeel overzicht** card grid is one column by default. Once its
+own container reaches **760px**, it uses two equal columns. This container
+query keeps individual evidence cards readable in narrow side-by-side layouts
+without tying their layout to the full browser width. The **Diagnose** card
+spans both columns at that breakpoint so its operational recommendation is not
+artificially constrained.
+Its captions use the related light-turquoise secondary accent, never the
+orange diagnostic secondary tone.
+
 Repeated compact evidence, such as specialist reviewer status, uses an
 auto-fitting grid of at least `180px` tiles. It fills a row when space permits
 and wraps cleanly at narrower widths; never hard-code a single wide tile per
-reviewer.
+reviewer. In the live-execution area, reviewer captions use the same turquoise
+accent family as the parent container; light mode uses its accessible dark
+turquoise ink rather than an unrelated evidence-blue.
+
+Interactive data rows use their parent table's category tint across every
+cell on hover and selection, with only the shared leading selection marker.
+Text actions inside such a row do not add an underline or a separate hover
+colour: the row itself is the affordance.
+
+Every table row divider uses the parent category's **secondary** accent at a
+subtle opacity. Neutral black or unrelated grey dividers are not permitted;
+the divider is supporting structure, not a separate visual language.
 
 Prompt-history status width is measured from the rendered status labels on the
 current visible page. It must accommodate the longest localized state,
@@ -162,9 +198,15 @@ promise or scheduler input.
 
 In the active-execution card, identify the run first: **Execution title** and
 **Filename** precede the **Execution** identity card (Run-ID and start time).
-The lifecycle flow follows identity, then execution status, execution context
-and local Codex processes, keeping the sequence adjacent to the artifact it
-explains.
+The **Estimated execution time** card follows identity, then the lifecycle
+flow, execution status, execution context and local Codex processes. This
+keeps the estimate adjacent to the run it describes.
+
+Step labels name their operational boundary rather than only its generic
+phase: **PR-controleherstel** identifies bounded repair of failed PR checks,
+**Implementatie-merge** identifies the implementation PR hand-off, and
+**Finalisatie-merge** identifies the separate finalization PR hand-off. These
+three labels are localized as a related set in every supported language.
 
 Within the active-execution container, the lifecycle and execution-context
 blocks use the same card surface as status and operational blocks. Their
@@ -175,17 +217,50 @@ Lifecycle steps use fixed-width slots, a visible connector element on a layer
 behind the circular nodes, and equal connector length between every adjacent
 pair. The connector centre aligns exactly with the circle centre. Long labels
 wrap within their own slot rather than changing the topology. Labels always
-inherit the standard interface text colour and weight; only the active circle
-uses house-style orange, with a dark glyph, so state is clear without turning
-ordinary step names into status colour.
+inherit the standard interface text colour and weight. Ordinary active and
+previously completed intermediate circles use the containing turquoise; only
+the terminal **complete** result uses semantic green with its check glyph. An
+active operator merge wait uses house-style orange with a dark `⌛` glyph, so
+it retains the same warning meaning as a blocked historical result.
+
+The neutral **Start** boundary uses one decorative rocket glyph. Its accessible
+name remains the localized Start label, so the glyph adds a friendly visual
+cue without adding a second spoken state.
+
+Lifecycle status glyphs use a deliberate `20px` size inside the fixed circles;
+the decorative Start rocket is `22px`. Neither changes the circle or connector
+geometry.
+
+Each lifecycle circle is an interactive detail control. On pointer hover its
+circle border switches to house-style orange, without changing its diameter or
+the connector alignment.
+
+On the first render of an active run, a horizontally clipped current step is
+centred in the lifecycle scroller. Subsequent server refreshes preserve the
+operator's own horizontal position instead of pulling the flow back.
+
+Destructive confirmation dialogs make the safe secondary action the initial
+keyboard focus. Standard confirmations may focus their explicit primary action;
+informational dialogs open without a selected control.
 
 The flow is part of its enclosing category, not an independent blue surface.
-Its title, border, non-terminal completed circles and connector lines inherit
-the containing category accent. In the active-execution container this is its
-monitoring cyan (`#65c5d9`). Terminal success, blocked and failed states keep
-their dedicated semantic colours; the active circle alone remains
-house-style orange. Lifecycle state, connector geometry, node interaction and
-the touch-safe no-glass treatment are maintained as one stylesheet bundle.
+Its title, border, non-terminal completed circles and connectors leading to a
+reached step inherit the containing category accent. Connectors leading to an
+unreached, blocked or pending step remain neutral grey. In the
+active-execution container the accent is monitoring cyan (`#65c5d9`). Terminal
+success, blocked and failed states keep their dedicated semantic colours.
+When an operator merge is pending, its persistent pull-request handoff card
+spans the active-execution grid and sits directly below the lifecycle flow;
+status, context and local-process cards follow it.
+Lifecycle state, connector geometry, node interaction and the touch-safe
+no-glass treatment are maintained as one stylesheet bundle.
+
+The surrounding active-execution blocks remain one column while their own
+container is narrower than **760px**. From that available width onward they
+use two equal columns; the lifecycle still spans both columns. This is a
+container query rather than a page-width rule, so the cards return to their
+desktop layout as soon as their actual parent has room, including beside other
+dashboard content.
 The lifecycle step-detail modal uses that same monitoring-cyan accent for its
 header, divider and border. Its field labels and phase names use the related
 light-turquoise secondary accent, never the default purple label colour; it is
@@ -195,17 +270,31 @@ shared modal ink, so they remain clearly readable against the dark surface.
 The flow renders the server lifecycle projection as one coherent update: the
 server-reported current step is the sole active circle. During an operator
 merge wait, **Merge** is the active circle and the summary states the same
-current step. Snapshots carry a source-scoped monotone revision; the client
+current step. An owner-authorized managed run has two distinct merge hand-offs:
+the implementation PR's **Merge** circle, then, after **Finalization**, a
+separate **Finalization merge** circle for its finalization PR. Each hand-off
+uses its own pull-request number and reopens the handoff modal for that PR,
+even though both belong to the same run. The projection omits merge circles
+when persisted lifecycle evidence proves that the run did not require that
+pull request: a no-PR run has none, an implementation-only run has one, and a
+run with a finalization PR has two. Snapshots carry a source-scoped monotone
+revision; the client
 must apply them atomically and discard an older revision from the same source,
 so it cannot retain a completed-state glyph from an older snapshot. Until GitHub
 reports the pull request as merged and the Execution Host advances, an open
 operator merge wait therefore renders **Merge** as the orange active circle,
-never as a completed check. This remains true while GitHub checks are queued
-or running: internal `WAIT_FOR_TERMINAL_EVIDENCE` polling is presented as
+with the summary explicitly saying that it waits for an operator merge, never
+as a completed check or generically “active”. This remains true while GitHub
+checks are queued or running: internal `WAIT_FOR_TERMINAL_EVIDENCE` polling is presented as
 `WAIT_FOR_OPERATOR_MERGE`, and the persistent handoff card, **Open pull
 request** and **Abort execution** controls must not disappear or flicker
 between status updates. The handoff modal may open once per run and may be
 dismissed by the operator; that does not hide the persistent card or controls.
+The modal identifies the exact hand-off before its actions: whether it is the
+implementation or finalization merge, its pull-request number, the run ID and
+the submitted prompt title (with filename only as a fallback). This context is
+compact, wraps safely on phone widths and uses the same localized terminology
+as the lifecycle flow.
 
 Each lifecycle node is an accessible detail control, not a glass or raised
 card. Its modal presents only
@@ -241,6 +330,11 @@ icon-only action, close control, category glyph, disclosure arrow and
 decorative modal-title glyph uses the shared **bold** glyph weight. This makes
 compact controls equally legible in both themes and at phone scale.
 
+Neutral confirmation and evidence dialogs use the subdued information glyph
+`ⓘ`, never an error-like exclamation mark. A real error dialog uses its own
+`×` glyph, so error severity stays semantic rather than leaking into normal
+operator hand-offs.
+
 Keep the glyph weight scoped to the glyph itself: the adjacent action label
 stays at its normal text weight. When an action has both a glyph and a label,
 they form one horizontally and vertically centred group; the glyph may create
@@ -270,7 +364,8 @@ Inputs, selects and text areas use the shared surface, border, orange focus
 border and orange focus ring. Selected native select options should use the
 house orange where platform styling permits. On phone widths, global options
 live in the expandable title-bar panel; rows keep labels visible and switches
-stack vertically.
+stack vertically. Switches draw their orange focus ring around the compact
+track only, never around the full label row.
 
 ## 6. Modals and confirmations
 
@@ -282,12 +377,25 @@ Use the shared modal shell and contextual panel. Modal rules are:
    the shared `--modal-parent-accent` contract. Dialogs are promoted outside
    their source DOM, so they cannot rely on CSS inheritance; the opening
    control resolves and supplies the source accent. A modal without a source
-   retains its contextual default accent.
+   retains its contextual default accent. The shared shell derives its
+   secondary text and subcontainer surface/border colours from that same
+   accent (`--modal-secondary-accent`, `--modal-subcontainer-surface` and
+   `--modal-subcontainer-border`); it must never fall back to the global
+   purple label colour. Thus a telemetry popup uses rose/pink secondary
+   details, a monitoring popup turquoise details, and a conversation popup
+   purple details. These secondary colours are exclusively for captions,
+   dividers and subordinate surfaces: factual field values always use the
+   standard modal document ink (dark in light mode, light in dark mode).
 2. The document/content surface exactly matches the modal content surface;
    no contrasting “padding frame” may appear around an otherwise white or dark
    document.
 3. Long content scrolls **below** the header. The scrollbar begins after the
    header divider, not against the modal top edge.
+   Historical execution evidence is split into an **Execution** summary card
+   and an **Execution context** card. On laptop/desktop widths, the summary
+   and its supporting **Duration**, **Runtime**, **Git commit** and
+   **Execution evidence** cards form the left column; context occupies the
+   adjacent right column. They stack in source order at phone widths.
 4. A state-changing action uses the shared confirmation dialog. Its copy says
    what changes, what remains, and any safe recovery path.
 5. On an iPhone, every modal shell supplies at least `16px` outer padding
@@ -296,10 +404,11 @@ Use the shared modal shell and contextual panel. Modal rules are:
    gutter only through a shell token (telemetry uses `24px`); it must not
    recreate a separate viewport, panel or header implementation. Background
    scrolling is locked while open.
-6. Opening an evidence-only modal puts no control in focus. Only an available
-   primary action may receive initial programmatic focus; close controls,
-   titles and dialog shells never do. The orange selected-control treatment is
-   reserved for actual form inputs, selects and text areas.
+6. Opening an evidence-only modal puts no control in focus. A standard
+   confirmation may focus its available primary action, but a destructive
+   confirmation focuses its safe secondary action. Close controls, titles and
+   dialog shells never receive initial focus. The orange selected-control
+   treatment is reserved for actual form inputs, selects and text areas.
 7. User-facing errors use the shared dashboard error dialog. Do not use a
    browser-native `alert`, `confirm` or `prompt`: those surfaces are not
    themed, localizable or consistent with the operational focus contract.
@@ -410,7 +519,7 @@ Add or extend Playwright coverage for the changed state and, when applicable:
   node, fixed connector length, exact vertical centre alignment, inherited
   containing-category accent, standard label colour and a coherent
   active/completed/pending projection, including that an open operator merge
-  wait renders Merge as active rather than completed, retains its handoff
+  wait renders the applicable Merge circle as active rather than completed, retains its handoff
   controls while checks are queued or running, and lifecycle nodes stay free
   of generic touch glass/transitions;
 - AI conversation modals: verify the purple descriptive divider remains and

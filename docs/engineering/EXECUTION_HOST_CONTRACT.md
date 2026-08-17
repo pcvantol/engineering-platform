@@ -93,6 +93,18 @@ checkmark, and returns it to active only when the PR is again awaiting an
 operator merge. A Merge completion is projected only from subsequent
 finalization evidence or a successful terminal outcome.
 
+The host permits at most three automatic required-check repair attempts for
+the same owner-authorized pull request. If required checks still fail after
+the third repair, it records the failed check names and stops the execution as
+`BLOCKED` with `repair_attempt_limit_reached`; it does not invoke another
+agent repair. A single provider invocation can still end earlier under its own
+runtime limits, and transient GitHub evidence reads remain separately bounded.
+When finalization creates its own pull request, that is a second, distinct
+operator merge handoff: the implementation Merge node remains completed,
+Finalization remains completed, and the console shows a separate active
+Finalization merge node with the finalization PR's Open pull request and Abort
+execution controls.
+
 `workspace-write` is intentionally not used for managed transactions because
 it denies Git index writes. It is suitable for edit-only work, but would leave
 a completed implementation without the commit and repository evidence required

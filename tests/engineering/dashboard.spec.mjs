@@ -80,24 +80,34 @@ test.afterAll(() => {
 });
 
 async function openTitlebarOptions(page) {
-  const options = page.locator("#dashboardTitlebarOptions");
-  if (!(await options.evaluate((element) => element.open))) {
+  const content = page.locator("#dashboardTitlebarOptionsContent");
+  if (await content.isHidden()) {
     await page.getByTestId("titlebar-options-toggle").click();
   }
 }
 
 test.beforeEach(async ({ page }, testInfo) => {
   const goto = page.goto.bind(page);
-  page.goto = async (...arguments_) => {
-    const response = await goto(...arguments_);
+  const reload = page.reload.bind(page);
+  const prepareDashboard = async () => {
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     if (![
       "puts every mobile title-bar setting in a labelled expandable panel",
+      "matches the iPhone portrait dashboard visual reference",
       "only starts pull-to-refresh from the scroll region's top edge",
       "keeps a green pull request visible until the operator merges or aborts it",
     ].includes(testInfo.title)) {
       await openTitlebarOptions(page);
     }
+  };
+  page.goto = async (...arguments_) => {
+    const response = await goto(...arguments_);
+    await prepareDashboard();
+    return response;
+  };
+  page.reload = async (...arguments_) => {
+    const response = await reload(...arguments_);
+    await prepareDashboard();
     return response;
   };
 });
@@ -587,6 +597,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("uses the active-execution card surface for lifecycle and execution context", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -609,6 +620,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     await expect(page.locator(".execution-lifecycle")).toHaveCount(1);
     await expect(page.locator("#executionContext")).toHaveCount(1);
+
+    const statusAndContext = await page.locator("#currentRun .current-run__grid").evaluate((grid) => {
+      const status = [...grid.children].find((child) => child.querySelector?.("#watcher"));
+      const context = grid.querySelector("#executionContext");
+      if (!status || !context) return null;
+      const statusBox = status.getBoundingClientRect(), contextBox = context.getBoundingClientRect();
+      return { statusX: statusBox.x, statusY: statusBox.y, contextX: contextBox.x, contextY: contextBox.y };
+    });
+    expect(statusAndContext).not.toBeNull();
+    expect(statusAndContext.statusY).toBe(statusAndContext.contextY);
+    expect(statusAndContext.statusX).toBeLessThan(statusAndContext.contextX);
 
     await expect(page.locator(".execution-lifecycle")).toHaveCSS("background-color", "rgb(27, 41, 49)");
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(27, 41, 49)");
@@ -669,6 +691,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     const nodes = page.locator(".execution-lifecycle__node");
     await expect(nodes).toHaveCount(2);
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     await expect(page.locator(".execution-lifecycle h3")).toHaveCSS("font-size", "14px");
     for (let index = 0; index < await nodes.count(); index += 1) {
       const node = nodes.nth(index);
@@ -677,7 +700,118 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(node).toHaveCSS("box-shadow", "none");
       await expect(node.locator("span").first()).toHaveCSS("border-top-width", "3px");
     }
-    await expect(nodes.nth(1).locator("span").first()).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    await expect(nodes.nth(0).locator("span").first()).toHaveCSS("background-color", "rgb(101, 197, 217)");
+    await nodes.nth(0).hover({ force: true });
+    await expect(nodes.nth(0).locator("span").first()).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
+    await expect(nodes.nth(0).locator("span").last()).toHaveCSS("color", "rgb(247, 243, 238)");
+    await expect(nodes.nth(1).locator("span").first()).toHaveCSS("background-color", "rgb(101, 197, 217)");
+  });
+
+  test("uses green only for the terminal complete lifecycle result", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "JOB_COMPLETED",
+      run_id: "lifecycle-terminal-complete",
+      lifecycle: {
+        available: true,
+        run_id: "lifecycle-terminal-complete",
+        terminal_state: "COMPLETE",
+        steps: [
+          { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+          { id: "result", presentation_key: "lifecycle.step.result", state: "COMPLETE" },
+        ],
+      },
+    }, {}));
+
+    const nodes = page.locator(".execution-lifecycle__node");
+    await expect(nodes).toHaveCount(2);
+    await expect(nodes.nth(0).locator("span").first()).toHaveCSS("background-color", "rgb(101, 197, 217)");
+    await expect(nodes.nth(1).locator("span").first()).toHaveCSS("background-color", "rgb(81, 216, 138)");
+  });
+
+  test("uses amber only for an operator merge wait, not ordinary active work", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "WAITING_FOR_OPERATOR_MERGE",
+      run_id: "lifecycle-operator-wait",
+      lifecycle: {
+        available: true,
+        run_id: "lifecycle-operator-wait",
+        terminal_state: "ACTIVE",
+        steps: [
+          { id: "implement", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
+          { id: "finalization-merge", presentation_key: "lifecycle.step.wait_for_finalization_merge", state: "ACTIVE" },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    const wait = page.locator(".execution-lifecycle__item--operator-wait");
+    await expect(wait).toHaveCount(1);
+    await expect(wait.locator(".execution-lifecycle__node").first()).toHaveClass(/operator-wait/);
+    await expect(wait.locator("span").first()).toHaveCSS("background-color", "rgb(240, 182, 106)");
+    await expect(wait.locator("span").first()).toHaveText("⌛");
+    await expect(wait.locator("span").first()).toHaveCSS("font-size", "20px");
+    await expect(page.locator(".execution-lifecycle__summary")).toContainText(
+      DASHBOARD_MESSAGES.nl["lifecycle.state.waiting_for_operator_merge"],
+    );
+  });
+
+  test("uses neutral connectors for lifecycle steps not yet reached", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "lifecycle-neutral-connectors",
+      lifecycle: {
+        available: true,
+        run_id: "lifecycle-neutral-connectors",
+        terminal_state: "ACTIVE",
+        steps: [
+          { id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED" },
+          { id: "implement", presentation_key: "lifecycle.step.execute_agent", state: "ACTIVE" },
+          { id: "finalize", presentation_key: "lifecycle.step.finalize_agent", state: "PENDING" },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    const connectors = page.locator(".execution-lifecycle__connector");
+    await expect(connectors).toHaveCount(2);
+    await expect(connectors.nth(0)).toHaveClass(/connector--reached/);
+    await expect(connectors.nth(0)).toHaveCSS("background-color", "rgb(101, 197, 217)");
+    await expect(connectors.nth(1)).not.toHaveClass(/connector--reached/);
+    await expect(connectors.nth(1)).toHaveCSS("background-color", "rgb(154, 154, 163)");
+  });
+
+  test("uses a decorative rocket only for the lifecycle start boundary", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "lifecycle-start-glyph",
+      lifecycle: {
+        available: true,
+        run_id: "lifecycle-start-glyph",
+        terminal_state: "ACTIVE",
+        steps: [
+          { id: "START", presentation_key: "lifecycle.step.start", state: "START" },
+          { id: "initialize", presentation_key: "lifecycle.step.initialize", state: "PENDING" },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    const start = page.locator(".execution-lifecycle__node--start");
+    await expect(start).toHaveCount(1);
+    await expect(start.locator("span").first()).toHaveText("🚀");
+    await expect(start).toHaveAttribute("aria-label", /Start/);
   });
 
   test("shows pull-request check repair and keeps Merge visibly blocked", async ({ page }) => {
@@ -713,7 +847,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(merge.locator("span").first()).not.toHaveText("✓");
   });
 
-  test("places the active execution lifecycle directly below execution identity", async ({ page }) => {
+  test("places the estimate directly below execution identity and before the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -724,12 +858,69 @@ test.describe("Engineering Status browser smoke", () => {
         available: true,
         run_id: "lifecycle-placement",
         terminal_state: "ACTIVE",
-        steps: [{ id: "implement", presentation_key: "lifecycle.step.implement", state: "ACTIVE" }],
+        steps: [
+          { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+          { id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED" },
+          { id: "implement", presentation_key: "lifecycle.step.implement", state: "ACTIVE" },
+          { id: "repair", presentation_key: "lifecycle.step.repair_agent", state: "PENDING" },
+          { id: "merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "PENDING" },
+          { id: "finalize", presentation_key: "lifecycle.step.finalize_agent", state: "PENDING" },
+          { id: "cleanup", presentation_key: "lifecycle.step.repository_cleanup", state: "PENDING" },
+          { id: "terminal", presentation_key: "lifecycle.step.terminal", state: "PENDING" },
+        ],
       },
     }, {}));
 
-    await expect(page.locator("#executionIdentity").locator("xpath=following-sibling::*[1]"))
-      .toHaveClass(/execution-lifecycle/);
+    const activeOrder = await page.locator("#currentRun .current-run__grid").evaluate((grid) =>
+      [...grid.children].filter((item) => item.matches(".card,.execution-lifecycle")).map((item) => item.id === "executionIdentity" ? "identity"
+        : item.querySelector("#executionEstimate") ? "estimate"
+          : item.classList.contains("execution-lifecycle") ? "lifecycle" : item.id || "card"),
+    );
+    expect(activeOrder.slice(0, 3)).toEqual(["identity", "estimate", "lifecycle"]);
+  });
+
+  test("returns active-execution blocks to two columns when their container permits it", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.setViewportSize({ width: 920, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "responsive-current-run",
+      lifecycle: {
+        available: true,
+        run_id: "responsive-current-run",
+        terminal_state: "ACTIVE",
+        steps: [{ id: "implement", presentation_key: "lifecycle.step.implement", state: "ACTIVE" }],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    const columns = async () => page.locator("#currentRun .current-run__grid").evaluate((element) =>
+      getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    );
+    await expect.poll(columns).toBe(2);
+    const [executionIdentity, executionEstimate] = await Promise.all([
+      page.locator("#executionIdentity").boundingBox(),
+      page.locator("#executionEstimate").locator("xpath=..").boundingBox(),
+    ]);
+    expect(executionIdentity).not.toBeNull();
+    expect(executionEstimate).not.toBeNull();
+    expect(executionIdentity.y).toBe(executionEstimate.y);
+    expect(executionIdentity.x).toBeLessThan(executionEstimate.x);
+
+    const contained = async () => page.locator("#currentRun").evaluate((run) => {
+      const runRight = run.getBoundingClientRect().right;
+      return [...run.querySelectorAll(".current-run__grid > *")].every((item) =>
+        item.getBoundingClientRect().right <= runRight,
+      );
+    });
+    await expect.poll(contained).toBe(true);
+    const lifecycleScroll = page.locator("#currentRun .execution-lifecycle__scroll");
+    await expect(lifecycleScroll).toHaveCSS("overflow-x", "auto");
+
+    await page.setViewportSize({ width: 760, height: 844 });
+    await expect.poll(columns).toBe(1);
   });
 
   test("keeps lifecycle steps transparent on iPhone and puts repair counts in their details", async ({ browser }) => {
@@ -798,6 +989,8 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
 
     await expect(page.locator(".execution-lifecycle__item")).toHaveCount(3);
+    await expect(page.locator(".execution-lifecycle__item").nth(1).locator(".execution-lifecycle__node > span").last())
+      .toHaveText("Repository opschoning");
     const spacing = await page.locator(".execution-lifecycle__item").evaluateAll((items) => items.map((item) => {
       const itemBox = item.getBoundingClientRect();
       const circleBox = item.querySelector(".execution-lifecycle__node > span")?.getBoundingClientRect();
@@ -862,9 +1055,21 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#lifecycleDetailModal");
     await expect(modal).toBeVisible();
     await expect(modal).toContainText("Implementatie");
+    await expect(modal.locator("#lifecycleDetailTitle")).toHaveAttribute("data-lifecycle-status", "active");
+    expect(await modal.locator("#lifecycleDetailTitle").evaluate(
+      (title) => getComputedStyle(title, "::before").content,
+    )).toBe('"●"');
     await expect(modal.locator(".lifecycle-detail-modal__content .field > span:last-child").first()).toHaveCSS("color", "rgb(247, 243, 238)");
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
-    await expect(modal.locator(".lifecycle-detail-modal__phase-list strong")).toHaveCSS("color", "rgb(167, 231, 242)");
+    const phaseSecondary = await modal.evaluate((element) => {
+      const expected = document.createElement("span");
+      expected.style.color = "var(--modal-secondary-accent)";
+      element.append(expected);
+      const colour = getComputedStyle(expected).color;
+      expected.remove();
+      return colour;
+    });
+    await expect(modal.locator(".lifecycle-detail-modal__phase-list strong")).toHaveCSS("color", phaseSecondary);
     await expect(modal).toContainText("12 sec");
     await page.locator("#lifecycleDetailClose").click();
     await expect(modal).not.toBeVisible();
@@ -896,6 +1101,31 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
     await expect(phaseRows.nth(0)).toContainText("3 sec");
     await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
+  });
+
+  test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
+    await page.setViewportSize({ width: 640, height: 900 });
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.abort());
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.addStyleTag({ content: ".execution-lifecycle__scroll { width: 300px !important; }" });
+    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "lifecycle-reveal", lifecycle: {
+      available: true, run_id: "lifecycle-reveal", terminal_state: "ACTIVE", steps: [
+        { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+        { id: "initialize", presentation_key: "lifecycle.step.initialize", state: "COMPLETED" },
+        { id: "execute", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
+        { id: "repair", presentation_key: "lifecycle.step.repair_agent", state: "COMPLETED" },
+        { id: "finalization-merge", presentation_key: "lifecycle.step.wait_for_finalization_merge", state: "ACTIVE" },
+        { id: "cleanup", presentation_key: "lifecycle.step.repository_cleanup", state: "PENDING" },
+      ],
+    } }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const scroll = page.locator(".execution-lifecycle__scroll"), active = page.locator(".execution-lifecycle__node--active");
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    expect(await active.evaluate((element) => {
+      const node = element.getBoundingClientRect(), container = element.closest(".execution-lifecycle__scroll").getBoundingClientRect();
+      return node.left >= container.left && node.right <= container.right;
+    })).toBe(true);
   });
 
   test("preserves the active lifecycle horizontal position across server refreshes", async ({ page }) => {
@@ -938,6 +1168,13 @@ test.describe("Engineering Status browser smoke", () => {
         pull_request: 832,
         target_repository: "pcvantol/djconnect",
         prompt_title: "Merge wait fixture",
+        lifecycle: {
+          available: true, run_id: "inbox-merge-wait", terminal_state: "ACTIVE",
+          steps: [
+            { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+            { id: "merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "ACTIVE" },
+          ],
+        },
       } },
     }));
     let abortRequested = false;
@@ -950,6 +1187,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const wait = page.locator("#operatorMergeWait");
     await expect(wait).toBeVisible();
+    await expect(page.locator(".execution-lifecycle + #operatorMergeWait")).toBeVisible();
     const mergeLink = wait.locator("a");
     const abort = wait.getByRole("button", { name: DASHBOARD_MESSAGES.nl["action.abort_execution"] });
     await expect(mergeLink).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
@@ -959,6 +1197,7 @@ test.describe("Engineering Status browser smoke", () => {
       const [first, second] = Array.from(container.children).map((action) => action.getBoundingClientRect());
       return { first: { right: first.right, bottom: first.bottom }, second: { left: second.left, top: second.top } };
     });
+    await expect(mergeLink).toHaveCSS("min-height", "40px");
     expect(
       actionLayout.first.bottom <= actionLayout.second.top || actionLayout.first.right <= actionLayout.second.left,
     ).toBe(true);
@@ -969,6 +1208,11 @@ test.describe("Engineering Status browser smoke", () => {
     const modalPullRequest = page.locator("#operatorMergeWaitModalPullRequest");
     const modalAbort = page.locator("#operatorMergeWaitModalAbort");
     await expect(modalPullRequest).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
+    await expect(mergeModal.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
+      `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_operator_merge"]} voor pull request #832.`,
+    );
+    await expect(mergeModal.locator("#operatorMergeWaitModalRunId")).toHaveText("inbox-merge-wait");
+    await expect(mergeModal.locator("#operatorMergeWaitModalPrompt")).toHaveText("Merge wait fixture");
     await expect(modalPullRequest).toHaveCSS("text-decoration-line", "none");
     await expect(modalPullRequest).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(modalAbort).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
@@ -980,6 +1224,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modalPullRequest).toHaveCSS("justify-content", "center");
     await expect(modalPullRequest).toHaveCSS("font-weight", "400");
     await expect(modalAbort).toHaveCSS("font-weight", "400");
+    const mergeActionHeights = await mergeModal.locator(".dashboard-modal-shell__action").evaluateAll(
+      (actions) => actions.map((action) => action.getBoundingClientRect().height),
+    );
+    expect(mergeActionHeights).toEqual([44, 44]);
     expect(await modalPullRequest.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↗"');
     expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"⊘"');
     expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").fontWeight)).toBe("700");
@@ -987,8 +1235,94 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#operatorMergeWaitModalClose").click();
     await abort.click();
     await expect(page.locator("#confirmationModal")).toBeVisible();
+    const confirmationActionHeights = await page.locator("#confirmationModal .dashboard-modal-shell__action").evaluateAll(
+      (actions) => actions.map((action) => action.getBoundingClientRect().height),
+    );
+    expect(confirmationActionHeights).toEqual(mergeActionHeights);
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => abortRequested).toBe(true);
+  });
+
+  test("opens a new handoff modal for the finalization pull request in the same run", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
+      run_id: "inbox-two-merges", pull_request: 840, target_repository: "pcvantol/djconnect",
+    }, {}));
+    const modal = page.locator("#operatorMergeWaitModal");
+    await expect(modal).toBeVisible();
+    await page.locator("#operatorMergeWaitModalClose").click();
+    await page.evaluate(() => r({
+      watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
+      run_id: "inbox-two-merges", pull_request: 841, finalization_pr: 841,
+      target_repository: "pcvantol/djconnect",
+      lifecycle: {
+        available: true, run_id: "inbox-two-merges", terminal_state: "ACTIVE",
+        steps: [
+          { id: "implementation-merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "COMPLETED" },
+          { id: "finalization", presentation_key: "lifecycle.step.finalize_agent", state: "COMPLETED" },
+          { id: "finalization-merge", presentation_key: "lifecycle.step.wait_for_finalization_merge", state: "ACTIVE" },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(modal).toBeVisible();
+    await expect(page.locator("#operatorMergeWaitModalPullRequest"))
+      .toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/841");
+    await expect(page.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
+      `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]} voor pull request #841.`,
+    );
+    await expect(page.locator(".execution-lifecycle__item")).toHaveCount(3);
+    await expect(page.locator(".execution-lifecycle__item--active .execution-lifecycle__node"))
+      .toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]);
+  });
+
+  test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const render = (steps) => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
+      available: true, run_id: "lifecycle-conditional-merges", terminal_state: "ACTIVE", steps,
+    } }, {});
+    await page.evaluate(render, [
+      { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+      { id: "finalization", presentation_key: "lifecycle.step.finalize_agent", state: "ACTIVE" },
+    ]);
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(page.locator(".execution-lifecycle__item")).toHaveCount(2);
+    await page.evaluate(render, [
+      { id: "start", presentation_key: "lifecycle.step.start", state: "COMPLETED" },
+      { id: "merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "COMPLETED" },
+      { id: "finalization", presentation_key: "lifecycle.step.finalize_agent", state: "ACTIVE" },
+    ]);
+    await expect(page.locator(".execution-lifecycle__item")).toHaveCount(3);
+    await expect(page.locator(".execution-lifecycle__node")).toContainText([
+      DASHBOARD_MESSAGES.nl["lifecycle.step.start"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_operator_merge"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.finalize_agent"],
+    ]);
+  });
+
+  test("uses explicit localized labels for PR repair and both merge hand-offs", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", lifecycle: {
+      available: true, run_id: "lifecycle-explicit-labels", terminal_state: "ACTIVE",
+      steps: [
+        { id: "repair", presentation_key: "lifecycle.step.repair_agent", state: "COMPLETED" },
+        { id: "implementation-merge", presentation_key: "lifecycle.step.wait_for_operator_merge", state: "COMPLETED" },
+        { id: "finalization-merge", presentation_key: "lifecycle.step.wait_for_finalization_merge", state: "ACTIVE" },
+      ],
+    } }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(page.locator(".execution-lifecycle__node")).toContainText([
+      DASHBOARD_MESSAGES.nl["lifecycle.step.repair_agent"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_operator_merge"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"],
+    ]);
   });
 
   test("keeps selected sortable headers within a thin cell edge", async ({ page }) => {
@@ -1047,6 +1381,46 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(modal.locator(".dashboard-modal-shell__close")).toHaveCSS("border-top-color", "rgb(146, 145, 155)");
       await modal.evaluate((element) => element.close());
     }
+  });
+
+  test("uses purpose-matched glyphs for confirmation and merge hand-off modals", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const glyph = async (selector) => page.locator(selector).evaluate(
+      (heading) => getComputedStyle(heading, "::before").content,
+    );
+    await expect.poll(() => glyph("#operatorMergeWaitModalTitle")).toBe('"ⓘ"');
+    await expect.poll(() => glyph("#confirmationModalTitle")).toBe('"ⓘ"');
+    await expect.poll(() => glyph("#dashboardErrorModalTitle")).toBe('"×"');
+    await page.evaluate(() => {
+      document.querySelector("#confirmationModalTitle").dataset.modalGlyph = "question";
+    });
+    await expect.poll(() => glyph("#confirmationModalTitle")).toBe('"?"');
+    expect(await page.locator("#confirmationModalTitle").evaluate(
+      (heading) => getComputedStyle(heading, "::before").width,
+    )).toBe("20px");
+    await page.evaluate(() => {
+      document.querySelector("#confirmationModalTitle").dataset.modalGlyph = "warning";
+    });
+    await expect.poll(() => glyph("#confirmationModalTitle")).toBe('"⚠"');
+    await page.evaluate(() => {
+      document.querySelector("#promptHistoryReportModalTitle").dataset.modalGlyph = "analysis";
+    });
+    await expect.poll(() => glyph("#promptHistoryReportModalTitle")).toBe('"✦"');
+    for (const selector of [
+      "#operatorMergeWaitModalTitle",
+      "#confirmationModalTitle",
+      "#promptHistoryReportModalTitle",
+      "#promptHistoryChatTitle",
+    ]) {
+      expect(await page.locator(selector).evaluate(
+        (heading) => getComputedStyle(heading, "::before").fontSize,
+      )).toBe("20px");
+    }
+    expect(await glyph("#promptHistoryDetailTitle")).toBe("none");
+    await expect(page.locator("#promptHistoryReportModalTitle")).toHaveCSS("border-top-width", "0px");
+    expect(await page.locator("#promptHistoryReportModalTitle").evaluate(
+      (heading) => getComputedStyle(heading, "::before").borderTopWidth,
+    )).toBe("0px");
   });
 
   test("keeps every modal close control visible in light mode", async ({ page }) => {
@@ -1138,6 +1512,8 @@ test.describe("Engineering Status browser smoke", () => {
         const title = header.querySelector("h2");
         const close = header.querySelector(".dashboard-modal-shell__close");
         const headerStyle = getComputedStyle(header);
+        const panelBox = panel.getBoundingClientRect();
+        const headerBox = header.getBoundingClientRect();
         const closeBox = close.getBoundingClientRect();
         return {
           panelBackground: getComputedStyle(panel).backgroundColor,
@@ -1147,12 +1523,16 @@ test.describe("Engineering Status browser smoke", () => {
           titleSize: getComputedStyle(title).fontSize,
           closeWidth: Math.round(closeBox.width),
           closeHeight: Math.round(closeBox.height),
+          headerStart: Math.abs(headerBox.left - (panelBox.left + parseFloat(getComputedStyle(panel).borderLeftWidth))),
+          headerEnd: Math.abs((panelBox.right - parseFloat(getComputedStyle(panel).borderRightWidth)) - headerBox.right),
         };
       });
       expect(metrics.headerBackground).not.toBe(metrics.panelBackground);
       expect(metrics.paddingTop).toBe(metrics.paddingBottom);
       expect(metrics.closeWidth).toBe(32);
       expect(metrics.closeHeight).toBe(32);
+      expect(metrics.headerStart).toBeLessThanOrEqual(1);
+      expect(metrics.headerEnd).toBeLessThanOrEqual(1);
       titles.push(metrics.titleSize);
       await modal.evaluate((element) => element.close());
     }
@@ -1562,17 +1942,104 @@ test.describe("Engineering Status browser smoke", () => {
     expect(script).not.toContain('id.className = "dashboard-action"; id.textContent = run.run_id');
     expect(stylesheet).toContain(".telemetry-run-link{");
     expect(stylesheet).toContain("min-height:0;min-width:0");
+    expect(stylesheet).toContain("text-decoration:none");
+    expect(stylesheet).toContain(".telemetry-run-link:is(:hover,:active){background:transparent!important;color:inherit!important}");
+    expect(stylesheet).toContain(".telemetry-run-link:is(:focus,:focus-visible){border-color:transparent!important;box-shadow:none!important;outline:0!important}");
+    expect(stylesheet).toContain("#telemetryDetailContent .telemetry-run-link:is(:focus,:focus-visible,:active){border-color:transparent!important;box-shadow:none!important;outline:0!important}");
     expect(stylesheet).toContain(".telemetry-detail-modal .telemetry-run-link{");
     expect(stylesheet).toContain("Telemetry run IDs are text links in a data table");
   });
 
-  test("uses the rose telemetry accent throughout the telemetry detail modal", async ({ page }) => {
+  test("uses the full rose row treatment for telemetry runs in the detail modal", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
+      summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [{
+        run_id: "inbox-telemetry-row", status: "COMPLETE", total_duration_ms: 1000,
+        queue_wait_ms: 0, provider_duration_ms: 500, validation_duration_ms: 200,
+        external_wait_ms: 0, largest_phase: "PROVIDER_EXECUTION",
+      }],
+    } }));
+    await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({ json: { history: { run_id: "inbox-telemetry-row" } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => window.executionTelemetry([{
+      date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
+      average_total_execution_seconds: 0, average_queue_wait_seconds: 0,
+      complete_count: 1, blocked_count: 0, failed_count: 0,
+    }]));
+    await page.locator("#executionTelemetry > summary").click();
+    await page.locator("#executionTelemetryRows .telemetry-row").click();
+    const runRow = page.locator("#telemetryDetailContent .telemetry-row");
+    await expect(runRow).toHaveCount(1);
+    await expect(runRow.locator(".telemetry-run-link")).toHaveCSS("text-decoration-line", "none");
+    await runRow.hover();
+    const hoverBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
+    expect(new Set(hoverBackgrounds).size).toBe(1);
+    expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
+    await runRow.click();
+    await expect(runRow).toHaveAttribute("data-selected", "true");
+    const selectedBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
+    expect(new Set(selectedBackgrounds).size).toBe(1);
+    const runId = runRow.locator(".telemetry-run-link");
+    await runId.focus();
+    await expect(runId).toHaveCSS("outline-style", "none");
+    await expect(runId).toHaveCSS("box-shadow", "none");
+    await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+  });
+
+  test("uses the rose telemetry accent throughout the telemetry detail modal", async ({ page }) => {
+    await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
+      summary: { executions: 1, completed: 1, blocked: 0, failed: 0 }, phases: [], bottlenecks: {}, runs: [],
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => window.executionTelemetry([{
+      date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
+      average_total_execution_seconds: 0, average_queue_wait_seconds: 0,
+      complete_count: 1, blocked_count: 0, failed_count: 0,
+    }]));
+    await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
+    await page.locator("#executionTelemetryRows tr").click();
     const modal = page.locator("#telemetryDetailModal");
-    await modal.evaluate((element) => element.showModal());
     await expect(modal.locator("#telemetryDetailTitle")).toHaveCSS("color", "rgb(251, 113, 133)");
+    expect(await modal.locator("#telemetryDetailTitle").evaluate(
+      (title) => getComputedStyle(title, "::before").content,
+    )).toBe('"▥"');
     await expect(modal.locator(".dashboard-modal-shell__header")).toHaveCSS("border-bottom-color", "rgb(251, 113, 133)");
+    const metricLabel = modal.locator(".telemetry-detail-metrics .label").first();
+    await expect(metricLabel).toBeVisible();
+    const metricInk = await modal.evaluate((element) => {
+      const expected = document.createElement("span");
+      expected.style.color = "var(--dashboard-modal-ink)";
+      element.append(expected);
+      const colour = getComputedStyle(expected).color;
+      expected.remove();
+      return colour;
+    });
+    await expect(modal.locator(".telemetry-detail-metrics .field > strong").first()).toHaveCSS("color", metricInk);
+    const secondaryColours = await modal.evaluate((element) => {
+      const sample = document.createElement("span");
+      sample.style.color = "#c7a6ff";
+      const expected = document.createElement("span");
+      expected.style.color = "var(--modal-secondary-accent)";
+      element.append(sample, expected);
+      const result = {
+        expected: getComputedStyle(expected).color,
+        label: getComputedStyle(element.querySelector(".telemetry-detail-metrics .label")).color,
+        legacyPurple: getComputedStyle(sample).color,
+      };
+      sample.remove(); expected.remove();
+      return result;
+    });
+    expect(secondaryColours.label).toBe(secondaryColours.expected);
+    expect(secondaryColours.label).not.toBe(secondaryColours.legacyPurple);
     await modal.evaluate((element) => element.close());
+  });
+
+  test("derives secondary modal tokens from the modal accent instead of a category-specific fallback", () => {
+    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    expect(stylesheet).toContain("--modal-secondary-accent:color-mix(in srgb,var(--modal-accent) 62%,#fff)");
+    expect(stylesheet).toContain("--modal-subcontainer-surface:color-mix(in srgb,var(--modal-accent) 8%,var(--modal-surface))");
+    expect(stylesheet).toContain(".dashboard-modal-shell :is(.label,.field>.label){color:var(--modal-secondary-accent)}");
+    expect(stylesheet).not.toContain(".lifecycle-detail-modal{--modal-accent:#65c5d9;--modal-secondary-accent:");
   });
 
   test("formats telemetry percentages with one localized decimal place", async ({ page }) => {
@@ -1930,9 +2397,18 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(
       () => document.body.classList.contains("dashboard-ready"),
     );
-    await page.locator("#autoRefresh").uncheck();
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
-    await page.locator("#dashboardTitlebarOptions").evaluate((element) => { element.open = false; });
+    await page.evaluate(async () => {
+      document.querySelector("#dashboardTitlebarOptionsContent").hidden = true;
+      document.querySelector("#dashboardTitlebarOptionsToggle").setAttribute("aria-expanded", "false");
+      document.activeElement?.blur();
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      document.querySelector(".dashboard-scroll-region").scrollTop = 0;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await expect.poll(() => page.evaluate(() => Math.round(window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0))).toBe(0);
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const image = await page.screenshot({ animations: "disabled" });
     await testInfo.attach("iphone-portrait-dashboard", {
@@ -2032,16 +2508,20 @@ test.describe("Engineering Status browser smoke", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
-    const options = page.locator("#dashboardTitlebarOptions");
     const disclosure = page.getByTestId("titlebar-options-toggle");
-    await expect(options).not.toHaveAttribute("open", "");
+    const content = page.locator("#dashboardTitlebarOptionsContent");
+    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await expect(disclosure).toBeVisible();
     await expect(page.getByTestId("theme-toggle")).not.toBeVisible();
 
     await disclosure.click();
-    await expect(options).toHaveAttribute("open", "");
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(content).toBeVisible();
     await expect(page.locator("#dashboardLocaleButton")).toBeVisible();
     await expect(page.locator("#dashboardLocaleButton")).toContainText("Nederlands");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(content).toBeVisible();
     for (const label of [
       ".dashboard-titlebar__options-content .dashboard-locale > span:first-child",
       ".dashboard-titlebar__options-content .theme-toggle__label",
@@ -2062,6 +2542,19 @@ test.describe("Engineering Status browser smoke", () => {
       return { refreshBottom: Math.round(refresh.bottom), optionsTop: Math.round(options.top) };
     });
     expect(titlebarLayout.refreshBottom).toBeLessThanOrEqual(titlebarLayout.optionsTop);
+  });
+
+  test("keeps title-bar options visible in a real laptop wrapper", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#dashboardTitlebarOptions")).toHaveCSS("display", "flex");
+    await expect(page.getByTestId("titlebar-options-toggle")).toBeHidden();
+    await expect(page.locator("#dashboardTitlebarOptionsContent")).toBeVisible();
+    await expect(page.getByTestId("theme-toggle")).toBeVisible();
+    const width = await page.locator("#dashboardTitlebarOptionsContent").evaluate(
+      (element) => element.getBoundingClientRect().width,
+    );
+    expect(width).toBeGreaterThan(200);
   });
 
   test("keeps each iPhone title-bar switch thumb inside its track", async ({ page }) => {
@@ -2563,14 +3056,35 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 Codex-opdrachten uitgevoerd");
   });
 
-  test("keeps specialist reviewer titles blue in light mode", async ({ page }) => {
+  test("lays out operational-overview cards in two columns only when its container has room", async ({ page }) => {
+    await page.setViewportSize({ width: 920, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#technicalDetails > summary").click();
+
+    const columns = async () => page.locator("#technicalDetails .technical-grid").evaluate((element) =>
+      getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    );
+    await expect.poll(columns).toBe(2);
+    const [gridBounds, diagnosisBounds] = await Promise.all([
+      page.locator("#technicalDetails .technical-grid").boundingBox(),
+      page.locator("#technicalDiagnosticsCard").boundingBox(),
+    ]);
+    expect(diagnosisBounds).not.toBeNull();
+    expect(gridBounds).not.toBeNull();
+    expect(Math.abs(diagnosisBounds.width - gridBounds.width)).toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 760, height: 844 });
+    await expect.poll(columns).toBe(1);
+  });
+
+  test("keeps specialist reviewer titles in the active-execution turquoise scale in light mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#themeToggle").click();
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "review-run",
       reviewer_agents: [{ reviewer: "repository_governance", capability: "engineering", status: "completed" }],
     }, {}));
-    await expect(page.locator(".reviewer-agent__name")).toHaveCSS("color", "rgb(47, 134, 189)");
+    await expect(page.locator(".reviewer-agent__name")).toHaveCSS("color", "rgb(24, 120, 132)");
   });
 
   test("shows live and completed reviewer status indicators", async ({ page }) => {
@@ -2592,6 +3106,27 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(cards.nth(1).locator(".reviewer-agent__status--completed")).toHaveAttribute(
       "aria-label", /.+/,
     );
+  });
+
+  test("does not project reviewers as running while an operator wait or stale lease owns the run", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const reviewerAgents = [
+      { reviewer: "validation", capability: "engineering", status: "running" },
+      { reviewer: "documentation", capability: "engineering", status: "running" },
+    ];
+    for (const [watcher_state, summaryKey, statusText] of [
+      ["WAITING_FOR_OPERATOR_MERGE", "ui.reviewer_waiting_operator", "Wacht op operator"],
+      ["ENGINEERING_RUN_STALE", "ui.reviewer_stale", "Uitvoering is niet langer actief"],
+    ]) {
+      await page.evaluate(({ watcher_state, reviewer_agents }) => r({
+        watcher_state, run_id: "reviewer-paused-run", reviewer_agents,
+      }, {}), { watcher_state, reviewer_agents: reviewerAgents });
+      await expect(page.locator("#activeReviewerSummary")).toHaveText(
+        DASHBOARD_MESSAGES.nl[summaryKey].replace("{count}", "2"),
+      );
+      await expect(page.locator(".reviewer-agent__status--running")).toHaveCount(0);
+      await expect(page.locator(".reviewer-agent__meta").first()).toContainText(statusText);
+    }
   });
 
   test("localizes specialist reviewer names and lifecycle status", async ({ page }) => {
@@ -2663,6 +3198,12 @@ test.describe("Engineering Status browser smoke", () => {
     const tiles = page.locator(".reviewer-agent");
     await expect(tiles).toHaveCount(4);
     await expect(tiles.first()).toBeVisible();
+    const reviewerGrid = page.locator("#currentRun .current-run__grid");
+    const reviewerCard = page.locator("#activeReviewerAgents");
+    const [gridBounds, cardBounds] = await Promise.all([reviewerGrid.boundingBox(), reviewerCard.boundingBox()]);
+    expect(gridBounds).not.toBeNull();
+    expect(cardBounds).not.toBeNull();
+    expect(Math.abs(cardBounds.width - gridBounds.width)).toBeLessThanOrEqual(1);
     const wideRows = await tiles.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().y)));
     expect(new Set(wideRows).size).toBe(1);
 
@@ -2683,7 +3224,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     await expect(page.locator("#currentRun > summary > .label")).toHaveCSS("color", "rgb(101, 197, 217)");
     await expect(page.locator("#currentRun .card .label").first()).toHaveCSS("color", "rgb(167, 231, 242)");
-    await expect(page.locator("#technicalDetails .card .label").first()).toHaveCSS("color", "rgb(255, 213, 155)");
+    await expect(page.locator("#technicalDetails .card .label").first()).toHaveCSS("color", "rgb(167, 231, 242)");
   });
 
   test("uses neutral content below the tinted heading of an expanded main category", async ({ page }) => {
@@ -3270,6 +3811,13 @@ test.describe("Engineering Status browser smoke", () => {
 
     const rows = page.locator("#inboxComponentLog tr");
     await expect(rows).toHaveCount(3);
+    const divider = await rows.nth(0).locator("td").first().evaluate((cell) => getComputedStyle(cell).borderBottomColor);
+    expect(divider).not.toBe("rgb(61, 54, 81)");
+    expect(divider).not.toBe("rgb(212, 222, 235)");
+    await rows.nth(1).hover();
+    const hoverRowSurface = await rows.nth(1).locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
+    expect(new Set(hoverRowSurface).size).toBe(1);
+    expect(hoverRowSurface[0]).not.toBe("rgba(0, 0, 0, 0)");
     await rows.nth(0).click();
     await rows.nth(2).click({ modifiers: ["Meta"] });
     await expect(rows.nth(0)).toHaveAttribute("aria-selected", "true");
@@ -3368,6 +3916,13 @@ test.describe("Engineering Status browser smoke", () => {
     for (const selector of ["#clearChat", "#componentLogs .clear-component-log"]) {
       await expect(page.locator(selector).first()).toHaveClass(/dashboard-action--destructive/);
     }
+    expect(await page.locator("#componentLogs .log-card-actions").evaluateAll((actions) => actions.map(
+      (action) => Array.from(action.children).map((button) => {
+        if (button.classList.contains("component-log-download")) return "download";
+        if (button.classList.contains("component-log-copy")) return "copy";
+        return "clear";
+      }),
+    ))).toEqual([["download", "copy", "clear"], ["download", "copy", "clear"]]);
   });
 
   test("uses the generic orange download glyph in the prompt-scoped chat", async ({ page }) => {
@@ -3530,8 +4085,10 @@ test.describe("Engineering Status browser smoke", () => {
     const styles = await page.evaluate(() => {
       const root = document.documentElement;
       root.dataset.theme = "light";
-      const summary = document.querySelector("#dashboardTitlebarOptions > summary");
-      document.querySelector("#dashboardTitlebarOptions").open = true;
+      const summary = document.querySelector("#dashboardTitlebarOptionsToggle");
+      const optionsContent = document.querySelector("#dashboardTitlebarOptionsContent");
+      summary.setAttribute("aria-expanded", "true");
+      optionsContent.hidden = false;
       const input = document.querySelector("#autoRefresh");
       const refresh = document.querySelector("#pageRefresh");
       input.focus({ preventScroll: true });
@@ -3586,6 +4143,14 @@ test.describe("Engineering Status browser smoke", () => {
       return colours;
     });
     expect(focusColours).toEqual(Array(6).fill("rgb(240, 182, 106)"));
+  });
+
+  test("keeps title-bar switch focus on the compact track", () => {
+    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    expect(stylesheet).toContain(".execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle");
+    expect(stylesheet).toContain(".dashboard-titlebar .theme-toggle:is(:focus,:focus-visible),.dashboard-titlebar .section-state-toggle:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-color:var(--house-style)!important}");
+    expect(stylesheet).toContain(".dashboard-titlebar .theme-toggle:is(:focus,:focus-visible)::before,.dashboard-titlebar .section-state-toggle:is(:focus,:focus-visible)::before{box-shadow:0 0 0 5px var(--house-style-focus);outline:2px solid var(--house-style);outline-offset:3px}");
+    expect(stylesheet).toContain(".auto-refresh-toggle input:focus-visible{box-shadow:0 0 0 5px var(--house-style-focus);outline:3px solid var(--house-style);outline-offset:3px}");
   });
 
   test("uses a dark locale picker surface in dark mode", async ({ page }) => {
@@ -3857,7 +4422,10 @@ test.describe("Engineering Status browser smoke", () => {
     expect(Math.abs(arrowGeometry.closed.arrowTop - arrowGeometry.opened.arrowTop)).toBeLessThanOrEqual(0.1);
     await expect(page.locator("#currentRun > summary > .current-run__category-description")).toHaveCount(1);
     await expect(page.locator(".current-run__category-description")).toHaveText("Voortgang, doorlooptijd en context van de uitvoering die nu actief is.");
-    expect(await page.locator("#indicator").evaluate((element) => element.parentElement.className)).toBe("current-run__prompt-heading");
+    expect(await page.locator("#indicator").evaluate((element) => ({
+      parentClass: element.parentElement.className,
+      previousSiblingId: element.previousElementSibling?.id,
+    }))).toEqual({ parentClass: "field execution-identity__run-id", previousSiblingId: "runId" });
     await expect(page.locator("#loadComponentLogs")).toHaveCount(0);
     await expect(page.getByTestId("pull-refresh")).toHaveText("Trek omlaag om te vernieuwen");
     await page.evaluate(() => showCopyToast());
@@ -4036,6 +4604,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryRows tr")).toHaveCount(10);
     await expect(page.locator("#promptHistory th")).toHaveCount(8);
     await expect(page.locator('#promptHistory th[data-history-sort-key="git_commit"]')).toHaveCount(0);
+    const firstPromptHistoryRow = page.locator("#promptHistoryRows .prompt-history-row").first();
+    await firstPromptHistoryRow.hover();
+    const promptHistoryHover = await firstPromptHistoryRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
+    expect(new Set(promptHistoryHover).size).toBe(1);
+    expect(promptHistoryHover[0]).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#promptHistoryRows tr").first().locator("td")).toHaveCount(8);
     await expect(page.locator("#promptHistoryPagination")).toContainText("Pagina 1 van 3 · 26 uitvoeringen");
     const nextPromptHistoryPage = page.locator("#promptHistoryPagination").getByRole("button", { name: "Volgende" });
@@ -4058,6 +4631,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).toBeVisible();
     await expect(page.locator("#promptHistoryReportModal")).not.toBeFocused();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    await expect(page.locator("#promptHistoryReportModalTitle"))
+      .toHaveText(DASHBOARD_MESSAGES.nl["history.execution_report_title"]);
     await expect(page.locator("#promptHistoryReportContent")).toContainText("Historisch rapport");
     await expect(page.locator("#promptHistoryReportDownload")).toBeVisible();
     await expect(page.locator("#promptHistoryReportCopy")).toBeVisible();
@@ -4077,6 +4652,25 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#promptHistoryRows tr td").nth(1).click();
     await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeFocused();
+    const executionSummary = page.locator("#promptHistoryDetailContent > .prompt-detail-card--execution-summary");
+    const executionContext = page.locator("#promptHistoryDetailContent > .prompt-detail-card--execution-context");
+    await expect(executionSummary).toHaveCount(1);
+    await expect(executionContext).toHaveCount(1);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const desktopExecutionCards = await Promise.all([executionSummary.boundingBox(), executionContext.boundingBox()]);
+    expect(desktopExecutionCards[0]).not.toBeNull();
+    expect(desktopExecutionCards[1]).not.toBeNull();
+    expect(desktopExecutionCards[0].x).toBeLessThan(desktopExecutionCards[1].x);
+    expect(desktopExecutionCards[0].y).toBe(desktopExecutionCards[1].y);
+    const detailSidebar = page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar");
+    const desktopEvidenceCards = await Promise.all([executionSummary.boundingBox(), executionContext.boundingBox(), detailSidebar.boundingBox()]);
+    expect(desktopEvidenceCards[2]).not.toBeNull();
+    expect(desktopEvidenceCards[2].x).toBe(desktopEvidenceCards[0].x);
+    expect(desktopEvidenceCards[2].y).toBeGreaterThan(desktopEvidenceCards[0].y);
+    expect(desktopEvidenceCards[2].y).toBeLessThanOrEqual(desktopEvidenceCards[1].y + desktopEvidenceCards[1].height);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileExecutionCards = await Promise.all([executionSummary.boundingBox(), executionContext.boundingBox()]);
+    expect(mobileExecutionCards[1].y).toBeGreaterThan(mobileExecutionCards[0].y);
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("0.146.0");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Doelrepository");
@@ -4093,11 +4687,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Actieve branch");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("forge-phase-evidence");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-status .indicator--green")).toHaveCount(1);
-    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toHaveCount(1);
-    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Doorlooptijd");
-    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Runtime");
-    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Git-commit");
-    await expect(page.locator("#promptHistoryDetailContent > .prompt-detail-sidebar")).toContainText("Uitvoeringsbewijs");
+    await expect(detailSidebar).toHaveCount(1);
+    await expect(detailSidebar).toContainText("Doorlooptijd");
+    await expect(detailSidebar).toContainText("Runtime");
+    await expect(detailSidebar).toContainText("Git-commit");
+    await expect(detailSidebar).toContainText("Uitvoeringsbewijs");
     await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("pcvantol/djconnect");
     await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("Historisch rapport");
     await expect(page.locator("#promptHistoryDetailContent")).not.toContainText("Historische AI-analyse");
@@ -4122,6 +4716,8 @@ test.describe("Engineering Status browser smoke", () => {
     await analysisView.click();
     await expect(page.locator("#promptHistoryReportModal")).toBeVisible();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    await expect(page.locator("#promptHistoryReportModalTitle"))
+      .toHaveText(DASHBOARD_MESSAGES.nl["table.analysis"]);
     await expect(page.locator("#promptHistoryReportContent")).toContainText("Historische AI-analyse");
     await expect(page.locator("#promptHistoryReportDownload")).toBeVisible();
     await page.locator("#promptHistoryReportClose").click();
@@ -4133,6 +4729,8 @@ test.describe("Engineering Status browser smoke", () => {
     await chat.click();
     await expect(page.locator("#promptHistoryChatModal")).toBeVisible();
     await expect(page.locator("#promptHistoryChatModal")).not.toBeFocused();
+    await expect(page.locator("#promptHistoryChatTitle"))
+      .toHaveText(DASHBOARD_MESSAGES.nl["history.execution_chat_title"]);
     let submittedRun;
     await page.route("**/api/codex-chat", async (route) => {
       submittedRun = route.request().postDataJSON().run_id;
@@ -4303,15 +4901,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [selector, glyph] of [
       ["#componentModalTitle", "⚙︎"],
-      ["#confirmationModalTitle", "!"],
+      ["#confirmationModalTitle", "ⓘ"],
       ["#promptHistoryReportModalTitle", "▤"],
-      ["#promptHistoryDetailTitle", "i"],
       ["#promptHistoryChatTitle", "⋯"],
     ]) {
       expect(await page.locator(selector).evaluate(
         (title) => getComputedStyle(title, "::before").content,
       )).toContain(glyph);
     }
+    expect(await page.locator("#promptHistoryDetailTitle").evaluate(
+      (title) => getComputedStyle(title, "::before").content,
+    )).toBe("none");
   });
 
   test("sizes prompt-history chat bubbles to their content", async ({ page }) => {
@@ -4810,7 +5410,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.getByTestId("clear-inbox-log").click();
     const modal = page.locator("#confirmationModal");
     await expect(modal).toBeVisible();
-    await expect(page.locator("#confirmationModalConfirm")).toBeFocused();
+    await expect(page.locator("#confirmationModalCancel")).toBeFocused();
     await expect(modal.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
     await expect(page.locator("#confirmationModal .confirmation-modal__header")).toHaveCSS("border-bottom-color", "rgb(255, 113, 143)");
     await expect(page.locator("#confirmationModalTitle")).toHaveCSS("color", "rgb(255, 113, 143)");

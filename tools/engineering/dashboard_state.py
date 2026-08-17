@@ -20,11 +20,48 @@ from .telemetry import comparable_duration_estimate
 from .storage import EngineeringStorageError, import_legacy_projection_once, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, load_readiness_evaluation, open_storage
 from .execution_lease import liveness as lease_liveness
 from .execution_lifecycle import projection as lifecycle_projection
+from .agent_state import redact_diagnostic
 
 
 JsonReader = Callable[[Path], bytes]
 RunJsonReader = Callable[[Path, str | None], bytes]
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+
+
+def _active_prompt_metadata(root: Path, run_id: object) -> tuple[str | None, str | None]:
+    """Return bounded title-only prompt context for the active run.
+
+    The watcher normally owns these fields. A restart can leave an older run
+    with only its durable transaction checkpoint, so recover just the first
+    Markdown H1 and filename for the operator hand-off. Never expose prompt
+    body text through the status projection.
+    """
+    if not isinstance(run_id, str) or not run_id:
+        return None, None
+    try:
+        connection = open_storage(root, create=False)
+        try:
+            row = connection.execute(
+                "SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        checkpoint = json.loads(row[0]) if row and isinstance(row[0], str) else {}
+        prompt_path = checkpoint.get("prompt_path") if isinstance(checkpoint, dict) else None
+        if not isinstance(prompt_path, str) or not prompt_path:
+            return None, None
+        path = Path(prompt_path)
+        filename = redact_diagnostic(path.name, limit=240) or None
+        with path.open(encoding="utf-8") as prompt:
+            for _ in range(512):
+                line = prompt.readline()
+                if not line:
+                    break
+                if line.startswith("# ") and line[2:].strip():
+                    return filename, redact_diagnostic(line[2:].strip(), limit=240) or filename
+        return filename, filename
+    except (EngineeringStorageError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
 
 
 def _transient_live_action(root: Path, run_id: object) -> str | None:
@@ -162,6 +199,7 @@ def status(root: Path) -> bytes:
         live_liveness = lease_liveness(root, live.get("run_id"))
         transient_action = _transient_live_action(root, live.get("run_id"))
         lifecycle = lifecycle_projection(root, live.get("run_id"))
+        fallback_filename, fallback_prompt_title = _active_prompt_metadata(root, live.get("run_id"))
         projection = json.dumps(
             {
                 "watcher_state": "ENGINEERING_RUN_ACTIVE",
@@ -181,8 +219,8 @@ def status(root: Path) -> bytes:
                 "workspace_state": live.get("workspace_state") or "ACTIVE",
                 "prompt_characters": live.get("prompt_characters"),
                 "diagnostic": live.get("diagnostic"),
-                "submitted_filename": watcher.get("submitted_filename"),
-                "prompt_title": watcher.get("prompt_title"),
+                "submitted_filename": watcher.get("submitted_filename") or fallback_filename,
+                "prompt_title": watcher.get("prompt_title") or fallback_prompt_title,
                 "last_executed_filename": watcher.get("last_executed_filename"),
                 "last_executed_title": watcher.get("last_executed_title"),
                 "last_executed_run": watcher.get("last_executed_run"),

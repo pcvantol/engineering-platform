@@ -1540,6 +1540,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(repaired.repair_iterations, 1)
         self.assertIn("Ruff failed", agent.prompts[0])
 
+    def test_repair_stops_after_three_failed_required_check_repairs(self) -> None:
+        state = TransactionState(
+            "repair-limit-run",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="codex/repair-limit",
+            pull_request=25,
+            owner_authorized=True,
+            repair_iterations=3,
+        )
+        github = FakeGitHub([
+            PullRequestEvidence(25, "OPEN", True, False, failed_checks=("browser-dashboard",)),
+        ])
+        agent = FakeAgent(AgentResult("COMPLETE", "codex/repair-limit", 25))
+        stopped = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None)._poll(state)
+
+        self.assertEqual(stopped.phase, "BLOCKED")
+        self.assertTrue(stopped.terminal)
+        self.assertEqual(stopped.next_action, "repair_attempt_limit_reached")
+        self.assertEqual(stopped.terminal_condition, "repair_attempt_limit_reached")
+        self.assertEqual(stopped.repair_iterations, 3)
+        self.assertIn("browser-dashboard", stopped.diagnostic or "")
+        self.assertEqual(agent.prompts, [])
+
     def test_completion_summary_contains_lifecycle_evidence(self) -> None:
         state = TransactionState("summary-run", "pcvantol/djconnect", str(self.prompt), "COMPLETE", owner_authorized=True, implementation_pull_request=21, implementation_merge_commit="b" * 40, finalization_pull_request=22, finalization_merge_commit="c" * 40, terminal=True)
         summary = format_management_summary(state)

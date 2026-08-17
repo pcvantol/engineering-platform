@@ -432,7 +432,13 @@ function processMetrics(active, x) {
   $("codexProcesses").textContent = x?.process_count ?? 0;
   $("codexGpu").textContent = x?.gpu_status || t("format.not_available");
 }
-function activeReviewerAgents(items) {
+function reviewerPresentationState(status = {}) {
+  const watcherState = String(status?.watcher_state || "").toUpperCase();
+  if (watcherState === "WAITING_FOR_OPERATOR_MERGE") return "waiting_operator";
+  if (watcherState === "ENGINEERING_RUN_STALE") return "stale";
+  return "active";
+}
+function activeReviewerAgents(items, executionStatus = {}) {
   const agents = Array.isArray(items) ? items : [];
   let card = $("activeReviewerAgents");
   if (!card) {
@@ -444,18 +450,24 @@ function activeReviewerAgents(items) {
   }
   card.hidden = !agents.length;
   if (!agents.length) return;
-  const running = agents.filter((agent) => agent?.status === "running").length,
+  const presentation = reviewerPresentationState(executionStatus),
+    running = agents.filter((agent) => agent?.status === "running").length,
     completed = agents.filter((agent) => ["completed", "failed"].includes(agent?.status)).length,
     summary = $("activeReviewerSummary"),
     list = $("activeReviewerList");
-  summary.textContent = running
-    ? t("ui.reviewer_running", { running, count: agents.length })
-    : t("ui.reviewer_completed", { completed, count: agents.length });
+  summary.textContent = presentation === "waiting_operator"
+    ? t("ui.reviewer_waiting_operator", { count: agents.length })
+    : presentation === "stale"
+      ? t("ui.reviewer_stale", { count: agents.length })
+      : running
+        ? t("ui.reviewer_running", { running, count: agents.length })
+        : t("ui.reviewer_completed", { completed, count: agents.length });
   list.replaceChildren();
   for (const agent of agents) {
     const row = document.createElement("article"), header = document.createElement("div"),
       name = document.createElement("p"), meta = document.createElement("p"),
-      indicator = document.createElement("span"), status = String(agent?.status || "").toLowerCase();
+      indicator = document.createElement("span"), rawStatus = String(agent?.status || "").toLowerCase(),
+      status = rawStatus === "running" && presentation !== "active" ? presentation : rawStatus;
     const isRunning = status === "running";
     const isCompleted = ["completed", "uitgevoerd"].includes(status);
     row.className = "reviewer-agent";
@@ -463,7 +475,7 @@ function activeReviewerAgents(items) {
     name.className = "reviewer-agent__name";
     meta.className = "reviewer-agent__meta";
     name.textContent = reviewerLabel(agent.reviewer);
-    meta.textContent = `${reviewerCapabilityLabel(agent.capability || "ENGINEERING")} · ${reviewerStatusLabel(agent.status || "selected")}`;
+    meta.textContent = `${reviewerCapabilityLabel(agent.capability || "ENGINEERING")} · ${reviewerStatusLabel(status || "selected")}`;
     if (isRunning || isCompleted) {
       indicator.className = `reviewer-agent__status reviewer-agent__status--${isRunning ? "running" : "completed"}`;
       indicator.setAttribute("role", "status");
@@ -823,9 +835,7 @@ function openPromptHistoryChat(entry) {
   if (!entry?.run_id) return;
   chatContextRun = String(entry.run_id);
   chatHistory = loadChatHistory(chatContextRun);
-  $("promptHistoryChatTitle").textContent = t("history.chat_title", {
-    title: entry.title || entry.run_id,
-  });
+  $("promptHistoryChatTitle").textContent = t("history.execution_chat_title");
   $("promptHistoryChatDescription").textContent = t("history.chat_description");
   $("chatStatus").textContent = "";
   renderChatHistory();
@@ -1037,6 +1047,7 @@ function renderOperatorMergeWait(x) {
   const waiting = x.current_phase === "WAIT_FOR_OPERATOR_MERGE" && Number.isInteger(pullRequest) && pullRequest > 0;
   card.hidden = !waiting;
   if (!waiting) return;
+  placeOperatorMergeWait();
   const repository = String(x.target_repository || "").trim();
   const href = repository ? `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/pull/${pullRequest}` : "#";
   const link = $("operatorMergePullRequest");
@@ -1045,10 +1056,21 @@ function renderOperatorMergeWait(x) {
   $("operatorMergeWaitDescription").textContent = t("merge_wait.description", { number: pullRequest });
   const modal = $("operatorMergeWaitModal");
   $("operatorMergeWaitModalDescription").textContent = t("merge_wait.description", { number: pullRequest });
+  const mergeKey = Number(x.finalization_pr) === pullRequest
+    ? "lifecycle.step.wait_for_finalization_merge"
+    : "lifecycle.step.wait_for_operator_merge";
+  $("operatorMergeWaitModalContextIntro").textContent = t("merge_wait.context_intro", {
+    merge: t(mergeKey), number: pullRequest,
+  });
+  $("operatorMergeWaitModalRunId").textContent = String(x.run_id || t("format.not_available"));
+  $("operatorMergeWaitModalPrompt").textContent = String(
+    x.prompt_title || x.submitted_filename || t("format.not_available"),
+  );
   $("operatorMergeWaitModalPullRequest").href = href;
   $("operatorMergeWaitModalPullRequest").textContent = t("merge_wait.open_pull_request", { number: pullRequest });
-  if (shownOperatorMergeWaitRun !== x.run_id) {
-    shownOperatorMergeWaitRun = x.run_id;
+  const handoffKey = `${x.run_id || ""}:${pullRequest}`;
+  if (shownOperatorMergeWaitRun !== handoffKey) {
+    shownOperatorMergeWaitRun = handoffKey;
     if (!modal.open) modal.showModal();
   }
 }
@@ -1058,13 +1080,20 @@ function renderCodexUsageLimitBanner(x) {
   banner.hidden = String(x?.terminal_condition || "") !== "codex_usage_limit_reached";
 }
 
-// Browsers otherwise put initial dialog focus on the first close button. Only
-// an explicit primary action may receive initial focus; evidence-only modals
-// deliberately leave focus outside the dialog so no control looks selected.
+// Browsers otherwise put initial dialog focus on the first close button.
+// Confirmation dialogs focus their primary action, except when that action is
+// destructive: then the safe secondary action is the deliberate default.
+// Evidence-only modals deliberately leave focus outside the dialog so no
+// control looks selected.
 function resetDashboardModalInitialFocus(modal) {
   requestAnimationFrame(() => {
     if (!modal?.open) return;
+    const secondary = modal.querySelector("button.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary):not([disabled]), a.dashboard-modal-shell__action:not(.dashboard-modal-shell__action--primary)[href]");
     const primary = modal.querySelector("button.dashboard-modal-shell__action--primary:not([disabled]), a.dashboard-modal-shell__action--primary[href]");
+    if (modal.classList.contains("dashboard-modal-shell--destructive") && secondary) {
+      secondary.focus({ preventScroll: true });
+      return;
+    }
     if (primary) {
       primary.focus({ preventScroll: true });
       return;
@@ -1082,6 +1111,16 @@ function lifecycleLabel(step) {
 }
 function lifecycleStateLabel(state) {
   return t("lifecycle.state." + String(state || "UNKNOWN").toLowerCase(), {}, String(state || "UNKNOWN"));
+}
+function isOperatorMergeStep(step) {
+  const id = String(step?.id || "").toUpperCase();
+  const key = String(step?.presentation_key || "");
+  return ["WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE"].includes(id)
+    || ["lifecycle.step.wait_for_operator_merge", "lifecycle.step.wait_for_finalization_merge"].includes(key);
+}
+function isLifecycleStartStep(step) {
+  return String(step?.id || "").toUpperCase() === "START"
+    || String(step?.presentation_key || "") === "lifecycle.step.start";
 }
 function lifecycleDetailField(label, value) {
   const field = document.createElement("div"); field.className = "field";
@@ -1116,12 +1155,18 @@ function closeLifecycleDetail() {
   const modal = $("lifecycleDetailModal");
   if (modal?.open) modal.close();
 }
+function lifecycleDetailStatusKey(step) {
+  const state = String(step?.state || "UNKNOWN").toLowerCase();
+  return state === "active" && isOperatorMergeStep(step) ? "operator-wait" : state;
+}
 function openLifecycleDetail(step, trigger) {
   const modal = $("lifecycleDetailModal"), content = $("lifecycleDetailContent");
   if (!modal || !content) return;
   lifecycleDetailTrigger = trigger || document.activeElement;
   const timing = step?.timing && typeof step.timing === "object" ? step.timing : {};
-  $("lifecycleDetailTitle").textContent = t("lifecycle.detail_title", { step: lifecycleLabel(step) });
+  const title = $("lifecycleDetailTitle");
+  title.dataset.lifecycleStatus = lifecycleDetailStatusKey(step);
+  title.textContent = t("lifecycle.detail_title", { step: lifecycleLabel(step) });
   content.replaceChildren();
   const overview = document.createElement("section"), grid = document.createElement("div");
   grid.className = "technical-grid";
@@ -1172,20 +1217,28 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   const steps = Array.isArray(projection.steps) ? projection.steps : [];
   for (const [index, step] of steps.entries()) {
     const state = String(step?.state || "UNKNOWN").toLowerCase();
+    const operatorWait = state === "active" && !historical && isOperatorMergeStep(step);
     const item = document.createElement("li"), button = document.createElement("button"), node = document.createElement("span"), label = document.createElement("span");
     item.className = "execution-lifecycle__item execution-lifecycle__item--" + state;
+    if (operatorWait) item.classList.add("execution-lifecycle__item--operator-wait");
     button.type = "button"; button.className = "execution-lifecycle__node";
     if (state === "active" && !historical) button.classList.add("execution-lifecycle__node--active");
+    if (operatorWait) button.classList.add("execution-lifecycle__node--operator-wait");
+    if (isLifecycleStartStep(step)) button.classList.add("execution-lifecycle__node--start");
     const name = lifecycleLabel(step), status = lifecycleStateLabel(step?.state);
     button.setAttribute("aria-label", name + " — " + status);
     button.addEventListener("click", () => openLifecycleDetail(step, button));
-    node.setAttribute("aria-hidden", "true"); node.textContent = state === "completed" ? "✓" : state === "complete" ? "✓" : state === "blocked" ? "!" : state === "failed" ? "×" : "";
+    node.setAttribute("aria-hidden", "true"); node.textContent = state === "completed" ? "✓" : state === "complete" ? "✓" : state === "blocked" ? "!" : state === "failed" ? "×" : operatorWait ? "⌛" : isLifecycleStartStep(step) ? "🚀" : "";
     label.textContent = name;
     button.append(node, label);
     item.append(button);
     if (index < steps.length - 1) {
       const connector = document.createElement("span");
       connector.className = "execution-lifecycle__connector";
+      const nextState = String(steps[index + 1]?.state || "UNKNOWN").toLowerCase();
+      if (["active", "completed", "complete"].includes(nextState)) {
+        connector.classList.add("execution-lifecycle__connector--reached");
+      }
       connector.setAttribute("aria-hidden", "true");
       item.append(connector);
     }
@@ -1193,7 +1246,14 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   }
   scroll.append(list); section.append(scroll);
   const summary = document.createElement("p"); summary.className = "execution-lifecycle__summary";
-  summary.textContent = t("lifecycle.summary", { step: lifecycleLabel((projection.steps || []).find((step) => step?.state === "ACTIVE") || (projection.steps || []).find((step) => step?.state === projection?.terminal_state) || {}), status: lifecycleStateLabel(projection.terminal_state || "ACTIVE") });
+  const currentStep = (projection.steps || []).find((step) => step?.state === "ACTIVE")
+    || (projection.steps || []).find((step) => step?.state === projection?.terminal_state) || {};
+  summary.textContent = t("lifecycle.summary", {
+    step: lifecycleLabel(currentStep),
+    status: isOperatorMergeStep(currentStep)
+      ? t("lifecycle.state.waiting_for_operator_merge")
+      : lifecycleStateLabel(projection.terminal_state || "ACTIVE"),
+  });
   section.append(summary);
   return section;
 }
@@ -1201,24 +1261,54 @@ function renderActiveLifecycle(projection) {
   const current = $("currentRun")?.querySelector(".current-run__grid"); if (!current) return;
   const previous = current.querySelector(".execution-lifecycle"),
     previousScroll = previous?.querySelector(".execution-lifecycle__scroll"),
-    preservedScrollLeft = previous?.dataset.runId === String(projection?.run_id || "")
+    sameRun = previous?.dataset.runId === String(projection?.run_id || ""),
+    preservedScrollLeft = sameRun
       ? previousScroll?.scrollLeft || 0
       : 0;
   previous?.remove();
   if (projection?.run_id) {
     const lifecycle = lifecycleFlow(projection);
-    const identity = $("executionIdentity");
-    // Keep run identity ahead of its read-only lifecycle projection. The
-    // fallback preserves compatibility with an older dashboard shell.
-    if (identity?.parentElement === current) identity.after(lifecycle);
+    const identity = $("executionIdentity"), estimate = $("executionEstimate")?.closest(".card");
+    placeExecutionEstimate();
+    // Keep run identity and its phase-aware estimate ahead of the read-only
+    // lifecycle projection. The fallback preserves older dashboard shells.
+    if (estimate?.parentElement === current) estimate.after(lifecycle);
+    else if (identity?.parentElement === current) identity.after(lifecycle);
     else current.prepend(lifecycle);
+    placeOperatorMergeWait();
     if (preservedScrollLeft) {
       const nextScroll = lifecycle.querySelector(".execution-lifecycle__scroll");
       // Wait for the replacement path to take part in layout before restoring
       // the user's independent horizontal review position.
       requestAnimationFrame(() => { nextScroll.scrollLeft = preservedScrollLeft; });
+    } else if (!sameRun) {
+      revealActiveLifecycleStep(lifecycle.querySelector(".execution-lifecycle__scroll"));
     }
   }
+}
+function revealActiveLifecycleStep(scroll) {
+  requestAnimationFrame(() => {
+    const active = scroll?.querySelector(".execution-lifecycle__node--active");
+    if (!active || scroll.scrollWidth <= scroll.clientWidth) return;
+    const scrollBox = scroll.getBoundingClientRect(), activeBox = active.getBoundingClientRect();
+    if (activeBox.left >= scrollBox.left && activeBox.right <= scrollBox.right) return;
+    const desired = scroll.scrollLeft + activeBox.left - scrollBox.left
+      - ((scroll.clientWidth - activeBox.width) / 2);
+    scroll.scrollLeft = Math.max(0, Math.min(desired, scroll.scrollWidth - scroll.clientWidth));
+  });
+}
+function placeExecutionEstimate() {
+  const current = $("currentRun")?.querySelector(".current-run__grid"),
+    identity = $("executionIdentity"), estimate = $("executionEstimate")?.closest(".card");
+  if (current && identity?.parentElement === current && estimate?.parentElement === current) {
+    identity.after(estimate);
+  }
+}
+function placeOperatorMergeWait() {
+  const current = $("currentRun")?.querySelector(".current-run__grid"),
+    lifecycle = current?.querySelector(".execution-lifecycle"),
+    wait = $("operatorMergeWait");
+  if (current && lifecycle && wait?.parentElement === current) lifecycle.after(wait);
 }
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
@@ -1311,7 +1401,7 @@ function renderHealthStatus(x, snapshot = {}) {
   $("workerVersion").textContent = components.worker || t("format.not_available");
   usage(snapshot.usage);
   rateLimits(snapshot.rate_limits);
-  activeReviewerAgents(x.reviewer_agents);
+  activeReviewerAgents(x.reviewer_agents, x);
 }
 let activePromptCategoryRun;
 function renderRunCategory(x) {
@@ -2192,8 +2282,9 @@ function arrangeCurrentRunCategory() {
   const current = $("currentRun"),
     summary = current?.querySelector(":scope>summary"),
     prompt = $("currentPrompt"),
-    indicator = $("indicator");
-  if (!current || !summary || !prompt || !indicator) return;
+    indicator = $("indicator"),
+    runId = $("runId");
+  if (!current || !summary || !prompt || !indicator || !runId) return;
   let heading = summary.querySelector(".current-run__prompt-heading");
   if (!heading) {
     heading = document.createElement("div");
@@ -2201,7 +2292,9 @@ function arrangeCurrentRunCategory() {
     prompt.replaceWith(heading);
     heading.append(prompt);
   }
-  heading.append(indicator);
+  const runIdField = runId.closest(".field");
+  runIdField?.classList.add("execution-identity__run-id");
+  runId.after(indicator);
   let description = summary.querySelector(
     ":scope>.current-run__category-description",
   );
@@ -2453,7 +2546,35 @@ function renderTelemetryDetail(detail, content) {
   const runSection = document.createElement("section"), runs = Array.isArray(detail?.runs) ? detail.runs : [];
   runSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.runs") }));
   const runTable = document.createElement("table"); runTable.className = "telemetry-table"; runTable.innerHTML = `<thead><tr>${["telemetry.run_id", "telemetry.status", "telemetry.average_total", "telemetry.average_wait", "telemetry.provider", "telemetry.validation", "telemetry.external_wait", "telemetry.largest_phase"].map((key) => `<th>${t(key)}</th>`).join("")}</tr></thead>`; const runBody = document.createElement("tbody");
-  for (const run of runs) { const row = document.createElement("tr"), id = document.createElement("button"); id.type = "button"; id.className = "telemetry-run-link"; id.textContent = run.run_id; id.addEventListener("click", () => openPromptHistoryDetail({ run_id: run.run_id, title: run.run_id })); const values = [id, run.status, telemetryMs(run.total_duration_ms), telemetryMs(run.queue_wait_ms), telemetryMs(run.provider_duration_ms), telemetryMs(run.validation_duration_ms), telemetryMs(run.external_wait_ms), telemetryLabel(run.largest_phase)]; values.forEach((value) => { const cell = document.createElement("td"); if (value instanceof Element) cell.append(value); else cell.textContent = String(value); row.append(cell); }); runBody.append(row); } runTable.append(runBody); runSection.append(runTable); content.append(runSection);
+  for (const run of runs) {
+    const row = document.createElement("tr"), id = document.createElement("button");
+    row.className = "telemetry-row";
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-label", String(run.run_id || t("format.unavailable")));
+    id.type = "button";
+    id.className = "telemetry-run-link";
+    id.textContent = run.run_id;
+    const open = () => {
+      runBody.querySelectorAll('.telemetry-row[data-selected="true"]')
+        .forEach((candidate) => { candidate.dataset.selected = "false"; });
+      row.dataset.selected = "true";
+      openPromptHistoryDetail({ run_id: run.run_id, title: run.run_id });
+    };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+    });
+    id.addEventListener("click", (event) => { event.stopPropagation(); open(); });
+    const values = [id, run.status, telemetryMs(run.total_duration_ms), telemetryMs(run.queue_wait_ms), telemetryMs(run.provider_duration_ms), telemetryMs(run.validation_duration_ms), telemetryMs(run.external_wait_ms), telemetryLabel(run.largest_phase)];
+    values.forEach((value) => {
+      const cell = document.createElement("td");
+      if (value instanceof Element) cell.append(value); else cell.textContent = String(value);
+      row.append(cell);
+    });
+    runBody.append(row);
+  }
+  runTable.append(runBody); runSection.append(runTable); content.append(runSection);
 }
 $("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
 $("telemetryDetailModal").addEventListener("close", () => { telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; });
@@ -2881,7 +3002,7 @@ function addComponentLogCopyButtons() {
         .then(() => void recordUserAction("component_visible_log_copied"))
         .catch(() => { button.title = t("copy.failed"); });
     });
-    download.before(button);
+    download.after(button);
   });
 }
 addComponentLogCopyButtons();
@@ -3238,7 +3359,7 @@ function renderPromptHistory() {
         view.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          openPromptHistoryDocument(entry.run_id, title.textContent, "report");
+          openPromptHistoryDocument(entry.run_id, "report");
         });
         report.append(view);
       } else report.textContent = "—";
@@ -3252,7 +3373,7 @@ function renderPromptHistory() {
         view.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          openPromptHistoryDocument(entry.run_id, title.textContent, "analysis");
+          openPromptHistoryDocument(entry.run_id, "analysis");
         });
         analysis.append(view);
       } else analysis.textContent = "—";
@@ -3423,12 +3544,24 @@ const dashboardClientState = loadDashboardClientState();
 const dashboardLocaleSelector = $("dashboardLocale");
 const dashboardLocaleButton = $("dashboardLocaleButton"), dashboardLocaleMenu = $("dashboardLocaleMenu");
 const dashboardTitlebarOptions = $("dashboardTitlebarOptions");
+const dashboardTitlebarOptionsToggle = $("dashboardTitlebarOptionsToggle");
+const dashboardTitlebarOptionsContent = $("dashboardTitlebarOptionsContent");
 const compactTitlebarMedia = window.matchMedia("(max-width: 620px)");
 function syncTitlebarOptions() {
-  dashboardTitlebarOptions.open = !compactTitlebarMedia.matches;
+  const compact = compactTitlebarMedia.matches;
+  const expanded = !compact || dashboardClientState.titlebarOptionsOpen === true;
+  dashboardTitlebarOptionsToggle.hidden = !compact;
+  dashboardTitlebarOptionsContent.hidden = !expanded;
+  dashboardTitlebarOptionsToggle.setAttribute("aria-expanded", String(expanded));
 }
 compactTitlebarMedia.addEventListener("change", syncTitlebarOptions);
 syncTitlebarOptions();
+dashboardTitlebarOptionsToggle.addEventListener("click", () => {
+  const expanded = dashboardTitlebarOptionsToggle.getAttribute("aria-expanded") === "true";
+  dashboardClientState.titlebarOptionsOpen = !expanded;
+  saveDashboardClientState();
+  syncTitlebarOptions();
+});
 function setLocaleMenuOpen(open) {
   dashboardLocaleMenu.hidden = !open;
   dashboardLocaleButton.setAttribute("aria-expanded", String(open));
@@ -3912,16 +4045,17 @@ function downloadPromptHistoryReport() {
       : "prompt_history_report_downloaded",
   );
 }
-function openPromptHistoryDocument(runId, title, kind = "report") {
+function openPromptHistoryDocument(runId, kind = "report") {
   const modal = $("promptHistoryReportModal"),
     content = $("promptHistoryReportContent");
   promptHistoryReportRun = String(runId || "");
   promptHistoryDocumentKind = kind === "analysis" ? "analysis" : "report";
   promptHistoryReportText = "";
+  $("promptHistoryReportModalTitle").dataset.modalGlyph = promptHistoryDocumentKind;
   $("promptHistoryReportModalTitle").textContent =
     promptHistoryDocumentKind === "analysis"
-      ? t("history.analysis_title", { title })
-      : title || t("history.report_title");
+      ? t("table.analysis")
+      : t("history.execution_report_title");
   $("promptHistoryReportCopy").hidden = true;
   $("promptHistoryReportDownload").hidden = true;
   content.replaceChildren();
@@ -4004,9 +4138,9 @@ function promptDetailStatusField(value) {
   output.replaceChildren(indicator, text);
   return field;
 }
-function promptDetailCard(title, fields, wide = false) {
+function promptDetailCard(title, fields, wide = false, modifier = "") {
   const card = document.createElement("section"), heading = document.createElement("h3");
-  card.className = "prompt-detail-card" + (wide ? " prompt-detail-card--wide" : "");
+  card.className = "prompt-detail-card" + (wide ? " prompt-detail-card--wide" : "") + (modifier ? " " + modifier : "");
   heading.textContent = title;
   card.append(heading, ...fields);
   return card;
@@ -4021,7 +4155,7 @@ function promptDetailDuration(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds >= 0 ? durationText(seconds) : "—";
 }
-function promptDetailExecutionSection(history) {
+function promptDetailExecutionSections(history) {
   const timestamp = Date.parse(String(history.executed_at || ""));
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : null;
   const contextFields = context ? [
@@ -4034,7 +4168,7 @@ function promptDetailExecutionSection(history) {
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
     detailField(t("execution_context.snapshot"), JSON.stringify(context)),
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
-  return promptDetailCard(t("detail.execution"), [
+  const summaryFields = [
     promptDetailStatusField(history.status),
     detailField(t("detail.operator_handling"), history.dismissed ? t("handling.dismissed") : t("handling.open")),
     ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
@@ -4046,6 +4180,8 @@ function promptDetailExecutionSection(history) {
         ? locale.dateTime(new Date(timestamp))
         : history.executed_at,
     ),
+  ];
+  const contextMetadataFields = [
     detailField(t("detail.execution_mode"), history.execution_mode || t("detail.not_recorded")),
     detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
     detailField(t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : t("detail.not_recorded")),
@@ -4065,7 +4201,11 @@ function promptDetailExecutionSection(history) {
     detailField(t("detail.files_deleted"), history.execution_metadata?.deleted ?? t("detail.not_recorded")),
     detailField(t("detail.codex_commands"), history.execution_metadata?.codex_commands_executed ?? t("detail.not_recorded")),
     ...contextFields,
-  ]);
+  ];
+  return [
+    promptDetailCard(t("detail.execution"), summaryFields, false, "prompt-detail-card--execution-summary"),
+    promptDetailCard(t("ui.execution_context"), contextMetadataFields, false, "prompt-detail-card--execution-context"),
+  ];
 }
 function promptDetailDurationSection(execution) {
   return promptDetailCard(t("detail.duration"), [
@@ -4182,14 +4322,14 @@ function renderPromptHistoryDetail(payload) {
   content.replaceChildren();
   content.append(
     ...[
-      promptDetailExecutionSection(history),
-      lifecycleFlow(payload?.lifecycle, { historical: true }),
+      ...promptDetailExecutionSections(history),
       promptDetailSidebar([
         promptDetailDurationSection(execution),
         promptDetailRuntimeSection(runtime),
         promptDetailCommitsSection(commits),
         promptDetailEvidenceSection(evidence),
       ]),
+      lifecycleFlow(payload?.lifecycle, { historical: true }),
       promptDetailUsageSection(usage),
       promptDetailRecommendationHandoff(recommendationHandoff),
       promptDetailReviewersSection(reviewers),
@@ -4420,6 +4560,7 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
     cancel = $("confirmationModalCancel"),
     confirm = $("confirmationModalConfirm");
   heading.textContent = title;
+  heading.dataset.modalGlyph = destructive ? "warning" : "question";
   body.textContent = text;
   confirm.textContent = confirmLabel;
   modal.classList.toggle("dashboard-modal-shell--destructive", destructive);
@@ -4428,6 +4569,7 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
     const finish = (value) => {
       modal.close();
       modal.classList.remove("dashboard-modal-shell--destructive");
+      delete heading.dataset.modalGlyph;
       close.onclick = cancel.onclick = confirm.onclick = null;
       resolve(value);
     };

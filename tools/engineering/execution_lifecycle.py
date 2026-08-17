@@ -14,7 +14,8 @@ from .storage import EngineeringStorageError, open_storage
 TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 _MANAGED_PATH = (
     "START", "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT",
-    "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
+    "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
+    "REPOSITORY_CLEANUP", "TERMINAL",
 )
 # Genesis has no pull-request merge boundary.  This is presentation of the
 # existing mode contract, not a new execution sequence.
@@ -56,8 +57,16 @@ def _nonnegative_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def _pull_request_recorded(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def _display_phase(phase: str, checkpoint: dict[str, object]) -> str:
     """Map internal evidence polling onto its visible lifecycle boundary."""
+    # Finalization has its own PR hand-off. Do not project it back onto the
+    # implementation merge once that implementation PR is already merged.
+    if phase == "WAIT_FOR_OPERATOR_MERGE" and checkpoint.get("transaction_kind") == "FINALIZATION":
+        return "WAIT_FOR_FINALIZATION_MERGE"
     if phase != "WAIT_FOR_TERMINAL_EVIDENCE":
         return phase
     # Required-check polling happens before the operator merge hand-off.  It
@@ -107,6 +116,12 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     display_phase = _display_phase(phase, checkpoint)
     observed: dict[str, dict[str, object]] = {}
     repair_iterations = 0
+    implementation_merge_required = _pull_request_recorded(checkpoint.get("implementation_pull_request"))
+    finalization_merge_required = _pull_request_recorded(checkpoint.get("finalization_pull_request"))
+    if checkpoint.get("transaction_kind") == "FINALIZATION":
+        finalization_merge_required = finalization_merge_required or _pull_request_recorded(checkpoint.get("pull_request"))
+    else:
+        implementation_merge_required = implementation_merge_required or _pull_request_recorded(checkpoint.get("pull_request"))
     for event_phase, event_checkpoint, recorded_at in events:
         event = _checkpoint(event_checkpoint)
         event_step = _display_phase(str(event_phase), event)
@@ -114,17 +129,41 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             observed.setdefault(event_step, {"started_at": recorded_at})
         if event_phase == "REPAIR_AGENT":
             repair_iterations = max(repair_iterations, _nonnegative_int(event.get("repair_iterations")))
+        implementation_merge_required = (
+            implementation_merge_required or event_step == "WAIT_FOR_OPERATOR_MERGE"
+        )
+        finalization_merge_required = (
+            finalization_merge_required or event_step == "WAIT_FOR_FINALIZATION_MERGE"
+        )
     repair_iterations = max(repair_iterations, _nonnegative_int(checkpoint.get("repair_iterations")))
     evidence_available = bool(events)
     terminal_state = phase if phase in TERMINAL else None
     # Reaching the pull-request hand-off is not evidence that the pull request
     # was merged. A later finalization step (or a successful terminal state)
     # is the first lifecycle evidence that can make the merge node complete.
-    merge_completed = (
+    implementation_merge_completed = (
         terminal_state == "COMPLETE"
         or "FINALIZE_AGENT" in observed
         or "REPOSITORY_CLEANUP" in observed
     )
+    finalization_merge_completed = terminal_state == "COMPLETE" or "REPOSITORY_CLEANUP" in observed
+    # The managed contract permits a no-PR path and a single implementation-PR
+    # path. Once persisted evidence proves that a merge boundary was skipped,
+    # omit that node instead of rendering a misleading unused circle.
+    if mode != "GENESIS":
+        path = tuple(
+            step_id for step_id in path
+            if not (
+                step_id == "WAIT_FOR_OPERATOR_MERGE"
+                and not implementation_merge_required
+                and ("FINALIZE_AGENT" in observed or "REPOSITORY_CLEANUP" in observed or terminal_state == "COMPLETE")
+            )
+            and not (
+                step_id == "WAIT_FOR_FINALIZATION_MERGE"
+                and not finalization_merge_required
+                and ("REPOSITORY_CLEANUP" in observed or terminal_state == "COMPLETE")
+            )
+        )
     steps: list[dict[str, object]] = []
     for order, step_id in enumerate(path):
         state = "PENDING"
@@ -140,18 +179,23 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             step["state"] = terminal_state or "PENDING"
             if terminal_state:
                 step["terminal_outcome"] = terminal_state
-        elif step_id == "WAIT_FOR_OPERATOR_MERGE" and step_id in observed:
+        elif step_id in {"WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE"} and step_id in observed:
             step.update(observed[step_id])
+            merge_completed = (
+                implementation_merge_completed
+                if step_id == "WAIT_FOR_OPERATOR_MERGE"
+                else finalization_merge_completed
+            )
             if merge_completed:
                 step["state"] = "COMPLETED"
-            elif display_phase == "WAIT_FOR_OPERATOR_MERGE" and terminal_state is None:
+            elif display_phase == step_id and terminal_state is None:
                 step["state"] = "ACTIVE"
             else:
                 # The PR exists, but it has not been merged. In particular,
                 # bounded validation repair must leave the merge visibly
                 # blocked and must not render a completion checkmark.
                 step["state"] = "BLOCKED"
-                if display_phase == "REPAIR_AGENT":
+                if step_id == "WAIT_FOR_OPERATOR_MERGE" and display_phase == "REPAIR_AGENT":
                     step["action_key"] = "state.repair_bounded_validation_failure"
         elif step_id in observed:
             step.update(observed[step_id])

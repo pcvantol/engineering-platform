@@ -240,6 +240,34 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["current_phase"], "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(payload["pull_request"], 840)
 
+    def test_status_recovers_bounded_prompt_context_for_a_restarted_merge_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "implementation.md"
+            prompt.write_text("# Restore the merge hand-off\n\nPrivate prompt body", encoding="utf-8")
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(
+                json.dumps({"watcher_state": "WAITING_FOR_OPERATOR_MERGE", "run_id": "inbox-prompt"}),
+                encoding="utf-8",
+            )
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-prompt", "phase": "WAIT_FOR_OPERATOR_MERGE", "pull_request": 841}),
+                encoding="utf-8",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState(
+                    "inbox-prompt", "pcvantol/djconnect", str(prompt), "WAIT_FOR_OPERATOR_MERGE",
+                    pull_request=841, finalization_pull_request=841, transaction_kind="FINALIZATION",
+                )
+            )
+            acquire(root, "inbox-prompt", identity="test-host", instance_id="test-instance")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["submitted_filename"], "implementation.md")
+        self.assertEqual(payload["prompt_title"], "Restore the merge hand-off")
+
     def test_snapshot_isolated_from_optional_telemetry_failure(self) -> None:
         root = Path("/workspace")
 

@@ -96,6 +96,11 @@ from .execution_timing import start_phase as _start_phase
 
 LOGGER = logging.getLogger(__name__)
 
+# A repair remains scoped to its original PR, but it must also have a finite
+# attempt budget. This prevents a persistently failing required check from
+# repeatedly invoking the provider without an operator decision.
+MAX_PR_CHECK_REPAIR_ATTEMPTS = 3
+
 
 def _timing_unavailable(error: EngineeringStorageError) -> None:
     """Keep optional phase telemetry from changing the run outcome."""
@@ -912,6 +917,15 @@ class EngineeringRunner:
             if not pr.checks_passed:
                 if state.owner_authorized:
                     failed = ", ".join(pr.failed_checks) or "required CI check"
+                    if state.repair_iterations >= MAX_PR_CHECK_REPAIR_ATTEMPTS:
+                        return self._save_terminal(
+                            state,
+                            "BLOCKED",
+                            "repair_attempt_limit_reached",
+                            "Required CI checks still failed after "
+                            f"{MAX_PR_CHECK_REPAIR_ATTEMPTS} bounded repair attempts: {failed}.",
+                            terminal_condition="repair_attempt_limit_reached",
+                        )
                     return self._repair(
                         state,
                         f"{failed} failed. Repair only the bounded transaction defects, commit and push the repair, then return the same pull request number.",
