@@ -4698,11 +4698,53 @@ test.describe("Engineering Status browser smoke", () => {
         commits: { "Genesis-commit": "abcdef1" },
         evidence: ["Execution Host: Engineering Platform"],
         reviewers: [],
+        lifecycle: {
+          available: true,
+          run_id: "inbox-history-25",
+          terminal_state: "COMPLETE",
+          steps: [{
+            id: "REPAIR_AGENT",
+            state: "COMPLETED",
+            timing: {
+              started_at: "2026-08-02T12:25:00Z",
+              finished_at: "2026-08-02T12:25:12Z",
+              spans: [{ phase: "REPAIR", duration_ms: 12000, outcome: "COMPLETED" }],
+            },
+          }],
+        },
       },
     }));
     await page.locator("#promptHistoryRows tr td").nth(1).click();
     await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeFocused();
+    await page.locator("#promptHistoryDetailContent .execution-lifecycle__node").click();
+    const lifecycleDetail = page.locator("#lifecycleDetailModal");
+    await expect(lifecycleDetail).toBeVisible();
+    await expect(lifecycleDetail.locator(".lifecycle-detail-modal__panel")).toHaveCSS("border-top-color", "rgb(141, 199, 255)");
+    await expect(lifecycleDetail.locator("#lifecycleDetailTitle")).toHaveCSS("color", "rgb(141, 199, 255)");
+    await expect(lifecycleDetail.locator("#lifecycleDetailTitle")).toHaveAttribute("data-lifecycle-status", "completed");
+    expect(await lifecycleDetail.locator("#lifecycleDetailTitle").evaluate(
+      (title) => getComputedStyle(title, "::before").content,
+    )).toBe('"✓"');
+    const inheritedDetailTokens = await lifecycleDetail.evaluate((element) => {
+      const secondary = document.createElement("span");
+      secondary.style.color = "var(--modal-secondary-accent)";
+      const divider = document.createElement("span");
+      divider.style.borderBottom = "1px solid color-mix(in srgb,var(--modal-accent) 32%,transparent)";
+      element.append(secondary, divider);
+      const result = {
+        label: getComputedStyle(element.querySelector(".lifecycle-detail-modal__content .label")).color,
+        secondary: getComputedStyle(secondary).color,
+        phaseDivider: getComputedStyle(element.querySelector(".lifecycle-detail-modal__phase-list li")).borderBottomColor,
+        divider: getComputedStyle(divider).borderBottomColor,
+      };
+      secondary.remove();
+      divider.remove();
+      return result;
+    });
+    expect(inheritedDetailTokens.label).toBe(inheritedDetailTokens.secondary);
+    expect(inheritedDetailTokens.phaseDivider).toBe(inheritedDetailTokens.divider);
+    await page.locator("#lifecycleDetailClose").click();
     const executionSummary = page.locator("#promptHistoryDetailContent > .prompt-detail-card--execution-summary");
     const executionContext = page.locator("#promptHistoryDetailContent > .prompt-detail-card--execution-context");
     await expect(executionSummary).toHaveCount(1);

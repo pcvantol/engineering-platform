@@ -968,8 +968,14 @@ function executionContextField(label, value, badge = false) {
   return field;
 }
 function inheritModalAccent(modal, trigger) {
-  const source = trigger?.closest(".current-run,[data-modal-accent-source]");
-  const accent = source ? getComputedStyle(source).getPropertyValue("--category-color").trim() : "";
+  const source = trigger?.closest(".current-run,[data-modal-accent-source],.dashboard-modal-shell");
+  const sample = source && document.createElement("span");
+  if (sample) {
+    sample.style.color = "var(--category-color)";
+    source.append(sample);
+  }
+  const accent = sample ? getComputedStyle(sample).color : "";
+  sample?.remove();
   if (accent) modal.style.setProperty("--modal-parent-accent", accent);
   else modal.style.removeProperty("--modal-parent-accent");
 }
@@ -1163,6 +1169,9 @@ function openLifecycleDetail(step, trigger) {
   const modal = $("lifecycleDetailModal"), content = $("lifecycleDetailContent");
   if (!modal || !content) return;
   lifecycleDetailTrigger = trigger || document.activeElement;
+  // A lifecycle detail is a child view: its modal chrome follows the nearest
+  // parent surface, while the step state below still controls only its glyph.
+  inheritModalAccent(modal, lifecycleDetailTrigger);
   const timing = step?.timing && typeof step.timing === "object" ? step.timing : {};
   const title = $("lifecycleDetailTitle");
   title.dataset.lifecycleStatus = lifecycleDetailStatusKey(step);
