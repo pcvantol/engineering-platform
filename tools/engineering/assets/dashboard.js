@@ -4597,6 +4597,11 @@ function localizedDashboardError(message, fallback) {
       reason: t("preflight.untracked_reason"),
       recovery: t("preflight.untracked_recovery"),
     });
+  if (/^Unstaged changes are present\.?$/iu.test(reason))
+    return t("preflight.unstaged", {
+      reason: t("preflight.unstaged_reason"),
+      recovery: t("preflight.unstaged_recovery"),
+    });
   const branch = reason.match(/^Managed target is not on the expected branch ([^.]+)\.?$/iu);
   if (branch)
     return t("preflight.branch", {

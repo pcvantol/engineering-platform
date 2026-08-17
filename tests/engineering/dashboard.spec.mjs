@@ -1556,6 +1556,35 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toBeVisible();
   });
 
+  test("localizes unstaged-change preflight failures for every supported language", async ({ page }) => {
+    const error = "Preflight failed: Unstaged changes are present. Recovery: Commit, stash, or remove unstaged changes before execution.";
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    for (const language of SUPPORTED_LOCALES) {
+      const localeSelect = page.locator("#dashboardLocale");
+      if (await localeSelect.inputValue() !== language) {
+        const localeReload = page.waitForEvent(
+          "framenavigated",
+          (frame) => frame === page.mainFrame(),
+        );
+        await localeSelect.selectOption(language);
+        await localeReload;
+        await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+      }
+      await page.evaluate((message) => window.showDashboardError(message), error);
+      const modal = page.locator("#dashboardErrorModal");
+      await expect(modal).toBeVisible();
+      const translate = createTranslator(language);
+      await expect(page.locator("#dashboardErrorModalText")).toHaveText(
+        translate("preflight.unstaged", {
+          reason: translate("preflight.unstaged_reason"),
+          recovery: translate("preflight.unstaged_recovery"),
+        }),
+      );
+      await page.locator("#dashboardErrorModalDismiss").click();
+      await expect(modal).not.toBeVisible();
+    }
+  });
+
   test("offers a safe branch synchronization recovery in a preflight error", async ({ page }) => {
     let recoveryRequested = false;
     await page.route("**/api/managed-branch-synchronization", async (route) => {
