@@ -1525,7 +1525,10 @@ class DashboardStatusTest(unittest.TestCase):
         server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=2)
+        # The dashboard landing page reads the current Git and pull-request
+        # state.  On a busy CI runner that legitimate local work can exceed
+        # the short socket timeout, which made this integration check flaky.
+        connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=10)
         try:
             yield root, connection
         finally:

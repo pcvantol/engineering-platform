@@ -2000,7 +2000,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(_completion_commits(root), "application/json; charset=utf-8")
             if self.path == "/api/prompt-started":
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
-            if self.path == "/":
+            if request.path == "/":
                 engineering_database = _engineering_database_details(root)
                 workspace_free_disk_space = _workspace_free_disk_space(root)
                 branch = GitProvider().execute(root, "git", "branch", "--show-current")

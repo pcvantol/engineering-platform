@@ -96,6 +96,7 @@ test.beforeEach(async ({ page }, testInfo) => {
       "matches the iPhone portrait dashboard visual reference",
       "only starts pull-to-refresh from the scroll region's top edge",
       "keeps a green pull request visible until the operator merges or aborts it",
+      "opens, closes and navigates prompt-history deeplinks without reloading",
     ].includes(testInfo.title)) {
       await openTitlebarOptions(page);
     }
@@ -511,6 +512,43 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailDescription")).toHaveCSS("border-bottom-color", "rgb(141, 199, 255)");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
     await expect(page.locator("dialog[open]")).toHaveCount(1);
+  });
+
+  test("opens, closes and navigates prompt-history deeplinks without reloading", async ({ page }) => {
+    const runId = "inbox-deeplink";
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: runId, status: "COMPLETE", title: "Deeplink prompt", executed_at: "2026-08-04T08:00:00Z",
+    }] } }));
+    await page.route(`**/api/prompt-history/${runId}/details`, (route) => route.fulfill({ json: {
+      history: { run_id: runId, status: "COMPLETE", title: "Deeplink prompt" }, execution: {}, evidence: [],
+    } }));
+
+    await page.goto(`${dashboardUrl}/?prompt=${runId}`, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryDetailModal");
+    await expect(modal).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`\\?prompt=${runId}$`));
+    await expect(page.locator("#promptHistoryRows .prompt-history-open-link, #promptHistoryRows .prompt-history-copy-link")).toHaveCount(0);
+    await expect(modal.locator(".prompt-history-run-id-copy")).toHaveAttribute(
+      "aria-label", DASHBOARD_MESSAGES.nl["history.copy_link"].replace("{title}", runId),
+    );
+
+    await page.locator("#promptHistoryDetailClose").click();
+    await expect(modal).not.toBeVisible();
+    await expect(page).toHaveURL(dashboardUrl);
+    await page.goBack();
+    await expect(modal).toBeVisible();
+    await page.goForward();
+    await expect(modal).not.toBeVisible();
+  });
+
+  test("normalizes an unknown prompt-history deeplink without opening a modal", async ({ page }) => {
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: "inbox-known", status: "COMPLETE", title: "Known prompt",
+    }] } }));
+
+    await page.goto(`${dashboardUrl}/?prompt=unknown-run`, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
+    await expect(page).toHaveURL(dashboardUrl);
   });
 
   test("uses one uninterrupted category-colour selected-row treatment for prompt history on touch devices", async ({ page }) => {
@@ -1358,7 +1396,8 @@ test.describe("Engineering Status browser smoke", () => {
     await alternatives.locator("summary").click();
     await expect(alternatives).toHaveAttribute("open", "");
     await expect(alternatives).toContainText("Mission Borealis");
-    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(0);
+    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent .prompt-history-run-id-copy")).toHaveCount(1);
   });
 
   test("uses the shared modal shell with contextual panels and neutral close controls", async ({ page }) => {
@@ -2026,7 +2065,9 @@ test.describe("Engineering Status browser smoke", () => {
       complete_count: 1, blocked_count: 0, failed_count: 0,
     }]));
     await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
+    const telemetryDetailLoaded = page.waitForResponse("**/api/telemetry/2026-08-16");
     await page.locator("#executionTelemetryRows tr").click();
+    await telemetryDetailLoaded;
     const modal = page.locator("#telemetryDetailModal");
     await expect(modal.locator("#telemetryDetailTitle")).toHaveCSS("color", "rgb(251, 113, 133)");
     expect(await modal.locator("#telemetryDetailTitle").evaluate(
@@ -4342,21 +4383,29 @@ test.describe("Engineering Status browser smoke", () => {
       close = page.locator("#promptHistoryDetailClose");
 
     await modal.evaluate((element) => {
-      document.querySelector("#promptHistoryDetailContent").innerHTML =
+      const content = document.querySelector("#promptHistoryDetailContent");
+      content.innerHTML =
         "<p>Detailregel</p>".repeat(120);
+      content.style.setProperty("height", "180px", "important");
       element.showModal();
     });
     const before = {
       close: await close.boundingBox(),
       header: await header.boundingBox(),
     };
-    await content.evaluate((element) => { element.scrollTop = 180; });
+    await expect.poll(() => content.evaluate(
+      (element) => element.scrollHeight >= element.clientHeight + 180,
+    )).toBe(true);
+    const scrollTop = await content.evaluate((element) => {
+      element.scrollTo(0, 180);
+      return element.scrollTop;
+    });
+    expect(scrollTop).toBeGreaterThan(0);
     const after = {
       close: await close.boundingBox(),
       header: await header.boundingBox(),
     }, panelBox = await panel.boundingBox();
 
-    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(180);
     expect(after.close.y).toBe(before.close.y);
     expect(after.header.y).toBe(before.header.y);
     expect(after.close.x + after.close.width).toBeGreaterThan(panelBox.x + panelBox.width - 48);

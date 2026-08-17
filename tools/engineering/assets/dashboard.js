@@ -3145,10 +3145,28 @@ setTimeout(hideDashboardSplash, 8e3);
 // at once and the next set is reached through the paginator rather than an
 // inner vertical scrollbar.
 const PROMPT_HISTORY_PAGE_SIZE = 10;
+const PROMPT_HISTORY_DEEPLINK_PARAMETER = "prompt";
 let promptHistoryEntries = [],
   promptHistoryPage = 1,
   promptHistorySelectedRunId = null,
-  promptHistorySort = { key: "executed_at", direction: "desc" };
+  promptHistorySort = { key: "executed_at", direction: "desc" },
+  promptHistoryDetailRunId = "",
+  promptHistoryDetailLocationSyncing = false;
+function promptHistoryDetailUrl(runId = "") {
+  const url = new URL(window.location.href);
+  if (runId) url.searchParams.set(PROMPT_HISTORY_DEEPLINK_PARAMETER, String(runId));
+  else url.searchParams.delete(PROMPT_HISTORY_DEEPLINK_PARAMETER);
+  return url;
+}
+function promptHistoryDetailRunFromUrl() {
+  return new URLSearchParams(window.location.search)
+    .get(PROMPT_HISTORY_DEEPLINK_PARAMETER) || "";
+}
+function updatePromptHistoryDetailUrl(runId, mode = "push") {
+  const url = promptHistoryDetailUrl(runId);
+  if (url.href === window.location.href) return;
+  history[mode === "replace" ? "replaceState" : "pushState"]({}, "", url);
+}
 function promptHistoryValue(entry, key) {
   const value = entry?.[key];
   if (key === "executed_at") {
@@ -3469,6 +3487,7 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
       if (!Array.isArray(payload?.runs)) throw Error("invalid prompt history");
       promptHistoryEntries = payload.runs;
       renderPromptHistory();
+      reconcilePromptHistoryDetailFromUrl();
       // The history index can be briefly unavailable while the watcher commits
       // a terminal run. Retry one empty initial projection so a transient
       // SQLite lock never leaves the visible history blank until a reload.
@@ -3482,6 +3501,7 @@ function refreshPromptHistory({ retryEmptyOnce = true } = {}) {
     .catch(() => {
       promptHistoryEntries = [];
       renderPromptHistory();
+      reconcilePromptHistoryDetailFromUrl();
       if (retryEmptyOnce) {
         clearTimeout(promptHistoryRefreshRetry);
         promptHistoryRefreshRetry = setTimeout(() => {
@@ -4127,6 +4147,21 @@ function detailField(label, value, preformatted = false) {
   field.append(name, output);
   return field;
 }
+function promptHistoryRunIdField(runId) {
+  const field = detailField(t("detail.run_id"), runId, true);
+  field.classList.add("prompt-history-run-id-field");
+  const copyLink = document.createElement("button");
+  copyLink.className = "prompt-history-run-id-copy";
+  copyLink.type = "button";
+  copyLink.title = t("history.copy_link", { title: runId });
+  copyLink.setAttribute("aria-label", copyLink.title);
+  copyLink.textContent = "⧉";
+  copyLink.addEventListener("click", () => {
+    void copyText(promptHistoryDetailUrl(runId).href);
+  });
+  field.append(copyLink);
+  return field;
+}
 function promptHistoryStatusTone(value) {
   switch (String(value || "").toUpperCase()) {
     case "COMPLETE": return "green";
@@ -4182,7 +4217,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.operator_handling"), history.dismissed ? t("handling.dismissed") : t("handling.open")),
     ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
     detailField(t("detail.prompt_title"), history.title),
-    detailField(t("detail.run_id"), history.run_id, true),
+    promptHistoryRunIdField(history.run_id),
     detailField(
       t("detail.executed_at"),
       Number.isFinite(timestamp)
@@ -4349,18 +4384,46 @@ function closePromptHistoryDetail() {
   const modal = $("promptHistoryDetailModal");
   if (modal.open) modal.close();
 }
-function openPromptHistoryDetail(entry) {
+function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (!entry?.run_id) return;
+  const runId = String(entry.run_id);
+  if (updateUrl) updatePromptHistoryDetailUrl(runId);
+  promptHistoryDetailRunId = runId;
   const modal = $("promptHistoryDetailModal"), content = $("promptHistoryDetailContent");
-  $("promptHistoryDetailTitle").textContent = String(entry.title || entry.run_id);
+  $("promptHistoryDetailTitle").textContent = String(entry.title || runId);
   $("promptHistoryDetailDescription").textContent = t("history.details_description");
   content.textContent = t("history.details_loading");
   if (!modal.open) modal.showModal();
   resetDashboardModalInitialFocus(modal);
-  fetch("/api/prompt-history/" + encodeURIComponent(entry.run_id) + "/details", { cache: "no-store" })
+  fetch("/api/prompt-history/" + encodeURIComponent(runId) + "/details", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : Promise.reject())
-    .then(renderPromptHistoryDetail)
-    .catch(() => { content.textContent = t("history.details_unavailable"); });
+    .then((payload) => {
+      if (promptHistoryDetailRunId === runId && modal.open) renderPromptHistoryDetail(payload);
+    })
+    .catch(() => {
+      if (promptHistoryDetailRunId === runId && modal.open)
+        content.textContent = t("history.details_unavailable");
+    });
+}
+function reconcilePromptHistoryDetailFromUrl() {
+  const runId = promptHistoryDetailRunFromUrl();
+  const entry = promptHistoryEntries.find((candidate) => String(candidate?.run_id || "") === runId);
+  if (!runId) {
+    if (!promptHistoryDetailRunId) return;
+    promptHistoryDetailLocationSyncing = true;
+    closePromptHistoryDetail();
+    promptHistoryDetailLocationSyncing = false;
+    return;
+  }
+  if (!entry) {
+    if (runId) updatePromptHistoryDetailUrl("", "replace");
+    promptHistoryDetailLocationSyncing = true;
+    closePromptHistoryDetail();
+    promptHistoryDetailLocationSyncing = false;
+    return;
+  }
+  if (promptHistoryDetailRunId !== runId || !$("promptHistoryDetailModal").open)
+    openPromptHistoryDetail(entry, { updateUrl: false });
 }
 $("promptHistoryDetailClose").addEventListener("click", (event) => {
   event.preventDefault();
@@ -4376,6 +4439,12 @@ $("promptHistoryDetailModal").addEventListener("click", (event) => {
   }
   if (event.target === $("promptHistoryDetailModal")) closePromptHistoryDetail();
 });
+$("promptHistoryDetailModal").addEventListener("close", () => {
+  promptHistoryDetailRunId = "";
+  if (!promptHistoryDetailLocationSyncing && promptHistoryDetailRunFromUrl())
+    updatePromptHistoryDetailUrl("");
+});
+window.addEventListener("popstate", reconcilePromptHistoryDetailFromUrl);
 $("promptHistoryReportClose").addEventListener(
   "click",
   closePromptHistoryReport,

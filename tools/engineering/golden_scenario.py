@@ -14,6 +14,12 @@ SCENARIO_ID = "EP-GOLDEN-001"
 
 def run(root: Path, *, fail_phase: str | None = None) -> dict[str, object]:
     """Prove the productized lifecycle without PRs, merges, secrets or network writes."""
+    directory = root / ".engineering" / "qualification"
+    evidence_path = directory / "ep-golden-001.json"
+    # The scenario records its result at this deterministic path.  A prior
+    # scenario run is evidence, not workspace input, so it must not make the
+    # next idempotent qualification look like a migration conflict.
+    evidence_path.unlink(missing_ok=True)
     phases: list[dict[str, object]] = []
     try:
         for name, operation in (
@@ -37,7 +43,6 @@ def run(root: Path, *, fail_phase: str | None = None) -> dict[str, object]:
         payload = {"scenario_id": SCENARIO_ID, "result": "ENGINEERING_PLATFORM_GOLDEN_PASS", "executed_at": datetime.now(timezone.utc).isoformat(), "phases": phases, "evidence": ["platform_identity", "workspace_identity", "providers", "readiness", "qualification", "handoff_simulation"]}
     except Exception as error:
         payload = {"scenario_id": SCENARIO_ID, "result": "ENGINEERING_PLATFORM_GOLDEN_FAIL", "executed_at": datetime.now(timezone.utc).isoformat(), "phases": phases, "failed_phase": fail_phase or (phases[-1]["phase"] if phases else "repository_bootstrap"), "diagnostic": str(error), "expected_state": "ENGINEERING_PLATFORM_GOLDEN_PASS", "remediation": "Correct the reported configuration, provider, readiness or qualification failure and rerun EP-GOLDEN-001."}
-    directory = root / ".engineering" / "qualification"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (directory / "ep-golden-001.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
