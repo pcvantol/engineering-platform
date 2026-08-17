@@ -47,6 +47,15 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", intended_path("GENESIS"))
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", intended_path("MANAGED"))
 
+    def test_status_reconciliation_uses_only_the_finalization_path(self) -> None:
+        path = intended_path("MANAGED", "FINALIZATION", None)
+        self.assertEqual(
+            path,
+            ("START", "INITIALIZE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE", "REPOSITORY_CLEANUP", "TERMINAL"),
+        )
+        self.assertNotIn("EXECUTE_AGENT", path)
+        self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", path)
+
     def test_required_check_polling_stays_on_the_visible_merge_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -60,7 +69,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
     def test_finalization_check_polling_stays_on_the_visible_finalization_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._state(root, "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="FINALIZATION", pull_request=841)
+            self._state(root, "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="FINALIZATION", implementation_pull_request=840, pull_request=841)
             value = projection(root, "inbox-flow")
         by_id = {step["id"]: step for step in value["steps"]}
         self.assertEqual(value["current_step"], "FINALIZE_AGENT")
@@ -85,7 +94,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._state(root, "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=840)
-            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION", pull_request=840)
+            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION", implementation_pull_request=840, pull_request=840)
             value = projection(root, "inbox-flow")
         by_id = {step["id"]: step for step in value["steps"]}
         self.assertEqual(by_id["WAIT_FOR_OPERATOR_MERGE"]["state"], "COMPLETED")
@@ -94,9 +103,9 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._state(root, "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=840)
-            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION")
+            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION", implementation_pull_request=840)
             self._state(
-                root, "WAIT_FOR_OPERATOR_MERGE", transaction_kind="FINALIZATION",
+                root, "WAIT_FOR_OPERATOR_MERGE", transaction_kind="FINALIZATION", implementation_pull_request=840,
                 pull_request=841, finalization_pull_request=841,
             )
             value = projection(root, "inbox-flow")

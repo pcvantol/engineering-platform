@@ -23,6 +23,10 @@ _GENESIS_PATH = (
     "START", "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT",
     "FINALIZE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
+_STATUS_RECONCILIATION_PATH = (
+    "START", "INITIALIZE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
+    "REPOSITORY_CLEANUP", "TERMINAL",
+)
 
 # This is a presentation-only association. The Execution Host stays the
 # authority for phase timing; this projection only groups persisted evidence
@@ -38,8 +42,14 @@ _STEP_PHASES = {
 }
 
 
-def intended_path(execution_mode: object) -> tuple[str, ...]:
+def intended_path(
+    execution_mode: object,
+    transaction_kind: object = "IMPLEMENTATION",
+    implementation_pull_request: object = None,
+) -> tuple[str, ...]:
     """Return the canonical display path for one existing execution mode."""
+    if transaction_kind == "FINALIZATION" and implementation_pull_request is None:
+        return _STATUS_RECONCILIATION_PATH
     return _GENESIS_PATH if execution_mode == "GENESIS" else _MANAGED_PATH
 
 
@@ -112,7 +122,8 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     checkpoint = _checkpoint(row[0])
     phase = str(row[1])
     mode = checkpoint.get("execution_mode") or (mode_row[0] if mode_row else None) or "MANAGED"
-    path = intended_path(mode)
+    transaction_kind = checkpoint.get("transaction_kind") or "IMPLEMENTATION"
+    path = intended_path(mode, transaction_kind, checkpoint.get("implementation_pull_request"))
     display_phase = _display_phase(phase, checkpoint)
     observed: dict[str, dict[str, object]] = {}
     repair_iterations = 0

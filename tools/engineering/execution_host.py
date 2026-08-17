@@ -474,6 +474,7 @@ class EngineeringRunner:
         run_id: str | None = None,
         resume: bool = False,
         owner_authorized: bool = False,
+        transaction_kind: str = "IMPLEMENTATION",
     ) -> TransactionState:
         objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
@@ -515,6 +516,7 @@ class EngineeringRunner:
                 str(prompt_path),
                 "INITIALIZE",
                 owner_authorized=owner_authorized,
+                transaction_kind=transaction_kind,
                 execution_mode=context.execution_mode,
             )
         context = replace(context, run_id=state.run_id)
@@ -764,6 +766,10 @@ class EngineeringRunner:
             pull_request=result.pull_request,
             next_action="poll_required_checks",
             terminal_condition=result.terminal_condition,
+            finalization_branch=(result.branch or evidence.branch)
+            if state.transaction_kind == "FINALIZATION" else state.finalization_branch,
+            finalization_pull_request=result.pull_request
+            if state.transaction_kind == "FINALIZATION" else state.finalization_pull_request,
         )
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
@@ -849,6 +855,17 @@ class EngineeringRunner:
                 phase="WAIT_FOR_TERMINAL_EVIDENCE",
                 last_verified_sha=evidence.head_sha,
                 next_action="poll_required_checks",
+            )
+        if (
+            state.transaction_kind == "FINALIZATION"
+            and state.implementation_pull_request is None
+            and not state.finalization_pull_request
+        ):
+            return replace(
+                state,
+                phase="FINALIZE_AGENT",
+                last_verified_sha=evidence.head_sha,
+                next_action="create_finalization",
             )
         if (
             state.transaction_kind == "FINALIZATION"
@@ -1209,6 +1226,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument(
+        "--transaction-kind",
+        choices=("IMPLEMENTATION", "FINALIZATION"),
+        default="IMPLEMENTATION",
+        help="internal watcher-selected transaction kind",
+    )
+    parser.add_argument(
         "--admitted-storage-schema",
         type=int,
         help="storage schema admitted by the watcher that spawned this run",
@@ -1264,7 +1287,13 @@ def main(argv: list[str] | None = None) -> int:
         compatibility=compatibility,
     )
     try:
-        state = runner.run(prompt_path, args.run_id, args.resume, args.owner_authorized)
+        state = runner.run(
+            prompt_path,
+            args.run_id,
+            args.resume,
+            args.owner_authorized,
+            args.transaction_kind,
+        )
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2

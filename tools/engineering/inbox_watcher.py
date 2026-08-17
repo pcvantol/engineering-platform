@@ -1371,6 +1371,11 @@ def _execute_runner_command(
         "--admitted-storage-schema",
         str(ENGINEERING_STORAGE_SCHEMA_VERSION),
     ]
+    # This marker is admitted only after the immutable predecessor proof.  It
+    # must also select the Finalization transaction in the Execution Host;
+    # otherwise the host defaults to an implementation pipeline.
+    if STATUS_RECONCILIATION_OF_PATTERN.search(prompt.read_text(encoding="utf-8")):
+        arguments.extend(("--transaction-kind", "FINALIZATION"))
     if phase and phase not in TERMINAL_PHASES:
         arguments.append("--resume")
     execution_started_at = datetime.now(timezone.utc)

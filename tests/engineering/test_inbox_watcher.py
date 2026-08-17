@@ -70,6 +70,21 @@ class InboxWatcherTest(unittest.TestCase):
         wait_for_pending_telemetry()
         self.temp.cleanup()
 
+    def test_status_reconciliation_starts_a_finalization_transaction(self) -> None:
+        prompt = self.repo / "reconciliation.md"
+        prompt.write_text(
+            "Status-Reconciliation-Of: inbox-abcdef123456\n\n# Reconcile status\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.CompletedProcess(("engineering-execution-host",), 0, "", "")
+
+        with patch.object(inbox_watcher.LocalProcessProvider, "execute", return_value=completed) as execute:
+            inbox_watcher._execute_runner_command(self.repo, prompt, "inbox-reconciliation")
+
+        arguments = execute.call_args.args[1]
+        self.assertIn("--transaction-kind", arguments)
+        self.assertEqual(arguments[arguments.index("--transaction-kind") + 1], "FINALIZATION")
+
     def test_preflight_failure_keeps_the_specific_bounded_runner_reason(self) -> None:
         completed = subprocess.CompletedProcess(("engineering-execution-host",), 2, "BLOCKED: working tree is not clean\n", "")
 
