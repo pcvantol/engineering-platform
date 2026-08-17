@@ -66,6 +66,11 @@ Every terminal report includes these derived sections:
 - **Execution Statistics** — execution count, evidence-backed engineering
   actions, Forge mission count, repair iterations, provider execution time and
   validation time status.
+- **Repair History** — append-only, run-scoped evidence for each bounded
+  required-check repair: failed checks, proposed action, bounded AI repair
+  summary, resulting commit when reported, timestamp and outcome. It is audit
+  evidence, not a raw AI chat transcript, and never replaces GitHub or
+  repository truth.
 - **Engineering Evidence Summary** — compact JSON for read-only consumers.
 
 Component and traceability records are generated from repository files,

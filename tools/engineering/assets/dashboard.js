@@ -4362,6 +4362,18 @@ function promptDetailEvidenceSection(evidence) {
     [detailField(t("detail.evidence"), evidence.join("\n"), true)],
   );
 }
+function promptDetailRepairAuditSection(audit) {
+  if (!Array.isArray(audit) || !audit.length) return null;
+  const text = audit.map((item) => [
+    t("detail.repair_iteration") + ": " + String(item.iteration || "—"),
+    t("detail.failed_checks") + ": " + String(item.failed_checks || "—"),
+    t("detail.proposed_action") + ": " + String(item.proposed_action || "—"),
+    t("detail.ai_repair_summary") + ": " + String(item.agent_summary || "—"),
+    t("detail.commit") + ": " + String(item.commit_sha || "—"),
+    t("detail.outcome") + ": " + String(item.outcome || "—"),
+  ].join("\n")).join("\n\n");
+  return promptDetailCard(t("detail.repair_history"), [detailField(t("detail.audit_evidence"), text, true)], true);
+}
 function promptDetailRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return null;
   const recommendation = handoff.recommendation || {}, alternatives = Array.isArray(handoff.alternatives) ? handoff.alternatives : [];
@@ -4431,7 +4443,8 @@ function renderPromptHistoryDetail(payload) {
         promptDetailDurationSection(execution),
         promptDetailRuntimeSection(runtime),
         promptDetailCommitsSection(commits),
-        promptDetailEvidenceSection(evidence),
+      promptDetailEvidenceSection(evidence),
+      promptDetailRepairAuditSection(payload?.repair_audit),
       ]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),

@@ -41,7 +41,7 @@ from .component_logging import (
     shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
-from .agent_state import redact_diagnostic
+from .agent_state import StateError, StateStore, redact_diagnostic
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
 from .telemetry import daily_statistics, daily_timing_detail, execution_timing
 from .prompt_history import prompt_history, report_for_prompt_history
@@ -253,6 +253,7 @@ def _project_prompt_history_detail(
     usage: dict[str, object],
     report: str | None,
     lifecycle: dict[str, object] | None = None,
+    repair_audit: list[dict[str, str]] | None = None,
 ) -> bytes:
     """Project one immutable history row into dashboard detail JSON.
 
@@ -273,6 +274,7 @@ def _project_prompt_history_detail(
             "evidence": evidence,
             "recommendation_handoff": handoff,
             "lifecycle": lifecycle or {},
+            "repair_audit": repair_audit or [],
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -341,6 +343,10 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         pass
     if diagnostic := _terminal_run_diagnostic(root, run_id):
         entry["execution_diagnostic"] = diagnostic
+    try:
+        repair_audit = list(StateStore(root / ".engineering" / "engineering-runs").load(run_id).repair_audit)
+    except (EngineeringStorageError, StateError):
+        repair_audit = []
     return _project_prompt_history_detail(
         entry,
         execution=execution,
@@ -350,6 +356,7 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         usage=usage,
         report=report,
         lifecycle=lifecycle_projection(root, run_id),
+        repair_audit=repair_audit,
     )
 
 
@@ -912,11 +919,21 @@ def _stale_local_branch_candidates(root: Path) -> list[str]:
         divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", f"origin/{expected_branch}...{expected_branch}")
         if divergence.returncode or divergence.stdout.strip() != "0\t0":
             raise RuntimeError("main moet eerst met origin worden gesynchroniseerd.")
+        worktrees = provider.execute(root, "git", "worktree", "list", "--porcelain")
+        if worktrees.returncode:
+            raise RuntimeError("Actieve Git-worktrees konden niet veilig worden gelezen.")
+        active_worktree_branches = {
+            line.removeprefix("branch refs/heads/")
+            for line in worktrees.stdout.splitlines()
+            if line.startswith("branch refs/heads/")
+        }
         branches = provider.execute(root, "git", "for-each-ref", "--format=%(refname:short)", "refs/heads")
         if branches.returncode:
             raise RuntimeError("Lokale branches konden niet veilig worden gelezen.")
         removable: list[str] = []
         for branch in sorted(name for name in branches.stdout.splitlines() if name and name != expected_branch):
+            if branch in active_worktree_branches:
+                continue
             remote = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
             if remote.returncode == 0:
                 continue

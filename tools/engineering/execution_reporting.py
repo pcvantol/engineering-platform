@@ -653,6 +653,16 @@ def _validation_evidence_lines(state: TransactionState) -> tuple[str, ...]:
     )
 
 
+def _repair_audit_lines(state: TransactionState) -> tuple[str, ...]:
+    if not state.repair_audit:
+        return ("No repair iterations were required.",)
+    return tuple(line for item in state.repair_audit for line in (
+        f"### Repair iteration {item['iteration']}", f"- Observed at: {item['observed_at']}",
+        f"- Failed checks: {item['failed_checks']}", f"- Proposed action: {item['proposed_action']}",
+        f"- AI repair summary: {item['agent_summary']}", f"- Commit: `{item['commit_sha']}`", f"- Outcome: `{item['outcome']}`",
+    ))
+
+
 def _reconciliation_evidence(objective: str, state: TransactionState, bundle: TerminalEvidenceBundle) -> str:
     if "reconcil" not in objective.casefold():
         return ""
@@ -1197,9 +1207,7 @@ def generate_terminal_report(
             else "No successful engineering validation or delivery is claimed for this terminal transaction.",
             "",
             "## Repair History",
-            "No repair iterations were required."
-            if not state.repair_iterations
-            else f"{state.repair_iterations} bounded repair iteration(s) were recorded.",
+            *_repair_audit_lines(state),
             "",
             "## Repository Cleanup",
             state.latest_repository_evidence or "Cleanup evidence unavailable.",

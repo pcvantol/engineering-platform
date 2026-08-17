@@ -359,6 +359,16 @@ class EngineeringRunner:
             return state
         return replace(state, validation_evidence=result.validation_evidence)
 
+    def _record_repair_audit(self, state: TransactionState, *, failed_checks: str, objective: str, result: AgentResult | None, outcome: str) -> TransactionState:
+        """Append bounded per-repair evidence; never overwrite prior attempts."""
+        record = {
+            "iteration": str(state.repair_iterations), "observed_at": datetime.now(timezone.utc).isoformat(),
+            "failed_checks": redact_diagnostic(failed_checks), "proposed_action": redact_diagnostic(objective),
+            "agent_summary": redact_diagnostic((result.diagnostic if result else None) or "Agent invocation did not return a repair summary."),
+            "commit_sha": result.commit_sha if result and result.commit_sha else "not_recorded", "outcome": outcome,
+        }
+        return replace(state, repair_audit=state.repair_audit + (record,))
+
     @staticmethod
     def _validation_kind(command: str) -> str | None:
         """Classify only known validation commands at their live boundary.
@@ -999,6 +1009,7 @@ class EngineeringRunner:
             return self._save_operator_merge_wait(waiting)
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
+        failed_checks = objective.split(" failed.", 1)[0]
         repair = replace(
             state,
             phase="REPAIR_AGENT",
@@ -1020,10 +1031,16 @@ class EngineeringRunner:
             )
             repair = self._record_agent_execution_time(repair)
             repair = self._record_validation_evidence(repair, result)
+            repair = self._record_repair_audit(
+                repair, failed_checks=failed_checks, objective=objective, result=result,
+                outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
+            )
+            self.store.save(repair)
             self._persist_agent_usage(repair.run_id)
         except CodexInvocationError as error:
             repair = self._record_agent_execution_time(repair)
             self.console_detail = error.console_detail
+            repair = self._record_repair_audit(repair, failed_checks=failed_checks, objective=objective, result=None, outcome="agent_failed")
             return self._save_terminal(
                 repair,
                 "BLOCKED",

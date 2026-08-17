@@ -909,9 +909,17 @@ def _active_transaction(repo: Path) -> bool:
 
 
 def _detached_runner_is_alive(watcher: dict[str, object]) -> bool:
-    """Confirm a detached runner PID, with a bounded legacy-start grace period."""
+    """Confirm a detached runner PID, reaping an exited child when possible."""
     pid = watcher.get("runner_pid")
     if isinstance(pid, int) and pid > 0:
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # The PID can belong to a pre-existing watcher process. It is not
+            # ours to reap, so retain the non-mutating liveness check below.
+            reaped_pid = 0
+        if reaped_pid == pid:
+            return False
         try:
             os.kill(pid, 0)
         except OSError:

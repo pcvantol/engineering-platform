@@ -1625,6 +1625,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         repaired = runner._poll(state)
         self.assertEqual(repaired.repair_iterations, 1)
         self.assertIn("Ruff failed", agent.prompts[0])
+        self.assertEqual(len(repaired.repair_audit), 1)
+        self.assertEqual(repaired.repair_audit[0]["failed_checks"], "Ruff")
+        self.assertEqual(repaired.repair_audit[0]["outcome"], "agent_failed")
+        self.assertEqual(repaired.repair_audit[0]["agent_summary"], "External review required.")
 
     def test_repair_stops_after_three_failed_required_check_repairs(self) -> None:
         state = TransactionState(

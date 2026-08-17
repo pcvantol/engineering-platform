@@ -64,6 +64,7 @@ class TransactionState:
     agent_execution_seconds: float | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
+    repair_audit: tuple[dict[str, str], ...] = ()
     waiting_for_merge_since: str | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
@@ -84,6 +85,7 @@ class TransactionState:
             "agent_execution_seconds": None,
             "validation_evidence": (),
             "repair_iterations": 0,
+            "repair_audit": (),
             "waiting_for_merge_since": None,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
@@ -92,6 +94,8 @@ class TransactionState:
             raise StateError("checkpoint fields are incompatible")
         if isinstance(raw.get("validation_evidence"), list):
             raw = {**raw, "validation_evidence": tuple(raw["validation_evidence"])}
+        if isinstance(raw.get("repair_audit"), list):
+            raw = {**raw, "repair_audit": tuple(raw["repair_audit"])}
         try:
             state = cls(**raw)
         except TypeError as error:
@@ -124,6 +128,20 @@ class TransactionState:
             raise StateError("checkpoint lifecycle pull request is invalid")
         if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:
             raise StateError("checkpoint repair iteration count is invalid")
+        audit_fields = {"iteration", "observed_at", "failed_checks", "proposed_action", "agent_summary", "commit_sha", "outcome"}
+        if (
+            not isinstance(state.repair_audit, tuple)
+            or len(state.repair_audit) > 3
+            or any(
+                not isinstance(item, dict) or set(item) != audit_fields
+                or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
+                or not item["iteration"].isdigit() or int(item["iteration"]) < 1
+                or item["outcome"] not in {"submitted_for_recheck", "agent_failed"}
+                or (item["commit_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["commit_sha"]))
+                for item in state.repair_audit
+            )
+        ):
+            raise StateError("checkpoint repair audit is invalid or unsafe")
         if state.waiting_for_merge_since is not None and (
             not isinstance(state.waiting_for_merge_since, str)
             or len(state.waiting_for_merge_since) > 80

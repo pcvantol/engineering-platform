@@ -666,6 +666,14 @@ class InboxWatcherTest(unittest.TestCase):
         with patch("tools.engineering.inbox_watcher.os.kill", side_effect=ProcessLookupError):
             self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
+    def test_exited_detached_runner_is_reaped_and_does_not_hold_the_inbox(self) -> None:
+        with (
+            patch("tools.engineering.inbox_watcher.os.waitpid", return_value=(12345, 0)),
+            patch("tools.engineering.inbox_watcher.os.kill") as kill,
+        ):
+            self.assertFalse(inbox_watcher._detached_runner_is_alive({"runner_pid": 12345}))
+        kill.assert_not_called()
+
     def test_stale_canonical_transaction_does_not_hold_the_inbox(self) -> None:
         run_id = "inbox-stale-lease"
         inbox_watcher.status(self.repo, "ENGINEERING_RUN_ACTIVE", run_id=run_id)
