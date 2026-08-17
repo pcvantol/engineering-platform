@@ -246,6 +246,192 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertFalse(lock.exists())
 
+    @patch("tools.engineering.dashboard._stale_local_branch_pull_request", return_value=None)
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_stale_local_branch_cleanup_removes_only_reviewed_patch_equivalent_branches(
+        self, git_provider: object, _: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "codex/different\ncodex/remote\ncodex/stale\nmain\n", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+        ]
+
+        preview = dashboard._stale_local_branch_preview(root)
+        self.assertEqual(preview, {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main"}]})
+
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "codex/different\ncodex/remote\ncodex/stale\nmain\n", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+        ]
+        self.assertEqual(
+            dashboard._cleanup_stale_local_branches(root, ["codex/stale"]),
+            {"removed": ["codex/stale"], "removed_count": 1},
+        )
+        self.assertEqual(
+            git_provider.return_value.execute.call_args_list[-1],
+            call(root, "git", "branch", "-D", "--", "codex/stale"),
+        )
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_stale_local_branch_preview_adds_an_exact_merged_pull_request_link_when_available(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "codex/stale\nmain\n", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
+        ]
+        github_provider.return_value.github.return_value = json.dumps([
+            {"number": 847, "url": "https://github.com/pcvantol/djconnect/pull/847", "headRefName": "codex/stale"},
+        ])
+
+        self.assertEqual(
+            dashboard._stale_local_branch_preview(root),
+            {"branches": [{
+                "name": "codex/stale",
+                "reason": "remote_absent_and_matches_main",
+                "pull_request": {"number": 847, "url": "https://github.com/pcvantol/djconnect/pull/847"},
+            }]},
+        )
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_switch_to_fast_forward_main_only_switches_a_clean_branch_and_fast_forwards(
+        self, git_provider: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "codex/work\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "2\t0\n", ""),
+        ]
+
+        self.assertEqual(
+            dashboard._switch_to_fast_forward_main(root),
+            {"previous_branch": "codex/work", "branch": "main", "synchronized": "true"},
+        )
+        self.assertEqual(
+            git_provider.return_value.command.call_args_list,
+            [
+                call(root, "git", "switch", "main"),
+                call(root, "git", "merge", "--ff-only", "origin/main"),
+            ],
+        )
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_switch_to_fast_forward_main_refuses_dirty_or_ahead_workspaces(self, git_provider: object) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, " M dashboard.py\n", ""),
+            completed(("git",), 0, "codex/work\n", ""),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "werkmap moet schoon"):
+            dashboard._switch_to_fast_forward_main(root)
+
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t1\n", ""),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "Lokale commits"):
+            dashboard._switch_to_fast_forward_main(root)
+        git_provider.return_value.command.assert_not_called()
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_workspace_open_pull_requests_are_bounded_display_safe_context(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.return_value = completed(
+            ("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""
+        )
+        github_provider.return_value.github.return_value = json.dumps([
+            {"number": 849, "title": "Cleanup <safe>", "url": "https://github.com/pcvantol/djconnect/pull/849", "headRefName": "codex/cleanup"},
+            {"number": "invalid", "title": "Ignored", "url": "https://github.com/pcvantol/djconnect/pull/0", "headRefName": "codex/ignored"},
+        ])
+
+        pull_requests = dashboard._workspace_open_pull_requests(root)
+
+        self.assertEqual(pull_requests, [{
+            "number": 849, "title": "Cleanup <safe>", "url": "https://github.com/pcvantol/djconnect/pull/849", "branch": "codex/cleanup",
+        }])
+        page = _dashboard_html(
+            "Engineering Status", workspace_branch="codex/cleanup", workspace_commit="123456789abc",
+            origin_main_commit="abcdef123456", origin_main_available=True,
+            workspace_open_pull_requests=pull_requests, workspace_main_action_hidden=False,
+        ).decode()
+        self.assertIn('data-i18n="workspace.open_pull_requests"', page)
+        self.assertIn('PR #849 — Cleanup &lt;safe&gt;', page)
+        self.assertIn("codex/cleanup", page)
+        self.assertNotIn('id="workspaceBranchMain" type="button" hidden', page)
+
+        github_provider.return_value.github.side_effect = RuntimeError("offline")
+        self.assertEqual(dashboard._workspace_open_pull_requests(root), [])
+
+        github_provider.return_value.github.side_effect = None
+        git_provider.return_value.execute.return_value = completed(("git",), 1, "", "")
+        self.assertEqual(dashboard._workspace_open_pull_requests(root), [])
+
+        git_provider.return_value.execute.return_value = completed(
+            ("git",), 0, "https://github.com/pcvantol/djconnect.git\n", ""
+        )
+        github_provider.return_value.github.return_value = "{}"
+        self.assertEqual(dashboard._workspace_open_pull_requests(root), [])
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_stale_branch_pull_request_context_never_affects_cleanup_safety(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        root = Path(__file__).parents[2]
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.return_value = completed(("git",), 1, "", "")
+        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
+
+        git_provider.return_value.execute.return_value = completed(
+            ("git",), 0, "https://example.invalid/repository.git\n", ""
+        )
+        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
+
+        git_provider.return_value.execute.return_value = completed(
+            ("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""
+        )
+        github_provider.return_value.github.return_value = "not-json"
+        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
+
     def test_rate_limit_helpers_cover_generic_windows_and_unavailable_provider_version(self) -> None:
         self.assertEqual(dashboard._rate_limit_window_label(1_440), "1-daags venster")
         self.assertEqual(dashboard._rate_limit_window_label(120), "2-uursvenster")
@@ -1541,6 +1727,24 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 409)
                 self.assertEqual(json.loads(response.read()), {"error": "De Git-vergrendeling is niet veilig herstelbaar."})
+            branch_preview = {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main"}]}
+            with patch("tools.engineering.dashboard._stale_local_branch_preview", return_value=branch_preview):
+                connection.request("POST", "/api/stale-local-branch-cleanup-preview", body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read()), branch_preview)
+            cleanup_outcome = {"removed": ["codex/stale"], "removed_count": 1}
+            with patch("tools.engineering.dashboard._cleanup_stale_local_branches", return_value=cleanup_outcome) as cleanup:
+                connection.request("POST", "/api/stale-local-branch-cleanup", body='{"branches":["codex/stale"]}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), cleanup_outcome)
+                cleanup.assert_called_once_with(root, ["codex/stale"])
+            with patch("tools.engineering.dashboard._cleanup_stale_local_branches", side_effect=RuntimeError("changed")):
+                connection.request("POST", "/api/stale-local-branch-cleanup", body='{"branches":["codex/stale"]}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Lokale branches konden niet veilig worden opgeruimd."})
             execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),

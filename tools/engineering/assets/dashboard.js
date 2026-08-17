@@ -3648,7 +3648,7 @@ function applyDashboardLocale() {
   const workspaceKeys = [
     "workspace.name", "ui.workspace_location",
     "workspace.free_disk_space", "detail.tracked_files", "workspace.database",
-    "workspace.database_size", "workspace.schema_version",
+    "workspace.database_size", "workspace.schema_version", "workspace.current_branch", "workspace.current_commit", "workspace.origin_main_commit",
   ];
   document.querySelectorAll("#workspaceCard .field .label").forEach((label, index) => {
     if (workspaceKeys[index]) label.textContent = t(workspaceKeys[index]);
@@ -4497,6 +4497,138 @@ function submitStaleGitLockRecovery() {
       });
   });
 }
+function showWorkspaceBranchCleanupResult(outcome) {
+  const modal = $("workspaceBranchCleanupResultModal"), content = $("workspaceBranchCleanupResultContent"),
+    close = $("workspaceBranchCleanupResultClose"), dismiss = $("workspaceBranchCleanupResultDismiss"),
+    removed = Array.isArray(outcome?.removed) ? outcome.removed.map(String) : [];
+  modal.style.setProperty("--modal-parent-accent", workspaceModalAccent());
+  content.replaceChildren(Object.assign(document.createElement("p"), {
+    textContent: removed.length
+      ? t("workspace.branch_cleanup_result_removed", { count: removed.length })
+      : t("workspace.branch_cleanup_result_empty"),
+  }));
+  if (removed.length) {
+    const branches = document.createElement("ul");
+    branches.className = "workspace-branch-cleanup__result-list";
+    for (const branch of removed) branches.append(Object.assign(document.createElement("li"), { textContent: branch }));
+    content.append(branches);
+  }
+  const finish = () => {
+    if (modal.open) modal.close();
+    modal.style.removeProperty("--modal-parent-accent");
+    close.onclick = dismiss.onclick = null;
+  };
+  close.onclick = dismiss.onclick = finish;
+  modal.addEventListener("cancel", (event) => { event.preventDefault(); finish(); }, { once: true });
+  modal.showModal();
+  resetDashboardModalInitialFocus(modal);
+}
+function workspaceModalAccent() {
+  return getComputedStyle($("workspaceCard")).getPropertyValue("--category-color").trim() || "#f3d36a";
+}
+function showWorkspaceBranchMainResult(message) {
+  const modal = $("workspaceBranchMainResultModal"), content = $("workspaceBranchMainResultContent"),
+    close = $("workspaceBranchMainResultClose"), dismiss = $("workspaceBranchMainResultDismiss");
+  modal.style.setProperty("--modal-parent-accent", workspaceModalAccent());
+  content.replaceChildren(Object.assign(document.createElement("p"), { textContent: message }));
+  const finish = () => {
+    if (modal.open) modal.close();
+    modal.style.removeProperty("--modal-parent-accent");
+    close.onclick = dismiss.onclick = null;
+  };
+  close.onclick = dismiss.onclick = finish;
+  modal.addEventListener("cancel", (event) => { event.preventDefault(); finish(); }, { once: true });
+  modal.showModal();
+  resetDashboardModalInitialFocus(modal);
+}
+async function switchToFastForwardMain() {
+  const button = $("workspaceBranchMain");
+  if (!button || button.disabled) return;
+  const confirmed = await confirmDashboardAction(
+    t("workspace.branch_main_title"), t("workspace.branch_main_confirmation"), t("workspace.branch_main_confirm_action"),
+    { accent: workspaceModalAccent() },
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/workspace-switch-to-main", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const outcome = await response.json();
+    showWorkspaceBranchMainResult(response.ok
+      ? t("workspace.branch_main_success", { previous_branch: outcome.previous_branch, branch: outcome.branch })
+      : outcome.error || t("workspace.branch_main_failed"));
+  } catch (error) {
+    showWorkspaceBranchMainResult(error.message || t("workspace.branch_main_failed"));
+  } finally {
+    button.disabled = false;
+  }
+}
+async function cleanupStaleLocalBranches() {
+  const button = $("workspaceBranchCleanup");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  const confirmation = confirmDashboardAction(
+    t("workspace.branch_cleanup_title"),
+    t("workspace.branch_cleanup_scanning"),
+    t("workspace.branch_cleanup_confirm_action"),
+    { destructive: true, accent: workspaceModalAccent(), loading: true },
+  );
+  const modal = $("confirmationModal"), body = $("confirmationModalText"), confirm = $("confirmationModalConfirm");
+  try {
+    const previewResponse = await fetch("/api/stale-local-branch-cleanup-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const preview = await previewResponse.json();
+    if (!previewResponse.ok) throw Error(preview.error || t("workspace.branch_cleanup_failed"));
+    const branches = Array.isArray(preview?.branches) ? preview.branches : [];
+    if (!branches.length) {
+      if (modal.open) {
+        body.replaceChildren(Object.assign(document.createElement("p"), {
+          textContent: t("workspace.branch_cleanup_empty_in_modal"),
+        }));
+        confirm.textContent = t("action.close");
+        confirm.disabled = false;
+        $("confirmationModalCancel").hidden = true;
+        confirm.classList.remove("dashboard-modal-shell__action--destructive");
+        confirm.classList.add("dashboard-modal-shell__action--primary");
+      }
+      await confirmation;
+      return;
+    }
+    if (!modal.open) {
+      await confirmation;
+      return;
+    }
+    const details = branches.map((branch) => ({
+      name: String(branch?.name || ""),
+      reason: t("workspace.branch_cleanup_reason." + String(branch?.reason || "")),
+      pull_request: branch?.pull_request,
+    }));
+    body.replaceChildren(
+      Object.assign(document.createElement("p"), { textContent: t("workspace.branch_cleanup_confirmation") }),
+      workspaceBranchCleanupDetails(details),
+    );
+    confirm.disabled = false;
+    const confirmed = await confirmation;
+    if (!confirmed) return;
+    const response = await fetch("/api/stale-local-branch-cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ branches: branches.map((branch) => String(branch?.name || "")) }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error || t("workspace.branch_cleanup_failed"));
+    showWorkspaceBranchCleanupResult(result);
+  } catch (error) {
+    if (modal.open) modal.close();
+    showDashboardError(error.message, t("workspace.branch_cleanup_failed"));
+  } finally {
+    button.disabled = false;
+  }
+}
 function submitExecutionRetry(entry) {
   if (!entry?.run_id) return;
   const title = String(entry.title || t("retry.unavailable_title"));
@@ -4561,7 +4693,30 @@ function abortOperatorMergeWait() {
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
 $("operatorMergeAbort").addEventListener("click", abortOperatorMergeWait);
 $("operatorMergeWaitModalAbort").addEventListener("click", abortOperatorMergeWait);
-function confirmDashboardAction(title, text, confirmLabel, { destructive = false } = {}) {
+$("workspaceBranchCleanup")?.addEventListener("click", cleanupStaleLocalBranches);
+$("workspaceBranchMain")?.addEventListener("click", switchToFastForwardMain);
+function workspaceBranchCleanupDetails(details) {
+  const list = document.createElement("ul");
+  list.className = "workspace-branch-cleanup__preview-list";
+  for (const detail of details) {
+    const item = document.createElement("li");
+    item.append(
+      Object.assign(document.createElement("code"), { textContent: detail.name }),
+      Object.assign(document.createElement("span"), { textContent: detail.reason }),
+    );
+    if (detail.pull_request?.url && Number.isInteger(detail.pull_request.number)) {
+      item.append(Object.assign(document.createElement("a"), {
+        href: detail.pull_request.url,
+        rel: "noreferrer",
+        target: "_blank",
+        textContent: t("workspace.branch_cleanup_pr_link", { number: detail.pull_request.number }),
+      }));
+    }
+    list.append(item);
+  }
+  return list;
+}
+function confirmDashboardAction(title, text, confirmLabel, { destructive = false, accent = "", details = [], loading = false } = {}) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),
     body = $("confirmationModalText"),
@@ -4570,14 +4725,30 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
     confirm = $("confirmationModalConfirm");
   heading.textContent = title;
   heading.dataset.modalGlyph = destructive ? "warning" : "question";
-  body.textContent = text;
+  body.replaceChildren(Object.assign(document.createElement("p"), { textContent: text }));
+  if (loading) body.append(Object.assign(document.createElement("span"), {
+    className: "workspace-branch-cleanup__spinner",
+    role: "status",
+    ariaLabel: text,
+  }));
+  if (details.length) {
+    body.append(workspaceBranchCleanupDetails(details));
+  }
   confirm.textContent = confirmLabel;
+  confirm.disabled = loading;
+  cancel.hidden = false;
+  confirm.classList.toggle("dashboard-modal-shell__action--primary", !destructive);
+  confirm.classList.toggle("dashboard-modal-shell__action--destructive", destructive);
   modal.classList.toggle("dashboard-modal-shell--destructive", destructive);
-  modal.style.setProperty("--modal-accent", destructive ? "#ff718f" : "#f0b66a");
+  modal.style.setProperty("--modal-accent", accent || (destructive ? "#ff718f" : "#f0b66a"));
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.close();
       modal.classList.remove("dashboard-modal-shell--destructive");
+      confirm.classList.add("dashboard-modal-shell__action--primary");
+      confirm.classList.remove("dashboard-modal-shell__action--destructive");
+      confirm.disabled = false;
+      cancel.hidden = false;
       delete heading.dataset.modalGlyph;
       close.onclick = cancel.onclick = confirm.onclick = null;
       resolve(value);
