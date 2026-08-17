@@ -65,6 +65,8 @@ class FakeRepository:
         self.contains = contains
         self.cleanup_calls: list[tuple[str | None, ...]] = []
         self.cleanup_error: RunnerError | None = None
+        self.refresh_main_reference_calls: list[Path] = []
+        self.refresh_main_reference_error: RunnerError | None = None
         self.synchronize_calls: list[Path] = []
         self.synchronize_error: RunnerError | None = None
 
@@ -72,6 +74,14 @@ class FakeRepository:
         return self.evidence
 
     def main_contains(self, root: Path, sha: str) -> bool:
+        return self.contains
+
+    def refresh_main_reference(self, root: Path) -> None:
+        self.refresh_main_reference_calls.append(root)
+        if self.refresh_main_reference_error:
+            raise self.refresh_main_reference_error
+
+    def remote_main_contains(self, root: Path, sha: str) -> bool:
         return self.contains
 
     def synchronize_main(self, root: Path) -> None:
@@ -208,6 +218,37 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(
             provider.calls,
             [("git", "switch", "main"), ("git", "pull", "--ff-only")],
+        )
+
+    def test_repository_main_reference_refresh_does_not_change_the_checkout(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                return ""
+
+        provider = Provider()
+        SubprocessRepositoryClient(provider).refresh_main_reference(Path("/repository"))
+        self.assertEqual(provider.calls, [("git", "fetch", "origin", "main")])
+
+    def test_repository_remote_main_containment_uses_refreshed_remote_reference(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                self.calls.append(args)
+                return subprocess.CompletedProcess(args, 0)
+
+        provider = Provider()
+        self.assertTrue(
+            SubprocessRepositoryClient(provider).remote_main_contains(Path("/repository"), "a" * 40)
+        )
+        self.assertEqual(
+            provider.calls,
+            [("git", "merge-base", "--is-ancestor", "a" * 40, "origin/main")],
         )
 
     @patch("tools.engineering.execution_repository.time.sleep")
@@ -1380,7 +1421,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             for span in phase_spans(self.root, state.run_id)
         ))
 
-    def test_merged_pull_request_synchronizes_main_before_containment_check(self) -> None:
+    def test_merged_pull_request_refreshes_main_reference_before_containment_check(self) -> None:
         state = TransactionState(
             "merged-main-refresh", "pcvantol/djconnect", str(self.prompt),
             "WAIT_FOR_OPERATOR_MERGE", branch="codex/merged", pull_request=12,
@@ -1398,7 +1439,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )._poll(state)
 
         self.assertEqual(result.phase, "COMPLETE")
-        self.assertEqual(repository.synchronize_calls, [self.root])
+        self.assertEqual(repository.refresh_main_reference_calls, [self.root])
+        self.assertEqual(repository.synchronize_calls, [])
 
     def test_agent_cannot_reuse_main_or_an_unbranched_pr_as_transaction_evidence(self) -> None:
         state = TransactionState(

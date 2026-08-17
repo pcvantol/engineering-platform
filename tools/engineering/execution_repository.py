@@ -23,6 +23,8 @@ _TRANSIENT_INDEX_LOCK_CONFLICT = re.compile(
 class RepositoryClient(Protocol):
     def inspect(self, root: Path) -> RepositoryEvidence: ...
     def main_contains(self, root: Path, sha: str) -> bool: ...
+    def refresh_main_reference(self, root: Path) -> None: ...
+    def remote_main_contains(self, root: Path, sha: str) -> bool: ...
     def synchronize_main(self, root: Path) -> None: ...
 
 
@@ -53,6 +55,13 @@ class SubprocessRepositoryClient:
 
     def main_contains(self, root: Path, sha: str) -> bool:
         return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "main").returncode == 0
+
+    def refresh_main_reference(self, root: Path) -> None:
+        """Refresh remote main evidence without changing the shared checkout."""
+        self._synchronize_command(root, "git", "fetch", "origin", "main")
+
+    def remote_main_contains(self, root: Path, sha: str) -> bool:
+        return self.provider.execute(root, "git", "merge-base", "--is-ancestor", sha, "origin/main").returncode == 0
 
     @staticmethod
     def _is_transient_index_lock_conflict(error: RuntimeError) -> bool:
