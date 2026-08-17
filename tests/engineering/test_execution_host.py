@@ -1356,6 +1356,50 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(result.terminal)
         self.assertEqual(self.store.load("pending-run").phase, "WAIT_FOR_OPERATOR_MERGE")
 
+    def test_operator_merge_wait_resume_only_polls_the_pull_request(self) -> None:
+        state = TransactionState(
+            "lightweight-merge-wait", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_OPERATOR_MERGE", branch="codex/waiting", pull_request=12,
+            owner_authorized=True, waiting_for_merge_since="2026-08-17T07:00:00+00:00",
+        )
+        self.store.save(state)
+        repository = FakeRepository()
+        github = FakeGitHub([PullRequestEvidence(12, "OPEN", True, True)])
+        agent = FakeAgent(AgentResult("WAITING"))
+
+        result = EngineeringRunner(
+            self.root, self.store, repository, github, agent, lambda _: None
+        ).run(self.prompt, run_id=state.run_id, resume=True)
+
+        self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(github.calls, 1)
+        self.assertEqual(repository.synchronize_calls, [])
+        self.assertEqual(agent.prompts, [])
+        self.assertFalse(any(
+            span["phase_name"] == "EXECUTION_PREPARATION"
+            for span in phase_spans(self.root, state.run_id)
+        ))
+
+    def test_merged_pull_request_synchronizes_main_before_containment_check(self) -> None:
+        state = TransactionState(
+            "merged-main-refresh", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_OPERATOR_MERGE", branch="codex/merged", pull_request=12,
+            transaction_kind="FINALIZATION", owner_authorized=True,
+        )
+        repository = FakeRepository(contains=True)
+
+        result = EngineeringRunner(
+            self.root,
+            self.store,
+            repository,
+            FakeGitHub([PullRequestEvidence(12, "MERGED", True, True, "b" * 40)]),
+            FakeAgent(AgentResult("WAITING")),
+            lambda _: None,
+        )._poll(state)
+
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertEqual(repository.synchronize_calls, [self.root])
+
     def test_agent_cannot_reuse_main_or_an_unbranched_pr_as_transaction_evidence(self) -> None:
         state = TransactionState(
             "invalid-pr-evidence",

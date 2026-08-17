@@ -480,6 +480,24 @@ class EngineeringRunner:
         state = self.store.load(run_id) if resume else None
         if resume and state is not None and dismissal_for_run(self.root, state.run_id):
             raise RunnerError("This execution has already been dismissed and cannot be resumed.")
+        if (
+            state is not None
+            and state.phase == "WAIT_FOR_OPERATOR_MERGE"
+            and state.pull_request is not None
+        ):
+            # A green pull request is deliberately operator-owned.  Resuming
+            # that wait must therefore only re-read the remote pull-request
+            # state.  Re-running workspace admission, repository
+            # synchronization, reviewer selection and memory retrieval here
+            # creates expensive local churn while there is no new work to do.
+            # Once a merge is observed, _poll performs the required
+            # repository reconciliation before cleanup or Finalization.
+            if Path(state.prompt_path) != prompt_path:
+                raise RunnerError("checkpoint conflicts with current prompt")
+            if not self.agent.available():
+                raise RunnerError("Codex CLI is not installed or invokable")
+            self._verify_engineering_platform()
+            return self._poll(state)
         try:
             context = resolve_execution_context(objective, self.root)
         except RunnerError as error:
@@ -951,7 +969,15 @@ class EngineeringRunner:
                     state, "FAILED", "required_checks_failed", "Required CI check failed."
                 )
             if pr.state == "MERGED":
-                evidence = self.repository.inspect(self.root)
+                # A merge is remote evidence. Refresh main once before
+                # requiring local ancestry evidence, otherwise a freshly
+                # merged PR remains indistinguishable from an unobserved
+                # merge until an unrelated full execution preparation runs.
+                try:
+                    self.repository.synchronize_main(self.root)
+                    evidence = self.repository.inspect(self.root)
+                except RunnerError:
+                    return self._save_operator_merge_wait(state)
                 if pr.merge_commit and self.repository.main_contains(self.root, pr.merge_commit):
                     state = self._record_merged_evidence(state, pr, evidence)
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
