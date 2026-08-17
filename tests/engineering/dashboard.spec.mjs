@@ -2166,6 +2166,31 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#telemetryDetailContent")).toContainText("61,8%");
   });
 
+  test("projects canonical bottlenecks and complete per-run telemetry detail", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
+      phase_telemetry_available: true,
+      summary: { executions: 1, completed: 1, blocked: 0, failed: 0, total_wall_time: { average_ms: 120000, median_ms: 120000 }, active_processing_time: { average_ms: 90000 }, queue_wait: { average_ms: 12000 }, provider_execution: { average_ms: 40000 }, validation: { average_ms: 10000 }, external_wait: { average_ms: 20000 }, overhead: { average_ms: 28000 } },
+      phases: [{ phase: "PROVIDER_EXECUTION", average_ms: 40000, median_ms: 40000, total_ms: 40000, share_percent: 33.333, runs: 1 }],
+      bottlenecks: { longest_average_phase: { phase: "PROVIDER_EXECUTION" }, largest_accumulated_phase: { phase: "PROVIDER_EXECUTION" }, shares: { queue_wait: 10, provider_execution: 33.333, validation: 8.333, external_wait: 16.667, overhead: 23.333 }, top_time_consumers: [{ phase: "PROVIDER_EXECUTION", share_percent: 33.333 }] },
+      runs: [{ run_id: "inbox-phase-detail", started_at: "2026-08-16T10:00:00+00:00", status: "COMPLETE", total_duration_ms: 120000, queue_wait_ms: 12000, provider_duration_ms: 40000, validation_duration_ms: 10000, external_wait_ms: 20000, largest_phase: "PROVIDER_EXECUTION", producer_type: "INBOX", repository: "pcvantol/djconnect", model: "gpt-5.6-terra", phase_telemetry: "RECORDED" }],
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => window.executionTelemetry([{ date: "2026-08-16", prompt_count: 1, average_total_execution_seconds: 120, average_queue_wait_seconds: 12, complete_count: 1, blocked_count: 0, failed_count: 0 }]));
+    await page.locator("#executionTelemetry > summary").click();
+    await page.locator("#executionTelemetryRows .telemetry-row").click();
+    const content = page.locator("#telemetryDetailContent");
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.longest_average_phase"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.largest_accumulated_phase"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.share.queue_wait"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.start_time"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.producer_type"]);
+    await expect(content).toContainText(DASHBOARD_MESSAGES.nl["telemetry.target_repository"]);
+    await expect(content).toContainText("gpt-5.6-terra");
+    await expect(content).toContainText("33,3%");
+    await expect(content.locator(".dashboard-action, .execution-dismiss, .predecessor-retry")).toHaveCount(0);
+  });
+
   test("uses one uninterrupted selected-row treatment for telemetry rows", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {

@@ -95,6 +95,15 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 },
             )
 
+    def test_daily_statistics_keeps_phase_detail_on_demand(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("run-trend", "COMPLETE", datetime(2026, 8, 1, 10, tzinfo=timezone.utc)))
+            with patch("tools.engineering.telemetry.daily_timing_detail", side_effect=AssertionError("detail query")):
+                rows = daily_statistics(root)
+        self.assertEqual(rows[0]["average_provider_execution_seconds"], None)
+        self.assertEqual(rows[0]["average_validation_seconds"], None)
+
     def test_persists_only_aggregate_execution_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -136,6 +145,8 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
         self.assertEqual(detail["summary"]["overhead"]["average_ms"], 32_000)
         self.assertEqual(detail["runs"][0]["model"], "gpt-5.6-terra")
         self.assertEqual(detail["bottlenecks"]["top_time_consumers"][0]["phase"], "PROVIDER_EXECUTION")
+        self.assertEqual(detail["bottlenecks"]["top_time_consumers"][0]["share_percent"], 39.216)
+        self.assertEqual(detail["bottlenecks"]["shares"]["provider_execution"], 39)
     def test_async_telemetry_failure_is_isolated_from_engineering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             observed = Event()

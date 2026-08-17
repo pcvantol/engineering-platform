@@ -261,19 +261,11 @@ def daily_statistics(root: Path, *, days: int = 7) -> list[dict[str, object]]:
         "output_tokens", "total_tokens",
     )
     result = [dict(zip(keys, row, strict=True)) for row in rows]
-    # The compact trend deliberately exposes only two additional phase metrics.
-    # Each selected UTC day is bounded by the same seven-day query limit above.
+    # Phase detail remains on demand. Keep the legacy trend shape stable
+    # without expanding the seven-day refresh into per-day run projections.
     for row in result:
-        detail = daily_timing_detail(root, str(row["date"]))
-        summary = detail["summary"]
-        row["average_provider_execution_seconds"] = (
-            float(summary["provider_execution"]["average_ms"]) / 1000
-            if detail["phase_telemetry_available"] and isinstance(summary.get("provider_execution"), dict) else None
-        )
-        row["average_validation_seconds"] = (
-            float(summary["validation"]["average_ms"]) / 1000
-            if detail["phase_telemetry_available"] and isinstance(summary.get("validation"), dict) else None
-        )
+        row["average_provider_execution_seconds"] = None
+        row["average_validation_seconds"] = None
     return result
 
 
@@ -448,17 +440,40 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
                 phase, value = aggregate_row.get("phase"), aggregate_row.get("duration_ms")
                 if isinstance(phase, str) and phase in phase_values and isinstance(value, int):
                     phase_values[phase].append(value)
-    phase_rows = [dict({"phase": phase}, **aggregate(items)) for phase, items in phase_values.items() if aggregate(items)]
-    total_phase_time = sum(int(item["total_ms"]) for item in phase_rows)
+    phase_wall_time = sum(
+        int(item["total_wall_time_ms"])
+        for item in summaries
+        if item.get("phase_telemetry_available") and isinstance(item.get("total_wall_time_ms"), int)
+    )
+    phase_rows = [
+        dict(
+            {"phase": phase},
+            **aggregate(items),
+            # This is each category's measured share of total wall time, not
+            # a normalization across phase aggregates.  Categories can have
+            # different nesting, so summing them would double-count time.
+            share_percent=round(sum(items) * 100 / phase_wall_time, 3) if phase_wall_time else None,
+        )
+        for phase, items in phase_values.items() if aggregate(items)
+    ]
     consumers = sorted(phase_rows, key=lambda item: (-int(item["total_ms"]), str(item["phase"])))[:3]
-    for item in consumers:
-        item["share_percent"] = round(int(item["total_ms"]) * 100 / total_phase_time, 3) if total_phase_time else None
+    canonical_share_keys = {
+        "queue_wait": "queue_share_percent",
+        "provider_execution": "provider_share_percent",
+        "validation": "validation_share_percent",
+        "external_wait": "external_wait_share_percent",
+        "overhead": "overhead_share_percent",
+    }
     return {
         "date": execution_date, "timezone": "UTC", "summary": summary, "phases": phase_rows,
         "bottlenecks": {"longest_average_phase": max(phase_rows, key=lambda item: int(item["average_ms"]), default=None),
                         "largest_accumulated_phase": max(phase_rows, key=lambda item: int(item["total_ms"]), default=None),
                         "top_time_consumers": consumers,
-                        "shares": {key: (round(mean(values(key)) * 100 / mean(totals), 3) if values(key) and totals and mean(totals) else None) for key in ("queue_wait_time_ms", "provider_execution_time_ms", "validation_time_ms", "external_wait_time_ms", "overhead_time_ms")}},
+                        "shares": {
+                            label: round(mean([int(item[key]) for item in summaries if isinstance(item.get(key), (int, float))]), 3)
+                            if any(isinstance(item.get(key), (int, float)) for item in summaries) else None
+                            for label, key in canonical_share_keys.items()
+                        }},
         "runs": run_rows, "phase_telemetry_available": any(bool(item.get("phase_telemetry_available")) for item in summaries),
     }
 
