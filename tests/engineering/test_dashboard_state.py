@@ -134,6 +134,28 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["lifecycle"]["terminal_state"], "BLOCKED")
         self.assertIsNone(payload["lifecycle"]["recovery"])
 
+    def test_status_hides_a_stale_dismissed_predecessor_projection(self) -> None:
+        from tools.engineering.prompt_history import record_prompt_execution
+        from tools.engineering.storage import record_execution_dismissal
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            run_id = "inbox-dismissed-projection"
+            record_prompt_execution(root, run_id=run_id, terminal_state="BLOCKED", prompt_title="Historical", executed_at="2026-08-18T12:00:00Z")
+            record_execution_dismissal(root, run_id=run_id, terminal_state="BLOCKED", dismissed_at="2026-08-18T12:01:00Z", dismissed_by="dashboard_operator")
+            (status / "status.json").write_text(json.dumps({
+                "watcher_state": "WAITING_FOR_PREDECESSOR", "queue_items": [{"filename": "deferred-benchmark.md"}],
+                "blocking_predecessor_run": run_id, "blocking_predecessor_phase": "BLOCKED",
+            }), encoding="utf-8")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "WATCHER_IDLE")
+        self.assertIsNone(payload["blocking_predecessor_run"])
+        self.assertEqual(payload["queue_items"], [{"filename": "deferred-benchmark.md"}])
+
     def test_status_projects_stale_liveness_without_claiming_an_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

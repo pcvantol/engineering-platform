@@ -17,7 +17,7 @@ from .capability_preflight import latest as latest_capability_preflight
 from .drift_diagnostics import guidance as drift_guidance
 from .platform_api import PlatformConfigurationError, execution_host_configuration
 from .telemetry import comparable_duration_estimate
-from .storage import EngineeringStorageError, import_legacy_projection_once, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, load_readiness_evaluation, open_storage
+from .storage import EngineeringStorageError, import_legacy_projection_once, is_active_blocking_predecessor, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, load_readiness_evaluation, open_storage
 from .execution_lease import liveness as lease_liveness
 from .execution_lifecycle import projection as lifecycle_projection
 from .agent_state import redact_diagnostic
@@ -190,6 +190,29 @@ def status(root: Path) -> bytes:
                 root, "live_status", root / ".engineering" / "status" / "current.json"
             )
         watcher = watcher or {}
+        # The dashboard is a read model, but it must not repeat a stale
+        # compatibility projection after SQLite has recorded dismissal.  The
+        # watcher persists the same reconciliation on its next publication.
+        predecessor_run = watcher.get("blocking_predecessor_run")
+        if (
+            watcher.get("watcher_state") == "WAITING_FOR_PREDECESSOR"
+            and isinstance(predecessor_run, str)
+            and predecessor_run
+            and not is_active_blocking_predecessor(
+                root, predecessor_run, watcher.get("blocking_predecessor_phase"),
+            )
+        ):
+            watcher = {
+                **watcher,
+                "watcher_state": "WATCHER_IDLE",
+                "current_phase": None,
+                "current_action": "Execution Host Idle",
+                "blocking_predecessor_run": None,
+                "blocking_predecessor_phase": None,
+                "blocking_predecessor_filename": None,
+                "blocking_predecessor_title": None,
+                "predecessor_recovery_action": None,
+            }
     except EngineeringStorageError:
         watcher = {}
         live = None

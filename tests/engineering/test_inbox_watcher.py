@@ -1154,6 +1154,81 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["queue_items"][0]["filename"], "next.txt")
         self.assertEqual(snapshot["queue_items"][0]["title"], "Later prompt")
 
+    def test_dismissed_blocked_predecessor_does_not_block_unrelated_admission(self) -> None:
+        from tools.engineering.prompt_history import record_prompt_execution
+        from tools.engineering.storage import record_execution_dismissal
+
+        run_id = "inbox-dismissed-blocked"
+        record_prompt_execution(
+            self.repo, run_id=run_id, terminal_state="BLOCKED",
+            prompt_title="Historical blocked predecessor", executed_at="2026-08-18T12:00:00Z",
+        )
+        record_execution_dismissal(
+            self.repo, run_id=run_id, terminal_state="BLOCKED",
+            dismissed_at="2026-08-18T12:01:00Z", dismissed_by="dashboard_operator",
+        )
+        (self.inbox / "next.txt").write_text("# Unrelated future work", encoding="utf-8")
+        status_directory = self.repo / ".engineering" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(json.dumps({
+            "last_executed_run": run_id, "last_executed_phase": "BLOCKED",
+            "last_executed_filename": "blocked.txt", "last_executed_title": "Historical blocked predecessor",
+            "blocking_predecessor_run": run_id, "blocking_predecessor_phase": "BLOCKED",
+        }), encoding="utf-8")
+
+        admitted_run_id = "inbox-unrelated-admitted"
+        checkpoint = self.repo / ".engineering" / "engineering-runs"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / f"{admitted_run_id}.json").write_text(
+            json.dumps({"phase": "COMPLETE"}), encoding="utf-8",
+        )
+        report_dir = self.repo / ".engineering" / "reports"
+        report_dir.mkdir(parents=True)
+        (report_dir / f"report_{admitted_run_id}.md").write_text(
+            inbox_watcher._corrected_terminal_report(admitted_run_id, "COMPLETE", None),
+            encoding="utf-8",
+        )
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=admitted_run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess((), 0)
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        self.assertTrue(run.called)
+        snapshot = json_status(self.repo)
+        self.assertIsNone(snapshot["blocking_predecessor_run"])
+        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        historical = next(item for item in history if item["run_id"] == run_id)
+        self.assertEqual(historical["status"], "BLOCKED")
+        self.assertTrue(historical["dismissed"])
+        self.assertIsNone(historical["retry_of"])
+
+    def test_missing_dismissal_evidence_fails_closed(self) -> None:
+        self.assertTrue(inbox_watcher.is_active_blocking_predecessor(self.repo, "inbox-unresolved", "BLOCKED"))
+
+    def test_status_publication_reconciles_stale_dismissed_blocker_fields(self) -> None:
+        from tools.engineering.prompt_history import record_prompt_execution
+        from tools.engineering.storage import record_execution_dismissal
+
+        run_id = "inbox-dismissed-status"
+        inbox_watcher.status(
+            self.repo, "WAITING_FOR_PREDECESSOR", queued_jobs=1,
+            blocking_predecessor_run=run_id, blocking_predecessor_phase="BLOCKED",
+            blocking_predecessor_filename="historical.md", blocking_predecessor_title="Historical",
+        )
+        record_prompt_execution(
+            self.repo, run_id=run_id, terminal_state="BLOCKED",
+            prompt_title="Historical", executed_at="2026-08-18T12:00:00Z",
+        )
+        record_execution_dismissal(
+            self.repo, run_id=run_id, terminal_state="BLOCKED",
+            dismissed_at="2026-08-18T12:01:00Z", dismissed_by="dashboard_operator",
+        )
+
+        inbox_watcher.status(self.repo, "WATCHER_IDLE", queued_jobs=1)
+
+        snapshot = json_status(self.repo)
+        self.assertIsNone(snapshot["blocking_predecessor_run"])
+        self.assertIsNone(snapshot["predecessor_recovery_action"])
+
     def test_explicit_retry_of_blocked_predecessor_precedes_later_prompts(self) -> None:
         later = self.inbox / "later.txt"
         later.write_text("# Later prompt", encoding="utf-8")

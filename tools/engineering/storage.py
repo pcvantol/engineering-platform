@@ -792,6 +792,31 @@ def dismissal_for_run(root: Path, run_id: object) -> dict[str, object] | None:
     }
 
 
+def is_active_blocking_predecessor(root: Path, run_id: object, terminal_state: object) -> bool:
+    """Return whether canonical evidence still requires predecessor resolution.
+
+    A terminal ``BLOCKED`` or ``FAILED`` run fails closed unless its immutable
+    dismissal record agrees with that terminal evidence.  Dismissal is
+    operator handling, not a lifecycle rewrite: callers must retain the
+    original terminal state in history while removing only its active queue
+    gate.
+    """
+    if terminal_state not in {"BLOCKED", "FAILED"}:
+        return False
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return False
+    dismissal = dismissal_for_run(root, run_id)
+    if dismissal is None:
+        # Older records without canonical operator evidence deliberately stay
+        # blocking; absence must never be interpreted as a dismissal.
+        return True
+    return not (
+        dismissal.get("dismissed") is True
+        and dismissal.get("handling_state") == "DISMISSED"
+        and dismissal.get("terminal_state") == terminal_state
+    )
+
+
 def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
                                dismissed_at: str, dismissed_by: str) -> dict[str, object]:
     """Record one immutable dismissal after its terminal history row exists."""

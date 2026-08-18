@@ -43,7 +43,7 @@ from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
 from .status_reconciliation import is_stale_rolling_status_block
@@ -429,6 +429,19 @@ def status(repo: Path, state: str, **details: object) -> None:
     }
     context.update({key: value for key, value in details.items() if key in retained and value is not None})
     context.update({key: None for key in retained if key in details and details[key] is None})
+    # ``blocking_predecessor_*`` is a derived operational projection.  Never
+    # retain stale fields after canonical dismissal evidence makes the run
+    # historical-only; this preserves its BLOCKED history and report.
+    if not is_active_blocking_predecessor(
+        repo, context.get("blocking_predecessor_run"), context.get("blocking_predecessor_phase"),
+    ):
+        context.update({
+            "blocking_predecessor_run": None,
+            "blocking_predecessor_phase": None,
+            "blocking_predecessor_filename": None,
+            "blocking_predecessor_title": None,
+            "predecessor_recovery_action": None,
+        })
     payload = build(
         manifest,
         watcher_state=state,
@@ -550,7 +563,7 @@ def _blocking_predecessor(root: Path) -> dict[str, str] | None:
     prior = _previous_prompt_context(root)
     phase = prior.get("last_executed_phase")
     run_id = prior.get("last_executed_run")
-    if phase not in BLOCKING_PREDECESSOR_PHASES or not isinstance(run_id, str):
+    if not is_active_blocking_predecessor(root, run_id, phase):
         return None
     title = prior.get("last_executed_title")
     filename = prior.get("last_executed_filename")
