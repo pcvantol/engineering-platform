@@ -1332,21 +1332,21 @@ class DashboardStatusTest(unittest.TestCase):
                 )
             for invocation in (
                 ProviderInvocation(
-                    run_id=selected_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra",
+                    run_id=selected_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra", model_authority="AUTHORITATIVE", raw_provider_model="gpt-5.6-terra",
                     phase="PROVIDER_EXECUTION", role="agent", started_at="2026-08-18T12:00:00Z",
                     completed_at="2026-08-18T12:00:01Z", duration_ms=1000,
                     usage={"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10},
                     runtime_metadata={"configuration_profile": "normal"},
                 ),
                 ProviderInvocation(
-                    run_id=selected_run, ordinal=2, provider="codex_cli", model="gpt-5.6-terra",
+                    run_id=selected_run, ordinal=2, provider="codex_cli", model="gpt-5.6-terra", model_authority="AUTHORITATIVE", raw_provider_model="gpt-5.6-terra",
                     phase="PROVIDER_EXECUTION", role="reviewer", started_at="2026-08-18T12:01:00Z",
                     completed_at="2026-08-18T12:01:01Z", duration_ms=1000,
                     usage={"input_tokens": 300, "cached_input_tokens": 100, "output_tokens": 20},
                     runtime_metadata={"configuration_profile": "normal"},
                 ),
                 ProviderInvocation(
-                    run_id=other_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra",
+                    run_id=other_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra", model_authority="AUTHORITATIVE", raw_provider_model="gpt-5.6-terra",
                     phase="PROVIDER_EXECUTION", role="agent", started_at="2026-08-18T12:02:00Z",
                     completed_at="2026-08-18T12:02:01Z", duration_ms=1000,
                     usage={"input_tokens": 999, "cached_input_tokens": 0, "output_tokens": 1},

@@ -453,8 +453,13 @@ class ClientContractTest(unittest.TestCase):
                 "commit_sha": "c" * 40,
             }
         )
+        review_output = "\n".join((
+            json.dumps({"type": "turn.started", "metadata": {"model": "gpt-5.6-terra"}}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10}}),
+            json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": review_message}}),
+        ))
         run.side_effect = [
-            subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": review_message}}), ""),
+            subprocess.CompletedProcess(("codex",), 0, review_output, ""),
             subprocess.CompletedProcess(("codex",), 0, json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": agent_message}}), ""),
         ]
         with tempfile.TemporaryDirectory() as temporary:
@@ -464,6 +469,8 @@ class ClientContractTest(unittest.TestCase):
             result = client.invoke(root, "objective")
         self.assertFalse(review.failed)
         self.assertEqual(review.recommendations, ("keep scope",))
+        self.assertEqual(review.runtime_metadata["raw_provider_model"], "gpt-5.6-terra")
+        self.assertEqual(review.usage["input_tokens"], 100)
         self.assertEqual(result.pull_request, 12)
 
     @patch("tools.engineering.execution_host.time.monotonic", side_effect=(10.0, 12.75))
@@ -1840,14 +1847,25 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_runtime_metadata_uses_only_cli_reported_values(self) -> None:
         metadata = extract_codex_runtime_metadata(
-            "model: gpt-5.6-terra\nreasoning effort: medium\nsandbox: workspace-write\n",
-            "provider: openai\n",
+            '{"type":"turn.started","model":"gpt-5.6-terra","reasoning_effort":"medium","fast_mode":true}\n',
+            "model: gpt-5.6-sol\n",
         )
         self.assertEqual(metadata["runtime_provider"], "codex_cli")
-        self.assertEqual(metadata["model"], "gpt-5.6-terra")
+        self.assertEqual(metadata["raw_provider_model"], "gpt-5.6-terra")
         self.assertEqual(metadata["reasoning_profile"], "medium")
-        self.assertEqual(metadata["provider"], "openai")
-        self.assertEqual(metadata["configuration_profile"], "workspace-write")
+        self.assertEqual(metadata["fast_mode"], "fast")
+
+    def test_runtime_metadata_accepts_only_structured_known_model_events(self) -> None:
+        for model in ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"):
+            with self.subTest(model=model):
+                metadata = extract_codex_runtime_metadata(
+                    json.dumps({"type": "turn.completed", "metadata": {"model": model}})
+                )
+                self.assertEqual(metadata["raw_provider_model"], model)
+        self.assertEqual(
+            extract_codex_runtime_metadata('{"type":"item.completed","item":{"type":"agent_message","text":"model: gpt-5.6-terra"}}'),
+            {"runtime_provider": "codex_cli"},
+        )
 
     def test_successful_report_prioritizes_final_repository_outcome(self) -> None:
         state = TransactionState(

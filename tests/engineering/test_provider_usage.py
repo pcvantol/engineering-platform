@@ -11,6 +11,7 @@ from tools.engineering.provider_usage import (
     credit_estimate,
     persist_provider_invocation,
     provider_usage_summary,
+    normalize_codex_model,
     speed_state,
 )
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
@@ -34,6 +35,8 @@ class ProviderUsageTests(unittest.TestCase):
                 ordinal=ordinal,
                 provider="codex_cli",
                 model=model,
+                model_authority=AUTHORITATIVE,
+                raw_provider_model=model,
                 phase="PROVIDER_EXECUTION",
                 role="agent",
                 started_at="2026-08-18T00:00:00+00:00",
@@ -96,6 +99,55 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual((terra["credits"], terra["eur"]), (355.0, 14.2))
         self.assertEqual((sol["credits"], sol["eur"]), (887.5, 35.5))
         self.assertEqual((luna["credits"], luna["eur"]), (35.5, 1.42))
+
+    def test_authoritative_supported_models_produce_credits(self) -> None:
+        for ordinal, model in enumerate(("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"), 1):
+            with self.subTest(model=model):
+                self._persist(ordinal, model=model)
+                with open_storage(self.root) as connection:
+                    estimate = connection.execute(
+                        "SELECT estimated_credits FROM provider_invocations WHERE ordinal=?", (ordinal,)
+                    ).fetchone()[0]
+                self.assertIsNotNone(estimate)
+
+    def test_normalizes_only_supported_codex_models(self) -> None:
+        self.assertEqual(normalize_codex_model("GPT-5.6-Terra"), "gpt-5.6-terra")
+        self.assertEqual(normalize_codex_model("gpt-5.6-sol"), "gpt-5.6-sol")
+        self.assertEqual(normalize_codex_model("gpt-5.6-luna"), "gpt-5.6-luna")
+        self.assertIsNone(normalize_codex_model("gpt-5.6-terra-preview"))
+        self.assertIsNone(normalize_codex_model("terra"))
+
+    def test_unknown_or_missing_model_never_produces_credits(self) -> None:
+        usage = {
+            "uncached_input_tokens": 1_000_000,
+            "cached_input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+        }
+        self.assertIsNone(credit_estimate(normalize_codex_model("future-model"), usage)["credits"])
+        self.assertIsNone(credit_estimate(None, usage)["credits"])
+
+    def test_persists_authoritative_raw_model_and_keeps_unknown_rate_unavailable(self) -> None:
+        self._persist(1, model="gpt-5.6-terra")
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id="run-usage", ordinal=2, provider="codex_cli", model=None,
+                model_authority=AUTHORITATIVE, raw_provider_model="gpt-99-future",
+                phase="PROVIDER_EXECUTION", role="agent",
+                started_at="2026-08-18T00:00:00+00:00",
+                completed_at="2026-08-18T00:00:01+00:00", duration_ms=1000,
+                usage={"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10},
+            ),
+        )
+        with open_storage(self.root) as connection:
+            rows = connection.execute(
+                "SELECT model,model_authority,raw_provider_model,estimated_credits FROM provider_invocations ORDER BY ordinal"
+            ).fetchall()
+        self.assertEqual(
+            rows[0][0:3], ("gpt-5.6-terra", AUTHORITATIVE, "gpt-5.6-terra")
+        )
+        self.assertEqual(rows[1][0:3], (None, AUTHORITATIVE, "gpt-99-future"))
+        self.assertIsNone(rows[1][3])
 
     def test_incomplete_billing_usage_never_becomes_a_partial_credit_total(self) -> None:
         for usage in (

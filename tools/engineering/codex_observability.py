@@ -1,4 +1,4 @@
-"""Bounded Codex CLI usage and runtime-provenance extraction."""
+"""Bounded Codex CLI usage and structured runtime-provenance extraction."""
 
 from __future__ import annotations
 
@@ -6,9 +6,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-
-from .agent_state import redact_diagnostic
-
 
 USAGE_KEYS = frozenset(
     {
@@ -52,37 +49,49 @@ def extract_codex_usage(*outputs: str) -> dict[str, int | float | str]:
 
 
 def extract_codex_runtime_metadata(*outputs: str) -> dict[str, str]:
-    """Return only runtime metadata explicitly emitted by the Codex CLI."""
+    """Return only structured runtime metadata explicitly emitted by Codex.
+
+    JSONL is the invocation contract.  In particular, agent prose and terminal
+    output are not a source of model, reasoning, or speed attribution.
+    """
     aliases = {
-        "model": "model",
-        "model_name": "model",
-        "reasoning effort": "reasoning_profile",
+        "model": "raw_provider_model",
+        "model_name": "raw_provider_model",
         "reasoning_effort": "reasoning_profile",
-        "reasoning": "reasoning_profile",
-        "configuration profile": "configuration_profile",
-        "configuration_profile": "configuration_profile",
-        "sandbox": "configuration_profile",
-        "approval": "configuration_profile",
-        "provider": "provider",
+        "reasoning_profile": "reasoning_profile",
+        "speed_mode": "speed_mode",
+        "speed_state": "speed_state",
+        "fast_mode": "fast_mode",
     }
+
+    def collect(container: object, metadata: dict[str, str]) -> None:
+        if not isinstance(container, dict):
+            return
+        for key, value in container.items():
+            alias = aliases.get(str(key).casefold().replace("-", "_"))
+            if alias == "fast_mode" and isinstance(value, bool):
+                metadata.setdefault(alias, "fast" if value else "normal")
+            elif alias and isinstance(value, str) and value.strip():
+                metadata.setdefault(alias, value.strip())
+
     metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
     for output in outputs:
         for raw_line in output.splitlines():
-            line = raw_line.strip()
-            if ":" not in line:
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError:
                 continue
-            key, value = (part.strip() for part in line.split(":", 1))
-            normalized = aliases.get(key.casefold())
-            if not normalized or not value:
+            if not isinstance(event, dict):
                 continue
-            value = redact_diagnostic(value, limit=120)
-            if value and value != "[REDACTED]":
-                previous = metadata.get(normalized)
-                metadata[normalized] = (
-                    f"{previous}; {key}: {value}"
-                    if previous and previous != value and normalized == "configuration_profile"
-                    else value
-                )
+            # These are provider-owned event envelopes, not recursively walked:
+            # recursive parsing could mistake an agent/tool payload for runtime
+            # provenance.
+            collect(event, metadata)
+            collect(event.get("metadata"), metadata)
+            item = event.get("item")
+            collect(item, metadata)
+            if isinstance(item, dict):
+                collect(item.get("metadata"), metadata)
     return metadata
 
 

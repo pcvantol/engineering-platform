@@ -215,6 +215,8 @@ class CodexCliClient:
     def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult:
         self.last_usage = {}
         self.last_churn = {}
+        self.last_execution_seconds = None
+        self.last_runtime_metadata = {"runtime_provider": "codex_cli"}
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -236,6 +238,7 @@ class CodexCliClient:
             json.dump(schema, handle)
             schema_path = Path(handle.name)
         try:
+            started = time.monotonic()
             completed = self.provider.invoke(
                 root,
                 (
@@ -251,8 +254,13 @@ class CodexCliClient:
                     reviewer_prompt(selection, objective),
                 ),
             )
+            self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
+            self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
+            self.last_runtime_metadata = extract_codex_runtime_metadata(
+                completed.stdout, completed.stderr
+            )
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
@@ -260,6 +268,8 @@ class CodexCliClient:
                 selection.reviewer,
                 "Reviewer invocation failed; primary review continues.",
                 failed=True,
+                usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
+                churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
@@ -267,12 +277,16 @@ class CodexCliClient:
                 selection.reviewer,
                 str(raw["contribution"]),
                 tuple(str(value) for value in raw["recommendations"]),
+                usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
+                churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
             )
         except (IndexError, KeyError, TypeError, json.JSONDecodeError):
             return ReviewerResult(
                 selection.reviewer,
                 "Reviewer returned invalid advice; primary review continues.",
                 failed=True,
+                usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
+                churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
             )
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:

@@ -27,6 +27,11 @@ RATE_TABLE = {
 }
 AUTHORITATIVE, DERIVED, UNAVAILABLE = "AUTHORITATIVE", "DERIVED", "UNAVAILABLE"
 _SPEED_STATES = frozenset({"FAST", "NORMAL_DEFAULT", "OTHER", "UNKNOWN"})
+_MODEL_NORMALIZATION = {
+    "gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-5.6-luna": "gpt-5.6-luna",
+}
 
 
 def _number(value: object) -> int | None:
@@ -40,6 +45,7 @@ def speed_state(metadata: Mapping[str, object] | None) -> str:
         "speed_mode",
         "execution_speed",
         "codex_speed_mode",
+        "fast_mode",
         "configuration_profile",
         "codex_configuration_profile",
     }
@@ -48,12 +54,24 @@ def speed_state(metadata: Mapping[str, object] | None) -> str:
         if normalized_key not in known_fields or not isinstance(value, str):
             continue
         normalized_value = value.casefold().strip()
+        if normalized_key == "fast_mode":
+            if normalized_value in {"true", "fast", "enabled"}:
+                return "FAST"
+            if normalized_value in {"false", "normal", "disabled"}:
+                return "NORMAL_DEFAULT"
         if re.search(r"\bfast(?:\s+mode)?\b", normalized_value):
             return "FAST"
         if re.search(r"\b(?:normal|default)\b", normalized_value):
             return "NORMAL_DEFAULT"
         return "OTHER"
     return "UNKNOWN"
+
+
+def normalize_codex_model(raw_model: object) -> str | None:
+    """Map only explicitly supported Codex runtime model identifiers."""
+    if not isinstance(raw_model, str):
+        return None
+    return _MODEL_NORMALIZATION.get(raw_model.casefold().strip())
 
 
 def _usage_from_event(event: object) -> dict[str, int]:
@@ -199,6 +217,8 @@ class ProviderInvocation:
     completed_at: str | None
     duration_ms: int | None
     usage: Mapping[str, object]
+    model_authority: str = UNAVAILABLE
+    raw_provider_model: str | None = None
     runtime_metadata: Mapping[str, object] | None = None
     retry_ordinal: int = 0
     churn: Mapping[str, object] | None = None
@@ -223,8 +243,14 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
         if any(value is not None for value in (input_tokens, cached, output, reasoning, total))
         else UNAVAILABLE
     )
+    model_authority = (
+        invocation.model_authority
+        if invocation.model_authority in {AUTHORITATIVE, DERIVED, UNAVAILABLE}
+        else UNAVAILABLE
+    )
+    model = invocation.model if model_authority != UNAVAILABLE else None
     estimate = credit_estimate(
-        invocation.model,
+        model,
         {"uncached_input_tokens": uncached, "cached_input_tokens": cached, "output_tokens": output},
     )
     identifier = (
@@ -239,16 +265,18 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
     try:
         connection.execute(
             """INSERT OR IGNORE INTO provider_invocations(
-                invocation_id,run_id,ordinal,provider,model,phase,role,started_at,completed_at,duration_ms,
+                invocation_id,run_id,ordinal,provider,model,model_authority,raw_provider_model,phase,role,started_at,completed_at,duration_ms,
                 input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,reasoning_tokens,total_tokens,
                 usage_authority,speed_state,retry_ordinal,estimated_credits,estimated_eur,rate_table_version,churn
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 identifier,
                 invocation.run_id,
                 invocation.ordinal,
                 invocation.provider,
-                invocation.model,
+                model,
+                model_authority,
+                invocation.raw_provider_model,
                 invocation.phase,
                 invocation.role,
                 invocation.started_at,
@@ -279,18 +307,18 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     connection = open_storage(root)
     try:
         rows = connection.execute(
-            "SELECT provider,model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
+            "SELECT provider,model,model_authority,raw_provider_model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
             (run_id,),
         ).fetchall()
     finally:
         connection.close()
     if not rows:
         return {"invocation_detail": UNAVAILABLE}
-    inputs = [row[2] for row in rows if isinstance(row[2], int)]
+    inputs = [row[4] for row in rows if isinstance(row[4], int)]
     churn: dict[str, int] = {}
     for row in rows:
         try:
-            values = json.loads(row[11])
+            values = json.loads(row[13])
         except (TypeError, json.JSONDecodeError):
             values = {}
         if isinstance(values, dict):
@@ -307,20 +335,20 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     return {
         "invocation_detail": AUTHORITATIVE,
         "provider_invocation_count": len(rows),
-        "input_tokens": total(2),
-        "cached_input_tokens": total(3),
-        "uncached_input_tokens": total(4),
-        "output_tokens": total(5),
-        "total_provider_execution_ms": total(6),
+        "input_tokens": total(4),
+        "cached_input_tokens": total(5),
+        "uncached_input_tokens": total(6),
+        "output_tokens": total(7),
+        "total_provider_execution_ms": total(8),
         "max_input_tokens_per_invocation": max(inputs) if inputs else None,
         "median_input_tokens_per_invocation": median(inputs) if inputs else None,
         "p95_input_tokens_per_invocation": p95,
-        "estimated_credits": total(7),
-        "estimated_eur": total(8),
+        "estimated_credits": total(9),
+        "estimated_eur": total(10),
         "rate_table_version": RATE_TABLE_VERSION,
-        "speed_state": next((row[9] for row in rows if row[9] != "UNKNOWN"), "UNKNOWN"),
+        "speed_state": next((row[11] for row in rows if row[11] != "UNKNOWN"), "UNKNOWN"),
         "usage_authority": AUTHORITATIVE
-        if any(row[10] == AUTHORITATIVE for row in rows)
+        if any(row[12] == AUTHORITATIVE for row in rows)
         else UNAVAILABLE,
         "context_churn": churn,
     }

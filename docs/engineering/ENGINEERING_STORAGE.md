@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `20`**. The required version is declared as `storage_schema` in
+schema `23`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -142,6 +142,12 @@ timestamp and closes at the observed execution claim boundary. The
 `TOTAL_EXECUTION` envelope starts at that claim boundary, so queue wait and
 active execution are disjoint.
 Repeated phases remain individual records and nested spans retain their parent.
+
+Schema `23` adds explicit model authority and an optional raw provider model
+to provider invocations. Only structured provider runtime events may populate
+those fields. Historical records retain `UNAVAILABLE` model authority and are
+never backfilled from configuration, token counts or later observations.
+
 ## Execution timing read-model semantics
 
 An **Individual Span** is one persisted concrete occurrence. It retains its

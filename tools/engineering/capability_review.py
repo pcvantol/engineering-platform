@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Callable, Protocol
@@ -65,6 +65,10 @@ class ReviewerResult:
     contribution: str
     recommendations: tuple[str, ...] = ()
     failed: bool = False
+    usage: dict[str, object] = field(default_factory=dict)
+    runtime_metadata: dict[str, object] = field(default_factory=dict)
+    churn: dict[str, object] = field(default_factory=dict)
+    duration_seconds: float | None = None
 
 
 class ReviewerClient(Protocol):
@@ -131,6 +135,10 @@ def run_reviews(
                 redact_diagnostic(result.contribution, limit=240),
                 tuple(redact_diagnostic(value, limit=240) for value in result.recommendations[:3]),
                 result.failed,
+                result.usage,
+                result.runtime_metadata,
+                result.churn,
+                result.duration_seconds,
             )
         except Exception:  # Reviewer failure is advisory and cannot block the transaction.
             result = ReviewerResult(selection.reviewer, "Reviewer failed; primary review continues.", failed=True)

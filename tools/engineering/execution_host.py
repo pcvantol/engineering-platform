@@ -88,7 +88,7 @@ from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
 from .storage import EngineeringStorageError, load_readiness_evaluation, record_readiness_evaluation
 from .storage import dismissal_for_run
-from .provider_usage import ProviderInvocation, persist_provider_invocation
+from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .execution_timing import ActivePhase
 from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
@@ -343,14 +343,16 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
-    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None) -> None:
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None) -> None:
         """Append safe per-invocation evidence without affecting execution outcome."""
         usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
         if not isinstance(usage, dict):
             usage = {}
-        metadata = getattr(self.agent, "last_runtime_metadata", None)
-        churn = getattr(self.agent, "last_churn", None)
-        duration = getattr(self.agent, "last_execution_seconds", None)
+        metadata = observed_metadata if observed_metadata is not None else getattr(self.agent, "last_runtime_metadata", None)
+        churn = observed_churn if observed_churn is not None else getattr(self.agent, "last_churn", None)
+        duration = observed_duration if observed_duration is not None else getattr(self.agent, "last_execution_seconds", None)
+        raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
+        normalized_model = normalize_codex_model(raw_model)
         try:
             from .storage import open_storage
             connection = open_storage(self.root)
@@ -363,7 +365,9 @@ class EngineeringRunner:
             now = datetime.now(timezone.utc).isoformat()
             persist_provider_invocation(self.root, ProviderInvocation(
                 run_id=state.run_id, ordinal=ordinal, provider="codex_cli",
-                model=metadata.get("model") if isinstance(metadata, dict) else None,
+                model=normalized_model,
+                model_authority=AUTHORITATIVE if isinstance(raw_model, str) else "UNAVAILABLE",
+                raw_provider_model=raw_model if isinstance(raw_model, str) else None,
                 phase=phase, role=role, started_at=started_at or now, completed_at=now,
                 duration_ms=round(duration * 1000) if isinstance(duration, (int, float)) and duration >= 0 else None,
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
@@ -745,13 +749,13 @@ class EngineeringRunner:
                 state, selection, event, result
             ),
         )
-        # Reviewers remain independently reasoned and read-only.  Their
-        # concurrent CLI streams do not expose a safe per-review usage handle
-        # in every Codex version, so record the invocation with usage
-        # explicitly unavailable rather than misattributing a shared total.
+        # Reviewer result objects retain only their own safe structured
+        # telemetry, avoiding shared-client attribution across concurrent work.
         for reviewer in results:
             self._persist_provider_invocation(
-                state, phase="CAPABILITY_REVIEW", role=f"reviewer:{reviewer.reviewer}", observed_usage={}
+                state, phase="CAPABILITY_REVIEW", role=f"reviewer:{reviewer.reviewer}",
+                observed_usage=reviewer.usage, observed_metadata=reviewer.runtime_metadata,
+                observed_churn=reviewer.churn, observed_duration=reviewer.duration_seconds,
             )
         self.reviewer_records = records_for_storage(selections, results)
         recommendations = reconciled_recommendations(results)

@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 22
+ENGINEERING_STORAGE_SCHEMA_VERSION = 23
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -669,6 +669,15 @@ def _schema_v22(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX provider_invocations_run_lookup ON provider_invocations(run_id, ordinal)")
 
 
+def _schema_v23(connection: sqlite3.Connection) -> None:
+    """Add explicit model provenance without modifying historical evidence."""
+    connection.execute(
+        "ALTER TABLE provider_invocations ADD COLUMN model_authority TEXT NOT NULL DEFAULT 'UNAVAILABLE' "
+        "CHECK(model_authority IN ('AUTHORITATIVE','DERIVED','UNAVAILABLE'))"
+    )
+    connection.execute("ALTER TABLE provider_invocations ADD COLUMN raw_provider_model TEXT")
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -738,6 +747,7 @@ MIGRATIONS: dict[int, Migration] = {
     20: _schema_v20,
     21: _schema_v21,
     22: _schema_v22,
+    23: _schema_v23,
 }
 
 
