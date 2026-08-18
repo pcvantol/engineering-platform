@@ -137,6 +137,22 @@ class FakeAgent:
         return "0.146.0"
 
 
+class ReviewCapableFakeAgent(FakeAgent):
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__(result)
+        self.reviewer_evidence: list[object] = []
+
+    def review(
+        self, _: Path, selection: object, __: str, evidence: object = None
+    ) -> ReviewerResult:
+        self.reviewer_evidence.append(evidence)
+        return ReviewerResult(
+            getattr(selection, "reviewer"),
+            "Reviewer completed the bounded check.",
+            ("DISTINCTIVE_REVIEWER_RECOMMENDATION",),
+        )
+
+
 class SequencedFakeAgent(FakeAgent):
     def __init__(self, results: list[AgentResult]) -> None:
         super().__init__(results[0])
@@ -745,6 +761,24 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("producer provenance only", agent.prompts[0])
         self.assertEqual(agent.roots, [self.root])
         self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_reviewer_recommendations_do_not_enter_the_primary_prompt(self) -> None:
+        self.prompt.write_text("# validation regression objective\n", encoding="utf-8")
+        agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
+
+        EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+        ).run(self.prompt, run_id="reviewer-isolation-run")
+
+        self.assertTrue(agent.reviewer_evidence)
+        for evidence in agent.reviewer_evidence:
+            self.assertIsInstance(evidence, ReviewerEvidence)
+            self.assertEqual(evidence.run_id, "reviewer-isolation-run")
+            self.assertEqual(evidence.head_sha, "a" * 40)
+        primary_prompt = agent.prompts[0]
+        self.assertIn('"run_id": "reviewer-isolation-run"', primary_prompt)
+        self.assertIn('"head_sha": "' + "a" * 40 + '"', primary_prompt)
+        self.assertNotIn("DISTINCTIVE_REVIEWER_RECOMMENDATION", primary_prompt)
 
     def test_managed_run_keeps_a_producer_target_from_overriding_host_checkout(self) -> None:
         producer_checkout = self.root / "producer-checkout"
