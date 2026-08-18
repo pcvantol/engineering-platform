@@ -1931,6 +1931,40 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("projects cumulative provider input without relabeling it as request context", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const localeReload = page.waitForEvent(
+      "framenavigated",
+      (frame) => frame === page.mainFrame(),
+    );
+    await page.locator("#dashboardLocale").selectOption("en");
+    await localeReload;
+    await page.waitForLoadState("domcontentloaded");
+    await page.evaluate(() => renderPromptHistoryDetail({
+      history: { run_id: "inbox-provider-usage", status: "COMPLETE", title: "Provider usage", executed_at: "2026-08-18T12:00:00Z" },
+      usage: {
+        input_tokens: 400,
+        max_input_tokens_per_invocation: 300,
+        actual_single_request_context_size: "UNAVAILABLE",
+        active_context_size: "UNAVAILABLE",
+      },
+    }));
+
+    expect(await page.locator("#promptHistoryDetailContent .prompt-detail-card")
+      .filter({ hasText: "AI Provider Usage" })
+      .locator(".field")
+      .evaluateAll((fields) => fields.map((field) => [
+        field.querySelector(".label")?.textContent,
+        field.querySelector(".label")?.nextElementSibling?.textContent,
+      ])))
+      .toEqual([
+        ["Run cumulative input tokens", "400"],
+        ["Maximum provider invocation cumulative input", "300"],
+        ["Actual single-request context size", "UNAVAILABLE"],
+        ["Active context size", "UNAVAILABLE"],
+      ]);
+  });
+
   test("formats preflight timestamps through the selected dashboard locale", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     expect(await page.evaluate(() => [

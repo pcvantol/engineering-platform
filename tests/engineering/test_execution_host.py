@@ -60,6 +60,7 @@ from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualif
 from tools.engineering.providers import CodexCliProvider
 from tools.engineering.execution_executor import workspace_change_summary
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
+from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 
 
 class FakeRepository:
@@ -1824,6 +1825,33 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Reasoning Profile: `medium`", body)
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
+
+    def test_terminal_report_labels_cumulative_input_without_calling_it_context(self) -> None:
+        state = TransactionState("provider-usage-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id=state.run_id,
+                ordinal=1,
+                provider="codex_cli",
+                model="gpt-5.6-terra",
+                phase="PROVIDER_EXECUTION",
+                role="agent",
+                started_at="2026-08-18T12:00:00Z",
+                completed_at="2026-08-18T12:00:01Z",
+                duration_ms=1000,
+                usage={"input_tokens": 400, "cached_input_tokens": 100, "output_tokens": 20},
+            ),
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn("- Run Cumulative Input Tokens: `400`", body)
+        self.assertIn("- Maximum Provider Invocation Cumulative Input: `400`", body)
+        self.assertIn("- Actual Single-Request Context Size: `UNAVAILABLE`", body)
+        self.assertIn("- Active Context Size: `UNAVAILABLE`", body)
+        for prohibited_label in ("Context Size", "Active Context", "Request Context"):
+            self.assertNotIn(f"- {prohibited_label}: `400`", body)
 
     def test_terminal_report_omits_timing_categories_that_did_not_occur(self) -> None:
         phase = start_phase(self.root, "timing-report", "HOST_PREFLIGHT", monotonic_clock=0)
