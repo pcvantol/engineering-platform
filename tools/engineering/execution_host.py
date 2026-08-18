@@ -273,9 +273,17 @@ are not conclusions and expire at repository mutation, validation, PR/merge,
 finalization, or cleanup; retrieve only the narrower current evidence needed
 after such a boundary.
 """ + json.dumps(reviewer_evidence.to_dict(), sort_keys=True) + "\n"
+    invocation_read_reuse = """
+Invocation-scoped source-read reuse:
+- Within this one provider invocation, retain and reuse already inspected immutable source, configuration, test, documentation, and persisted-evidence content instead of issuing an accidental duplicate file read.
+- This is factual-content reuse only; it does not reuse conclusions, reasoning, reviewer advice, or results from another provider invocation, Run ID, reviewer, retry, or resume.
+- Treat a file as mutable and reread it after you edit it, a repair changes it, a generated/projection artefact is refreshed, or any repository checkout/change, validation, pull-request, merge, finalization, or cleanup boundary can affect it.
+- Preserve deliberate verification reads. If freshness is not proven, reread. Do not create a persistent source cache or retain source contents outside this invocation.
+- Shell reads are not host-intercepted: use this invocation-local evidence deliberately, and do not claim a cache hit unless you actually reuse content already inspected in this invocation.
+"""
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
 Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 

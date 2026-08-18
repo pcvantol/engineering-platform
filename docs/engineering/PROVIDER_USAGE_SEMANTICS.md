@@ -52,6 +52,27 @@ repeat-read counts. These are correlations, not token allocations. When Codex
 does not publish intermediate usage snapshots, exact input growth by activity
 is `UNAVAILABLE`.
 
+## File-read churn semantics
+
+`file_read_count` is the number of **logical shell read requests** observed in
+one provider invocation. It is intentionally a command-event metric, not a
+filesystem syscall counter: the host does not retain paths, contents, or an
+agent's private in-context evidence ledger. `distinct_files_read` and
+`repeated_file_read_count` retain their compatible bounded command-identity
+semantics; they do not claim an exact count of filesystem objects.
+
+The host supplies an invocation-scoped read-reuse instruction to primary and
+reviewer invocations. It asks the provider to reuse content already inspected
+in that exact invocation only when it remains immutable. File edits, repair
+iterations, generated/projection refreshes, repository changes and lifecycle
+freshness boundaries require a new read. This avoids a second cache authority:
+shell reads are not intercepted, source contents are never persisted for this
+feature, and a deliberately requested freshness check remains a physical read.
+
+Consequently, telemetry reports observed logical reads after reuse, rather than
+inventing cache-hit or provider-token counters. A real provider measurement is
+required before asserting any provider-input reduction.
+
 ## Session reuse
 
 The execution command does not pass `resume` or a prior Codex thread ID. Each

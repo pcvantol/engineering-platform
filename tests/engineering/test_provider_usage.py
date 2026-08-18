@@ -179,6 +179,17 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(churn["test_commands"], 1)
         self.assertEqual(churn["passing_test_output_bytes"], 2)
 
+    def test_comparable_fixture_shows_duplicate_logical_read_reduction(self) -> None:
+        event = ('{"type":"item.completed","item":{"type":"command_execution",'
+                 '"command":"sed -n \'1,120p\' tools/engineering/execution_host.py"}}')
+        before = "\n".join((event,) * 49)
+        after = "\n".join((event,) * 25)
+        baseline = churn_from_jsonl(before)
+        optimized = churn_from_jsonl(after)
+        self.assertEqual(baseline["repeated_file_read_count"], 48)
+        self.assertEqual(optimized["repeated_file_read_count"], 24)
+        self.assertEqual(optimized["file_read_count"], 25)
+
     def test_current_codex_final_usage_is_one_cumulative_snapshot_not_context_size(self) -> None:
         output = '{"type":"turn.completed","usage":{"input_tokens":160,"cached_input_tokens":110,"output_tokens":9}}'
         snapshots = usage_snapshots_from_jsonl(output)

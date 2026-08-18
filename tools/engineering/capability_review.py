@@ -227,4 +227,12 @@ def reviewer_prompt(
             "capability review genuinely requires. This snapshot expires at any "
             "repository mutation, validation, PR/merge, finalization, or cleanup boundary."
         )
+    prompt["invocation_read_reuse"] = (
+        "Within this one reviewer invocation, reuse already inspected immutable file "
+        "content for factual inspection rather than accidentally rereading it. "
+        "Do not share content, conclusions, or reasoning with another reviewer or "
+        "Run ID. Reread after an edit, generated-artifact refresh, repository "
+        "change, validation, PR/merge, finalization, cleanup, or whenever freshness "
+        "is uncertain. Deliberate verification reads remain required."
+    )
     return json.dumps(prompt, sort_keys=True)

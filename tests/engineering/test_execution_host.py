@@ -2187,6 +2187,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         })
         self.assertIn("do not rediscover branch", prompt["evidence_instructions"])
         self.assertNotIn("recommendation", prompt["run_scoped_repository_evidence"])
+        self.assertIn("one reviewer invocation", prompt["invocation_read_reuse"])
+        self.assertIn("another reviewer", prompt["invocation_read_reuse"])
+        self.assertIn("whenever freshness is uncertain", prompt["invocation_read_reuse"])
 
     def test_parallel_reviewers_share_facts_but_not_reasoning(self) -> None:
         selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
@@ -2208,6 +2211,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         prompt = assemble_prompt(self.prompt, state, reviewer_evidence=evidence)
         self.assertIn('"freshness_boundary": "post_synchronization_pre_reviewer_wave"', prompt)
         self.assertIn("instead of repeating Git/GitHub discovery", prompt)
+        self.assertIn("Invocation-scoped source-read reuse", prompt)
+        self.assertIn("after you edit it", prompt)
+        self.assertIn("Do not create a persistent source cache", prompt)
+        self.assertIn("Shell reads are not host-intercepted", prompt)
 
     def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
         selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})
