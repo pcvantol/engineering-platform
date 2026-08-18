@@ -1851,8 +1851,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("- Maximum Provider Invocation Cumulative Input: `400`", body)
         self.assertIn("- Actual Single-Request Context Size: `UNAVAILABLE`", body)
         self.assertIn("- Active Context Size: `UNAVAILABLE`", body)
-        for prohibited_label in ("Context Size", "Active Context", "Request Context"):
-            self.assertNotIn(f"- {prohibited_label}: `400`", body)
+        self.assertNotRegex(
+            body,
+            r"(?mi)^-\s*.*(?:context size|active context|request context).*:\s*`400`",
+        )
 
     def test_terminal_report_omits_timing_categories_that_did_not_occur(self) -> None:
         phase = start_phase(self.root, "timing-report", "HOST_PREFLIGHT", monotonic_clock=0)
