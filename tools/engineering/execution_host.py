@@ -73,6 +73,7 @@ from .execution_context import (
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
 from .reviewer_evidence import ReviewerEvidence
+from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexInvocationError, RunnerError
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
@@ -281,9 +282,31 @@ Invocation-scoped source-read reuse:
 - Preserve deliberate verification reads. If freshness is not proven, reread. Do not create a persistent source cache or retain source contents outside this invocation.
 - Shell reads are not host-intercepted: use this invocation-local evidence deliberately, and do not claim a cache hit unless you actually reuse content already inspected in this invocation.
 """
+    investigation_ledger = InvocationInvestigationLedger().record(
+        "repository_identity", "repository_status", "git_ancestry"
+    ) if reviewer_evidence is not None else InvocationInvestigationLedger()
+    primary_tool_loop = """
+Primary Invocation Investigation Ledger (ephemeral and primary-only):
+Use this identifier-only ledger to avoid rediscovering a fact already established
+in this invocation. Record a fact only after its narrow real check; never record
+source text, paths, commands, tool output, prompts, conclusions, or reviewer
+reasoning. Before a tool call, it must establish one missing fact, refresh an
+invalidated fact, perform a mutation, or execute required validation.
+
+For unchanged state, reuse an established source inspection, test surface,
+repository status, or ancestry fact. Prefer exact branch/HEAD/status, named
+diff/stat, and targeted ancestry queries over broad logs or full diffs. Do not
+rerun a passing validation unless relevant code/test inputs changed or a
+canonical boundary requires it. At every listed boundary, invalidate all
+non-RUN-STABLE facts and obtain narrow fresh evidence; uncertainty is itself a
+freshness boundary. Reviewer advice and primary conclusions are never ledger
+facts and must never cross the primary/reviewer boundary.
+
+Ledger bootstrap:
+""" + json.dumps(investigation_ledger.to_prompt_dict(), sort_keys=True) + "\n"
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
 Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 

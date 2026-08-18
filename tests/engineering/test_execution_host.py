@@ -56,6 +56,7 @@ from tools.engineering.capability_review import (
     reviewer_prompt,
 )
 from tools.engineering.reviewer_evidence import ReviewerEvidence
+from tools.engineering.investigation_ledger import InvocationInvestigationLedger
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
 from tools.engineering.execution_executor import workspace_change_summary
@@ -2243,6 +2244,43 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("after you edit it", prompt)
         self.assertIn("Do not create a persistent source cache", prompt)
         self.assertIn("Shell reads are not host-intercepted", prompt)
+        self.assertIn("Primary Invocation Investigation Ledger", prompt)
+        self.assertIn('"persistence": "none"', prompt)
+        self.assertIn("Prefer exact branch/HEAD/status", prompt)
+        self.assertIn("Reviewer advice and primary conclusions are never ledger", prompt)
+
+    def test_primary_investigation_ledger_reuses_only_current_facts(self) -> None:
+        ledger = InvocationInvestigationLedger().record(
+            "repository_identity", "repository_status", "source_inspection", "test_surface"
+        )
+        self.assertTrue(ledger.reusable("source_inspection"))
+        self.assertTrue(ledger.reusable("test_surface"))
+        invalidated = ledger.invalidate("repository_mutation")
+        self.assertTrue(invalidated.reusable("repository_identity"))
+        self.assertFalse(invalidated.reusable("repository_status"))
+        self.assertFalse(invalidated.reusable("source_inspection"))
+        self.assertFalse(invalidated.reusable("test_surface"))
+
+    def test_primary_investigation_ledger_fails_closed_for_uncertain_freshness(self) -> None:
+        ledger = InvocationInvestigationLedger().record(
+            "repository_identity", "validation_surface", "finalization_state", "reconciliation_state"
+        ).invalidate("freshness_uncertain")
+        self.assertTrue(ledger.reusable("repository_identity"))
+        self.assertFalse(ledger.reusable("validation_surface"))
+        self.assertFalse(ledger.reusable("finalization_state"))
+        self.assertFalse(ledger.reusable("reconciliation_state"))
+
+    def test_primary_investigation_ledger_is_identifier_only_and_not_cross_run_memory(self) -> None:
+        first_invocation = InvocationInvestigationLedger().record("source_inspection")
+        projection = first_invocation.to_prompt_dict()
+        self.assertEqual(projection["scope"], "one_primary_provider_invocation")
+        self.assertEqual(projection["persistence"], "none")
+        self.assertEqual(projection["completed_fact_ids"], ["source_inspection"])
+        serialized = json.dumps(projection)
+        self.assertNotIn("path", serialized)
+        self.assertNotIn("output", serialized)
+        self.assertNotIn("prompt", serialized)
+        self.assertFalse(InvocationInvestigationLedger().reusable("source_inspection"))
 
     def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
         selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})

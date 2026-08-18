@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -178,6 +179,34 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(churn["shell_command_calls"], 1)
         self.assertEqual(churn["test_commands"], 1)
         self.assertEqual(churn["passing_test_output_bytes"], 2)
+        self.assertEqual(churn["tool_loop_operations"], 1)
+
+    def test_primary_tool_loop_fixture_reduces_redundant_operations_without_skipping_validation(self) -> None:
+        def event(command: str, output: str = "") -> str:
+            return json.dumps({"type": "item.completed", "item": {
+                "type": "command_execution", "command": command,
+                "exit_code": 0, "aggregated_output": output,
+            }})
+
+        required = (
+            event("git status --short --branch", "## main"),
+            event("sed -n '1,80p' tools/engineering/execution_host.py"),
+            event("pytest tests/engineering/test_execution_host.py", "passed"),
+            event("git diff --check"),
+            event("git status --short --branch", "## feature"),
+        )
+        before = required[:2] + (event("git log --oneline --decorate", "x" * 300),) * 8 + required[2:] + (event("sed -n '1,80p' tools/engineering/execution_host.py"),) * 7
+        after = required
+        baseline = churn_from_jsonl("\n".join(before))
+        optimized = churn_from_jsonl("\n".join(after))
+        reduction = 1 - optimized["tool_loop_operations"] / baseline["tool_loop_operations"]
+        self.assertGreaterEqual(reduction, 0.30)
+        self.assertEqual(optimized["test_commands"], baseline["test_commands"])
+        self.assertLess(optimized["file_read_count"], baseline["file_read_count"])
+        self.assertLess(optimized["repeated_file_read_count"], baseline["repeated_file_read_count"])
+        self.assertEqual(optimized["git_output_bytes"], len("## main") + len("## feature"))
+        self.assertLess(optimized["git_output_bytes"], baseline["git_output_bytes"])
+        self.assertLess(optimized["tool_output_bytes"], baseline["tool_output_bytes"])
 
     def test_comparable_fixture_shows_duplicate_logical_read_reduction(self) -> None:
         event = ('{"type":"item.completed","item":{"type":"command_execution",'

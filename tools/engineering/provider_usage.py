@@ -147,6 +147,7 @@ def churn_from_jsonl(*outputs: str) -> dict[str, int]:
             "failed_test_diagnostic_bytes",
             "git_output_bytes",
             "github_output_bytes",
+            "tool_loop_operations",
         )
     }
     reads: set[str] = set()
@@ -164,6 +165,10 @@ def churn_from_jsonl(*outputs: str) -> dict[str, int]:
                 continue
             normalized = command.casefold()
             result["shell_command_calls"] += 1
+            # One command-execution event is one observed tool-loop operation.
+            # This is a derived churn counter, not token attribution and does
+            # not require a storage-schema column.
+            result["tool_loop_operations"] += 1
             is_test = bool(re.search(r"\b(?:pytest|unittest|tox|nox|playwright)\b", normalized))
             if is_test:
                 result["test_commands"] += 1
