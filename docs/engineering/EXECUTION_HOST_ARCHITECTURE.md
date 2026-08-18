@@ -11,6 +11,8 @@ evidence. It does not own platform process execution or dashboard projection.
 - `execution_reporting.py` owns terminal-report validation and delivery.
 - `execution_executor.py` owns Codex invocation, result normalization and
   prompt-free live activity projection through `CodexCliProvider`.
+- `reviewer_evidence.py` owns the bounded run-scoped repository fact
+  projection used by one Managed reviewer wave.
 - `execution_models.py` and `execution_evidence.py` own shared execution and
   terminal-evidence value types.
 - `execution_lease.py` owns SQLite-backed active-run ownership and liveness.
@@ -45,3 +47,25 @@ projected separately as `STALE`, never as an active run; the Inbox watcher only
 gates later work on a valid live lease after a transaction exists. Recovery
 continues through the existing Resume/Retry/Dismiss semantics and retains the
 previous lease history.
+
+## Reviewer repository evidence
+
+After the Managed Execution Host synchronizes the repository while holding
+the run lease, it creates one content-minimal `ReviewerEvidence` projection
+for that exact Run ID. It separates facts by freshness:
+
+- **RUN-STABLE:** repository identity and execution mode;
+- **MUTABLE:** branch, HEAD, worktree classification and `main` ancestry;
+- **BOUNDARY-SENSITIVE:** the post-synchronization/pre-reviewer-wave boundary
+  and its invalidators.
+
+The same facts are supplied to each independent reviewer and the first primary
+provider invocation. Reviewers keep independent reasoning and recommendations;
+their conclusions are not merged into another reviewer or the primary provider
+context. The projection contains no command output, diff content or
+conclusions. It is valid only until repository mutation, validation,
+pull-request mutation, merge, finalization or cleanup. A later reviewer or
+resumed execution creates a fresh projection rather than reusing a mutable
+observation. Git/GitHub detail remains available through narrow on-demand
+retrieval when a review actually needs it. Genesis runs receive no Managed
+checkout projection.

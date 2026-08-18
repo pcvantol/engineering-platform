@@ -135,6 +135,7 @@ from dataclasses import replace
 from typing import Callable
 
 from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
+from .reviewer_evidence import ReviewerEvidence
 from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
 from .provider_usage import churn_from_jsonl, usage_from_jsonl
 from .execution_context import additional_workspace_write_roots
@@ -212,7 +213,13 @@ class CodexCliClient:
             raise RunnerError("Codex CLI version could not be detected")
         return detected_codex_cli_version(completed.stdout)
 
-    def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult:
+    def review(
+        self,
+        root: Path,
+        selection: ReviewerSelection,
+        objective: str,
+        evidence: ReviewerEvidence | None = None,
+    ) -> ReviewerResult:
         self.last_usage = {}
         self.last_churn = {}
         self.last_execution_seconds = None
@@ -251,7 +258,7 @@ class CodexCliClient:
                     "--json",
                     "--output-schema",
                     str(schema_path),
-                    reviewer_prompt(selection, objective),
+                    reviewer_prompt(selection, objective, evidence),
                 ),
             )
             self.last_execution_seconds = round(time.monotonic() - started, 3)

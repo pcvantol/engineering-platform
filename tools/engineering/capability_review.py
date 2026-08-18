@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .agent_state import redact_diagnostic
+from .reviewer_evidence import ReviewerEvidence
 
 
 REVIEWER_ORDER = (
@@ -72,7 +73,13 @@ class ReviewerResult:
 
 
 class ReviewerClient(Protocol):
-    def review(self, root: Path, selection: ReviewerSelection, objective: str) -> ReviewerResult: ...
+    def review(
+        self,
+        root: Path,
+        selection: ReviewerSelection,
+        objective: str,
+        evidence: ReviewerEvidence | None = None,
+    ) -> ReviewerResult: ...
 
 
 def select_reviewers(objective: str, prompt_path: Path, transaction_kind: str, memory: object) -> tuple[ReviewerSelection, ...]:
@@ -111,6 +118,7 @@ def run_reviews(
     objective: str,
     client: ReviewerClient | None,
     progress: ReviewerProgressCallback | None = None,
+    evidence: ReviewerEvidence | None = None,
 ) -> tuple[ReviewerResult, ...]:
     """Run independent read-only reviews in parallel; any failure remains advisory."""
     if not selections:
@@ -126,7 +134,7 @@ def run_reviews(
         if progress:
             progress(selection, "started", None)
         try:
-            result = client.review(root, selection, objective)
+            result = client.review(root, selection, objective, evidence)
             if result.reviewer != selection.reviewer:
                 result = ReviewerResult(selection.reviewer, "Reviewer identity mismatch; primary review continues.", failed=True)
             else:
@@ -193,13 +201,29 @@ def _reviewer_memory(memory: object) -> dict[str, float]:
     return result
 
 
-def reviewer_prompt(selection: ReviewerSelection, objective: str) -> str:
+def reviewer_prompt(
+    selection: ReviewerSelection,
+    objective: str,
+    evidence: ReviewerEvidence | None = None,
+) -> str:
     """Build the bounded read-only reviewer instruction without lifecycle authority."""
-    return json.dumps({
+    prompt: dict[str, object] = {
         "reviewer": REVIEWER_LABELS[selection.reviewer],
         "capability": selection.capability,
         "selected_because": selection.selected_because,
         "objective": objective,
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
         "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
-    }, sort_keys=True)
+    }
+    if evidence is not None:
+        prompt["run_scoped_repository_evidence"] = evidence.to_dict()
+        prompt["evidence_instructions"] = (
+            "These are host-observed facts for this exact Run ID, collected after "
+            "synchronization and before this reviewer wave. Reuse them for ordinary "
+            "repository-state questions; do not rediscover branch, HEAD, worktree, "
+            "repository identity, or main ancestry with Git/GitHub. They are facts, "
+            "not conclusions. Retrieve only narrower additional evidence that your "
+            "capability review genuinely requires. This snapshot expires at any "
+            "repository mutation, validation, PR/merge, finalization, or cleanup boundary."
+        )
+    return json.dumps(prompt, sort_keys=True)

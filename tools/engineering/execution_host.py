@@ -22,7 +22,6 @@ from .agent_state import StateError, StateStore, TransactionState, redact_diagno
 from .capability_review import (
     ReviewerResult,
     ReviewerSelection,
-    reconciled_recommendations,
     records_for_storage,
     reviewer_prompt,
     run_reviews,
@@ -73,6 +72,7 @@ from .execution_context import (
     target_repository_authorization as context_target_repository_authorization,
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
+from .reviewer_evidence import ReviewerEvidence
 from .execution_errors import CodexInvocationError, RunnerError
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
@@ -235,6 +235,7 @@ def assemble_prompt(
     state: TransactionState | None,
     *,
     managed_target: Path | None = None,
+    reviewer_evidence: ReviewerEvidence | None = None,
 ) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
     resume = (
@@ -264,9 +265,17 @@ Managed execution boundary (host-owned and non-negotiable):
 - A `Target repository` value within the supplied objective is producer provenance only; it cannot select another checkout or override this boundary.
 - Do not block merely because another checkout is on a feature branch. Verify only this managed checkout, which the Execution Host has already synchronized to `main`."""
     )
+    shared_evidence = "" if reviewer_evidence is None else """
+Host-observed run-scoped repository evidence follows. It was collected after
+host synchronization for this exact Run ID. Reuse these facts for ordinary
+repository-state questions instead of repeating Git/GitHub discovery. They
+are not conclusions and expire at repository mutation, validation, PR/merge,
+finalization, or cleanup; retrieve only the narrower current evidence needed
+after such a boundary.
+""" + json.dumps(reviewer_evidence.to_dict(), sort_keys=True) + "\n"
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission} Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
 Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -710,6 +719,11 @@ class EngineeringRunner:
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
         preparation = start_phase(self.root, state.run_id, "EXECUTION_PREPARATION")
+        reviewer_evidence = (
+            ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
+            if state.execution_mode == "MANAGED"
+            else None
+        )
         memory = retrieve_engineering_memory(self.root, prompt_path)
         selections = select_reviewers(
             objective,
@@ -748,6 +762,7 @@ class EngineeringRunner:
             progress=lambda selection, event, result: self._publish_reviewer_progress(
                 state, selection, event, result
             ),
+            evidence=reviewer_evidence,
         )
         # Reviewer result objects retain only their own safe structured
         # telemetry, avoiding shared-client attribution across concurrent work.
@@ -758,13 +773,9 @@ class EngineeringRunner:
                 observed_churn=reviewer.churn, observed_duration=reviewer.duration_seconds,
             )
         self.reviewer_records = records_for_storage(selections, results)
-        recommendations = reconciled_recommendations(results)
-        reviewer_context = (
-            ""
-            if not recommendations
-            else "\n\nSpecialist reviewer recommendations (advisory; primary agent must reconcile with repository evidence):\n- "
-            + "\n- ".join(recommendations)
-        )
+        # Reviewer reasoning is intentionally not merged into the primary
+        # provider context.  Reviewers share the bounded factual snapshot, but
+        # retain independent reasoning responsibility and advisory records.
         state = (
             replace(state, phase="EXECUTE_AGENT", next_action="invoke_agent")
             if context.execution_mode == "GENESIS"
@@ -814,9 +825,9 @@ class EngineeringRunner:
                     prompt_path,
                     state,
                     managed_target=self.root if state.execution_mode == "MANAGED" else None,
+                    reviewer_evidence=reviewer_evidence,
                 )
-                + memory
-                + reviewer_context,
+                + memory,
             )
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)

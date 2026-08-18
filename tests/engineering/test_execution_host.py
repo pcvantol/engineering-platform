@@ -33,6 +33,7 @@ from tools.engineering.execution_host import (
     terminal_report_matches_state,
     report_consistency_errors,
     collect_terminal_evidence,
+    assemble_prompt,
     generate_terminal_report,
     project_codex_activity,
     project_codex_live_action_name,
@@ -52,7 +53,9 @@ from tools.engineering.capability_review import (
     records_for_storage,
     run_reviews,
     select_reviewers,
+    reviewer_prompt,
 )
+from tools.engineering.reviewer_evidence import ReviewerEvidence
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
 from tools.engineering.execution_executor import workspace_change_summary
@@ -186,10 +189,14 @@ class FakeReviewer:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls: list[str] = []
+        self.evidence: list[object] = []
 
-    def review(self, root: Path, selection: object, objective: str) -> ReviewerResult:
+    def review(
+        self, root: Path, selection: object, objective: str, evidence: object = None
+    ) -> ReviewerResult:
         reviewer = getattr(selection, "reviewer")
         self.calls.append(reviewer)
+        self.evidence.append(evidence)
         if self.fail:
             raise RuntimeError("reviewer unavailable")
         return ReviewerResult(reviewer, "Bounded review complete.", ("Use canonical wording.",))
@@ -2126,6 +2133,46 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
         records = records_for_storage(selections, results)
         self.assertEqual(records[0]["accepted_recommendations"], 1)
+
+    def test_reviewer_prompt_reuses_bounded_run_scoped_facts_without_conclusions(self) -> None:
+        selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]
+        evidence = ReviewerEvidence.from_repository(
+            "inbox-context", "MANAGED",
+            RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
+        )
+        prompt = json.loads(reviewer_prompt(selection, "objective", evidence))
+        self.assertEqual(prompt["run_scoped_repository_evidence"], {
+            "run_id": "inbox-context",
+            "run_stable": {"repository": "pcvantol/djconnect", "execution_mode": "MANAGED"},
+            "mutable": {"branch": "main", "head_sha": "a" * 40, "worktree": "clean", "main_contains_head": True},
+            "boundary_sensitive": {
+                "freshness_boundary": "post_synchronization_pre_reviewer_wave",
+                "invalidated_by": ["repository_mutation", "validation", "pull_request_mutation", "merge", "finalization", "repository_cleanup"],
+            },
+        })
+        self.assertIn("do not rediscover branch", prompt["evidence_instructions"])
+        self.assertNotIn("recommendation", prompt["run_scoped_repository_evidence"])
+
+    def test_parallel_reviewers_share_facts_but_not_reasoning(self) -> None:
+        selections = select_reviewers("governance documentation validation", self.prompt, "IMPLEMENTATION", {})
+        evidence = ReviewerEvidence.from_repository(
+            "inbox-context", "MANAGED",
+            RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
+        )
+        reviewer = FakeReviewer()
+        results = run_reviews(self.root, selections, "objective", reviewer, evidence=evidence)
+        self.assertEqual(len(results), len(selections))
+        self.assertEqual(reviewer.evidence, [evidence] * len(selections))
+
+    def test_primary_prompt_receives_the_same_expiring_repository_projection(self) -> None:
+        state = TransactionState("inbox-context", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        evidence = ReviewerEvidence.from_repository(
+            state.run_id, state.execution_mode,
+            RepositoryEvidence("pcvantol/djconnect", "main", "a" * 40, True, True),
+        )
+        prompt = assemble_prompt(self.prompt, state, reviewer_evidence=evidence)
+        self.assertIn('"freshness_boundary": "post_synchronization_pre_reviewer_wave"', prompt)
+        self.assertIn("instead of repeating Git/GitHub discovery", prompt)
 
     def test_reviewer_progress_reports_started_and_terminal_states(self) -> None:
         selections = select_reviewers("documentation validation", self.prompt, "IMPLEMENTATION", {})
