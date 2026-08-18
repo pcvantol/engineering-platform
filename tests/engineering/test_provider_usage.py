@@ -13,6 +13,8 @@ from tools.engineering.provider_usage import (
     provider_usage_summary,
     normalize_codex_model,
     speed_state,
+    usage_from_jsonl,
+    usage_snapshots_from_jsonl,
 )
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
 
@@ -26,7 +28,8 @@ class ProviderUsageTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def _persist(
-        self, ordinal: int, *, model: str = "gpt-5.6-terra", usage: dict[str, int] | None = None
+        self, ordinal: int, *, model: str = "gpt-5.6-terra", usage: dict[str, int] | None = None,
+        snapshots: tuple[dict[str, int], ...] = (),
     ) -> None:
         persist_provider_invocation(
             self.root,
@@ -47,6 +50,7 @@ class ProviderUsageTests(unittest.TestCase):
                 else {"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10},
                 runtime_metadata={"configuration_profile": "normal"},
                 churn={"file_read_count": ordinal, "tool_output_bytes": 4},
+                usage_snapshots=snapshots,
             ),
         )
 
@@ -175,6 +179,62 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(churn["test_commands"], 1)
         self.assertEqual(churn["passing_test_output_bytes"], 2)
 
+    def test_current_codex_final_usage_is_one_cumulative_snapshot_not_context_size(self) -> None:
+        output = '{"type":"turn.completed","usage":{"input_tokens":160,"cached_input_tokens":110,"output_tokens":9}}'
+        snapshots = usage_snapshots_from_jsonl(output)
+        self.assertEqual(snapshots, ({"input_tokens": 160, "cached_input_tokens": 110, "output_tokens": 9},))
+        self.assertEqual(usage_from_jsonl(output), snapshots[0])
+
+    def test_future_authoritative_snapshots_remain_counter_only(self) -> None:
+        output = "\n".join((
+            '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":70,"output_tokens":5}}',
+            '{"type":"turn.completed","usage":{"input_tokens":160,"cached_input_tokens":110,"output_tokens":9}}',
+        ))
+        snapshots = usage_snapshots_from_jsonl(output)
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(usage_from_jsonl(output), snapshots[-1])
+        self.assertEqual(snapshots[-1]["input_tokens"] - snapshots[0]["input_tokens"], 60)
+        self.assertEqual(
+            usage_snapshots_from_jsonl('{"type":"item.completed","usage":{"input_tokens":999}}'),
+            (),
+        )
+
+    def test_single_final_usage_snapshot_has_no_incremental_delta(self) -> None:
+        self._persist(
+            1,
+            snapshots=({"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10},),
+        )
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["usage_snapshot_count"], 1)
+        self.assertFalse(summary["intermediate_usage_delta_available"])
+        self.assertIsNone(summary["maximum_incremental_input_tokens"])
+        self.assertEqual(summary["actual_single_request_context_size"], "UNAVAILABLE")
+        self.assertEqual(summary["active_context_size"], "UNAVAILABLE")
+
+    def test_multiple_usage_snapshots_persist_only_counters_and_deltas(self) -> None:
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id="run-usage", ordinal=1, provider="codex_cli", model=None,
+                phase="PROVIDER_EXECUTION", role="agent", started_at="2026-08-18T00:00:00+00:00",
+                completed_at="2026-08-18T00:00:01+00:00", duration_ms=1000,
+                usage={"input_tokens": 160, "cached_input_tokens": 110, "output_tokens": 9},
+                usage_snapshots=(
+                    {"input_tokens": 100, "cached_input_tokens": 70, "output_tokens": 5},
+                    {"input_tokens": 160, "cached_input_tokens": 110, "output_tokens": 9},
+                ),
+            ),
+        )
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["usage_snapshot_count"], 2)
+        self.assertEqual(summary["maximum_incremental_input_tokens"], 60)
+        with open_storage(self.root) as connection:
+            row = connection.execute(
+                "SELECT input_delta,cached_input_delta,uncached_input_delta,output_delta FROM provider_usage_snapshots WHERE ordinal=2"
+            ).fetchone()
+        self.assertEqual(row, (60, 40, 20, 4))
+        self.assertTrue(summary["intermediate_usage_delta_available"])
+
     def test_schema_is_migrated_transactionally(self) -> None:
         connection = open_storage(self.root)
         try:
@@ -187,6 +247,11 @@ class ProviderUsageTests(unittest.TestCase):
             self.assertTrue(
                 connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_invocations'"
+                ).fetchone()
+            )
+            self.assertTrue(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_usage_snapshots'"
                 ).fetchone()
             )
         finally:

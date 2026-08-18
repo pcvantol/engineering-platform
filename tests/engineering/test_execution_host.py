@@ -1347,6 +1347,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             client.last_usage,
             {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
         )
+        self.assertEqual(client.last_usage_snapshots, ({"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},))
 
     def test_genesis_workspace_preflight_requires_accessible_target(self) -> None:
         issue = genesis_workspace_preflight(Path("/definitely/absent/forge"))

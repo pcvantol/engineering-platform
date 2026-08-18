@@ -352,9 +352,10 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
-    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None) -> None:
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None) -> None:
         """Append safe per-invocation evidence without affecting execution outcome."""
         usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
+        snapshots = observed_snapshots if observed_snapshots is not None else getattr(self.agent, "last_usage_snapshots", ())
         if not isinstance(usage, dict):
             usage = {}
         metadata = observed_metadata if observed_metadata is not None else getattr(self.agent, "last_runtime_metadata", None)
@@ -381,6 +382,7 @@ class EngineeringRunner:
                 duration_ms=round(duration * 1000) if isinstance(duration, (int, float)) and duration >= 0 else None,
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
                 retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
+                usage_snapshots=snapshots if isinstance(snapshots, tuple) else (),
             ))
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
             LOGGER.warning("Provider invocation telemetry is unavailable for run %s", state.run_id)
@@ -771,6 +773,7 @@ class EngineeringRunner:
                 state, phase="CAPABILITY_REVIEW", role=f"reviewer:{reviewer.reviewer}",
                 observed_usage=reviewer.usage, observed_metadata=reviewer.runtime_metadata,
                 observed_churn=reviewer.churn, observed_duration=reviewer.duration_seconds,
+                observed_snapshots=reviewer.usage_snapshots,
             )
         self.reviewer_records = records_for_storage(selections, results)
         # Reviewer reasoning is intentionally not merged into the primary

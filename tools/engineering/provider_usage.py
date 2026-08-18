@@ -1,4 +1,4 @@
-"""Provider invocation usage and bounded context-churn attribution.
+"""Provider invocation usage and bounded provider-input attribution.
 
 This module deliberately stores only counters derived from provider JSONL.  It
 never stores prompts, tool arguments, command output, paths, or model replies.
@@ -103,18 +103,30 @@ def _usage_from_event(event: object) -> dict[str, int]:
     return usage
 
 
-def usage_from_jsonl(*outputs: str) -> dict[str, int]:
-    """Use the last explicit provider usage snapshot, never sum repeated snapshots."""
-    result: dict[str, int] = {}
+def usage_snapshots_from_jsonl(*outputs: str) -> tuple[dict[str, int], ...]:
+    """Return only actual final-turn counter snapshots, without conversation content.
+
+    Codex CLI 0.147.0 exposes usage on ``turn.completed``.  The counters are
+    provider-execution cumulative counters, not an active-context measurement.
+    """
+    snapshots: list[dict[str, int]] = []
     for output in outputs:
         for line in output.splitlines():
             try:
-                found = _usage_from_event(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if found:
-                result.update(found)
-    return result
+            if isinstance(event, dict) and event.get("type") == "turn.completed":
+                found = _usage_from_event(event.get("usage"))
+                if found:
+                    snapshots.append(found)
+    return tuple(snapshots)
+
+
+def usage_from_jsonl(*outputs: str) -> dict[str, int]:
+    """Use the last final-turn usage snapshot; never sum repeated snapshots."""
+    snapshots = usage_snapshots_from_jsonl(*outputs)
+    return dict(snapshots[-1]) if snapshots else {}
 
 
 def churn_from_jsonl(*outputs: str) -> dict[str, int]:
@@ -223,6 +235,7 @@ class ProviderInvocation:
     retry_ordinal: int = 0
     churn: Mapping[str, object] | None = None
     invocation_id: str | None = None
+    usage_snapshots: tuple[Mapping[str, object], ...] = ()
 
 
 def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> str:
@@ -261,6 +274,14 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
         for key, value in (invocation.churn or {}).items()
         if _number(value) is not None
     }
+    snapshots = tuple(
+        {
+            key: _number(snapshot.get(key))
+            for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens")
+        }
+        for snapshot in invocation.usage_snapshots
+        if isinstance(snapshot, Mapping)
+    )
     connection = open_storage(root)
     try:
         connection.execute(
@@ -297,6 +318,32 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
                 json.dumps(churn, sort_keys=True, separators=(",", ":")),
             ),
         )
+        previous: dict[str, int | None] | None = None
+        for ordinal, snapshot in enumerate(snapshots, 1):
+            input_tokens = snapshot["input_tokens"]
+            cached_input_tokens = snapshot["cached_input_tokens"]
+            snapshot["uncached_input_tokens"] = (
+                input_tokens - cached_input_tokens
+                if input_tokens is not None and cached_input_tokens is not None
+                and cached_input_tokens <= input_tokens
+                else None
+            )
+            def delta(key: str) -> int | None:
+                if previous is None or snapshot[key] is None or previous[key] is None:
+                    return None
+                return snapshot[key] - previous[key] if snapshot[key] >= previous[key] else None
+            connection.execute(
+                """INSERT OR IGNORE INTO provider_usage_snapshots(
+                    invocation_id,ordinal,input_tokens,cached_input_tokens,uncached_input_tokens,
+                    output_tokens,reasoning_tokens,total_tokens,input_delta,cached_input_delta,
+                    uncached_input_delta,output_delta
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (identifier, ordinal, snapshot["input_tokens"], snapshot["cached_input_tokens"],
+                 snapshot["uncached_input_tokens"], snapshot["output_tokens"], snapshot["reasoning_tokens"],
+                 snapshot["total_tokens"], delta("input_tokens"), delta("cached_input_tokens"),
+                 delta("uncached_input_tokens"), delta("output_tokens")),
+            )
+            previous = snapshot
     finally:
         connection.close()
     return identifier
@@ -308,6 +355,10 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     try:
         rows = connection.execute(
             "SELECT provider,model,model_authority,raw_provider_model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
+            (run_id,),
+        ).fetchall()
+        snapshot_rows = connection.execute(
+            "SELECT input_delta,cached_input_delta,uncached_input_delta,output_delta FROM provider_usage_snapshots WHERE invocation_id IN (SELECT invocation_id FROM provider_invocations WHERE run_id=?)",
             (run_id,),
         ).fetchall()
     finally:
@@ -332,6 +383,7 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
 
     ordered = sorted(inputs)
     p95 = ordered[min(len(ordered) - 1, ceil(len(ordered) * 0.95) - 1)] if ordered else None
+    input_deltas = [row[0] for row in snapshot_rows if isinstance(row[0], int)]
     return {
         "invocation_detail": AUTHORITATIVE,
         "provider_invocation_count": len(rows),
@@ -351,4 +403,9 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
         if any(row[12] == AUTHORITATIVE for row in rows)
         else UNAVAILABLE,
         "context_churn": churn,
+        "usage_snapshot_count": len(snapshot_rows) or None,
+        "intermediate_usage_delta_available": bool(input_deltas),
+        "maximum_incremental_input_tokens": max(input_deltas) if input_deltas else None,
+        "actual_single_request_context_size": UNAVAILABLE,
+        "active_context_size": UNAVAILABLE,
     }

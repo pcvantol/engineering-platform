@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 23
+ENGINEERING_STORAGE_SCHEMA_VERSION = 24
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -678,6 +678,22 @@ def _schema_v23(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE provider_invocations ADD COLUMN raw_provider_model TEXT")
 
 
+def _schema_v24(connection: sqlite3.Connection) -> None:
+    """Keep bounded, counter-only Codex usage snapshots per invocation."""
+    connection.execute(
+        """CREATE TABLE provider_usage_snapshots (
+            invocation_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+            input_tokens INTEGER, cached_input_tokens INTEGER, uncached_input_tokens INTEGER,
+            output_tokens INTEGER,
+            reasoning_tokens INTEGER, total_tokens INTEGER,
+            input_delta INTEGER, cached_input_delta INTEGER, uncached_input_delta INTEGER,
+            output_delta INTEGER,
+            PRIMARY KEY(invocation_id, ordinal),
+            FOREIGN KEY(invocation_id) REFERENCES provider_invocations(invocation_id)
+        )"""
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -748,6 +764,7 @@ MIGRATIONS: dict[int, Migration] = {
     21: _schema_v21,
     22: _schema_v22,
     23: _schema_v23,
+    24: _schema_v24,
 }
 
 

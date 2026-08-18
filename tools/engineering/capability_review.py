@@ -70,6 +70,7 @@ class ReviewerResult:
     runtime_metadata: dict[str, object] = field(default_factory=dict)
     churn: dict[str, object] = field(default_factory=dict)
     duration_seconds: float | None = None
+    usage_snapshots: tuple[dict[str, int], ...] = ()
 
 
 class ReviewerClient(Protocol):

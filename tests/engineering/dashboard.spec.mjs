@@ -1883,11 +1883,11 @@ test.describe("Engineering Status browser smoke", () => {
       json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const expectations = [
-      ["en", "Workspace location", "Specialist reviewers", "Input tokens", "Use reset"],
-      ["nl", "Werkruimtelocatie", "Specialistische reviewers", "Invoertokens", "Gebruik reset"],
-      ["de", "Arbeitsbereichspfad", "Spezialisierte Reviewer", "Eingabetoken", "Zurücksetzung verwenden"],
-      ["fr", "Emplacement de l’espace de travail", "Évaluateurs spécialisés", "Jetons d’entrée", "Utiliser la réinitialisation"],
-      ["es", "Ubicación del espacio de trabajo", "Revisores especializados", "Tokens de entrada", "Usar restablecimiento"],
+      ["en", "Workspace location", "Specialist reviewers", "Run cumulative input tokens", "Use reset"],
+      ["nl", "Werkruimtelocatie", "Specialistische reviewers", "Cumulatieve invoertokens van de run", "Gebruik reset"],
+      ["de", "Arbeitsbereichspfad", "Spezialisierte Reviewer", "Kumulative Eingabetoken des Durchlaufs", "Zurücksetzung verwenden"],
+      ["fr", "Emplacement de l’espace de travail", "Évaluateurs spécialisés", "Jetons d’entrée cumulés de l’exécution", "Utiliser la réinitialisation"],
+      ["es", "Ubicación del espacio de trabajo", "Revisores especializados", "Tokens de entrada acumulados de la ejecución", "Usar restablecimiento"],
     ];
     for (const [language, workspaceLocation, reviewers, inputTokens, reset] of expectations) {
       const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");

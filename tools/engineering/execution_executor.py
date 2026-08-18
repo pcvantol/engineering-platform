@@ -137,7 +137,7 @@ from typing import Callable
 from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
 from .reviewer_evidence import ReviewerEvidence
 from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
-from .provider_usage import churn_from_jsonl, usage_from_jsonl
+from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
 from .execution_context import additional_workspace_write_roots
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
@@ -157,6 +157,7 @@ class CodexCliClient:
     def __init__(self, provider: CodexCliProvider | None = None) -> None:
         self.provider = provider or CodexCliProvider()
         self.last_usage: dict[str, int | float | str] = {}
+        self.last_usage_snapshots: tuple[dict[str, int], ...] = ()
         self.last_churn: dict[str, int] = {}
         self.last_execution_seconds: float | None = None
         self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
@@ -264,6 +265,7 @@ class CodexCliClient:
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
+            self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
             self.last_runtime_metadata = extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr
@@ -277,6 +279,7 @@ class CodexCliClient:
                 failed=True,
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
+                usage_snapshots=self.last_usage_snapshots,
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
@@ -286,6 +289,7 @@ class CodexCliClient:
                 tuple(str(value) for value in raw["recommendations"]),
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
+                usage_snapshots=self.last_usage_snapshots,
             )
         except (IndexError, KeyError, TypeError, json.JSONDecodeError):
             return ReviewerResult(
@@ -294,10 +298,12 @@ class CodexCliClient:
                 failed=True,
                 usage=dict(self.last_usage), runtime_metadata=dict(self.last_runtime_metadata),
                 churn=dict(self.last_churn), duration_seconds=self.last_execution_seconds,
+                usage_snapshots=self.last_usage_snapshots,
             )
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         self.last_usage = {}
+        self.last_usage_snapshots = ()
         self.last_churn = {}
         self.last_execution_seconds = None
         self.last_runtime_metadata = {"runtime_provider": "codex_cli"}
@@ -369,6 +375,7 @@ class CodexCliClient:
             # Prefer one final explicit usage snapshot; legacy extraction stays
             # in place for compatibility with older Codex JSONL variants.
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
+            self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
             self.last_runtime_metadata = extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr

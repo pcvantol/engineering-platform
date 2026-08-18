@@ -4344,6 +4344,11 @@ function promptDetailUsageSection(usage) {
     total_tokens: t("detail.total_tokens"),
     provider_invocation_count: t("detail.provider_invocation_count"),
     max_input_tokens_per_invocation: t("detail.max_input_tokens"),
+    usage_snapshot_count: t("detail.usage_snapshot_count"),
+    intermediate_usage_delta_available: t("detail.intermediate_usage_delta_available"),
+    maximum_incremental_input_tokens: t("detail.maximum_incremental_input_tokens"),
+    actual_single_request_context_size: t("detail.actual_single_request_context_size"),
+    active_context_size: t("detail.active_context_size"),
     estimated_credits: t("detail.estimated_credits"),
     estimated_eur: t("detail.estimated_eur"),
     speed_state: t("detail.speed_state"),
@@ -4351,7 +4356,12 @@ function promptDetailUsageSection(usage) {
   };
   const visible = Object.entries(usage).filter(([key, value]) => labels[key] && value !== null && typeof value !== "object");
   const fields = visible.map(([key, value]) =>
-    detailField(labels[key] || key, value),
+    detailField(
+      labels[key] || key,
+      key === "intermediate_usage_delta_available"
+        ? (value ? t("detail.available") : t("format.unavailable"))
+        : value,
+    ),
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
 }
