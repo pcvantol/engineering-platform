@@ -285,7 +285,7 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     finally:
         connection.close()
     if not rows:
-        return {"invocation_detail": UNAVAILABLE, "provider_invocation_count": 0}
+        return {"invocation_detail": UNAVAILABLE}
     inputs = [row[2] for row in rows if isinstance(row[2], int)]
     churn: dict[str, int] = {}
     for row in rows:

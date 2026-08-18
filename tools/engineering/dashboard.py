@@ -327,14 +327,20 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         # Legacy runs have no invocation rows. Retain the historic aggregate
         # projection without fabricating invocation detail.
         if provider_summary.get("invocation_detail") == "UNAVAILABLE":
+            usage = provider_summary
             connection = open_storage(root)
             row = connection.execute(
                 "SELECT input_tokens, output_tokens, total_tokens FROM execution_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
             connection.close()
             if row:
-                usage = {label: value for label, value in zip(("input_tokens", "output_tokens", "total_tokens"), row)
-                         if isinstance(value, (int, float)) and not isinstance(value, bool)}
+                usage.update(
+                    {
+                        label: value
+                        for label, value in zip(("input_tokens", "output_tokens", "total_tokens"), row)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    }
+                )
         else:
             usage = provider_summary
     except Exception:

@@ -16,6 +16,7 @@ from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _cl
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
+from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire
@@ -1313,8 +1314,80 @@ class DashboardStatusTest(unittest.TestCase):
             payload = json.loads(_prompt_history_detail(root, "inbox-detail"))
             self.assertEqual(payload["history"]["run_id"], "inbox-detail")
             self.assertEqual(payload["history"]["title"], "Detail prompt")
-            self.assertEqual(payload["usage"], {})
+            self.assertEqual(payload["usage"], {"invocation_detail": "UNAVAILABLE"})
             self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
+
+    def test_prompt_history_detail_projects_run_scoped_provider_usage_without_fabricating_legacy_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected_run = "inbox-provider-usage"
+            other_run = "inbox-other-provider-usage"
+            for run_id in (selected_run, other_run, "inbox-legacy-usage"):
+                record_prompt_execution(
+                    root,
+                    run_id=run_id,
+                    terminal_state="COMPLETE",
+                    prompt_title="Provider usage",
+                    executed_at="2026-08-18T12:00:00Z",
+                )
+            for invocation in (
+                ProviderInvocation(
+                    run_id=selected_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra",
+                    phase="PROVIDER_EXECUTION", role="agent", started_at="2026-08-18T12:00:00Z",
+                    completed_at="2026-08-18T12:00:01Z", duration_ms=1000,
+                    usage={"input_tokens": 100, "cached_input_tokens": 25, "output_tokens": 10},
+                    runtime_metadata={"configuration_profile": "normal"},
+                ),
+                ProviderInvocation(
+                    run_id=selected_run, ordinal=2, provider="codex_cli", model="gpt-5.6-terra",
+                    phase="PROVIDER_EXECUTION", role="reviewer", started_at="2026-08-18T12:01:00Z",
+                    completed_at="2026-08-18T12:01:01Z", duration_ms=1000,
+                    usage={"input_tokens": 300, "cached_input_tokens": 100, "output_tokens": 20},
+                    runtime_metadata={"configuration_profile": "normal"},
+                ),
+                ProviderInvocation(
+                    run_id=other_run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra",
+                    phase="PROVIDER_EXECUTION", role="agent", started_at="2026-08-18T12:02:00Z",
+                    completed_at="2026-08-18T12:02:01Z", duration_ms=1000,
+                    usage={"input_tokens": 999, "cached_input_tokens": 0, "output_tokens": 1},
+                    runtime_metadata={"configuration_profile": "Fast Mode"},
+                ),
+            ):
+                persist_provider_invocation(root, invocation)
+            with open_storage(root) as connection:
+                connection.execute(
+                    """INSERT INTO execution_runs(
+                        run_id, execution_date, arrived_at, execution_started_at,
+                        execution_finished_at, queue_wait_seconds, execution_seconds,
+                        terminal_state, input_tokens, output_tokens, total_tokens,
+                        execution_mode, workspace, repository, execution_host_version
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        "inbox-legacy-usage", "2026-08-18", "2026-08-18T12:00:00Z",
+                        "2026-08-18T12:00:00Z", "2026-08-18T12:00:01Z", 0, 1,
+                        "COMPLETE", 40, 8, 48, "MANAGED", "workspace",
+                        "pcvantol/djconnect", "1.5.0",
+                    ),
+                )
+
+            usage = json.loads(_prompt_history_detail(root, selected_run))["usage"]
+
+            self.assertEqual(usage["provider_invocation_count"], 2)
+            self.assertEqual(usage["input_tokens"], 400)
+            self.assertEqual(usage["cached_input_tokens"], 125)
+            self.assertEqual(usage["uncached_input_tokens"], 275)
+            self.assertEqual(usage["max_input_tokens_per_invocation"], 300)
+            self.assertAlmostEqual(usage["estimated_credits"], 0.023375)
+            self.assertAlmostEqual(usage["estimated_eur"], 0.000935)
+            self.assertEqual(usage["speed_state"], "NORMAL_DEFAULT")
+
+            legacy_usage = json.loads(_prompt_history_detail(root, "inbox-legacy-usage"))["usage"]
+            self.assertEqual(legacy_usage["invocation_detail"], "UNAVAILABLE")
+            self.assertEqual(legacy_usage["input_tokens"], 40)
+            self.assertEqual(legacy_usage["output_tokens"], 8)
+            self.assertEqual(legacy_usage["total_tokens"], 48)
+            self.assertNotIn("provider_invocation_count", legacy_usage)
+            self.assertNotIn("max_input_tokens_per_invocation", legacy_usage)
 
     def test_prompt_history_detail_includes_run_scoped_repair_audit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1594,7 +1667,15 @@ class DashboardStatusTest(unittest.TestCase):
             connection.execute.return_value.fetchone.return_value = (10, 20, 30)
             with patch("tools.engineering.dashboard.open_storage", return_value=connection):
                 detail = json.loads(_prompt_history_detail(root, "inbox-evidence"))
-            self.assertEqual(detail["usage"], {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30})
+            self.assertEqual(
+                detail["usage"],
+                {
+                    "invocation_detail": "UNAVAILABLE",
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30,
+                },
+            )
             self.assertEqual(
                 detail["evidence"],
                 [
