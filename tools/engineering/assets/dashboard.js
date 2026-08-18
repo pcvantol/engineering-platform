@@ -4338,10 +4338,19 @@ function promptDetailRuntimeSection(runtime) {
 function promptDetailUsageSection(usage) {
   const labels = {
     input_tokens: t("detail.input_tokens"),
+    cached_input_tokens: t("detail.cached_input_tokens"),
+    uncached_input_tokens: t("detail.uncached_input_tokens"),
     output_tokens: t("detail.output_tokens"),
     total_tokens: t("detail.total_tokens"),
+    provider_invocation_count: t("detail.provider_invocation_count"),
+    max_input_tokens_per_invocation: t("detail.max_input_tokens"),
+    estimated_credits: t("detail.estimated_credits"),
+    estimated_eur: t("detail.estimated_eur"),
+    speed_state: t("detail.speed_state"),
+    usage_authority: t("detail.usage_authority"),
   };
-  const fields = Object.entries(usage).map(([key, value]) =>
+  const visible = Object.entries(usage).filter(([key, value]) => labels[key] && value !== null && typeof value !== "object");
+  const fields = visible.map(([key, value]) =>
     detailField(labels[key] || key, value),
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;

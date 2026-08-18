@@ -25,6 +25,7 @@ from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
+from .provider_usage import provider_usage_summary
 
 
 class ReportingCoordinator:
@@ -902,6 +903,30 @@ def generate_terminal_report(
     }
     bundle = collect_terminal_evidence(root, state)
     timing = timing_summary(root, state.run_id)
+    provider_usage = provider_usage_summary(root, state.run_id)
+    churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
+    provider_usage_lines = (
+        "## Provider Usage",
+        f"- Provider Invocations: `{provider_usage.get('provider_invocation_count', 0)}`",
+        f"- Input Tokens: `{provider_usage.get('input_tokens', 'UNAVAILABLE')}`",
+        f"- Cached Input Tokens: `{provider_usage.get('cached_input_tokens', 'UNAVAILABLE')}`",
+        f"- Uncached Input Tokens: `{provider_usage.get('uncached_input_tokens', 'UNAVAILABLE')}`",
+        f"- Output Tokens: `{provider_usage.get('output_tokens', 'UNAVAILABLE')}`",
+        f"- Max Input per Invocation: `{provider_usage.get('max_input_tokens_per_invocation', 'UNAVAILABLE')}`",
+        f"- Estimated Credits: `{provider_usage.get('estimated_credits', 'UNAVAILABLE')}`",
+        f"- Estimated EUR: `{provider_usage.get('estimated_eur', 'UNAVAILABLE')}` (derived estimate; not account billing)",
+        f"- Rate Table Version: `{provider_usage.get('rate_table_version', 'UNAVAILABLE')}`",
+        f"- Usage Authority: `{provider_usage.get('usage_authority', 'UNAVAILABLE')}`",
+        f"- Speed State: `{provider_usage.get('speed_state', 'UNKNOWN')}`",
+        "",
+        "## Context Efficiency",
+        f"- File Reads: `{churn.get('file_read_count', 'UNAVAILABLE')}`",
+        f"- Repeated File Reads: `{churn.get('repeated_file_read_count', 'UNAVAILABLE')}`",
+        f"- Tool Output Bytes: `{churn.get('tool_output_bytes', 'UNAVAILABLE')}`",
+        f"- Test Output Bytes: `{(churn.get('passing_test_output_bytes', 0) + churn.get('failed_test_diagnostic_bytes', 0)) if churn else 'UNAVAILABLE'}`",
+        "- Dominant Churn Indicators: derived only from bounded invocation counters; raw prompts and outputs are not retained.",
+        "",
+    )
     timing_lines = ["## Execution Phase Timing"]
     if timing.get("phase_telemetry_available"):
         occurred = set(timing.get("occurred_phases", ()))
@@ -1130,6 +1155,7 @@ def generate_terminal_report(
             "",
             *timing_lines,
             "",
+            *provider_usage_lines,
             "## Pull Requests",
             f"- Implementation: branch `{state.implementation_branch}`, PR `{state.implementation_pull_request}`, merge `{state.implementation_merge_commit}`",
             f"- Finalization: branch `{state.finalization_branch}`, PR `{state.finalization_pull_request}`, merge `{state.finalization_merge_commit}`",

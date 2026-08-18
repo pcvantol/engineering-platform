@@ -47,6 +47,7 @@ from .telemetry import daily_statistics, daily_timing_detail, execution_timing
 from .prompt_history import prompt_history, report_for_prompt_history
 from .recommendation_handoff import handoff_from_report
 from .storage import EngineeringStorageError, open_storage
+from .provider_usage import provider_usage_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .platform_version import EngineeringPlatformManifest
 from . import dashboard_state
@@ -322,18 +323,20 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
     commits = _commits_for_run(root, run_id)
     usage: dict[str, object] = {}
     try:
-        connection = open_storage(root)
-        row = connection.execute(
-            "SELECT input_tokens, output_tokens, total_tokens FROM execution_runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        connection.close()
-        if row:
-            usage = {
-                label: value
-                for label, value in zip(("input_tokens", "output_tokens", "total_tokens"), row)
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            }
+        provider_summary = provider_usage_summary(root, run_id)
+        # Legacy runs have no invocation rows. Retain the historic aggregate
+        # projection without fabricating invocation detail.
+        if provider_summary.get("invocation_detail") == "UNAVAILABLE":
+            connection = open_storage(root)
+            row = connection.execute(
+                "SELECT input_tokens, output_tokens, total_tokens FROM execution_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            connection.close()
+            if row:
+                usage = {label: value for label, value in zip(("input_tokens", "output_tokens", "total_tokens"), row)
+                         if isinstance(value, (int, float)) and not isinstance(value, bool)}
+        else:
+            usage = provider_summary
     except Exception:
         usage = {}
     report: str | None = None

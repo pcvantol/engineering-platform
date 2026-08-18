@@ -286,3 +286,28 @@ A retry report contains a **Retry Relationship** section with Retry Of,
 Original Run, Retry Generation, Retry Timestamp, Current Run, Terminal State
 and Repository Context. It documents that new execution only; original reports,
 checkpoints, telemetry and evidence remain immutable.
+
+## Provider usage and context efficiency
+
+The local datastore appends one immutable provider-invocation row for every
+observed primary, repair or reviewer invocation. It retains only timing,
+provider/model provenance, role, token counters, the observed speed state and
+bounded churn counters; prompts, replies, command arguments, file paths and
+tool output are never stored for this purpose.
+
+`AUTHORITATIVE` means the provider/runtime reported a counter directly.
+`DERIVED` means it was calculated from direct counters (for example, uncached
+input is input minus cached input). `UNAVAILABLE` means the runtime did not
+report it and is never converted to zero. Legacy reports remain unchanged;
+their invocation detail is `UNAVAILABLE`.
+
+The versioned `2026-08-18` rate table supplies only an estimated
+purchased-credit equivalent for GPT-5.6 Sol, Terra and Luna. EUR is derived at
+EUR 0.04 per credit. These values are observability estimates, not account
+billing, included allowance, remaining quota or account-balance authority.
+
+The report and private run detail distinguish cumulative input from the maximum
+input in any one invocation. A runtime may prove `FAST`, `NORMAL_DEFAULT` or
+`OTHER` only from its actual CLI/runtime metadata; otherwise it reports
+`UNKNOWN`. Context counters are deterministic observations where possible and
+remain bounded; they do not preserve raw traces.

@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 21
+ENGINEERING_STORAGE_SCHEMA_VERSION = 22
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -651,6 +651,24 @@ def _schema_v21(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _schema_v22(connection: sqlite3.Connection) -> None:
+    """Append immutable provider-invocation evidence and bounded churn counters."""
+    connection.execute(
+        """CREATE TABLE provider_invocations (
+            invocation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+            provider TEXT NOT NULL, model TEXT, phase TEXT NOT NULL, role TEXT NOT NULL,
+            started_at TEXT NOT NULL, completed_at TEXT, duration_ms INTEGER,
+            input_tokens INTEGER, cached_input_tokens INTEGER, uncached_input_tokens INTEGER,
+            output_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER,
+            usage_authority TEXT NOT NULL CHECK(usage_authority IN ('AUTHORITATIVE','DERIVED','UNAVAILABLE')),
+            speed_state TEXT NOT NULL CHECK(speed_state IN ('FAST','NORMAL_DEFAULT','OTHER','UNKNOWN')),
+            retry_ordinal INTEGER NOT NULL DEFAULT 0, estimated_credits REAL, estimated_eur REAL,
+            rate_table_version TEXT NOT NULL, churn TEXT NOT NULL DEFAULT '{}', UNIQUE(run_id, ordinal)
+        )"""
+    )
+    connection.execute("CREATE INDEX provider_invocations_run_lookup ON provider_invocations(run_id, ordinal)")
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -719,6 +737,7 @@ MIGRATIONS: dict[int, Migration] = {
     19: _schema_v19,
     20: _schema_v20,
     21: _schema_v21,
+    22: _schema_v22,
 }
 
 

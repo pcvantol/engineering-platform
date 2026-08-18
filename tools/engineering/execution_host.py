@@ -16,6 +16,7 @@ from threading import Lock
 from typing import Callable, Mapping, Protocol
 import uuid
 import re
+import sqlite3
 
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .capability_review import (
@@ -87,6 +88,7 @@ from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
 from .storage import EngineeringStorageError, load_readiness_evaluation, record_readiness_evaluation
 from .storage import dismissal_for_run
+from .provider_usage import ProviderInvocation, persist_provider_invocation
 from .execution_timing import ActivePhase
 from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
@@ -341,6 +343,35 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None) -> None:
+        """Append safe per-invocation evidence without affecting execution outcome."""
+        usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
+        if not isinstance(usage, dict):
+            usage = {}
+        metadata = getattr(self.agent, "last_runtime_metadata", None)
+        churn = getattr(self.agent, "last_churn", None)
+        duration = getattr(self.agent, "last_execution_seconds", None)
+        try:
+            from .storage import open_storage
+            connection = open_storage(self.root)
+            try:
+                ordinal = int(connection.execute(
+                    "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM provider_invocations WHERE run_id=?", (state.run_id,)
+                ).fetchone()[0])
+            finally:
+                connection.close()
+            now = datetime.now(timezone.utc).isoformat()
+            persist_provider_invocation(self.root, ProviderInvocation(
+                run_id=state.run_id, ordinal=ordinal, provider="codex_cli",
+                model=metadata.get("model") if isinstance(metadata, dict) else None,
+                phase=phase, role=role, started_at=started_at or now, completed_at=now,
+                duration_ms=round(duration * 1000) if isinstance(duration, (int, float)) and duration >= 0 else None,
+                usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
+                retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
+            ))
+        except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+            LOGGER.warning("Provider invocation telemetry is unavailable for run %s", state.run_id)
+
     def _record_agent_execution_time(self, state: TransactionState) -> TransactionState:
         """Accumulate only measured Codex CLI invocation time for this run."""
         measured = getattr(self.agent, "last_execution_seconds", None)
@@ -417,9 +448,11 @@ class EngineeringRunner:
         command_callback = getattr(self.agent, "set_command_callback", None)
         if callable(command_callback):
             command_callback(command_boundary)
+        invocation_started = datetime.now(timezone.utc).isoformat()
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
+            self._persist_provider_invocation(state, phase="REPAIR" if repair else "PROVIDER_EXECUTION", started_at=invocation_started)
             for active in validation_spans.values():
                 complete_phase(self.root, active, outcome="INTERRUPTED")
             complete_phase(self.root, provider, outcome="FAILED")
@@ -429,6 +462,7 @@ class EngineeringRunner:
         finally:
             if callable(command_callback):
                 command_callback(None)
+        self._persist_provider_invocation(state, phase="REPAIR" if repair else "PROVIDER_EXECUTION", started_at=invocation_started)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)
@@ -711,6 +745,14 @@ class EngineeringRunner:
                 state, selection, event, result
             ),
         )
+        # Reviewers remain independently reasoned and read-only.  Their
+        # concurrent CLI streams do not expose a safe per-review usage handle
+        # in every Codex version, so record the invocation with usage
+        # explicitly unavailable rather than misattributing a shared total.
+        for reviewer in results:
+            self._persist_provider_invocation(
+                state, phase="CAPABILITY_REVIEW", role=f"reviewer:{reviewer.reviewer}", observed_usage={}
+            )
         self.reviewer_records = records_for_storage(selections, results)
         recommendations = reconciled_recommendations(results)
         reviewer_context = (
