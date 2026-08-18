@@ -281,6 +281,13 @@ Invocation-scoped source-read reuse:
 - Treat a file as mutable and reread it after you edit it, a repair changes it, a generated/projection artefact is refreshed, or any repository checkout/change, validation, pull-request, merge, finalization, or cleanup boundary can affect it.
 - Preserve deliberate verification reads. If freshness is not proven, reread. Do not create a persistent source cache or retain source contents outside this invocation.
 - Shell reads are not host-intercepted: use this invocation-local evidence deliberately, and do not claim a cache hit unless you actually reuse content already inspected in this invocation.
+- The host bounds only oversized Git, GitHub, search, and test output at the
+  provider tool boundary. A bounded result says `MORE_EVIDENCE_AVAILABLE`;
+  rerun that same narrow command with `DJCONNECT_EVIDENCE_EXPAND=1` only when
+  its exact raw output is required. Source reads remain exact by default.
+- A successful test result may be compact, but a failed test keeps its failing
+  identity, assertion and diagnostic context. Never treat a bounded result as
+  proof when it is ambiguous: expand it or fail closed.
 """
     investigation_ledger = InvocationInvestigationLedger().record(
         "repository_identity", "repository_status", "git_ancestry"

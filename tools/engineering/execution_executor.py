@@ -132,7 +132,7 @@ import json
 import subprocess
 import time
 from dataclasses import replace
-from typing import Callable
+from typing import Callable, Mapping
 
 from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
 from .reviewer_evidence import ReviewerEvidence
@@ -143,6 +143,7 @@ from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .providers import CodexCliProvider
 from .execution_errors import CodexInvocationError, RunnerError
+from .evidence_projection import ToolProxyEnvironment
 
 _format_cli_failure = format_cli_failure
 
@@ -247,9 +248,10 @@ class CodexCliClient:
             schema_path = Path(handle.name)
         try:
             started = time.monotonic()
-            completed = self.provider.invoke(
-                root,
-                (
+            with ToolProxyEnvironment() as environment:
+                completed = self.provider.invoke(
+                    root,
+                    (
                     "codex",
                     "exec",
                     "--sandbox",
@@ -259,9 +261,9 @@ class CodexCliClient:
                     "--json",
                     "--output-schema",
                     str(schema_path),
-                    reviewer_prompt(selection, objective, evidence),
-                ),
-            )
+                        reviewer_prompt(selection, objective, evidence),
+                    ), environment=environment,
+                )
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
@@ -369,7 +371,8 @@ class CodexCliClient:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))
             started = time.monotonic()
-            completed = self._run_invocation(tuple(command), root)
+            with ToolProxyEnvironment() as environment:
+                completed = self._run_invocation(tuple(command), root, environment)
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             # Prefer one final explicit usage snapshot; legacy extraction stays
@@ -416,7 +419,7 @@ class CodexCliClient:
             ) from error
 
     def _run_invocation(
-        self, command: tuple[str, ...], root: Path
+        self, command: tuple[str, ...], root: Path, environment: Mapping[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
         """Run Codex, streaming only the approved activity projection when enabled."""
         self.last_execution_metadata = {
@@ -432,8 +435,8 @@ class CodexCliClient:
             and self._runtime_metadata_callback is None
             and self._workspace_progress_callback is None
         ):
-            return self.provider.invoke(root, command)
-        process = self.provider.spawn(root, command)
+            return self.provider.invoke(root, command, environment=environment)
+        process = self.provider.spawn_invocation(root, command, environment=environment)
         if self._process_callback is not None:
             try:
                 self._process_callback({"pid": process.pid, "process_group": os.getpgid(process.pid)})

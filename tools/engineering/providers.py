@@ -114,7 +114,7 @@ class CodexCliProvider(LocalProcessProvider):
             if stream is not None:
                 stream.close()
 
-    def invoke(self, root: Path, arguments: tuple[str, ...], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    def invoke(self, root: Path, arguments: tuple[str, ...], *, timeout: float | None = None, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
         # Execution remains behind the provider boundary.  The current
@@ -122,7 +122,25 @@ class CodexCliProvider(LocalProcessProvider):
         # do not supply a timeout here; retaining the argument preserves the
         # public provider contract for compatible callers.
         del timeout
-        return self.execute(root, command)
+        if environment is None:
+            return self.execute(root, command)
+        # The executable is this provider's configured Codex launcher, never a
+        # caller-selected command. Remaining values are Codex CLI arguments.
+        return subprocess.run(
+            (self._executable, *command[1:]), cwd=root, env=dict(environment),
+            text=True, capture_output=True, check=False,
+        )
+
+    def spawn_invocation(
+        self, root: Path, arguments: tuple[str, ...], *, environment: Mapping[str, str] | None = None
+    ) -> subprocess.Popen[str]:
+        command = self._arguments(arguments)
+        if environment is None:
+            return self.spawn(root, command)
+        return subprocess.Popen(
+            (self._executable, *command[1:]), cwd=root, env=dict(environment),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+        )
 
 
 class GitProvider(LocalProcessProvider):
