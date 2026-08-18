@@ -129,6 +129,33 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertNotEqual(first_content, second_content)
         self.assertIn("Status-Reconciliation-Request:", second_content)
 
+    def test_status_reconciliation_accepts_the_triggering_stale_rolling_record_diagnostic(self) -> None:
+        run_id = "inbox-triggering-shape"
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            terminal_condition="external_blocked",
+            diagnostic=(
+                "PR #865 is merged and current main is clean, but the rolling records "
+                "still state that PR #866 finalization is pending despite merged finalization PR #867."
+            ),
+        ))
+
+        self.assertEqual(
+            inbox_watcher.status_reconciliation_preview(self.repo, run_id),
+            {"run_id": run_id, "reason": "merged_status_records_stale"},
+        )
+
+    def test_status_reconciliation_rejects_a_run_with_its_own_pr_evidence(self) -> None:
+        run_id = "inbox-own-pr-evidence"
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            terminal_condition="external_blocked", implementation_pull_request=866,
+            diagnostic="Rolling records still state that Finalization is pending.",
+        ))
+
+        with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "niet in aanmerking"):
+            inbox_watcher.status_reconciliation_preview(self.repo, run_id)
+
     def test_verified_status_reconciliation_can_pass_its_blocked_predecessor_gate(self) -> None:
         run_id = "inbox-status-drift"
         StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(

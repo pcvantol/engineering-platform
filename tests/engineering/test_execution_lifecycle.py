@@ -143,6 +143,23 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(value["recovery"], {"kind": "status_reconciliation", "run_id": "inbox-flow"})
         self.assertEqual(value["recovery"], {"kind": "status_reconciliation", "run_id": "inbox-flow"})
 
+    def test_triggering_stale_rolling_record_shape_projects_only_finalization_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "INITIALIZE")
+            self._state(
+                root, "BLOCKED", terminal_condition="external_blocked",
+                diagnostic=(
+                    "Current main is clean, but the rolling records still state that "
+                    "Finalization is pending despite its merged finalization PR."
+                ),
+            )
+            value = projection(root, "inbox-flow")
+        step_ids = {step["id"] for step in value["steps"]}
+        self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", step_ids)
+        self.assertNotIn("WAIT_FOR_FINALIZATION_MERGE", step_ids)
+        self.assertEqual(value["recovery"], {"kind": "status_reconciliation", "run_id": "inbox-flow"})
+
     def test_completed_managed_run_omits_only_unused_finalization_merge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

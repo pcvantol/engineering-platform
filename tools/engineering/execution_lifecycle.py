@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 
 from .storage import EngineeringStorageError, open_storage
+from .agent_state import TransactionState
+from .status_reconciliation import is_stale_rolling_status_block
 
 
 TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -157,13 +159,12 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     repair_iterations = max(repair_iterations, _nonnegative_int(checkpoint.get("repair_iterations")))
     evidence_available = bool(events)
     terminal_state = phase if phase in TERMINAL else None
-    status_reconciliation_block = (
-        terminal_state == "BLOCKED"
-        and checkpoint.get("terminal_condition") == "external_blocked"
-        and not recorded_pull_request
-        and isinstance(checkpoint.get("diagnostic"), str)
-        and "rolling status records" in checkpoint["diagnostic"].lower()
-    )
+    try:
+        status_reconciliation_block = is_stale_rolling_status_block(
+            TransactionState.from_dict(checkpoint)
+        ) and not recorded_pull_request
+    except ValueError:
+        status_reconciliation_block = False
     # Reaching the pull-request hand-off is not evidence that the pull request
     # was merged. A later finalization step (or a successful terminal state)
     # is the first lifecycle evidence that can make the merge node complete.

@@ -46,6 +46,7 @@ from .drift_diagnostics import summary as drift_summary
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
+from .status_reconciliation import is_stale_rolling_status_block
 
 LABEL = "com.djconnect.engineering-inbox"
 WATCHER_VERSION = "1.1.5"
@@ -755,14 +756,7 @@ def status_reconciliation_preview(repo: Path, run_id: str) -> dict[str, str]:
         state = StateStore(repo / ".engineering" / "engineering-runs").load(run_id)
     except StateError as error:
         raise RetrySubmissionError("De geblokkeerde uitvoering is niet beschikbaar.") from error
-    diagnostic = state.diagnostic or ""
-    if not (
-        state.phase == "BLOCKED"
-        and state.terminal_condition == "external_blocked"
-        and state.implementation_pull_request is None
-        and state.finalization_pull_request is None
-        and "rolling status records" in diagnostic.lower()
-    ):
+    if not is_stale_rolling_status_block(state):
         raise RetrySubmissionError("Deze uitvoering komt niet in aanmerking voor veilig statusherstel.")
     return {"run_id": run_id, "reason": "merged_status_records_stale"}
 
