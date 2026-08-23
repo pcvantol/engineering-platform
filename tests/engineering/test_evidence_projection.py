@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+# This test invokes only its temporary controlled fixture.
+import subprocess  # nosec B404
+import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 from tools.engineering.evidence_projection import (
     FAILED_DIAGNOSTIC_LIMIT,
     PASSING_TEST_LIMIT,
+    ToolProxyEnvironment,
     deterministic_fixture,
     project_output,
 )
@@ -35,6 +42,49 @@ class EvidenceProjectionTests(unittest.TestCase):
         self.assertIn("MATCHES_BOUNDED", projected.text)
         self.assertIn("MORE_EVIDENCE_AVAILABLE", projected.text)
         self.assertTrue(projected.more_evidence_available)
+
+    def test_proxy_expansion_returns_search_evidence_and_cleans_up(self) -> None:
+        with TemporaryDirectory() as temporary:
+            source = Path(temporary) / "evidence.txt"
+            executable_directory = Path(temporary) / "bin"
+            executable_directory.mkdir()
+            executable = executable_directory / "rg"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "needle, source = sys.argv[1:]\n"
+                "for line in Path(source).read_text(encoding='utf-8').splitlines():\n"
+                "    if needle in line:\n"
+                "        print(line)\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            source.write_text("".join(f"needle {item}\n" for item in range(80)), encoding="utf-8")
+            expected = "".join(f"needle {item}\n" for item in range(80))
+            with ToolProxyEnvironment() as environment:
+                proxy_directory = Path(environment["PATH"].split(os.pathsep, 1)[0])
+                environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
+                # Command and fixture path are test-controlled.
+                bounded = subprocess.run(  # nosec B603
+                    ("rg", "needle", str(source)),
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                    text=True,
+                )
+                expanded = subprocess.run(  # nosec B603
+                    ("rg", "needle", str(source)),
+                    capture_output=True,
+                    check=False,
+                    env={**environment, "DJCONNECT_EVIDENCE_EXPAND": "1"},
+                    text=True,
+                )
+            self.assertEqual(bounded.returncode, 0)
+            self.assertIn("MORE_EVIDENCE_AVAILABLE", bounded.stdout)
+            self.assertEqual(expanded.returncode, 0)
+            self.assertEqual(expanded.stdout, expected)
+            self.assertFalse(proxy_directory.exists())
 
     def test_broad_git_and_github_outputs_become_bounded_facts(self) -> None:
         git = project_output(("git", "log"), "commit\n" * 1000, 0)
