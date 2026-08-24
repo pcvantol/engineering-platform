@@ -133,6 +133,38 @@ class EngineeringStorageTest(unittest.TestCase):
                     connection.execute("SELECT content FROM engineering_artifacts").fetchone()[0], b"test"
                 )
 
+    def test_schema_twenty_five_repairs_early_usage_snapshot_table(self) -> None:
+        """A database that recorded v24 before uncached counters can report."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root) as connection:
+                connection.execute("DROP TABLE provider_usage_snapshots")
+                connection.execute(
+                    """CREATE TABLE provider_usage_snapshots (
+                        invocation_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                        input_tokens INTEGER, cached_input_tokens INTEGER,
+                        output_tokens INTEGER, reasoning_tokens INTEGER,
+                        total_tokens INTEGER, input_delta INTEGER,
+                        cached_input_delta INTEGER, output_delta INTEGER,
+                        PRIMARY KEY(invocation_id, ordinal)
+                    )"""
+                )
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version=25"
+                )
+            with open_storage(root) as connection:
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(provider_usage_snapshots)")
+                }
+                self.assertTrue({"uncached_input_tokens", "uncached_input_delta"} <= columns)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT MAX(version) FROM engineering_schema_migrations"
+                    ).fetchone()[0],
+                    ENGINEERING_STORAGE_SCHEMA_VERSION,
+                )
+
     def test_schema_four_imports_legacy_redacted_component_logs_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

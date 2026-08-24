@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 24
+ENGINEERING_STORAGE_SCHEMA_VERSION = 25
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -694,6 +694,25 @@ def _schema_v24(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v25(connection: sqlite3.Connection) -> None:
+    """Repair early v24 snapshot tables missing uncached-token counters.
+
+    Some live databases recorded migration 24 while carrying the initial
+    provider-usage table shape.  Keep this migration additive and inspect the
+    physical table so both those databases and clean v24 installations migrate
+    safely.
+    """
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(provider_usage_snapshots)")
+    }
+    for name in ("uncached_input_tokens", "uncached_input_delta"):
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE provider_usage_snapshots ADD COLUMN {name} INTEGER"
+            )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -765,6 +784,7 @@ MIGRATIONS: dict[int, Migration] = {
     22: _schema_v22,
     23: _schema_v23,
     24: _schema_v24,
+    25: _schema_v25,
 }
 
 
