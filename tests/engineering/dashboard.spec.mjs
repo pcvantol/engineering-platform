@@ -1351,6 +1351,28 @@ test.describe("Engineering Status browser smoke", () => {
       .toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]);
   });
 
+  test("renders automatic reconciliation without an operator handoff", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "RECONCILE_AGENT",
+      run_id: "inbox-reconciliation",
+      target_repository: "pcvantol/djconnect",
+      lifecycle: {
+        available: true, run_id: "inbox-reconciliation", terminal_state: "ACTIVE",
+        steps: [
+          { id: "RECONCILE_AGENT", presentation_key: "lifecycle.step.reconcile_agent", state: "ACTIVE" },
+        ],
+      },
+    }, {}));
+    const modal = page.locator("#operatorMergeWaitModal");
+    await expect(modal).toBeHidden();
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await page.locator(".execution-lifecycle__item--active .execution-lifecycle__node").click();
+    await expect(page.locator("#lifecycleDetailModal")).toBeVisible();
+  });
+
   test("renders only the merge boundaries recorded for the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));

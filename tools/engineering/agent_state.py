@@ -13,7 +13,7 @@ from .storage import EngineeringStorageError, open_storage
 
 
 SCHEMA_VERSION = 1
-PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
+PHASES = frozenset({"INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
@@ -59,6 +59,7 @@ class TransactionState:
     finalization_pull_request: int | None = None
     finalization_head_sha: str | None = None
     finalization_merge_commit: str | None = None
+    reconciliation_pull_request: int | None = None
     latest_repository_evidence: str | None = None
     latest_github_evidence: str | None = None
     agent_execution_seconds: float | None = None
@@ -81,6 +82,7 @@ class TransactionState:
             "implementation_head_sha": None, "implementation_merge_commit": None,
             "finalization_branch": None, "finalization_pull_request": None,
             "finalization_head_sha": None, "finalization_merge_commit": None,
+            "reconciliation_pull_request": None,
             "latest_repository_evidence": None, "latest_github_evidence": None,
             "agent_execution_seconds": None,
             "validation_evidence": (),
@@ -114,7 +116,7 @@ class TransactionState:
             raise StateError("checkpoint last_verified_sha is invalid")
         if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
             raise StateError("checkpoint diagnostic is invalid or unsafe")
-        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION"} or state.execution_mode not in {"MANAGED", "GENESIS"}:
+        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
         if state.genesis_repository_path is not None and (not isinstance(state.genesis_repository_path, str) or not Path(state.genesis_repository_path).is_absolute()):
             raise StateError("genesis repository path is invalid")
@@ -123,7 +125,7 @@ class TransactionState:
         optional_sha_fields = (state.implementation_head_sha, state.implementation_merge_commit, state.finalization_head_sha, state.finalization_merge_commit)
         if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)) for value in optional_sha_fields):
             raise StateError("checkpoint lifecycle SHA is invalid")
-        optional_pr_fields = (state.implementation_pull_request, state.finalization_pull_request)
+        optional_pr_fields = (state.implementation_pull_request, state.finalization_pull_request, state.reconciliation_pull_request)
         if any(value is not None and (not isinstance(value, int) or value < 1) for value in optional_pr_fields):
             raise StateError("checkpoint lifecycle pull request is invalid")
         if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:

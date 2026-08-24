@@ -70,7 +70,7 @@ class InboxWatcherTest(unittest.TestCase):
         wait_for_pending_telemetry()
         self.temp.cleanup()
 
-    def test_status_reconciliation_starts_a_finalization_transaction(self) -> None:
+    def test_status_reconciliation_starts_a_reconciliation_transaction(self) -> None:
         prompt = self.repo / "reconciliation.md"
         prompt.write_text(
             "Status-Reconciliation-Of: inbox-abcdef123456\n\n# Reconcile status\n",
@@ -83,7 +83,7 @@ class InboxWatcherTest(unittest.TestCase):
 
         arguments = execute.call_args.args[1]
         self.assertIn("--transaction-kind", arguments)
-        self.assertEqual(arguments[arguments.index("--transaction-kind") + 1], "FINALIZATION")
+        self.assertEqual(arguments[arguments.index("--transaction-kind") + 1], "RECONCILIATION")
 
     def test_preflight_failure_keeps_the_specific_bounded_runner_reason(self) -> None:
         completed = subprocess.CompletedProcess(("engineering-execution-host",), 2, "BLOCKED: working tree is not clean\n", "")
@@ -93,7 +93,7 @@ class InboxWatcherTest(unittest.TestCase):
             "BLOCKED: working tree is not clean",
         )
 
-    def test_status_reconciliation_only_queues_a_verified_finalization_request(self) -> None:
+    def test_status_reconciliation_only_queues_a_verified_reconciliation_request(self) -> None:
         run_id = "inbox-status-drift"
         StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
             run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
@@ -109,7 +109,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(outcome["run_id"], run_id)
         prompt = (self.inbox / outcome["filename"]).read_text(encoding="utf-8")
         self.assertIn(f"Status-Reconciliation-Of: {run_id}", prompt)
-        self.assertIn("governance-only Finalization", prompt)
+        self.assertIn("governance-only Reconciliation", prompt)
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "staat al in de wachtrij"):
             inbox_watcher.submit_status_reconciliation(self.repo, self.root, run_id)
 

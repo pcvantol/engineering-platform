@@ -795,7 +795,7 @@ def _is_verified_status_reconciliation(
 
 
 def submit_status_reconciliation(repo: Path, root: Path, run_id: str) -> dict[str, str]:
-    """Queue exactly one dedicated Finalization prompt after a verified preview."""
+    """Queue exactly one dedicated Reconciliation prompt after a verified preview."""
     preview = status_reconciliation_preview(repo, run_id)
     with _lock(repo):
         marker = f"Status-Reconciliation-Of: {run_id}"
@@ -806,11 +806,11 @@ def submit_status_reconciliation(repo: Path, root: Path, run_id: str) -> dict[st
             f"{marker}\nStatus-Reconciliation-Request: {request_id}\n\n"
             "# Engineering Platform — Reconcile merged status records\n\n"
             "Required Engineering Platform: >= 1.5.0\n\n"
-            "Execute only the dedicated governance-only Finalization reconciliation for the "
+            "Execute only the dedicated governance-only Reconciliation for the "
             "verified merged predecessor of the referenced blocked run. Reconcile the four "
             "rolling records required by PROMPT_INITIALIZATION.md with current main. Do not "
             "rewrite Prompt History or change product, execution, validation, retry, merge, "
-            "or lifecycle semantics. Create one reviewable Finalization pull request.\n"
+            "or lifecycle semantics. Commit and push the verified rolling-record reconciliation directly to main; do not create a pull request.\n"
         )
         inbox = folders(root)["Inbox"]
         filename = f"status-reconciliation-{run_id}-{uuid.uuid4().hex[:8]}.md"
@@ -1388,10 +1388,10 @@ def _execute_runner_command(
         str(ENGINEERING_STORAGE_SCHEMA_VERSION),
     ]
     # This marker is admitted only after the immutable predecessor proof.  It
-    # must also select the Finalization transaction in the Execution Host;
+    # must also select the Reconciliation transaction in the Execution Host;
     # otherwise the host defaults to an implementation pipeline.
     if STATUS_RECONCILIATION_OF_PATTERN.search(prompt.read_text(encoding="utf-8")):
-        arguments.extend(("--transaction-kind", "FINALIZATION"))
+        arguments.extend(("--transaction-kind", "RECONCILIATION"))
     if phase and phase not in TERMINAL_PHASES:
         arguments.append("--resume")
     execution_started_at = datetime.now(timezone.utc)

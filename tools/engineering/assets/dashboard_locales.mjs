@@ -2529,6 +2529,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.step.repair_agent":"PR-controle
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.step.repair_agent":"PR-Prüfungsreparatur","lifecycle.step.wait_for_operator_merge":"Implementierungs-Merge","lifecycle.step.wait_for_finalization_merge":"Finalisierungs-Merge"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.step.repair_agent":"Correction des contrôles de PR","lifecycle.step.wait_for_operator_merge":"Fusion d’implémentation","lifecycle.step.wait_for_finalization_merge":"Fusion de finalisation"});
 Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.step.repair_agent":"Corrección de controles de PR","lifecycle.step.wait_for_operator_merge":"Fusión de implementación","lifecycle.step.wait_for_finalization_merge":"Fusión de finalización"});
+Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.step.reconcile_agent":"Reconciliation","lifecycle.step.wait_for_reconciliation_merge":"Reconciliation merge"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.step.reconcile_agent":"Reconciliatie","lifecycle.step.wait_for_reconciliation_merge":"Reconciliatie-merge"});
+Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.step.reconcile_agent":"Abgleich","lifecycle.step.wait_for_reconciliation_merge":"Abgleichs-Merge"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"lifecycle.step.reconcile_agent":"Rapprochement","lifecycle.step.wait_for_reconciliation_merge":"Fusion de rapprochement"});
+Object.assign(DASHBOARD_MESSAGES.es, {"lifecycle.step.reconcile_agent":"Conciliación","lifecycle.step.wait_for_reconciliation_merge":"Fusión de conciliación"});
 Object.assign(DASHBOARD_MESSAGES.en, {"lifecycle.state.waiting_for_operator_merge":"waiting for operator merge"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"lifecycle.state.waiting_for_operator_merge":"wacht op operator-merge"});
 Object.assign(DASHBOARD_MESSAGES.de, {"lifecycle.state.waiting_for_operator_merge":"warten auf Operator-Merge"});

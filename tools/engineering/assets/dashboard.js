@@ -1067,9 +1067,11 @@ function renderOperatorMergeWait(x) {
   $("operatorMergeWaitDescription").textContent = t("merge_wait.description", { number: pullRequest });
   const modal = $("operatorMergeWaitModal");
   $("operatorMergeWaitModalDescription").textContent = t("merge_wait.description", { number: pullRequest });
-  const mergeKey = Number(x.finalization_pr) === pullRequest
-    ? "lifecycle.step.wait_for_finalization_merge"
-    : "lifecycle.step.wait_for_operator_merge";
+  const mergeKey = Number(x.reconciliation_pr) === pullRequest
+    ? "lifecycle.step.wait_for_reconciliation_merge"
+    : Number(x.finalization_pr) === pullRequest
+      ? "lifecycle.step.wait_for_finalization_merge"
+      : "lifecycle.step.wait_for_operator_merge";
   $("operatorMergeWaitModalContextIntro").textContent = t("merge_wait.context_intro", {
     merge: t(mergeKey), number: pullRequest,
   });
@@ -1126,8 +1128,8 @@ function lifecycleStateLabel(state) {
 function isOperatorMergeStep(step) {
   const id = String(step?.id || "").toUpperCase();
   const key = String(step?.presentation_key || "");
-  return ["WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE"].includes(id)
-    || ["lifecycle.step.wait_for_operator_merge", "lifecycle.step.wait_for_finalization_merge"].includes(key);
+  return ["WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE", "WAIT_FOR_RECONCILIATION_MERGE"].includes(id)
+    || ["lifecycle.step.wait_for_operator_merge", "lifecycle.step.wait_for_finalization_merge", "lifecycle.step.wait_for_reconciliation_merge"].includes(key);
 }
 function isLifecycleStartStep(step) {
   return String(step?.id || "").toUpperCase() === "START"

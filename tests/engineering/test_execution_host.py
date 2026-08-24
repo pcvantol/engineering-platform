@@ -1485,13 +1485,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.store,
             repository,
             FakeGitHub([PullRequestEvidence(12, "MERGED", True, True, "b" * 40)]),
-            FakeAgent(AgentResult("WAITING")),
+            FakeAgent(AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)),
             lambda _: None,
         )._poll(state)
 
         self.assertEqual(result.phase, "COMPLETE")
         self.assertEqual(repository.refresh_main_reference_calls, [self.root])
-        self.assertEqual(repository.synchronize_calls, [])
+        self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_agent_cannot_reuse_main_or_an_unbranched_pr_as_transaction_evidence(self) -> None:
         state = TransactionState(
@@ -1617,7 +1617,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ])
         runner = EngineeringRunner(
             self.root, self.store, FakeRepository(), github,
-            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)]), lambda _: None,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
         )
 
         result = runner._poll(state)
@@ -1630,7 +1630,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
         final_open = PullRequestEvidence(22, "OPEN", True, True)
         final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
-        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)])
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
         state = TransactionState("full-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation", pull_request=21, owner_authorized=True)
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([implementation, final_open, final_merged]), agent, lambda _: None)
         result = runner._poll(state)
@@ -1656,7 +1656,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         result = EngineeringRunner(
             self.root, self.store, repository, github,
-            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)]), lambda _: None,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)]), lambda _: None,
         )._poll(state)
 
         self.assertEqual(result.phase, "COMPLETE")
@@ -1669,7 +1669,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_merged_finalization_returned_by_agent_is_reconciled_without_ready(self) -> None:
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
         final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
-        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)])
+        agent = SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22), AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)])
         state = TransactionState(
             "already-finalized", "pcvantol/djconnect", str(self.prompt),
             "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation",
@@ -1742,7 +1742,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         repository = FakeRepository()
         state = TransactionState("cleanup-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", transaction_kind="FINALIZATION", owner_authorized=True, implementation_branch="codex/implementation", finalization_branch="codex/final", finalization_merge_commit="c" * 40, pull_request=25)
         github = FakeGitHub([PullRequestEvidence(25, "MERGED", True, True, "c" * 40)])
-        result = EngineeringRunner(self.root, self.store, repository, github, FakeAgent(AgentResult("WAITING")), lambda _: None)._poll(state)
+        result = EngineeringRunner(self.root, self.store, repository, github, FakeAgent(AgentResult("COMPLETE", terminal_condition="repository_reconciled", commit_sha="a" * 40)), lambda _: None)._poll(state)
         self.assertEqual(result.phase, "COMPLETE")
         self.assertEqual(repository.cleanup_calls, [("codex/implementation", "codex/final")])
 

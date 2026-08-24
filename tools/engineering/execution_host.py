@@ -250,6 +250,14 @@ def assemble_prompt(
         else json.dumps(state.to_dict(), sort_keys=True)
     )
     authority = (
+        """This is the sole automatic post-Finalization reconciliation. You may only update
+the four canonical rolling records, commit them directly to the already synchronized `main`,
+and push that one commit. Do not create a branch or pull request. Do not change runtime code,
+authority, lifecycle, retry, validation, provider, Forge, queue, or delivery semantics. Return
+`COMPLETE`, `repository_reconciled`, and the pushed main commit SHA only after verifying a clean
+workspace and that `main` contains that exact commit."""
+        if state and state.transaction_kind == "RECONCILIATION"
+        else
         """The runner holds explicit owner authorization for this exact bounded transaction. You may create, commit and push one bounded branch and draft pull request, or repair that same pull request. The runner may mark that pull request ready for review, but only the human operator may merge it. Do not merge, release, deploy, tag, publish, upload, change repository settings, bypass protection, or expand the objective."""
         if state and state.owner_authorized
         else "Do not create a merge, release, deployment, daemon, remote-control, or architecture authority beyond the supplied objective."
@@ -930,6 +938,8 @@ class EngineeringRunner:
             if state.transaction_kind == "FINALIZATION" else state.finalization_branch,
             finalization_pull_request=result.pull_request
             if state.transaction_kind == "FINALIZATION" else state.finalization_pull_request,
+            reconciliation_pull_request=result.pull_request
+            if state.transaction_kind == "RECONCILIATION" else state.reconciliation_pull_request,
         )
         self.store.save(state)
         write_live_status(self.root, state, state.next_action)
@@ -1027,6 +1037,11 @@ class EngineeringRunner:
                 last_verified_sha=evidence.head_sha,
                 next_action="create_finalization",
             )
+        if state.transaction_kind == "RECONCILIATION" and not state.reconciliation_pull_request:
+            return replace(
+                state, phase="RECONCILE_AGENT", last_verified_sha=evidence.head_sha,
+                next_action="create_reconciliation",
+            )
         if (
             state.transaction_kind == "FINALIZATION"
             and state.finalization_merge_commit
@@ -1060,6 +1075,26 @@ class EngineeringRunner:
                 "Agent result referenced a pull request without a transaction branch; the current main branch cannot be reused as execution evidence.",
             )
         if not state.pull_request:
+            if state.transaction_kind == "RECONCILIATION" and result and result.pull_request:
+                return self._save_terminal(
+                    state, "BLOCKED", "reconciliation_pull_request_forbidden",
+                    "Automatic reconciliation must commit directly to main and must not create a pull request.",
+                )
+            if state.transaction_kind == "RECONCILIATION" and result and result.terminal_state == "COMPLETE":
+                evidence = self.repository.inspect(self.root)
+                if (
+                    result.terminal_condition == "repository_reconciled"
+                    and result.commit_sha
+                    and evidence.clean
+                    and evidence.branch == "main"
+                    and evidence.head_sha == result.commit_sha
+                    and evidence.main_contains_head
+                ):
+                    return self._cleanup(replace(state, last_verified_sha=result.commit_sha))
+                return self._save_terminal(
+                    state, "BLOCKED", "automatic_reconciliation_evidence_required",
+                    "Automatic reconciliation requires a clean main checkout containing its reported commit.",
+                )
             if result and result.terminal_state == "COMPLETE":
                 evidence = self.repository.inspect(self.root)
                 if evidence.clean and evidence.main_contains_head:
@@ -1123,12 +1158,15 @@ class EngineeringRunner:
                 except RunnerError:
                     return self._save_operator_merge_wait(state)
                 if pr.merge_commit and self.repository.remote_main_contains(self.root, pr.merge_commit):
-                    gate_type = "IMPLEMENTATION_MERGE_APPROVAL" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE_APPROVAL"
+                    gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
                     self._managed_gate(state, gate_type, "SATISFIED", pr.number, resolved=True)
-                    self._managed_action(state, "IMPLEMENTATION_MERGE" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE", "EXPECTED_OPERATOR_GATE", actor="operator", evidence_ref="github_merge")
+                    action = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE", "FINALIZATION": "FINALIZATION_MERGE", "RECONCILIATION": "RECONCILIATION_MERGE"}[state.transaction_kind]
+                    self._managed_action(state, action, "EXPECTED_OPERATOR_GATE", actor="operator", evidence_ref="github_merge")
                     state = self._record_merged_evidence(state, pr, evidence)
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
+                    if state.owner_authorized and state.transaction_kind == "FINALIZATION":
+                        return self._start_automatic_reconciliation(state)
                     return self._cleanup(state)
             # A green PR is an explicit hand-off to the operator.  The runner
             # must not turn that durable waiting state into a synthetic failure
@@ -1142,7 +1180,7 @@ class EngineeringRunner:
                 waiting_for_merge_since=state.waiting_for_merge_since
                 or datetime.now(timezone.utc).isoformat(),
             )
-            gate_type = "IMPLEMENTATION_MERGE_APPROVAL" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE_APPROVAL"
+            gate_type = {"IMPLEMENTATION": "IMPLEMENTATION_MERGE_APPROVAL", "FINALIZATION": "FINALIZATION_MERGE_APPROVAL", "RECONCILIATION": "RECONCILIATION_MERGE_APPROVAL"}[state.transaction_kind]
             self._managed_gate(waiting, gate_type, "WAITING", state.pull_request)
             return self._save_operator_merge_wait(waiting)
 
@@ -1311,6 +1349,48 @@ class EngineeringRunner:
         self.github.ready(result.pull_request)
         return self._poll(finalization, result)
 
+    def _start_automatic_reconciliation(self, state: TransactionState) -> TransactionState:
+        """Apply the bounded rolling-record update after Finalization merges.
+
+        This is deliberately a direct, post-merge `main` commit: it has no PR,
+        review, approval, or operator merge boundary. Its scope is enforced by
+        the supplied reconciliation prompt and the exact commit evidence below.
+        """
+        synchronize = getattr(self.repository, "synchronize_main", None)
+        if callable(synchronize):
+            synchronize(self.root)
+        evidence = self.repository.inspect(self.root)
+        if not evidence.clean or evidence.branch != "main":
+            return self._save_terminal(
+                state, "BLOCKED", "synchronize_main",
+                "Automatic reconciliation requires a clean, synchronized main checkout.",
+            )
+        reconciliation = replace(
+            state, phase="RECONCILE_AGENT", transaction_kind="RECONCILIATION",
+            branch=None, pull_request=None, reconciliation_pull_request=None,
+            next_action="reconcile_rolling_records_on_main", waiting_for_merge_since=None,
+            latest_repository_evidence=_repository_summary(evidence),
+        )
+        self._managed_action(reconciliation, "AUTOMATIC_RECONCILIATION")
+        self.store.save(reconciliation)
+        write_live_status(self.root, reconciliation, reconciliation.next_action)
+        try:
+            result = self._invoke_agent_with_timing(
+                reconciliation,
+                assemble_prompt(
+                    Path(reconciliation.prompt_path), reconciliation,
+                    managed_target=self.root if reconciliation.execution_mode == "MANAGED" else None,
+                ) + "\n\nReconcile only the four canonical rolling current-state records after the verified Finalization merge. Preserve immutable Prompt History.",
+            )
+            reconciliation = self._record_agent_execution_time(reconciliation)
+            reconciliation = self._record_validation_evidence(reconciliation, result)
+            self._persist_agent_usage(reconciliation.run_id)
+        except CodexInvocationError as error:
+            reconciliation = self._record_agent_execution_time(reconciliation)
+            self.console_detail = error.console_detail
+            return self._save_terminal(reconciliation, "BLOCKED", error.next_action, str(error), terminal_condition=error.terminal_condition)
+        return self._poll(reconciliation, result)
+
     def _save_terminal(
         self,
         state: TransactionState,
@@ -1394,6 +1474,8 @@ class EngineeringRunner:
                 implementation_merge_commit=pr.merge_commit,
                 **common,
             )
+        if state.transaction_kind == "RECONCILIATION":
+            return replace(state, reconciliation_pull_request=pr.number, **common)
         return replace(
             state,
             finalization_branch=state.branch or state.finalization_branch,
@@ -1413,7 +1495,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id")
     parser.add_argument(
         "--transaction-kind",
-        choices=("IMPLEMENTATION", "FINALIZATION"),
+        choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"),
         default="IMPLEMENTATION",
         help="internal watcher-selected transaction kind",
     )

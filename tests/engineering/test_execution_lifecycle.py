@@ -47,14 +47,24 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", intended_path("GENESIS"))
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", intended_path("MANAGED"))
 
-    def test_status_reconciliation_uses_only_the_finalization_path(self) -> None:
-        path = intended_path("MANAGED", "FINALIZATION", None)
+    def test_status_reconciliation_uses_its_own_merge_path(self) -> None:
+        path = intended_path("MANAGED", "RECONCILIATION", None)
         self.assertEqual(
             path,
-            ("START", "INITIALIZE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE", "REPOSITORY_CLEANUP", "TERMINAL"),
+            ("START", "INITIALIZE", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL"),
         )
         self.assertNotIn("EXECUTE_AGENT", path)
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", path)
+
+    def test_reconciliation_projects_its_automatic_agent_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "RECONCILE_AGENT", transaction_kind="RECONCILIATION")
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(value["current_step"], "RECONCILE_AGENT")
+        self.assertEqual(by_id["RECONCILE_AGENT"]["state"], "ACTIVE")
+        self.assertNotIn("WAIT_FOR_RECONCILIATION_MERGE", by_id)
 
     def test_required_check_polling_stays_on_the_visible_merge_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -138,7 +138,7 @@ def _watcher_lags_live_phase(
         and watcher.get("current_phase") == "WAIT_FOR_OPERATOR_MERGE"
         and isinstance(lifecycle, dict)
         and lifecycle.get("current_step") in {
-            "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP",
+            "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP",
         }
     )
 
@@ -160,7 +160,7 @@ def _is_operator_merge_wait(live: object, lifecycle: object) -> bool:
         return True
     return (
         phase == "WAIT_FOR_TERMINAL_EVIDENCE"
-        and lifecycle.get("current_step") == "WAIT_FOR_OPERATOR_MERGE"
+        and lifecycle.get("current_step") in {"WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE", "WAIT_FOR_RECONCILIATION_MERGE"}
         and isinstance(live.get("pull_request"), int)
         and not isinstance(live.get("pull_request"), bool)
         and live["pull_request"] > 0
@@ -179,6 +179,7 @@ def unavailable_status() -> bytes:
             "queue_items": [],
             "implementation_pr": None,
             "finalization_pr": None,
+            "reconciliation_pr": None,
             "repository_state": "UNKNOWN",
             "workspace_state": "UNKNOWN",
             "diagnostic": "Er is nog geen lokale engineeringstatus gepubliceerd.",
@@ -261,6 +262,7 @@ def status(root: Path) -> bytes:
                 "queue_items": watcher.get("queue_items", []),
                 "implementation_pr": live.get("implementation_pr"),
                 "finalization_pr": live.get("finalization_pr"),
+                "reconciliation_pr": live.get("reconciliation_pr"),
                 "pull_request": live.get("pull_request"),
                 "waiting_for_merge_since": live.get("waiting_for_merge_since"),
                 "repository_state": live.get("repository_state") or "ACTIVE",
