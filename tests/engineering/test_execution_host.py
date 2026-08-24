@@ -1642,6 +1642,30 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("tools.engineering.repository_handoff", agent.prompts[0])
         self.assertIn("handoff records to that same Finalization branch", agent.prompts[0])
 
+    def test_owner_authorized_merged_lifecycle_reconciles_and_cleans_up(self) -> None:
+        """A verified two-PR happy path completes without a runner merge call."""
+        implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
+        final_open = PullRequestEvidence(22, "OPEN", True, True)
+        final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)
+        repository = FakeRepository()
+        github = FakeGitHub([implementation, final_open, final_merged])
+        state = TransactionState(
+            "autonomous-happy-path", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/implementation",
+            pull_request=21, owner_authorized=True,
+        )
+        result = EngineeringRunner(
+            self.root, self.store, repository, github,
+            SequencedFakeAgent([AgentResult("WAITING", "codex/final", 22)]), lambda _: None,
+        )._poll(state)
+
+        self.assertEqual(result.phase, "COMPLETE")
+        self.assertTrue(result.terminal)
+        self.assertEqual(result.implementation_merge_commit, "b" * 40)
+        self.assertEqual(result.finalization_merge_commit, "c" * 40)
+        self.assertEqual(repository.cleanup_calls, [("codex/implementation", "codex/final")])
+        self.assertEqual(github.merge_calls, [])
+
     def test_merged_finalization_returned_by_agent_is_reconciled_without_ready(self) -> None:
         implementation = PullRequestEvidence(21, "MERGED", True, True, "b" * 40)
         final_merged = PullRequestEvidence(22, "MERGED", True, True, "c" * 40)

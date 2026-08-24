@@ -2419,7 +2419,15 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("sizes the visible status column before narrowing the prompt title", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
+    // Wait for the initial history request before replacing its fixture. Without
+    // this, the asynchronous response can replace the row under measurement.
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: {
+      runs: [{ run_id: "inbox-fixture", status: "COMPLETE", title: "Fixture" }],
+    } }));
+    const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await historyLoaded;
+    await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       document.querySelector("#promptHistory").open = true;
       promptHistoryEntries = [{
