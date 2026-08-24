@@ -430,6 +430,7 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
         "evidence_persistence": aggregate(values("evidence_persistence_time_ms")),
     }
     phase_values: dict[str, list[int]] = {phase: [] for phase in _DASHBOARD_PHASES}
+    phase_share_values: dict[str, list[int]] = {phase: [] for phase in _DASHBOARD_PHASES}
     for item in summaries:
         # Use the shared run-level category projection.  The dashboard must
         # not reconstruct a competing aggregate from raw spans.
@@ -441,6 +442,11 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
                 phase, value = aggregate_row.get("phase"), aggregate_row.get("duration_ms")
                 if isinstance(phase, str) and phase in phase_values and isinstance(value, int):
                     phase_values[phase].append(value)
+        shares = item.get("phase_share_durations_ms", {})
+        if isinstance(shares, dict):
+            for phase, value in shares.items():
+                if isinstance(phase, str) and phase in phase_share_values and isinstance(value, int):
+                    phase_share_values[phase].append(value)
     phase_wall_time = sum(
         int(item["total_wall_time_ms"])
         for item in summaries
@@ -450,10 +456,11 @@ def daily_timing_detail(root: Path, execution_date: str) -> dict[str, object]:
         dict(
             {"phase": phase},
             **aggregate(items),
-            # This is each category's measured share of total wall time, not
-            # a normalization across phase aggregates.  Categories can have
-            # different nesting, so summing them would double-count time.
-            share_percent=round(sum(items) * 100 / phase_wall_time, 3) if phase_wall_time else None,
+            # Raw durations retain nested and stale-span audit evidence. The
+            # percentage uses only each category's overlap with the run's
+            # TOTAL_EXECUTION envelope, so a single category cannot exceed
+            # 100% of total wall time.
+            share_percent=round(sum(phase_share_values[phase]) * 100 / phase_wall_time, 3) if phase_wall_time else None,
         )
         for phase, items in phase_values.items() if aggregate(items)
     ]

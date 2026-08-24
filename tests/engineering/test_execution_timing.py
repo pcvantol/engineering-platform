@@ -66,6 +66,24 @@ class ExecutionPhaseTimingTest(unittest.TestCase):
             self.assertEqual(summary["validation_time_ms"], 10000)
             self.assertEqual(summary["overhead_time_ms"], 60000)
 
+    def test_phase_share_uses_total_execution_overlap_but_preserves_stale_raw_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, tzinfo=timezone.utc)
+            record_phase(
+                root, "run-stale-tail", "TOTAL_EXECUTION", started_at=started,
+                completed_at=started + timedelta(seconds=100), outcome="FAILED",
+            )
+            record_phase(
+                root, "run-stale-tail", "PROVIDER_EXECUTION", started_at=started + timedelta(seconds=50),
+                completed_at=started + timedelta(seconds=160), outcome="STALE",
+            )
+            summary = timing_summary(root, "run-stale-tail")
+        self.assertEqual(summary["provider_execution_time_ms"], 110_000)
+        self.assertEqual(summary["phase_share_durations_ms"]["PROVIDER_EXECUTION"], 50_000)
+        self.assertEqual(summary["provider_share_percent"], 50.0)
+        self.assertEqual(summary["phase_aggregates"][0], {"phase": "PROVIDER_EXECUTION", "duration_ms": 110_000})
+
     def test_stale_reconciliation_preserves_completed_spans_and_closes_active(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

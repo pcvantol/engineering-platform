@@ -147,6 +147,20 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
         self.assertEqual(detail["bottlenecks"]["top_time_consumers"][0]["phase"], "PROVIDER_EXECUTION")
         self.assertEqual(detail["bottlenecks"]["top_time_consumers"][0]["share_percent"], 39.216)
         self.assertEqual(detail["bottlenecks"]["shares"]["provider_execution"], 39)
+
+    def test_daily_timing_detail_caps_a_phase_share_to_total_execution_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, 10, tzinfo=timezone.utc)
+            persist_execution(root, self._record("run-stale-share", "FAILED", started))
+            record_phase(root, "run-stale-share", "TOTAL_EXECUTION", started_at=started,
+                         completed_at=started + timedelta(seconds=100), outcome="FAILED")
+            record_phase(root, "run-stale-share", "PROVIDER_EXECUTION", started_at=started + timedelta(seconds=50),
+                         completed_at=started + timedelta(seconds=160), outcome="STALE")
+            detail = daily_timing_detail(root, "2026-08-15")
+        provider = next(item for item in detail["phases"] if item["phase"] == "PROVIDER_EXECUTION")
+        self.assertEqual(provider["total_ms"], 110_000)
+        self.assertEqual(provider["share_percent"], 50.0)
     def test_async_telemetry_failure_is_isolated_from_engineering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             observed = Event()

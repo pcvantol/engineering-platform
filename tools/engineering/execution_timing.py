@@ -270,6 +270,47 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
         total = historical_total if historical_total is not None else sum(
             duration for name, duration in by_phase.items() if name != "QUEUE_WAIT"
         )
+
+    def timestamp(span: dict[str, object], key: str) -> datetime | None:
+        value = span.get(key)
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    total_envelopes = [
+        (timestamp(span, "started_at"), timestamp(span, "completed_at"))
+        for span in top_level
+        if span["phase_name"] == "TOTAL_EXECUTION"
+    ]
+    total_envelopes = [
+        (started, completed) for started, completed in total_envelopes
+        if started is not None and completed is not None and completed >= started
+    ]
+    if total_envelopes:
+        observed_total = round(sum((completed - started).total_seconds() * 1000 for started, completed in total_envelopes))
+        # Unit and recovery paths can preserve monotonic durations while their
+        # wall-clock timestamps are only boundary markers. Do not turn such
+        # non-comparable timestamps into invented overlap evidence.
+        if abs(observed_total - total) > 5_000:
+            total_envelopes = []
+
+    def envelope_overlap(span: dict[str, object]) -> int:
+        """Return the measurable overlap with TOTAL_EXECUTION, never raw stale tail time."""
+        duration = int(span["duration_ms"])
+        if not total_envelopes:
+            return min(duration, total)
+        started, completed = timestamp(span, "started_at"), timestamp(span, "completed_at")
+        if started is None or completed is None or completed < started:
+            return min(duration, total)
+        overlap = sum(
+            max(0.0, (min(completed, envelope_end) - max(started, envelope_start)).total_seconds())
+            for envelope_start, envelope_end in total_envelopes
+        )
+        return min(duration, total, round(overlap * 1000))
+
     def measured(name: str) -> int:
         return sum(int(span["duration_ms"]) for span in semantic if span["phase_name"] == name)
 
@@ -300,7 +341,7 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
         return False
 
     processing_coverage = sum(
-        int(span["duration_ms"])
+        envelope_overlap(span)
         for span in semantic
         if span["phase_name"] in {"PROVIDER_EXECUTION", "VALIDATION"}
         and not has_processing_ancestor(span)
@@ -310,10 +351,12 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     # metrics.  The deterministic category-name tie break keeps reports, API
     # projections and dashboard detail identical.
     aggregate_by_phase: dict[str, int] = {}
+    share_by_phase: dict[str, int] = {}
     for span in semantic:
         name = str(span["phase_name"])
         if name != "TOTAL_EXECUTION":
             aggregate_by_phase[name] = aggregate_by_phase.get(name, 0) + int(span["duration_ms"])
+            share_by_phase[name] = min(total, share_by_phase.get(name, 0) + envelope_overlap(span))
     phase_aggregates = [
         {"phase": phase, "duration_ms": duration}
         for phase, duration in sorted(aggregate_by_phase.items(), key=lambda item: (-item[1], item[0]))
@@ -359,12 +402,13 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
             "queue_wait_time_ms": queue, "report_generation_time_ms": report_generation,
             "evidence_persistence_time_ms": evidence_persistence,
             "repository_finalization_time_ms": repository_finalization, "overhead_time_ms": overhead,
-            "provider_share_percent": share(provider), "validation_share_percent": share(validation),
-            "external_wait_share_percent": share(external), "queue_share_percent": share(queue),
+            "provider_share_percent": share(share_by_phase.get("PROVIDER_EXECUTION", 0)), "validation_share_percent": share(share_by_phase.get("VALIDATION", 0)),
+            "external_wait_share_percent": share(share_by_phase.get("EXTERNAL_CI_WAIT", 0)), "queue_share_percent": share(share_by_phase.get("QUEUE_WAIT", 0)),
             "overhead_share_percent": share(overhead),
             "longest_phase": phase_aggregates[0]["phase"] if phase_aggregates else None,
             "longest_phase_duration_ms": phase_aggregates[0]["duration_ms"] if phase_aggregates else None,
             "phase_aggregates": phase_aggregates,
+            "phase_share_durations_ms": share_by_phase,
             "top_phase_categories": phase_aggregates[:3],
             "longest_individual_spans": longest_individual_spans[:3],
             # Compatibility alias for pre-reconciliation API clients.  It is
