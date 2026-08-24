@@ -1781,6 +1781,16 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         validate_compatibility(manifest, RunnerCompatibility(), "0.146.0")
 
+    def test_current_storage_schema_is_admitted_for_retry_children(self) -> None:
+        root = Path(__file__).parents[2]
+        manifest = EngineeringPlatformManifest.load(
+            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        )
+        self.assertEqual(manifest.storage_schema, 26)
+        validate_compatibility(
+            manifest, RunnerCompatibility(storage_schemas=frozenset({26})), "0.146.0"
+        )
+
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:
         compatibility = RunnerCompatibility(
             platform_version="1.0.0",

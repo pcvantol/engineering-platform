@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import re
 
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION
+
 
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CONTRACT = re.compile(r"^(\d{4})\.(0[1-9]|1[0-2])$")
@@ -112,7 +114,9 @@ class RunnerCompatibility:
     report_formats: frozenset[int] = frozenset({1, 2})
     # New runners retain compatibility with prior local stores while accepting
     # the current telemetry-capable schema.
-    storage_schemas: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+    storage_schemas: frozenset[int] = frozenset(
+        range(1, ENGINEERING_STORAGE_SCHEMA_VERSION + 1)
+    )
 
 
 def validate_compatibility(

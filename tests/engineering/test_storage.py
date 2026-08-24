@@ -28,9 +28,17 @@ from tools.engineering.storage import (
     verify_artifact_integrity,
 )
 from tools.engineering.agent_state import StateStore, TransactionState
+from tools.engineering.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_platform_manifest_tracks_the_current_storage_schema(self) -> None:
+        root = Path(__file__).parents[2]
+        manifest = EngineeringPlatformManifest.load(
+            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        )
+        self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
+
     def test_submission_persists_an_immutable_forge_governance_handoff_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
