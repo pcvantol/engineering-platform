@@ -390,7 +390,9 @@ def prompt_history(
     try:
         rows = connection.execute(
             """
-            SELECT history.run_id, history.terminal_state, history.prompt_title, history.executed_at,
+            SELECT history.run_id,
+                CASE WHEN emergency.run_id IS NOT NULL THEN 'CANCELLED' ELSE history.terminal_state END,
+                history.prompt_title, history.executed_at,
                 history.git_commit, history.report_path, history.retry_of, history.original_run_id,
                 history.retry_generation, history.retry_timestamp, history.target_checkout_path,
                 history.tracked_file_count, history.target_branch,
@@ -429,12 +431,14 @@ def prompt_history(
                 submission.contract_version, submission.execution_context_version,
                 submission.execution_context_snapshot, submission.forge_governance_handoff_version,
                 submission.forge_governance_handoff_snapshot, dismissal.terminal_state,
-                dismissal.handling_state, dismissal.dismissed_at, dismissal.dismissed_by
+                dismissal.handling_state, dismissal.dismissed_at, dismissal.dismissed_by,
+                emergency.cancelled_at
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
             LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
             LEFT JOIN execution_submissions AS submission ON submission.submission_id = submission_link.submission_id
             LEFT JOIN execution_dismissals AS dismissal ON dismissal.run_id = history.run_id
+            LEFT JOIN execution_emergency_recoveries AS emergency ON emergency.run_id = history.run_id
             ORDER BY history.executed_at DESC, history.run_id DESC
             LIMIT ?
             """,
@@ -478,6 +482,7 @@ def prompt_history(
             "handling_state": row[31] or "OPEN",
             "dismissed_at": row[32],
             "dismissed_by": row[33],
+            "emergency_cancelled_at": row[34],
         }
         for row in rows
     ]
@@ -485,6 +490,8 @@ def prompt_history(
         if record["forge_governance_handoff"] is None:
             record.pop("forge_governance_handoff_version")
             record.pop("forge_governance_handoff")
+        if record["emergency_cancelled_at"] is None:
+            record.pop("emergency_cancelled_at")
     # Lineage is a read-only projection of persisted child evidence. It never
     # changes a terminal parent or treats retry as resume. A terminal child
     # wins over active, which wins over an unclaimed Inbox child.

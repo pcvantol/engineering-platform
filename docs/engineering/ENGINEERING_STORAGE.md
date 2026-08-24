@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `23`**. The required version is declared as `storage_schema` in
+schema `28`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 

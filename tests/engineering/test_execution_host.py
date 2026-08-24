@@ -1804,9 +1804,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = EngineeringPlatformManifest.load(
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
-        self.assertEqual(manifest.storage_schema, 27)
+        self.assertEqual(manifest.storage_schema, 28)
         validate_compatibility(
-            manifest, RunnerCompatibility(storage_schemas=frozenset({27})), "0.146.0"
+            manifest, RunnerCompatibility(storage_schemas=frozenset({28})), "0.146.0"
         )
 
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:

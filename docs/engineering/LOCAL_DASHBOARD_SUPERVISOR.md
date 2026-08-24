@@ -308,6 +308,18 @@ predecessor blocks later queued work, the category remains available for that
 queue-recovery context and shows the predecessor recovery action and retry
 control.
 
+For a live Managed run that started from a verified clean `main` baseline, the
+category may expose **Noodstop en terugdraaien**. It is an explicitly
+confirmed, local operator action: it stops only the recorded Execution Host
+and its recorded Codex process group, restores tracked and untracked workspace
+changes to that baseline, and removes only an uncommitted `codex/` branch that
+was not present when the run started. It fails closed when the run has commits,
+a pull request, an unknown/pre-existing branch, an unverified process owner or
+an unavailable baseline. Every completed action writes immutable recovery
+evidence and a component-log audit event; the terminal historical prompt is
+presented as **Geannuleerd**, while its underlying lifecycle failure remains
+intact for timing and evidence integrity.
+
 A retry in the Inbox is shown as queued without a Run ID. The watcher assigns
 and exposes its immutable Run ID only after it has passed admission and the
 retry has become an active execution.

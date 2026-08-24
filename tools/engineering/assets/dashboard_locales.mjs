@@ -29,6 +29,10 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.title": "Engineering Operations Console",
     "notification.codex_usage_limit.title": "Codex usage limit reached.",
     "notification.codex_usage_limit.body": "Add Codex credits or resume after the account limit resets.",
+    "notification.codex_usage_warning.title": "Codex limit is nearly reached.",
+    "notification.codex_usage_warning.body": "Only {percent}% remains in the most restrictive active limit.",
+    "notification.codex_usage_critical.title": "Codex limit is critically low.",
+    "notification.codex_usage_critical.body": "Only {percent}% remains in the most restrictive active limit.",
     "dashboard.status_invalid": "Dashboard status is invalid.",
     "dashboard.status_unavailable": "Dashboard status is unavailable.",
     "description.active_prompt": "Progress, duration and context for the execution that is active now.",
@@ -535,6 +539,10 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.title": "Engineering Operationele console",
     "notification.codex_usage_limit.title": "Codex-gebruikslimiet bereikt.",
     "notification.codex_usage_limit.body": "Voeg Codex-credits toe of hervat wanneer de accountlimiet is gereset.",
+    "notification.codex_usage_warning.title": "Codex-limiet is bijna bereikt.",
+    "notification.codex_usage_warning.body": "Nog maar {percent}% beschikbaar in de meest beperkende actieve limiet.",
+    "notification.codex_usage_critical.title": "Codex-limiet is kritiek laag.",
+    "notification.codex_usage_critical.body": "Nog maar {percent}% beschikbaar in de meest beperkende actieve limiet.",
     "dashboard.status_invalid": "Dashboardstatus is ongeldig.",
     "dashboard.status_unavailable": "Dashboardstatus is niet beschikbaar.",
     "description.active_prompt": "Voortgang, doorlooptijd en context van de uitvoering die nu actief is.",
@@ -1041,6 +1049,10 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.title": "Engineering-Betriebskonsole",
     "notification.codex_usage_limit.title": "Codex-Nutzungslimit erreicht.",
     "notification.codex_usage_limit.body": "Fügen Sie Codex-Guthaben hinzu oder setzen Sie fort, wenn das Kontolimit zurückgesetzt ist.",
+    "notification.codex_usage_warning.title": "Das Codex-Limit ist fast erreicht.",
+    "notification.codex_usage_warning.body": "Im restriktivsten aktiven Limit bleiben nur noch {percent}%.",
+    "notification.codex_usage_critical.title": "Das Codex-Limit ist kritisch niedrig.",
+    "notification.codex_usage_critical.body": "Im restriktivsten aktiven Limit bleiben nur noch {percent}%.",
     "dashboard.status_invalid": "Der Dashboardstatus ist ungültig.",
     "dashboard.status_unavailable": "Der Dashboardstatus ist nicht verfügbar.",
     "description.active_prompt": "Fortschritt, Dauer und Kontext der aktuell laufenden Ausführung.",
@@ -1482,6 +1494,10 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.title": "Console des opérations d’ingénierie",
     "notification.codex_usage_limit.title": "Limite d’utilisation Codex atteinte.",
     "notification.codex_usage_limit.body": "Ajoutez des crédits Codex ou reprenez lorsque la limite du compte est réinitialisée.",
+    "notification.codex_usage_warning.title": "La limite Codex est presque atteinte.",
+    "notification.codex_usage_warning.body": "Il ne reste que {percent}% dans la limite active la plus restrictive.",
+    "notification.codex_usage_critical.title": "La limite Codex est à un niveau critique.",
+    "notification.codex_usage_critical.body": "Il ne reste que {percent}% dans la limite active la plus restrictive.",
     "dashboard.status_invalid": "L’état du tableau de bord n’est pas valide.",
     "dashboard.status_unavailable": "L’état du tableau de bord n’est pas disponible.",
     "description.active_prompt": "Progression, durée et contexte de l’exécution actuellement active.",
@@ -1923,6 +1939,10 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.title": "Consola de operaciones de ingeniería",
     "notification.codex_usage_limit.title": "Se alcanzó el límite de uso de Codex.",
     "notification.codex_usage_limit.body": "Añada créditos de Codex o reanude cuando se restablezca el límite de la cuenta.",
+    "notification.codex_usage_warning.title": "El límite de Codex está casi alcanzado.",
+    "notification.codex_usage_warning.body": "Solo queda {percent}% en el límite activo más restrictivo.",
+    "notification.codex_usage_critical.title": "El límite de Codex está críticamente bajo.",
+    "notification.codex_usage_critical.body": "Solo queda {percent}% en el límite activo más restrictivo.",
     "dashboard.status_invalid": "El estado del panel no es válido.",
     "dashboard.status_unavailable": "El estado del panel no está disponible.",
     "description.active_prompt": "Progreso, duración y contexto de la ejecución actualmente activa.",
@@ -2455,6 +2475,11 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "preflight.sync_failed": "La rama esperada no se pudo sincronizar de forma segura.",
   "log_event.managed_branch_synchronization_completed": "Rama del espacio de trabajo sincronizada"
 });
+Object.assign(DASHBOARD_MESSAGES.en, {"log_event.execution_emergency_rollback_completed":"Emergency stop and rollback completed"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"log_event.execution_emergency_rollback_completed":"Noodstop en rollback voltooid"});
+Object.assign(DASHBOARD_MESSAGES.de, {"log_event.execution_emergency_rollback_completed":"Notstopp und Rücksetzung abgeschlossen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"log_event.execution_emergency_rollback_completed":"Arrêt d’urgence et annulation terminés"});
+Object.assign(DASHBOARD_MESSAGES.es, {"log_event.execution_emergency_rollback_completed":"Parada de emergencia y reversión completadas"});
 
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_scan_action":"Scan branches for cleanup","workspace.branch_cleanup_confirm_action":"Remove reviewed branches","workspace.branch_cleanup_title":"Clean stale local branches","workspace.branch_cleanup_confirmation":"This checks a clean, synchronized main workspace first. The reviewed branches below are the only branches that will be removed.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"No longer exists on origin; contents exactly match main.","workspace.branch_cleanup_failed":"Stale local branches could not be cleaned safely.","workspace.branch_cleanup_result_title":"Branch cleanup complete","workspace.branch_cleanup_result_removed":"Removed {count} stale local branch(es).","workspace.branch_cleanup_result_empty":"No stale local branches were found."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_scan_action":"Scan branches voor opruiming","workspace.branch_cleanup_confirm_action":"Verwijder gecontroleerde branches","workspace.branch_cleanup_title":"Verouderde lokale branches opruimen","workspace.branch_cleanup_confirmation":"Dit controleert eerst of main schoon en gesynchroniseerd is. Alleen de hieronder gecontroleerde branches worden verwijderd.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Bestaat niet meer op origin; inhoud is exact gelijk aan main.","workspace.branch_cleanup_failed":"Verouderde lokale branches konden niet veilig worden opgeruimd.","workspace.branch_cleanup_result_title":"Branch-opruiming voltooid","workspace.branch_cleanup_result_removed":"{count} verouderde lokale branch(es) verwijderd.","workspace.branch_cleanup_result_empty":"Geen verouderde lokale branches gevonden."});
@@ -2613,6 +2638,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"telemetry.not_recorded_short":"Niet gereg
 Object.assign(DASHBOARD_MESSAGES.de, {"telemetry.not_recorded_short":"Nicht erfasst","telemetry.active_processing":"Durchschn. aktive Verarbeitung","telemetry.share":"Anteil","telemetry.longest_average_phase":"Längste durchschnittliche Phase","telemetry.largest_accumulated_phase":"Größte kumulierte Phase","telemetry.start_time":"Startzeit","telemetry.producer_type":"Produzententyp","telemetry.target_repository":"Ziel-Repository","telemetry.model":"Modell","telemetry.share.queue_wait":"Warteanteil","telemetry.share.provider_execution":"Anbieteranteil","telemetry.share.validation":"Validierungsanteil","telemetry.share.external_wait":"Externer Warteanteil","telemetry.share.overhead":"Overheadanteil"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"telemetry.not_recorded_short":"Non enregistré","telemetry.active_processing":"Traitement actif moy.","telemetry.share":"Part","telemetry.longest_average_phase":"Phase moyenne la plus longue","telemetry.largest_accumulated_phase":"Phase cumulée la plus grande","telemetry.start_time":"Heure de début","telemetry.producer_type":"Type de producteur","telemetry.target_repository":"Dépôt cible","telemetry.model":"Modèle","telemetry.share.queue_wait":"Part d’attente en file","telemetry.share.provider_execution":"Part fournisseur","telemetry.share.validation":"Part validation","telemetry.share.external_wait":"Part d’attente externe","telemetry.share.overhead":"Part de surcharge"});
 Object.assign(DASHBOARD_MESSAGES.es, {"telemetry.not_recorded_short":"No registrado","telemetry.active_processing":"Procesamiento activo prom.","telemetry.share":"Proporción","telemetry.longest_average_phase":"Fase media más larga","telemetry.largest_accumulated_phase":"Fase acumulada más grande","telemetry.start_time":"Hora de inicio","telemetry.producer_type":"Tipo de productor","telemetry.target_repository":"Repositorio objetivo","telemetry.model":"Modelo","telemetry.share.queue_wait":"Proporción de cola","telemetry.share.provider_execution":"Proporción de proveedor","telemetry.share.validation":"Proporción de validación","telemetry.share.external_wait":"Proporción de espera externa","telemetry.share.overhead":"Proporción de sobrecarga"});
+Object.assign(DASHBOARD_MESSAGES.en, {"status.cancelled":"Cancelled","handling.cancelled":"Cancelled by emergency stop","emergency_recovery.title":"Emergency stop and rollback","emergency_recovery.description":"Stops this exact active execution and restores its verified clean workspace baseline.","emergency_recovery.action":"Emergency stop and rollback","emergency_recovery.confirmation":"Run ID: {run_id}\n\nThis stops the active Execution Host, discards all uncommitted changes made since the clean baseline, and removes local branch {branch} when it was created by this run. Committed work and pull requests are never removed.","emergency_recovery.failed":"The emergency stop and rollback could not be completed safely."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"status.cancelled":"Geannuleerd","handling.cancelled":"Geannuleerd via noodstop","emergency_recovery.title":"Noodstop en terugdraaien","emergency_recovery.description":"Stopt precies deze actieve uitvoering en zet de geverifieerde schone werkmapbasis terug.","emergency_recovery.action":"Noodstop en terugdraaien","emergency_recovery.confirmation":"Run-ID: {run_id}\n\nHiermee stopt de actieve Execution Host, worden alle niet-gecommitteerde wijzigingen sinds de schone basis verworpen en wordt lokale branch {branch} verwijderd wanneer deze door deze uitvoering is aangemaakt. Gecommit werk en pull requests worden nooit verwijderd.","emergency_recovery.failed":"De noodstop en rollback konden niet veilig worden voltooid."});
+Object.assign(DASHBOARD_MESSAGES.de, {"status.cancelled":"Abgebrochen","handling.cancelled":"Durch Notstopp abgebrochen","emergency_recovery.title":"Notstopp und Rücksetzung","emergency_recovery.description":"Stoppt genau diese aktive Ausführung und stellt die verifizierte saubere Workspace-Basis wieder her.","emergency_recovery.action":"Notstopp und Rücksetzung","emergency_recovery.confirmation":"Ausführungs-ID: {run_id}\n\nDadurch wird der aktive Execution Host gestoppt, alle nicht übertragenen Änderungen seit der sauberen Basis werden verworfen und der lokale Branch {branch} entfernt, wenn er von dieser Ausführung erstellt wurde. Übertragene Arbeit und Pull Requests werden nie entfernt.","emergency_recovery.failed":"Notstopp und Rücksetzung konnten nicht sicher abgeschlossen werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"status.cancelled":"Annulée","handling.cancelled":"Annulée par arrêt d’urgence","emergency_recovery.title":"Arrêt d’urgence et annulation","emergency_recovery.description":"Arrête exactement cette exécution active et restaure la base de l’espace de travail propre vérifiée.","emergency_recovery.action":"Arrêt d’urgence et annulation","emergency_recovery.confirmation":"ID d’exécution : {run_id}\n\nCette action arrête l’Execution Host actif, annule toutes les modifications non validées depuis la base propre et supprime la branche locale {branch} si cette exécution l’a créée. Le travail validé et les pull requests ne sont jamais supprimés.","emergency_recovery.failed":"L’arrêt d’urgence et l’annulation n’ont pas pu être effectués en toute sécurité."});
+Object.assign(DASHBOARD_MESSAGES.es, {"status.cancelled":"Cancelada","handling.cancelled":"Cancelada por parada de emergencia","emergency_recovery.title":"Parada de emergencia y reversión","emergency_recovery.description":"Detiene exactamente esta ejecución activa y restaura la base limpia verificada del espacio de trabajo.","emergency_recovery.action":"Parada de emergencia y reversión","emergency_recovery.confirmation":"ID de ejecución: {run_id}\n\nEsto detiene el Execution Host activo, descarta todos los cambios no confirmados desde la base limpia y elimina la rama local {branch} cuando esta ejecución la creó. El trabajo confirmado y las solicitudes de extracción nunca se eliminan.","emergency_recovery.failed":"La parada de emergencia y la reversión no se pudieron completar de forma segura."});
 for (const locale of ["nl", "de", "fr", "es"]) for (const [key, value] of Object.entries(DASHBOARD_MESSAGES.en)) {
   if (key.startsWith("telemetry.phase.") && !Object.hasOwn(DASHBOARD_MESSAGES[locale], key)) DASHBOARD_MESSAGES[locale][key] = value;
 }

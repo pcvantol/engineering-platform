@@ -43,6 +43,7 @@ def write_live_status(
     previous_reviewers: list[dict[str, object]] = []
     previous_runtime: dict[str, str] = {}
     previous_transient_action: str | None = None
+    previous_recovery: dict[str, object] | None = None
     try:
         previous_file = json.loads(path.read_text(encoding="utf-8"))
         if previous_file.get("run_id") == state.run_id and isinstance(previous_file.get("transient_action"), str):
@@ -65,6 +66,8 @@ def write_live_status(
                 if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
                 and isinstance(value, str)
             }
+        if isinstance(previous.get("workspace_recovery"), dict):
+            previous_recovery = dict(previous["workspace_recovery"])
     safe_runtime = previous_runtime if runtime_metadata is None else {
         key: value[:120]
         for key, value in runtime_metadata.items()
@@ -80,6 +83,25 @@ def write_live_status(
         for key in ("modified", "created", "deleted", "codex_commands_executed")
         if isinstance(safe_progress.get(key, 0), int)
     }
+    if previous_recovery is None:
+        try:
+            provider = GitProvider()
+            head_result = provider.execute(checkout, "git", "rev-parse", "HEAD")
+            status_result = provider.execute(checkout, "git", "status", "--porcelain", "--untracked-files=all")
+            branches_result = provider.execute(checkout, "git", "for-each-ref", "--format=%(refname:short)", "refs/heads")
+            if head_result.returncode or status_result.returncode or branches_result.returncode:
+                raise OSError("Git recovery baseline is unavailable")
+            baseline_head = head_result.stdout.strip()
+            baseline_status = status_result.stdout.strip()
+            branches = branches_result.stdout.splitlines()
+            previous_recovery = {
+                "baseline_branch": observed_branch,
+                "baseline_head": baseline_head,
+                "baseline_clean": not baseline_status,
+                "preexisting_branches": [branch for branch in branches if branch],
+            }
+        except OSError:
+            previous_recovery = {"baseline_clean": False}
     payload = {
         "run_id": state.run_id,
         "phase": state.phase,
@@ -105,6 +127,10 @@ def write_live_status(
         "reviewer_agents": reviewer_agents if reviewer_agents is not None else previous_reviewers,
         "runtime_metadata": safe_runtime,
         "workspace_progress": safe_progress,
+        # A recovery baseline is captured once, after admission has proven the
+        # workspace clean. It allows the emergency control to fail closed when
+        # a run has commits, a pre-existing branch, or an unknown base.
+        "workspace_recovery": previous_recovery,
     }
     terminal_phase = state.phase in {"COMPLETE", "BLOCKED", "FAILED"}
     transient = None if state.terminal or terminal_phase else transient_action or previous_transient_action

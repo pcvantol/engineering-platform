@@ -49,6 +49,7 @@ from .recommendation_handoff import handoff_from_report
 from .storage import EngineeringStorageError, open_storage
 from .provider_usage import provider_usage_summary
 from .execution_lifecycle import projection as lifecycle_projection
+from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
 from . import dashboard_state
 
@@ -177,6 +178,10 @@ def _sse_snapshot(root: Path) -> bytes:
     if not isinstance(payload, dict):
         return snapshot
     payload["workspace_git_lock"] = _workspace_git_lock(root)
+    status = payload.get("status")
+    payload["emergency_recovery"] = emergency_recovery_preview(
+        root, status.get("run_id") if isinstance(status, dict) else None
+    )
     # Git state is deliberately projected with the SSE payload instead of
     # being fixed in the initial HTML response. A managed execution can switch
     # to its transaction branch after the operator opens the dashboard.
@@ -1475,6 +1480,7 @@ def _dashboard_html(
 <div class="card execution-context" id="executionContext" hidden><strong data-i18n="ui.execution_context"></strong><p class="field"><span class="label" data-i18n="field.execution_mode"></span><span id="executionMode"></span></p><p class="field"><span class="label" data-i18n="field.repository"></span><span id="targetRepository"></span></p><div class="field"><span class="label" data-i18n="detail.target_checkout"></span><pre id="checkoutPath"></pre></div><p class="field"><span class="label" data-i18n="ui.active_branch"></span><span id="activeBranch"></span></p></div>
 <div class="card" id="processMetrics" hidden><strong data-i18n="ui.local_ai_processes"></strong><p class="field"><span class="label">CPU</span><span id="codexCpu" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.process_count"></span><span id="codexProcesses" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.gpu_usage"></span><span id="codexGpu" data-i18n="format.loading"></span></p></div>
 <div class="card operator-merge-wait" id="operatorMergeWait" hidden><strong data-i18n="merge_wait.title"></strong><p id="operatorMergeWaitDescription"></p><div class="operator-merge-wait__actions"><a class="dashboard-action dashboard-action--primary" id="operatorMergePullRequest" target="_blank" rel="noopener noreferrer"></a><button class="dashboard-action" id="operatorMergeStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-action dashboard-action--destructive" id="operatorMergeAbort" type="button" data-i18n="action.abort_execution"></button></div></div>
+<div class="card operator-merge-wait" id="emergencyRecovery" hidden><strong data-i18n="emergency_recovery.title"></strong><p data-i18n="emergency_recovery.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--destructive" id="emergencyRecoveryStart" type="button" data-i18n="emergency_recovery.action"></button></div></div>
 <div class="card status-reconciliation-card" id="statusReconciliation" hidden><strong data-i18n="status_reconciliation.title"></strong><p data-i18n="status_reconciliation.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--primary" id="statusReconciliationStart" type="button" data-i18n="status_reconciliation.action"></button></div><p id="statusReconciliationResult" role="status" aria-live="polite"></p></div>
 <div class="card" id="workspaceProgress"><strong data-i18n="detail.workspace_changes"></strong><p class="field"><span id="workspaceProgressValue" data-i18n="format.loading"></span></p></div>
 <div class="card" id="predecessorGate" hidden><strong data-i18n="status.blocked"></strong><p class="field"><span class="label" data-i18n="detail.run_id"></span><code id="predecessorRun"></code></p><p class="field"><span class="label" data-i18n="ui.preceding_prompt"></span><span id="predecessorPrompt"></span></p><p class="field"><span class="label" data-i18n="field.terminal_state"></span><span id="predecessorPhase"></span></p><div class="field"><span class="label" data-i18n="ui.recovery_action"></span><pre id="predecessorAction"></pre></div><button class="predecessor-retry" id="predecessorRetry" type="button" data-i18n="action.resume_queue"></button><p class="predecessor-retry-status" id="predecessorRetryStatus" role="status" aria-live="polite"></p></div>
@@ -1854,6 +1860,19 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     self._send(b'{"error":"De wachtende uitvoering kon niet veilig worden afgebroken."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/execution-emergency-rollback":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
+                        raise ValueError
+                    outcome = execute_emergency_recovery(root, payload["run_id"])
+                    log_event(logger, logging.WARNING, "execution_emergency_rollback_completed", run_id=payload["run_id"])
+                except (EmergencyRecoveryError, EngineeringStorageError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    self._send(json.dumps({"error": str(error) or "De noodactie kon niet veilig worden uitgevoerd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return

@@ -38,7 +38,7 @@ const $ = (id) => document.getElementById(id),
     workspace_state: "UNKNOWN",
     diagnostic: t("dashboard.status_unavailable"),
   };
-let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDurationEstimate,
+let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDashboardSnapshot, latestDurationEstimate,
   shownOperatorMergeWaitRun;
 function formatTimestamp(value, fallback = t("format.timestamp_unavailable")) {
   const timestamp = Date.parse(String(value || ""));
@@ -1107,10 +1107,33 @@ function renderOperatorMergeWait(x) {
     if (!modal.open) modal.showModal();
   }
 }
-function renderCodexUsageLimitBanner(x) {
+function codexLimitRemainingPercent(rateLimits) {
+  const remaining = (Array.isArray(rateLimits?.windows) ? rateLimits.windows : [])
+    .map((window) => Number(window?.used_percent))
+    .filter(Number.isFinite)
+    .map((used) => Math.max(0, Math.min(100, 100 - used)));
+  return remaining.length ? Math.min(...remaining) : null;
+}
+function renderCodexUsageLimitBanner(x, rateLimits) {
   const banner = $("codexUsageLimitBanner");
   if (!banner) return;
-  banner.hidden = String(x?.terminal_condition || "") !== "codex_usage_limit_reached";
+  const terminalLimit = String(x?.terminal_condition || "") === "codex_usage_limit_reached";
+  const remaining = codexLimitRemainingPercent(rateLimits);
+  const critical = !terminalLimit && remaining !== null && remaining < 5;
+  const warning = !terminalLimit && remaining !== null && remaining < 10;
+  const state = terminalLimit ? "limit" : critical ? "critical" : warning ? "warning" : null;
+  banner.hidden = !state;
+  banner.className = "dashboard-status-banner dashboard-status-banner--usage-" + (state || "limit");
+  if (!state) return;
+  const title = banner.querySelector("strong"), body = banner.querySelector("span");
+  if (terminalLimit) {
+    title.textContent = t("notification.codex_usage_limit.title");
+    body.textContent = t("notification.codex_usage_limit.body");
+    return;
+  }
+  const percent = locale.number(remaining, { maximumFractionDigits: 0 });
+  title.textContent = t("notification.codex_usage_" + state + ".title");
+  body.textContent = t("notification.codex_usage_" + state + ".body", { percent });
 }
 
 // Browsers otherwise put initial dialog focus on the first close button.
@@ -1464,11 +1487,43 @@ function placeOperatorMergeWait() {
     wait = $("operatorMergeWait");
   if (current && lifecycle && wait?.parentElement === current) lifecycle.after(wait);
 }
+function renderEmergencyRecovery(recovery, status) {
+  const card = $("emergencyRecovery"), button = $("emergencyRecoveryStart");
+  if (!card || !button) return;
+  const available = Boolean(recovery?.available && status?.run_id === recovery?.run_id);
+  card.hidden = !available;
+  button.disabled = !available;
+}
+async function startEmergencyRecovery() {
+  const recovery = latestDashboardSnapshot?.emergency_recovery;
+  if (!recovery?.available || !latestStatus?.run_id || recovery.run_id !== latestStatus.run_id) return;
+  const confirmed = await confirmDashboardAction(
+    t("emergency_recovery.title"),
+    t("emergency_recovery.confirmation", { run_id: recovery.run_id, branch: recovery.branch }),
+    t("emergency_recovery.action"),
+    { destructive: true },
+  );
+  if (!confirmed) return;
+  const button = $("emergencyRecoveryStart");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/execution-emergency-rollback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: recovery.run_id }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) throw Error(outcome.error || t("emergency_recovery.failed"));
+    await refreshAfterOperatorAction();
+  } catch (error) {
+    showDashboardError(error.message, t("emergency_recovery.failed"));
+  } finally { button.disabled = false; }
+}
 function renderHealthStatus(x, snapshot = {}) {
   lastRefresh = new Date();
   clock();
   x = x && typeof x === "object" ? x : fallback;
   latestStatus = x;
+  latestDashboardSnapshot = snapshot;
   latestDurationEstimate = snapshot.duration_estimate || {};
   let active = isActiveRun(x),
     visibleStaleLifecycle = hasVisibleStaleLifecycle(x),
@@ -1495,7 +1550,8 @@ function renderHealthStatus(x, snapshot = {}) {
   renderExecutionContext(x.execution_context, x);
   renderActiveLifecycle(x.lifecycle);
   renderOperatorMergeWait(x);
-  renderCodexUsageLimitBanner(x);
+  renderEmergencyRecovery(snapshot.emergency_recovery, x);
+  renderCodexUsageLimitBanner(x, snapshot.rate_limits);
   indicator.className =
     "indicator indicator--" +
     statusTone +
@@ -3373,6 +3429,7 @@ function promptHistoryStatus(value) {
 }
 function promptHistoryDisplayStatus(entry) {
   const outcome = promptHistoryStatus(entry?.status);
+  if (entry?.emergency_cancelled_at) return outcome;
   return entry?.dismissed ? `${outcome} · ${t("handling.dismissed")}` : outcome;
 }
 function updatePromptHistoryColumnWidths(entries) {
@@ -4385,7 +4442,7 @@ function promptDetailExecutionSections(history) {
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
-    detailField(t("detail.operator_handling"), history.dismissed ? t("handling.dismissed") : t("handling.open")),
+    detailField(t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")),
     ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
     detailField(t("detail.prompt_title"), history.title),
     promptHistoryRunIdField(history.run_id),
@@ -4996,6 +5053,7 @@ function checkOperatorMergeStatus(button) {
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
 $("operatorMergeAbort").addEventListener("click", abortOperatorMergeWait);
+$("emergencyRecoveryStart")?.addEventListener("click", startEmergencyRecovery);
 $("operatorMergeWaitModalAbort").addEventListener("click", abortOperatorMergeWait);
 $("operatorMergeStatusCheck").addEventListener("click", (event) => checkOperatorMergeStatus(event.currentTarget));
 $("operatorMergeWaitModalStatusCheck").addEventListener("click", (event) => checkOperatorMergeStatus(event.currentTarget));

@@ -3741,6 +3741,36 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(banner).toBeHidden();
   });
 
+  test("warns below ten percent and turns red below five percent of a Codex limit", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const banner = page.getByTestId("codex-usage-limit-banner");
+
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {
+      rate_limits: { windows: [{ used_percent: 91 }] },
+    }));
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveClass(/dashboard-status-banner--usage-warning/);
+    await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.codex_usage_warning.title"]);
+    await expect(banner).toContainText("9%");
+
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {
+      rate_limits: { windows: [{ used_percent: 96 }] },
+    }));
+    await expect(banner).toHaveClass(/dashboard-status-banner--usage-critical/);
+    await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.codex_usage_critical.title"]);
+    await expect(banner).toContainText("4%");
+
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {
+      rate_limits: { windows: [{ used_percent: 90 }] },
+    }));
+    await expect(banner).toBeHidden();
+  });
+
   test("keeps a watcher-failed stale live run out of Active Prompt", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({

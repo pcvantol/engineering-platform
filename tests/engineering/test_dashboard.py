@@ -2095,6 +2095,22 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(response.read()), {"error": "De wachtende uitvoering kon niet veilig worden afgebroken."})
+            emergency_outcome = {"run_id": "inbox-emergency", "stopped": True, "rolled_back": True}
+            with (
+                patch("tools.engineering.dashboard.execute_emergency_recovery", return_value=emergency_outcome) as emergency,
+                patch("tools.engineering.dashboard.log_event") as emergency_log,
+            ):
+                connection.request("POST", "/api/execution-emergency-rollback", body='{"run_id":"inbox-emergency"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), emergency_outcome)
+                emergency.assert_called_once_with(root, "inbox-emergency")
+                emergency_log.assert_any_call(ANY, logging.WARNING, "execution_emergency_rollback_completed", run_id="inbox-emergency")
+            with patch("tools.engineering.dashboard.execute_emergency_recovery", side_effect=dashboard.EmergencyRecoveryError("De host is niet veilig identificeerbaar.")):
+                connection.request("POST", "/api/execution-emergency-rollback", body='{"run_id":"inbox-emergency"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "De host is niet veilig identificeerbaar."})
             with (
                 patch("tools.engineering.dashboard.check_operator_merge_status", return_value={"verified": True, "continuation": "scheduled", "pull_request": 915}) as check,
                 patch("tools.engineering.dashboard.log_event") as check_log_event,

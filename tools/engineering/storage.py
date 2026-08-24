@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 27
+ENGINEERING_STORAGE_SCHEMA_VERSION = 28
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -757,6 +757,26 @@ def _schema_v27(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _schema_v28(connection: sqlite3.Connection) -> None:
+    """Keep immutable evidence for an operator-approved emergency rollback."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_emergency_recoveries ("
+        "run_id TEXT PRIMARY KEY REFERENCES prompt_execution_history(run_id) ON DELETE RESTRICT,"
+        "cancelled_at TEXT NOT NULL,rolled_back INTEGER NOT NULL CHECK(rolled_back IN (0,1)),"
+        "removed_branch TEXT,recorded_by TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS execution_emergency_recoveries_immutable_update "
+        "BEFORE UPDATE ON execution_emergency_recoveries BEGIN "
+        "SELECT RAISE(ABORT, 'Emergency recovery evidence is immutable.'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS execution_emergency_recoveries_immutable_delete "
+        "BEFORE DELETE ON execution_emergency_recoveries BEGIN "
+        "SELECT RAISE(ABORT, 'Emergency recovery evidence is immutable.'); END"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -831,6 +851,7 @@ MIGRATIONS: dict[int, Migration] = {
     25: _schema_v25,
     26: _schema_v26,
     27: _schema_v27,
+    28: _schema_v28,
 }
 
 
@@ -903,6 +924,27 @@ def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
         "run_id": run_id, "terminal_state": terminal_state, "dismissed": True,
         "handling_state": "DISMISSED", "dismissed_at": dismissed_at, "dismissed_by": dismissed_by,
     }
+
+
+def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
+                              rolled_back: bool, removed_branch: str | None) -> None:
+    """Append one immutable operator-authorized emergency recovery record."""
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise EngineeringStorageError("Emergency recovery requires a valid Inbox run.")
+    if not isinstance(cancelled_at, str) or not cancelled_at.strip():
+        raise EngineeringStorageError("Emergency recovery requires a timestamp.")
+    if removed_branch is not None and (not isinstance(removed_branch, str) or not removed_branch.startswith("codex/")):
+        raise EngineeringStorageError("Emergency recovery branch evidence is invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT INTO execution_emergency_recoveries(run_id,cancelled_at,rolled_back,removed_branch,recorded_by) VALUES(?,?,?,?,?)",
+            (run_id, cancelled_at.strip(), int(rolled_back), removed_branch, "dashboard_emergency_recovery"),
+        )
+    except sqlite3.IntegrityError as error:
+        raise EngineeringStorageError("Emergency recovery is already recorded or has no terminal history.") from error
+    finally:
+        connection.close()
 
 
 def _encoded_payload(payload: dict[str, object]) -> str:
