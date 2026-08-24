@@ -68,6 +68,39 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["unplanned_manual_intervention_count"], 0)
         self.assertEqual(snapshot["expected_operator_gate_count"], 2)
 
+    def test_operator_merge_actions_remain_expected_gates_through_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            for action in ("IMPLEMENTATION_MERGE", "FINALIZATION_MERGE"):
+                append_action(
+                    root,
+                    run_id="inbox-managed-proof",
+                    action=action,
+                    authority="EXPECTED_OPERATOR_GATE",
+                    actor="operator",
+                    evidence_ref="github_merge",
+                )
+            snapshot = terminal_snapshot(
+                root,
+                run_id="inbox-managed-proof",
+                execution_outcome="COMPLETE",
+                implementation_pr=101,
+                finalization_pr=102,
+                repository_state="MERGED_RECONCILED",
+                workspace_state="WORKSPACE_READY",
+                main_origin_sync="YES",
+                worktree_state="CLEAN",
+                active_blocker="NONE",
+                recovery_required="NO",
+            )
+        self.assertEqual(
+            [action["authority"] for action in snapshot["actions"][-2:]],
+            ["EXPECTED_OPERATOR_GATE", "EXPECTED_OPERATOR_GATE"],
+        )
+        self.assertEqual(snapshot["unplanned_manual_intervention_count"], 0)
+        self.assertEqual(snapshot["managed_autonomy_qualification"], "QUALIFIED")
+
     def test_manual_repair_is_disqualifying(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
