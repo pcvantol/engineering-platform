@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 25
+ENGINEERING_STORAGE_SCHEMA_VERSION = 26
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -713,6 +713,32 @@ def _schema_v25(connection: sqlite3.Connection) -> None:
             )
 
 
+def _schema_v26(connection: sqlite3.Connection) -> None:
+    """Append bounded Managed-autonomy evidence without lifecycle authority."""
+    for statement in """
+        CREATE TABLE IF NOT EXISTS managed_autonomy_actions (
+            id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, action TEXT NOT NULL,
+            authority TEXT NOT NULL CHECK(authority IN ('AUTONOMOUS_EP_ACTION','EXPECTED_OPERATOR_GATE','EXTERNAL_PLATFORM_EVENT','UNPLANNED_MANUAL_INTERVENTION','UNKNOWN_AUTHORITY')),
+            actor TEXT NOT NULL, evidence_ref TEXT NOT NULL, observed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS managed_autonomy_actions_run_lookup ON managed_autonomy_actions(run_id,id);
+        CREATE TABLE IF NOT EXISTS managed_governance_gates (
+            run_id TEXT NOT NULL, gate_type TEXT NOT NULL CHECK(gate_type IN ('IMPLEMENTATION_MERGE_APPROVAL','FINALIZATION_MERGE_APPROVAL')),
+            gate_authority TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('NOT_REQUIRED','WAITING','SATISFIED','UNAVAILABLE')),
+            requested_at TEXT NOT NULL, resolved_at TEXT, resolution_actor TEXT, related_pr INTEGER, phase TEXT NOT NULL,
+            PRIMARY KEY(run_id,gate_type)
+        );
+        CREATE TABLE IF NOT EXISTS managed_validation_observations (
+            id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, control TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('PASS','FAIL','NOT_EXECUTED','NOT_APPLICABLE','UNAVAILABLE','WAITING')),
+            required INTEGER NOT NULL CHECK(required IN (0,1)), currentness INTEGER NOT NULL, observed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS managed_validation_observations_run_lookup ON managed_validation_observations(run_id,control,id);
+    """.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -785,6 +811,7 @@ MIGRATIONS: dict[int, Migration] = {
     23: _schema_v23,
     24: _schema_v24,
     25: _schema_v25,
+    26: _schema_v26,
 }
 
 

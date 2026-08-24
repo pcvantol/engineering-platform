@@ -95,6 +95,11 @@ from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
 from .execution_timing import start_or_resume_phase as _start_or_resume_phase
 from .execution_timing import start_phase as _start_phase
+from .managed_autonomy import (
+    append_action as record_managed_action,
+    append_validation_observation as record_managed_validation,
+    record_gate as record_managed_gate,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -441,7 +446,34 @@ class EngineeringRunner:
         """Persist only bounded report evidence; it has no lifecycle authority."""
         if not result.validation_evidence:
             return state
+        for item in result.validation_evidence:
+            command, summary = item.get("command", ""), item.get("result", "")
+            kind = self._validation_kind(command)
+            if kind is None:
+                continue
+            normalized = summary.casefold()
+            status = "FAIL" if any(token in normalized for token in ("fail", "error", "blocked")) else "PASS"
+            try:
+                record_managed_validation(
+                    self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
+                    required=True, currentness=state.repair_iterations,
+                )
+            except EngineeringStorageError:
+                LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
         return replace(state, validation_evidence=result.validation_evidence)
+
+    def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
+        """Best-effort evidence instrumentation; it never changes lifecycle outcome."""
+        try:
+            record_managed_action(self.root, run_id=state.run_id, action=action, authority=authority, actor=actor, evidence_ref=evidence_ref)
+        except EngineeringStorageError:
+            LOGGER.warning("Managed-autonomy evidence is unavailable for run %s", state.run_id)
+
+    def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False) -> None:
+        try:
+            record_managed_gate(self.root, run_id=state.run_id, gate_type=gate_type, status=status, related_pr=pr, phase=state.phase, resolution_actor="operator" if resolved else None, resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None)
+        except EngineeringStorageError:
+            LOGGER.warning("Managed governance-gate evidence is unavailable for run %s", state.run_id)
 
     def _record_repair_audit(self, state: TransactionState, *, failed_checks: str, objective: str, result: AgentResult | None, outcome: str) -> TransactionState:
         """Append bounded per-repair evidence; never overwrite prior attempts."""
@@ -649,6 +681,8 @@ class EngineeringRunner:
         self._verify_engineering_platform()
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
+        if context.execution_mode == "MANAGED":
+            self._managed_action(state, "IMPLEMENTATION")
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
         self._total_phase = start_or_resume_phase(
@@ -1053,6 +1087,7 @@ class EngineeringRunner:
                 continue
             complete_phase(self.root, pr_operation)
             if not pr.checks_terminal:
+                self._managed_action(state, "GITHUB_REQUIRED_CHECK", "EXTERNAL_PLATFORM_EVENT", actor="github", evidence_ref="required_check_waiting")
                 wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
                 self.sleep(15)
                 complete_phase(self.root, wait)
@@ -1088,6 +1123,9 @@ class EngineeringRunner:
                 except RunnerError:
                     return self._save_operator_merge_wait(state)
                 if pr.merge_commit and self.repository.remote_main_contains(self.root, pr.merge_commit):
+                    gate_type = "IMPLEMENTATION_MERGE_APPROVAL" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE_APPROVAL"
+                    self._managed_gate(state, gate_type, "SATISFIED", pr.number, resolved=True)
+                    self._managed_action(state, "IMPLEMENTATION_MERGE" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE", "EXPECTED_OPERATOR_GATE", actor="operator", evidence_ref="github_merge")
                     state = self._record_merged_evidence(state, pr, evidence)
                     if state.owner_authorized and state.transaction_kind == "IMPLEMENTATION":
                         return self._start_finalization(state, pr.number)
@@ -1104,6 +1142,8 @@ class EngineeringRunner:
                 waiting_for_merge_since=state.waiting_for_merge_since
                 or datetime.now(timezone.utc).isoformat(),
             )
+            gate_type = "IMPLEMENTATION_MERGE_APPROVAL" if state.transaction_kind == "IMPLEMENTATION" else "FINALIZATION_MERGE_APPROVAL"
+            self._managed_gate(waiting, gate_type, "WAITING", state.pull_request)
             return self._save_operator_merge_wait(waiting)
 
     def _repair(self, state: TransactionState, objective: str) -> TransactionState:
@@ -1165,6 +1205,7 @@ class EngineeringRunner:
     def _start_finalization(
         self, state: TransactionState, implementation_pr: int
     ) -> TransactionState:
+        self._managed_action(state, "POST_IMPLEMENTATION_MERGE")
         if state.finalization_pull_request:
             return replace(
                 state,
@@ -1198,6 +1239,7 @@ class EngineeringRunner:
             latest_repository_evidence=_repository_summary(evidence),
             waiting_for_merge_since=None,
         )
+        self._managed_action(finalization, "FINALIZATION")
         self.store.save(finalization)
         write_live_status(self.root, finalization, finalization.next_action)
         complete_phase(self.root, finalization_phase)
@@ -1318,6 +1360,8 @@ class EngineeringRunner:
 
     def _cleanup(self, state: TransactionState) -> TransactionState:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
+        self._managed_action(state, "RECONCILIATION")
+        self._managed_action(state, "CLEANUP")
         cleanup = start_phase(self.root, state.run_id, "REPOSITORY_CLEANUP")
         try:
             result = self.finalization.cleanup(

@@ -26,6 +26,7 @@ from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
 from .provider_usage import provider_usage_summary
+from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 
 
 class ReportingCoordinator:
@@ -858,6 +859,30 @@ def _format_engineering_outcome(state: TransactionState) -> str:
     )
 
 
+def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: TerminalEvidenceBundle, reviewer_records: tuple[dict[str, object], ...]) -> tuple[str, ...]:
+    """Project canonical evidence only; legacy runs intentionally fail closed."""
+    snapshot = managed_autonomy_snapshot(
+        root, run_id=state.run_id, execution_outcome=state.phase,
+        implementation_pr=state.implementation_pull_request, finalization_pr=state.finalization_pull_request,
+        repository_state="MERGED_RECONCILED" if state.phase == "COMPLETE" and state.finalization_merge_commit else "UNAVAILABLE",
+        workspace_state="WORKSPACE_READY" if state.phase == "COMPLETE" and bundle.worktree_state == "clean" else "UNAVAILABLE",
+        main_origin_sync="YES" if bundle.target_branch == "main" else "UNAVAILABLE",
+        worktree_state=bundle.worktree_state.upper(), active_blocker="NONE" if state.phase == "COMPLETE" else "UNAVAILABLE",
+        recovery_required="NO" if state.phase == "COMPLETE" else "UNAVAILABLE", reviewer_records=reviewer_records,
+    )
+    return (
+        "## Managed Autonomy Qualification",
+        f"- Execution: `{snapshot['terminal_execution_state']}`",
+        f"- Managed Autonomy: `{snapshot['managed_autonomy_qualification']}`",
+        f"- Expected Operator Gates: `{snapshot['expected_operator_gate_count']}`",
+        f"- Unexpected Manual Interventions: `{snapshot['unplanned_manual_intervention_count']}`",
+        f"- Unknown Authority Actions: `{snapshot['unknown_authority_count']}`",
+        f"- Required Validation State: `{snapshot['required_validation_state']}`",
+        f"- Qualification Reasons: `{', '.join(snapshot['qualification_failure_reasons']) or 'none'}`",
+        "",
+    )
+
+
 def generate_terminal_report(
     root: Path,
     state: TransactionState,
@@ -1172,6 +1197,7 @@ def generate_terminal_report(
             "## Engineering Outcome",
             _format_engineering_outcome(state),
             "",
+            *_managed_autonomy_projection(root, state, bundle, reviewer_records),
             "## Reviewer Findings",
             "Initial observations only. They are not final repository claims.",
             _format_reviewer_records(reviewer_records, state.phase),
