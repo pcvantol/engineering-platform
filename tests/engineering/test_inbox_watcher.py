@@ -516,10 +516,10 @@ class InboxWatcherTest(unittest.TestCase):
         open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
         with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = open_pr
-            self.assertEqual(
-                inbox_watcher.check_operator_merge_status(self.repo, run_id),
-                {"verified": False, "reason": "pull_request_not_merged", "pull_request": 832},
-            )
+            outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["reason"], "pull_request_not_merged")
+        self.assertEqual(outcome["pull_request"], 832)
 
         merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
         with (
@@ -531,7 +531,9 @@ class InboxWatcherTest(unittest.TestCase):
             repository.return_value.remote_main_contains.return_value = True
             outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
 
-        self.assertEqual(outcome, {"verified": True, "continuation": "scheduled", "pull_request": 832})
+        self.assertTrue(outcome["verified"])
+        self.assertEqual(outcome["continuation"], "scheduled")
+        self.assertEqual(outcome["pull_request"], 832)
         repository.return_value.refresh_main_reference.assert_called_once_with(self.repo)
         timer.return_value.start.assert_called_once_with()
 
@@ -563,17 +565,18 @@ class InboxWatcherTest(unittest.TestCase):
         ))
         with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.side_effect = RuntimeError("GitHub unavailable")
-            self.assertEqual(
-                inbox_watcher.check_operator_merge_status(self.repo, run_id),
-                {"verified": False, "reason": "github_evidence_unavailable", "pull_request": 832},
-            )
+            outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["reason"], "github_cli_unavailable")
+        self.assertEqual(outcome["pull_request"], 832)
 
         missing_commit = PullRequestEvidence(832, "MERGED", True, True, None)
         with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = missing_commit
             self.assertEqual(
                 inbox_watcher.check_operator_merge_status(self.repo, run_id),
-                {"verified": False, "reason": "merge_commit_unavailable", "pull_request": 832},
+                {"verified": False, "reason": "merge_commit_unavailable", "pull_request": 832,
+                 "last_successful_github_check_at": None},
             )
 
         merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
@@ -585,13 +588,38 @@ class InboxWatcherTest(unittest.TestCase):
             repository.return_value.remote_main_contains.return_value = False
             self.assertEqual(
                 inbox_watcher.check_operator_merge_status(self.repo, run_id),
-                {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": 832},
+                {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": 832,
+                 "last_successful_github_check_at": None},
             )
             repository.return_value.refresh_main_reference.side_effect = RuntimeError("git unavailable")
             self.assertEqual(
                 inbox_watcher.check_operator_merge_status(self.repo, run_id),
-                {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": 832},
+                {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": 832,
+                 "last_successful_github_check_at": ANY},
             )
+
+    def test_direct_merge_check_persists_safe_failure_category_and_last_success(self) -> None:
+        run_id = "inbox-merge-check-metadata"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "metadata.md"
+        source.write_text("# Merge metadata\n", encoding="utf-8")
+        state = TransactionState(
+            run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        inbox_watcher._publish_operator_merge_wait(self.repo, state)
+        open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
+        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+            github.return_value.pull_request.return_value = open_pr
+            inbox_watcher.check_operator_merge_status(self.repo, run_id)
+        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+            github.return_value.pull_request.side_effect = RuntimeError("authentication required")
+            outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
+        self.assertEqual(outcome["reason"], "github_authentication_unavailable")
+        self.assertIsInstance(outcome["last_successful_github_check_at"], str)
+        watcher = inbox_watcher.load_projection(self.repo, "watcher_status")
+        self.assertEqual(watcher["merge_status_check"]["failure_category"], "github_authentication_unavailable")
+        self.assertIsInstance(watcher["merge_status_check"]["last_successful_github_check_at"], str)
 
     def test_operator_merge_wait_finalization_archives_completed_prompt_and_report(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState

@@ -97,6 +97,7 @@ test.beforeEach(async ({ page }, testInfo) => {
       "matches the iPhone portrait dashboard visual reference",
       "only starts pull-to-refresh from the scroll region's top edge",
       "keeps a green pull request visible until the operator merges or aborts it",
+      "explains a merge-check category, retains its successful check time, and retries from the error dialog",
       "opens, closes and navigates prompt-history deeplinks without reloading",
     ].includes(testInfo.title)) {
       await openTitlebarOptions(page);
@@ -1397,6 +1398,39 @@ test.describe("Engineering Status browser smoke", () => {
     expect(confirmationActionHeights).toEqual([44, 44]);
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => abortRequested).toBe(true);
+  });
+
+  test("explains a merge-check category, retains its successful check time, and retries from the error dialog", async ({ page }) => {
+    let checkCount = 0;
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: checkCount >= 2 ? {
+      watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase: "FINALIZE_AGENT", run_id: "inbox-merge-check",
+    } : {
+      watcher_state: "WAITING_FOR_OPERATOR_MERGE", current_phase: "WAIT_FOR_OPERATOR_MERGE",
+      run_id: "inbox-merge-check", pull_request: 832, target_repository: "pcvantol/djconnect",
+      merge_status_check: { last_successful_github_check_at: "2026-08-24T12:00:00Z" },
+    } } }));
+    await page.route("**/api/execution-merge-status-check", (route) => {
+      checkCount += 1;
+      return route.fulfill({ status: checkCount === 1 ? 409 : 202, json: checkCount === 1
+        ? { verified: false, reason: "github_network_unavailable" }
+        : { verified: true, continuation: "scheduled" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#operatorMergeWaitModalLastCheck")).toContainText(
+      DASHBOARD_MESSAGES.nl["merge_wait.last_successful_check"].split(":")[0],
+    );
+    await page.locator("#operatorMergeWaitModalStatusCheck").click();
+    await expect(page.locator("#dashboardErrorModal")).toBeVisible();
+    await expect(page.locator("#dashboardErrorModalText")).toContainText(
+      DASHBOARD_MESSAGES.nl["merge_wait.reason.github_network_unavailable"],
+    );
+    await expect(page.locator("#dashboardErrorModalRecover")).toHaveText(
+      DASHBOARD_MESSAGES.nl["merge_wait.check_again"],
+    );
+    await page.locator("#dashboardErrorModalRecover").click();
+    await expect.poll(() => checkCount).toBe(2);
+    await expect(page.getByText(DASHBOARD_MESSAGES.nl["merge_wait.continuation_scheduled"])).toBeVisible();
   });
 
   test("opens a new handoff modal for the finalization pull request in the same run", async ({ page }) => {

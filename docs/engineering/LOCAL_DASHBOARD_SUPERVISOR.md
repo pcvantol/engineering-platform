@@ -447,7 +447,13 @@ At an operator merge hand-off, **Check pull request status** performs an
 immediate read-only GitHub check. Continuation is scheduled only after the PR
 is merged and its merge commit is proven reachable from `origin/main`; it never
 merges a PR. Any missing proof is shown as a localized reason and leaves the
-button available for a later check.
+button available for a later check. The dashboard records only the safe
+operational result of that check: its timestamp, the most recent successful
+GitHub-read timestamp, and, when applicable, a bounded category for GitHub
+authentication, network, API, local CLI or local ancestry availability. It
+never stores raw provider diagnostics. A failed check presents an immediate
+**Check again** action; a verified merge announces that continuation is
+scheduled and briefly refreshes until the hand-off advances.
 
 Every implementation run has a mandatory **Autonomous quality control** step
 after implementation and before the pull-request checks and operator merge

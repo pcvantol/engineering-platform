@@ -408,6 +408,7 @@ def _previous_prompt_context(repo: Path) -> dict[str, object]:
         "blocking_predecessor_filename",
         "blocking_predecessor_title",
         "predecessor_recovery_action",
+        "merge_status_check",
     )
     try:
         prior = load_projection(repo, "watcher_status") or {}
@@ -426,7 +427,7 @@ def status(repo: Path, state: str, **details: object) -> None:
         "submitted_filename", "prompt_title", "last_executed_filename", "last_executed_title",
         "last_executed_run", "last_executed_phase", "blocking_predecessor_run",
         "blocking_predecessor_phase", "blocking_predecessor_filename",
-        "blocking_predecessor_title", "predecessor_recovery_action",
+        "blocking_predecessor_title", "predecessor_recovery_action", "merge_status_check",
     }
     context.update({key: value for key, value in details.items() if key in retained and value is not None})
     context.update({key: None for key in retained if key in details and details[key] is None})
@@ -1176,25 +1177,85 @@ def check_operator_merge_status(repo: Path, run_id: str) -> dict[str, object]:
             return {"verified": False, "reason": "pull_request_unavailable"}
         try:
             evidence = GhCliClient().pull_request(pull_request)
-        except Exception:
-            return {"verified": False, "reason": "github_evidence_unavailable", "pull_request": pull_request}
+        except Exception as error:
+            category = _github_evidence_failure_category(error)
+            check = _record_operator_merge_status_check(
+                repo, run_id, pull_request, failure_category=category,
+            )
+            return {
+                "verified": False, "reason": category, "pull_request": pull_request,
+                "last_successful_github_check_at": check.get("last_successful_github_check_at"),
+            }
+        check = _record_operator_merge_status_check(repo, run_id, pull_request, github_succeeded=True)
         if evidence.state != "MERGED":
-            return {"verified": False, "reason": "pull_request_not_merged", "pull_request": pull_request}
+            return {"verified": False, "reason": "pull_request_not_merged", "pull_request": pull_request,
+                    "last_successful_github_check_at": check.get("last_successful_github_check_at")}
         if not evidence.merge_commit:
-            return {"verified": False, "reason": "merge_commit_unavailable", "pull_request": pull_request}
+            return {"verified": False, "reason": "merge_commit_unavailable", "pull_request": pull_request,
+                    "last_successful_github_check_at": check.get("last_successful_github_check_at")}
         try:
             repository = SubprocessRepositoryClient()
             repository.refresh_main_reference(repo)
             merged_to_main = repository.remote_main_contains(repo, evidence.merge_commit)
         except Exception:
-            return {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": pull_request}
+            _record_operator_merge_status_check(
+                repo, run_id, pull_request, failure_category="main_ancestry_unavailable",
+            )
+            return {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": pull_request,
+                    "last_successful_github_check_at": check.get("last_successful_github_check_at")}
         if not merged_to_main:
-            return {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": pull_request}
+            return {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": pull_request,
+                    "last_successful_github_check_at": check.get("last_successful_github_check_at")}
         # The browser returns immediately. The regular runner still owns all
         # state transitions, finalization and reconciliation.
         from threading import Timer
         Timer(0.25, _execute_runner_command, args=(repo, Path(state.prompt_path), run_id)).start()
-        return {"verified": True, "continuation": "scheduled", "pull_request": pull_request}
+        return {"verified": True, "continuation": "scheduled", "pull_request": pull_request,
+                "last_successful_github_check_at": check.get("last_successful_github_check_at")}
+
+
+def _github_evidence_failure_category(error: Exception) -> str:
+    """Return a safe operational category without exposing provider diagnostics."""
+    detail = str(error).lower()
+    if any(token in detail for token in ("auth", "login", "credential", "token", "not logged")):
+        return "github_authentication_unavailable"
+    if any(token in detail for token in ("timeout", "network", "connect", "dns", "offline", "connection")):
+        return "github_network_unavailable"
+    if any(token in detail for token in ("api", "http", "rate limit", "service unavailable")):
+        return "github_api_unavailable"
+    return "github_cli_unavailable"
+
+
+def _record_operator_merge_status_check(
+    repo: Path,
+    run_id: str,
+    pull_request: int,
+    *,
+    github_succeeded: bool = False,
+    failure_category: str | None = None,
+) -> dict[str, object]:
+    """Persist bounded diagnostic metadata for the current merge hand-off."""
+    checked_at = datetime.now(timezone.utc).isoformat()
+    try:
+        watcher = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
+        return {}
+    if watcher.get("run_id") != run_id:
+        return {}
+    prior = watcher.get("merge_status_check")
+    prior = prior if isinstance(prior, dict) else {}
+    record: dict[str, object] = {
+        "pull_request": pull_request,
+        "last_checked_at": checked_at,
+        "last_successful_github_check_at": prior.get("last_successful_github_check_at"),
+        "failure_category": failure_category,
+    }
+    if github_succeeded:
+        record["last_successful_github_check_at"] = checked_at
+        record["failure_category"] = None
+    watcher["merge_status_check"] = record
+    publish(repo / ".engineering" / "status", watcher)
+    return record
 
 
 def _finalize_operator_merge_wait(repo: Path, state: TransactionState) -> None:

@@ -918,11 +918,11 @@ function copyText(value) {
   }
 }
 let copyToastTimer;
-function showCopyToast() {
+function showDashboardToast(message) {
   const toast = $("copyToast");
   if (!toast) return;
   clearTimeout(copyToastTimer);
-  toast.textContent = t("copy.success");
+  toast.textContent = message;
   toast.hidden = false;
   if (typeof toast.showPopover === "function" && !toast.matches(":popover-open"))
     toast.showPopover();
@@ -936,6 +936,7 @@ function showCopyToast() {
     }, 180);
   }, 2200);
 }
+function showCopyToast() { showDashboardToast(t("copy.success")); }
 const PREFLIGHT_PRESENTATIONS = Object.freeze([
   ["host_preflight", [
     ["hostPreflightStatus", "outcome"],
@@ -1085,6 +1086,15 @@ function renderOperatorMergeWait(x) {
   link.href = href;
   link.textContent = t("merge_wait.open_pull_request", { number: pullRequest });
   $("operatorMergeWaitDescription").textContent = t("merge_wait.description", { number: pullRequest });
+  const lastCheck = x.merge_status_check?.last_successful_github_check_at;
+  const lastCheckText = typeof lastCheck === "string"
+    ? t("merge_wait.last_successful_check", { timestamp: formatTimestamp(lastCheck) })
+    : "";
+  for (const id of ["operatorMergeWaitLastCheck", "operatorMergeWaitModalLastCheck"]) {
+    const field = $(id);
+    field.hidden = !lastCheckText;
+    field.textContent = lastCheckText;
+  }
   const modal = $("operatorMergeWaitModal");
   $("operatorMergeWaitModalDescription").textContent = t("merge_wait.description", { number: pullRequest });
   const mergeKey = Number(x.reconciliation_pr) === pullRequest
@@ -5105,19 +5115,39 @@ function checkOperatorMergeStatus(button) {
       const reason = String(result.body?.reason || "github_evidence_unavailable");
       if (result.body?.verified) {
         if ($("operatorMergeWaitModal").open) $("operatorMergeWaitModal").close();
-        return refreshAfterOperatorAction();
+        showDashboardToast(t("merge_wait.continuation_scheduled"));
+        return refreshMergeContinuation();
       }
       // Re-read the authoritative snapshot before retaining a failure modal:
       // a background watcher can advance the same hand-off while this request
       // is in flight. The control remains available when it is still waiting.
       return refreshAfterOperatorAction().finally(() => {
         if (latestStatus?.current_phase === "WAIT_FOR_OPERATOR_MERGE") {
-          showDashboardError(t(`merge_wait.reason.${reason}`), t("merge_wait.status_check_failed"));
+          showMergeStatusCheckError(reason);
         }
       });
     })
-    .catch((error) => showDashboardError(error.message, t("merge_wait.status_check_failed")))
+    .catch(() => showMergeStatusCheckError("github_cli_unavailable"))
     .finally(() => { button.disabled = false; });
+}
+async function refreshMergeContinuation() {
+  for (const delay of [0, 300, 900, 1800]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    await refreshAfterOperatorAction();
+    if (latestStatus?.current_phase !== "WAIT_FOR_OPERATOR_MERGE") return;
+  }
+}
+function showMergeStatusCheckError(reason) {
+  const lastCheck = latestStatus?.merge_status_check?.last_successful_github_check_at;
+  const timestamp = typeof lastCheck === "string" ? formatTimestamp(lastCheck) : "";
+  const detail = [
+    t(`merge_wait.reason.${reason}`),
+    timestamp ? t("merge_wait.last_successful_check", { timestamp }) : "",
+  ].filter(Boolean).join(" ");
+  showDashboardError(detail, t("merge_wait.status_check_failed"), {
+    label: t("merge_wait.check_again"),
+    run: () => checkOperatorMergeStatus($("operatorMergeWaitModalStatusCheck")),
+  });
 }
 $("predecessorRetry").addEventListener("click", submitPredecessorRetry);
 $("operatorMergeAbort").addEventListener("click", abortOperatorMergeWait);
@@ -5235,23 +5265,26 @@ function dashboardErrorRecovery(message) {
     ? "managed_branch_synchronization"
     : null;
 }
-function showDashboardError(message, fallback) {
+function showDashboardError(message, fallback, action = null) {
   const modal = $("dashboardErrorModal"),
     close = $("dashboardErrorModalClose"),
     dismiss = $("dashboardErrorModalDismiss"),
     recover = $("dashboardErrorModalRecover"),
-    recovery = dashboardErrorRecovery(message);
+    recovery = dashboardErrorRecovery(message),
+    followUp = action || (recovery ? { label: t("action.recover") } : null);
   $("dashboardErrorModalTitle").textContent = t("ui.action_failed");
   $("dashboardErrorModalText").textContent = localizedDashboardError(message, fallback);
-  recover.hidden = !recovery;
+  recover.hidden = !followUp;
   recover.disabled = false;
-  recover.textContent = t("action.recover");
+  recover.textContent = followUp?.label || "";
   const finish = () => {
     if (modal.open) modal.close();
     close.onclick = dismiss.onclick = recover.onclick = null;
   };
   close.onclick = dismiss.onclick = finish;
-  recover.onclick = recovery === "managed_branch_synchronization"
+  recover.onclick = action
+    ? () => { finish(); action.run(); }
+    : recovery === "managed_branch_synchronization"
     ? () => {
       recover.disabled = true;
       fetch("/api/managed-branch-synchronization", {
