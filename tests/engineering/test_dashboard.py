@@ -109,6 +109,7 @@ class DashboardStatusTest(unittest.TestCase):
             "detail.business_value", "detail.confidence", "detail.dependencies", "detail.alternatives",
             "detail.decision_evidence", "detail.projection_incomplete", "technical.git_lock",
             "technical.git_lock_recovery_action", "detail.execution_diagnostic",
+            "lifecycle.detail_quality_evidence", "lifecycle.quality_evidence.test_coverage",
         ):
             self.assertEqual(catalog.count(f'"{key}"'), 5)
         self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
@@ -1389,18 +1390,26 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertNotIn("provider_invocation_count", legacy_usage)
             self.assertNotIn("max_input_tokens_per_invocation", legacy_usage)
 
-    def test_prompt_history_detail_includes_run_scoped_repair_audit(self) -> None:
+    def test_prompt_history_detail_scopes_repair_audit_to_its_lifecycle_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             run_id = "inbox-repair-audit"
             record_prompt_execution(root, run_id=run_id, terminal_state="BLOCKED", prompt_title="Audit", executed_at="2026-08-03T12:00:00Z")
-            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
-                run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+            store = StateStore(root / ".engineering" / "engineering-runs")
+            audit = ({"iteration": "1", "observed_at": "2026-08-03T12:00:00+00:00", "failed_checks": "Ruff", "proposed_action": "Repair Ruff.", "agent_summary": "Updated lint configuration.", "commit_sha": "a" * 40, "outcome": "submitted_for_recheck"},)
+            store.save(TransactionState(
+                run_id, "pcvantol/djconnect", "prompt.md", "REPAIR_AGENT",
                 repair_iterations=1,
-                repair_audit=({"iteration": "1", "observed_at": "2026-08-03T12:00:00+00:00", "failed_checks": "Ruff", "proposed_action": "Repair Ruff.", "agent_summary": "Updated lint configuration.", "commit_sha": "a" * 40, "outcome": "submitted_for_recheck"},),
+                repair_audit=audit,
+            ))
+            store.save(TransactionState(
+                run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+                repair_iterations=1, repair_audit=audit,
             ))
             payload = json.loads(_prompt_history_detail(root, run_id))
-            self.assertEqual(payload["repair_audit"][0]["failed_checks"], "Ruff")
+            self.assertNotIn("repair_audit", payload)
+            repair = next(step for step in payload["lifecycle"]["steps"] if step["id"] == "REPAIR_AGENT")
+            self.assertEqual(repair["repair_audit"][0]["failed_checks"], "Ruff")
 
     def test_prompt_history_detail_includes_only_its_own_terminal_failure_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

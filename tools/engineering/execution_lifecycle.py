@@ -304,6 +304,14 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             step["presentation_detail_key"] = "lifecycle.detail.not_part_of_reconciliation"
         if step_id == "REPAIR_AGENT" and repair_iterations:
             step["iteration_count"] = repair_iterations
+        if step_id == "REPAIR_AGENT" and step["state"] not in {"PENDING", "SKIPPED"}:
+            audit = checkpoint.get("repair_audit")
+            if isinstance(audit, (list, tuple)) and audit:
+                step["repair_audit"] = list(audit)
+        if step_id == "QUALITY_CONTROL_AGENT" and step["state"] not in {"PENDING", "SKIPPED"}:
+            evidence = checkpoint.get("quality_evidence")
+            if isinstance(evidence, (list, tuple)) and evidence:
+                step["quality_evidence"] = list(evidence)
         spans = [
             {
                 "phase": phase_name,
@@ -316,7 +324,12 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             for _, parent_phase_id, phase_name, attempt, started_at, completed_at, duration_ms, outcome in phase_spans
             if belongs_to_step(step_id, parent_phase_id, phase_name)
         ]
-        if spans:
+        # Timing is supporting evidence, not lifecycle authority.  In
+        # particular, admission can record a short reconciliation span before
+        # the end-reconciliation lifecycle step is ever reached.  Do not let
+        # that span invent start/end timestamps or a completed phase for a
+        # pending (or explicitly skipped) step.
+        if spans and step["state"] not in {"PENDING", "SKIPPED"}:
             step["timing"] = {
                 "started_at": min(str(span["started_at"]) for span in spans if span["started_at"]),
                 "finished_at": max((str(span["finished_at"]) for span in spans if span["finished_at"]), default=None),

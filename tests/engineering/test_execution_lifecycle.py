@@ -35,12 +35,14 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
     def test_terminal_outcome_keeps_later_steps_pending_and_repairs_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            repair_audit = ({"iteration": "2", "observed_at": "2026-08-24T20:10:00+00:00", "failed_checks": "Ruff", "proposed_action": "Repair Ruff.", "agent_summary": "Updated lint configuration.", "commit_sha": "a" * 40, "outcome": "submitted_for_recheck"},)
             self._state(root, "INITIALIZE")
-            self._state(root, "REPAIR_AGENT", repair_iterations=2)
-            self._state(root, "BLOCKED", repair_iterations=2)
+            self._state(root, "REPAIR_AGENT", repair_iterations=2, repair_audit=repair_audit)
+            self._state(root, "BLOCKED", repair_iterations=2, repair_audit=repair_audit)
             value = projection(root, "inbox-flow")
         by_id = {step["id"]: step for step in value["steps"]}
         self.assertEqual(by_id["REPAIR_AGENT"]["iteration_count"], 2)
+        self.assertEqual(by_id["REPAIR_AGENT"]["repair_audit"], list(repair_audit))
         self.assertEqual(by_id["WAIT_FOR_OPERATOR_MERGE"]["state"], "PENDING")
         self.assertEqual(by_id["TERMINAL"]["state"], "BLOCKED")
 
@@ -213,6 +215,28 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
             "duration_ms": 12000, "outcome": "COMPLETE",
         }])
 
+    def test_unreached_step_does_not_project_timing_from_admission_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 24, 20, 5, 21, tzinfo=timezone.utc)
+            self._state(root, "EXECUTE_AGENT")
+            reconciliation = start_phase(
+                root, "inbox-flow", "RECONCILIATION", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(
+                root, reconciliation, completed_at=started, monotonic_clock=10.0,
+            )
+            start_phase(
+                root, "inbox-flow", "TOTAL_EXECUTION", started_at=started, monotonic_clock=10.0,
+            )
+            value = projection(root, "inbox-flow")
+
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(by_id["RECONCILE_AGENT"]["state"], "PENDING")
+        self.assertNotIn("timing", by_id["RECONCILE_AGENT"])
+        self.assertEqual(by_id["TERMINAL"]["state"], "PENDING")
+        self.assertNotIn("timing", by_id["TERMINAL"])
+
     def test_quality_control_owns_its_nested_provider_timing_and_terminal_has_total_timing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -236,11 +260,13 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
             )
             complete_phase(root, quality_validation, completed_at=started + timedelta(seconds=25), monotonic_clock=35.0)
             complete_phase(root, quality, completed_at=started + timedelta(seconds=26), monotonic_clock=36.0)
+            quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
+            self._state(root, "QUALITY_CONTROL_AGENT", quality_evidence=quality_evidence)
             total = start_phase(
                 root, "inbox-flow", "TOTAL_EXECUTION", started_at=started, monotonic_clock=10.0,
             )
             complete_phase(root, total, completed_at=started + timedelta(seconds=30), monotonic_clock=40.0)
-            self._state(root, "COMPLETE")
+            self._state(root, "COMPLETE", quality_evidence=quality_evidence)
             value = projection(root, "inbox-flow")
         by_id = {step["id"]: step for step in value["steps"]}
         self.assertEqual(
@@ -251,6 +277,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
             [span["phase"] for span in by_id["QUALITY_CONTROL_AGENT"]["timing"]["spans"]],
             ["QUALITY_CONTROL", "PROVIDER_EXECUTION", "VALIDATION"],
         )
+        self.assertEqual(by_id["QUALITY_CONTROL_AGENT"]["quality_evidence"], list(quality_evidence))
         terminal = by_id["TERMINAL"]["timing"]
         self.assertEqual(terminal["started_at"], "2026-08-16T14:00:00+00:00")
         self.assertEqual(terminal["finished_at"], "2026-08-16T14:00:30+00:00")

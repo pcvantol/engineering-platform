@@ -1167,7 +1167,8 @@ test.describe("Engineering Status browser smoke", () => {
         steps: [
           { id: "execute", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
           { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
-            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL", duration_ms: 1000, outcome: "ACTIVE" }] } },
+            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL", duration_ms: 1000, outcome: "ACTIVE" }] },
+            quality_evidence: [{ activity: "TEST_COVERAGE", result: "Gerichte regressietest toegevoegd." }] },
         ],
       },
     }, {}));
@@ -1178,6 +1179,10 @@ test.describe("Engineering Status browser smoke", () => {
     const modal = page.locator("#lifecycleDetailModal");
     await expect(modal).toBeVisible();
     await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.quality_control_agent"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.quality_control"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_quality_evidence"]);
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.quality_evidence.test_coverage"]);
+    await expect(modal).toContainText("Gerichte regressietest toegevoegd.");
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
@@ -1195,6 +1200,7 @@ test.describe("Engineering Status browser smoke", () => {
             { phase: "INITIALIZATION", duration_ms: 1000, outcome: "COMPLETE" },
             { phase: "INITIALIZATION", duration_ms: 2000, outcome: "COMPLETE" },
             { phase: "PROVIDER_EXECUTION", duration_ms: 12000, outcome: "COMPLETE" },
+            { phase: "TOTAL_EXECUTION", duration_ms: 15000, outcome: "COMPLETE" },
           ] },
         }],
       },
@@ -1203,10 +1209,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator(".execution-lifecycle__node").click();
 
     const phaseRows = page.locator("#lifecycleDetailModal .lifecycle-detail-modal__phase-list li");
-    await expect(phaseRows).toHaveCount(2);
+    await expect(phaseRows).toHaveCount(3);
     await expect(phaseRows.nth(0)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.initialization"]);
     await expect(phaseRows.nth(0)).toContainText("3 sec");
     await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
+    await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
   });
 
   test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
@@ -2028,6 +2035,43 @@ test.describe("Engineering Status browser smoke", () => {
         ["Speed state", "Unknown"],
         ["Usage authority", "Provider-observed"],
       ]);
+  });
+
+  test("pairs specialist reviews beside the wider provider usage card on wide prompt details", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      renderPromptHistoryDetail({
+        history: { run_id: "inbox-provider-review-layout", status: "COMPLETE", title: "Provider and reviews", executed_at: "2026-08-24T20:00:00Z" },
+        usage: { input_tokens: 400, output_tokens: 40, provider_invocation_count: 8 },
+        reviewers: [
+          { reviewer: "validation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 2, selected_because: "validation-related objective" },
+          { reviewer: "documentation", capability: "ENGINEERING", status: "completed", accepted_recommendations: 1, selected_because: "documentation-oriented objective" },
+        ],
+      });
+      document.querySelector("#promptHistoryDetailModal").showModal();
+    });
+
+    const pair = page.locator("#promptHistoryDetailContent .prompt-detail-provider-review");
+    const cards = pair.locator(".prompt-detail-card");
+    await expect(cards).toHaveCount(2);
+    const [usageBounds, reviewerBounds] = await Promise.all([
+      cards.nth(0).boundingBox(), cards.nth(1).boundingBox(),
+    ]);
+    expect(usageBounds).not.toBeNull();
+    expect(reviewerBounds).not.toBeNull();
+    expect(reviewerBounds.x).toBeGreaterThan(usageBounds.x);
+    expect(reviewerBounds.width).toBeLessThan(usageBounds.width);
+    expect(Math.abs(reviewerBounds.y - usageBounds.y)).toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const [narrowUsage, narrowReviewers] = await Promise.all([
+      cards.nth(0).boundingBox(), cards.nth(1).boundingBox(),
+    ]);
+    expect(narrowUsage).not.toBeNull();
+    expect(narrowReviewers).not.toBeNull();
+    expect(Math.abs(narrowReviewers.x - narrowUsage.x)).toBeLessThanOrEqual(1);
+    expect(narrowReviewers.y).toBeGreaterThan(narrowUsage.y);
   });
 
   test("formats preflight timestamps through the selected dashboard locale", async ({ page }) => {
@@ -3317,8 +3361,8 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
       platform_version: "1.5.0",
-      current_phase: "EXECUTE_AGENT",
-      current_action: "Codex bewerkt bestanden",
+      current_phase: "CAPABILITY_REVIEW",
+      current_action: "Capability review: documentation",
       run_id: "activity-run",
       prompt_title: "Veilige voortgang",
       submitted_filename: "activity.md",
@@ -3327,9 +3371,20 @@ test.describe("Engineering Status browser smoke", () => {
 
     await expect(page.locator("#currentRun")).toBeVisible();
     await expect(page.locator("#platformVersion")).toHaveText("1.5.0");
-    await expect(page.locator("#action")).toHaveText("Codex bewerkt bestanden");
+    await expect(page.locator("#phase")).toHaveText("Specialistenreview");
+    await expect(page.locator("#action")).toHaveText("Documentatie voert een specialistenreview uit");
     await expect(page.locator("#action")).toHaveCSS("font-style", "italic");
     await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 primaire Codex-opdrachten uitgevoerd · 0 reviewer-Codex-opdrachten uitgevoerd");
+
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      current_action: "invoke_agent",
+      run_id: "activity-run",
+      prompt_title: "Veilige voortgang",
+      submitted_filename: "activity.md",
+    }, {}));
+    await expect(page.locator("#action")).toHaveText("Codex voert de uitvoering uit");
   });
 
   test("lays out operational-overview cards in two columns only when its container has room", async ({ page }) => {
@@ -4875,7 +4930,6 @@ test.describe("Engineering Status browser smoke", () => {
       componentLogsLoaded = true;
       renderComponentLogs();
     });
-
     await expect(page.locator("#inboxComponentLog tr")).toHaveCount(50);
     await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 1 van 2 · 51 regels");
     await expect(page.locator("#dashboardLogPagination")).toContainText("Pagina 1 van 1 · 2 regels");
@@ -4983,6 +5037,7 @@ test.describe("Engineering Status browser smoke", () => {
               finished_at: "2026-08-02T12:25:12Z",
               spans: [{ phase: "REPAIR", duration_ms: 12000, outcome: "COMPLETED" }],
             },
+            repair_audit: [{ iteration: "1", failed_checks: "Ruff", proposed_action: "Repair Ruff.", agent_summary: "Updated lint configuration.", commit_sha: "abcdef1", outcome: "submitted_for_recheck" }],
           }],
         },
       },
@@ -4993,6 +5048,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#promptHistoryDetailContent .execution-lifecycle__node").click();
     const lifecycleDetail = page.locator("#lifecycleDetailModal");
     await expect(lifecycleDetail).toBeVisible();
+    await expect(lifecycleDetail).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_repair_evidence"]);
+    await expect(lifecycleDetail).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.detail_repair_iteration"].replace("{iteration}", "1"));
+    await expect(lifecycleDetail).toContainText("Updated lint configuration.");
+    await expect(page.locator("#promptHistoryDetailContent")).not.toContainText(DASHBOARD_MESSAGES.nl["detail.repair_history"]);
     await expect(lifecycleDetail.locator(".lifecycle-detail-modal__panel")).toHaveCSS("border-top-color", "rgb(141, 199, 255)");
     await expect(lifecycleDetail.locator("#lifecycleDetailTitle")).toHaveCSS("color", "rgb(141, 199, 255)");
     await expect(lifecycleDetail.locator("#lifecycleDetailTitle")).toHaveAttribute("data-lifecycle-status", "completed");
@@ -5374,8 +5433,11 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
+    const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await snapshotLoaded;
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
     await page.locator("#themeToggle").click();
     await page.evaluate(() => {
       document.querySelector("#inboxComponentLog").innerHTML =

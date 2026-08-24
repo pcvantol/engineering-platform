@@ -328,7 +328,7 @@ Ledger bootstrap:
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
-Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha and validation_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence and quality_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -625,11 +625,16 @@ Mandatory autonomous refactor and quality-control stage:
   needed, commit and push them to that same branch; do not create another PR,
   merge, alter authority, or expand scope.
 - Return the same pull-request number and branch after the quality boundary.
+- In quality_evidence, record only work actually performed in this stage. Use
+  activity values REFACTOR, TEST_COVERAGE, DOCUMENTATION, VALIDATION, or
+  NO_CHANGE_REQUIRED and a short safe result for each. Do not include raw
+  commands, output, prompts, source content, paths, secrets, or reasoning.
 """
         try:
             result = self._invoke_agent_with_timing(quality, prompt, quality=True)
             quality = self._record_agent_execution_time(quality)
             quality = self._record_validation_evidence(quality, result)
+            quality = replace(quality, quality_evidence=result.quality_evidence)
             self._persist_agent_usage(quality.run_id)
         except CodexInvocationError as error:
             quality = self._record_agent_execution_time(quality)

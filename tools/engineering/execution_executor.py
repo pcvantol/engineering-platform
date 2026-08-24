@@ -14,6 +14,7 @@ _CODEX_USAGE_LIMIT = re.compile(
     r"(?:you(?:'ve| have) hit your usage limit|purchase more credits|try again at)",
     re.IGNORECASE,
 )
+_QUALITY_EVIDENCE_ACTIVITIES = frozenset({"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"})
 
 
 def codex_failure_disposition(
@@ -323,6 +324,7 @@ class CodexCliClient:
                 "repository_path",
                 "commit_sha",
                 "validation_evidence",
+                "quality_evidence",
             ],
             "properties": {
                 "terminal_state": {
@@ -348,6 +350,12 @@ class CodexCliClient:
                     "items": {"type": "object", "additionalProperties": False,
                               "required": ["command", "result"],
                               "properties": {"command": {"type": "string", "maxLength": 240}, "result": {"type": "string", "maxLength": 240}}},
+                },
+                "quality_evidence": {
+                    "type": "array", "maxItems": 8,
+                    "items": {"type": "object", "additionalProperties": False,
+                              "required": ["activity", "result"],
+                              "properties": {"activity": {"type": "string", "enum": sorted(_QUALITY_EVIDENCE_ACTIVITIES)}, "result": {"type": "string", "maxLength": 240}}},
                 },
             },
         }
@@ -399,14 +407,24 @@ class CodexCliClient:
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
             result = AgentResult(**raw)
-            if not isinstance(result.validation_evidence, (list, tuple)):
-                raise TypeError("validation evidence must be a list")
+            if not isinstance(result.validation_evidence, (list, tuple)) or not isinstance(result.quality_evidence, (list, tuple)):
+                raise TypeError("execution evidence must be a list")
+            if any(
+                not isinstance(item, dict) or item.get("activity") not in _QUALITY_EVIDENCE_ACTIVITIES
+                or not item.get("result")
+                for item in result.quality_evidence
+            ):
+                raise TypeError("quality evidence is invalid")
             result = replace(
                 result,
                 validation_evidence=tuple(
                     {"command": redact_diagnostic(item.get("command", ""), limit=240), "result": redact_diagnostic(item.get("result", ""), limit=240)}
                     for item in result.validation_evidence
                     if isinstance(item, dict) and item.get("command") and item.get("result")
+                ),
+                quality_evidence=tuple(
+                    {"activity": str(item["activity"]), "result": redact_diagnostic(str(item["result"]), limit=240)}
+                    for item in result.quality_evidence
                 ),
             )
             if result.diagnostic is not None:

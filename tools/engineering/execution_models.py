@@ -36,3 +36,4 @@ class AgentResult:
     repository_path: str | None = None
     commit_sha: str | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
+    quality_evidence: tuple[dict[str, str], ...] = ()

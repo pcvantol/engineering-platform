@@ -447,6 +447,16 @@ regressions when needed. It must also assess applicable operator, contract and
 implementation documentation, updating it whenever the bounded change affects
 documented behavior.
 
+For a reached quality-control step, the lifecycle popup shows the persisted,
+bounded evidence of work actually performed: refactoring, test coverage,
+documentation, validation, or a verified no-change outcome. This evidence is
+structured and safe for the operator surface; it excludes raw prompts, source
+content, commands, output, paths, secrets and model reasoning.
+
+The same placement rule applies to PR-check repair: its recorded repair audit
+is shown only in the reached **PR check repair** lifecycle popup, rather than
+as a duplicate card in prompt details.
+
 CI runs the browser suite with four isolated workers. Each worker starts its
 own temporary dashboard root and local server, so status fixtures, browser
 preferences and retry projections never leak between tests. Local runs retain

@@ -134,6 +134,8 @@ document
   );
 const OPERATIONAL_PRESENTATION_KEYS = {
   ENGINEERING_RUN_STALE: "operational.stale_run",
+  CAPABILITY_REVIEW: "telemetry.phase.capability_review",
+  invoke_agent: "operational.activity_invoke_agent",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
   WAIT_FOR_OPERATOR_MERGE: "lifecycle.step.wait_for_operator_merge",
   WAIT_FOR_FINALIZATION_MERGE: "lifecycle.step.wait_for_finalization_merge",
@@ -143,6 +145,12 @@ const OPERATIONAL_PRESENTATION_KEYS = {
 };
 function translate(value) {
   const raw = String(value || "");
+  const capabilityReview = /^Capability review:\s*(.+)$/i.exec(raw);
+  if (capabilityReview) {
+    return t("operational.activity_capability_review", {
+      reviewer: reviewerLabel(capabilityReview[1]),
+    });
+  }
   const presentationKey = OPERATIONAL_PRESENTATION_KEYS[raw];
   return presentationKey ? t(presentationKey) : t("state." + raw, {}, raw);
 }
@@ -1196,6 +1204,62 @@ function lifecyclePhaseTiming(spans) {
     duration_ms: hasDuration ? phase.duration_ms : null,
   }));
 }
+function lifecycleQualityEvidence(step) {
+  const evidence = Array.isArray(step?.quality_evidence) ? step.quality_evidence : [];
+  if (!evidence.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__quality-evidence";
+  section.append(Object.assign(document.createElement("h3"), {
+    textContent: t("lifecycle.detail_quality_evidence"),
+  }));
+  const list = document.createElement("ol");
+  list.className = "lifecycle-detail-modal__phase-list";
+  for (const item of evidence) {
+    if (!item || typeof item !== "object") continue;
+    const activity = String(item.activity || "").trim();
+    const result = String(item.result || "").trim();
+    if (!activity || !result) continue;
+    const row = document.createElement("li");
+    row.append(
+      Object.assign(document.createElement("strong"), {
+        textContent: t("lifecycle.quality_evidence." + activity.toLowerCase(), {}, activity),
+      }),
+      Object.assign(document.createElement("span"), { textContent: result }),
+    );
+    list.append(row);
+  }
+  if (!list.childElementCount) return null;
+  section.append(list);
+  return section;
+}
+function lifecycleRepairEvidence(step) {
+  const audit = Array.isArray(step?.repair_audit) ? step.repair_audit : [];
+  if (!audit.length) return null;
+  const section = document.createElement("section");
+  section.className = "lifecycle-detail-modal__repair-evidence";
+  section.append(Object.assign(document.createElement("h3"), {
+    textContent: t("lifecycle.detail_repair_evidence"),
+  }));
+  for (const item of audit) {
+    if (!item || typeof item !== "object") continue;
+    const iteration = String(item.iteration || "").trim();
+    if (!iteration) continue;
+    const heading = document.createElement("h4");
+    heading.textContent = t("lifecycle.detail_repair_iteration", { iteration });
+    const grid = document.createElement("div");
+    grid.className = "technical-grid";
+    const outcome = String(item.outcome || "").trim();
+    grid.append(
+      lifecycleDetailField(t("detail.failed_checks"), String(item.failed_checks || t("detail.not_recorded"))),
+      lifecycleDetailField(t("detail.proposed_action"), String(item.proposed_action || t("detail.not_recorded"))),
+      lifecycleDetailField(t("detail.ai_repair_summary"), String(item.agent_summary || t("detail.not_recorded"))),
+      lifecycleDetailField(t("detail.commit"), String(item.commit_sha || t("detail.not_recorded"))),
+      lifecycleDetailField(t("detail.outcome"), t("lifecycle.repair_outcome." + outcome, {}, outcome || t("detail.not_recorded"))),
+    );
+    section.append(heading, grid);
+  }
+  return section.childElementCount > 1 ? section : null;
+}
 let lifecycleDetailTrigger = null;
 function closeLifecycleDetail() {
   const modal = $("lifecycleDetailModal");
@@ -1246,6 +1310,10 @@ function openLifecycleDetail(step, trigger) {
     phaseTiming.append(list);
   }
   content.append(phaseTiming);
+  const qualityEvidence = lifecycleQualityEvidence(step);
+  if (qualityEvidence) content.append(qualityEvidence);
+  const repairEvidence = lifecycleRepairEvidence(step);
+  if (repairEvidence) content.append(repairEvidence);
   if (!modal.open) modal.showModal();
   resetDashboardModalInitialFocus(modal);
 }
@@ -4435,18 +4503,6 @@ function promptDetailEvidenceSection(evidence) {
     [detailField(t("detail.evidence"), evidence.join("\n"), true)],
   );
 }
-function promptDetailRepairAuditSection(audit) {
-  if (!Array.isArray(audit) || !audit.length) return null;
-  const text = audit.map((item) => [
-    t("detail.repair_iteration") + ": " + String(item.iteration || "—"),
-    t("detail.failed_checks") + ": " + String(item.failed_checks || "—"),
-    t("detail.proposed_action") + ": " + String(item.proposed_action || "—"),
-    t("detail.ai_repair_summary") + ": " + String(item.agent_summary || "—"),
-    t("detail.commit") + ": " + String(item.commit_sha || "—"),
-    t("detail.outcome") + ": " + String(item.outcome || "—"),
-  ].join("\n")).join("\n\n");
-  return promptDetailCard(t("detail.repair_history"), [detailField(t("detail.audit_evidence"), text, true)], true);
-}
 function promptDetailRecommendationHandoff(handoff) {
   if (!handoff || typeof handoff !== "object") return null;
   const recommendation = handoff.recommendation || {}, alternatives = Array.isArray(handoff.alternatives) ? handoff.alternatives : [];
@@ -4481,7 +4537,7 @@ function promptDetailRecommendationHandoff(handoff) {
   }
   return promptDetailCard(t("detail.recommendation_handoff"), fields, true);
 }
-function promptDetailReviewersSection(reviewers) {
+function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
   if (!reviewers.length) return null;
   const fields = reviewers.map((reviewer) =>
     detailField(
@@ -4496,7 +4552,17 @@ function promptDetailReviewersSection(reviewers) {
       true,
     ),
   );
-  return promptDetailCard(t("detail.specialist_reviews"), fields, true);
+  return promptDetailCard(t("detail.specialist_reviews"), fields, wide, "prompt-detail-card--reviewers");
+}
+function promptDetailProviderReviewSections(usage, reviewers) {
+  const usageCard = promptDetailUsageSection(usage);
+  const reviewerCard = promptDetailReviewersSection(reviewers, { wide: false });
+  if (!usageCard) return reviewerCard;
+  if (!reviewerCard) return usageCard;
+  const pair = document.createElement("section");
+  pair.className = "prompt-detail-provider-review";
+  pair.append(usageCard, reviewerCard);
+  return pair;
 }
 function renderPromptHistoryDetail(payload) {
   const content = $("promptHistoryDetailContent"),
@@ -4517,13 +4583,11 @@ function renderPromptHistoryDetail(payload) {
         promptDetailRuntimeSection(runtime),
         promptDetailCommitsSection(commits),
       promptDetailEvidenceSection(evidence),
-      promptDetailRepairAuditSection(payload?.repair_audit),
       ]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
-      promptDetailUsageSection(usage),
+      promptDetailProviderReviewSections(usage, reviewers),
       promptDetailRecommendationHandoff(recommendationHandoff),
-      promptDetailReviewersSection(reviewers),
     ].filter(Boolean),
   );
 }

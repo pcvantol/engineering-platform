@@ -748,7 +748,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
-        agent = FakeAgent(AgentResult("COMPLETE"))
+        quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
+        agent = FakeAgent(AgentResult("COMPLETE", quality_evidence=quality_evidence))
         repository = FakeRepository()
         runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None)
         state = runner.run(self.prompt, run_id="new-run")
@@ -765,6 +766,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Mandatory autonomous refactor and quality-control stage", agent.prompts[1])
         self.assertIn("Assess test coverage for every changed behavior", agent.prompts[1])
         self.assertIn("Assess the applicable operator, contract, and implementation documentation", agent.prompts[1])
+        self.assertIn("In quality_evidence, record only work actually performed", agent.prompts[1])
+        self.assertEqual(state.quality_evidence, quality_evidence)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_reviewer_recommendations_do_not_enter_the_primary_prompt(self) -> None:

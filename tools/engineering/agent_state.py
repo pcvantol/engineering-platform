@@ -64,6 +64,7 @@ class TransactionState:
     latest_github_evidence: str | None = None
     agent_execution_seconds: float | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
+    quality_evidence: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
     repair_audit: tuple[dict[str, str], ...] = ()
     waiting_for_merge_since: str | None = None
@@ -86,6 +87,7 @@ class TransactionState:
             "latest_repository_evidence": None, "latest_github_evidence": None,
             "agent_execution_seconds": None,
             "validation_evidence": (),
+            "quality_evidence": (),
             "repair_iterations": 0,
             "repair_audit": (),
             "waiting_for_merge_since": None,
@@ -96,6 +98,8 @@ class TransactionState:
             raise StateError("checkpoint fields are incompatible")
         if isinstance(raw.get("validation_evidence"), list):
             raw = {**raw, "validation_evidence": tuple(raw["validation_evidence"])}
+        if isinstance(raw.get("quality_evidence"), list):
+            raw = {**raw, "quality_evidence": tuple(raw["quality_evidence"])}
         if isinstance(raw.get("repair_audit"), list):
             raw = {**raw, "repair_audit": tuple(raw["repair_audit"])}
         try:
@@ -175,6 +179,22 @@ class TransactionState:
             )
         ):
             raise StateError("checkpoint validation evidence is invalid or unsafe")
+        quality_activities = {"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"}
+        if (
+            not isinstance(state.quality_evidence, tuple)
+            or len(state.quality_evidence) > 8
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"activity", "result"}
+                or item["activity"] not in quality_activities
+                or not isinstance(item["result"], str)
+                or not item["result"]
+                or len(item["result"]) > 240
+                or item["result"] != redact_diagnostic(item["result"], limit=240)
+                for item in state.quality_evidence
+            )
+        ):
+            raise StateError("checkpoint quality evidence is invalid or unsafe")
         if not isinstance(state.terminal, bool) or state.terminal != (state.phase in {"COMPLETE", "BLOCKED", "FAILED"}):
             raise StateError("checkpoint terminal flag conflicts with phase")
         return state
