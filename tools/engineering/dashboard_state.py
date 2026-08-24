@@ -118,6 +118,31 @@ def _watcher_has_terminal_run(watcher: object, run_id: object) -> bool:
     )
 
 
+def _watcher_lags_live_phase(
+    watcher: object, live: object, lifecycle: object,
+) -> bool:
+    """Return whether an old implementation-merge wait masks later progress.
+
+    The watcher can retain its last operator-merge publication while the
+    resumed Execution Host has already persisted a later phase for the same
+    run: finalization, bounded validation repair, or cleanup. That is not
+    another merge wait. Keep the later lifecycle visible even when the host
+    lease has subsequently gone stale, so the operator sees the durable state
+    and its ownership warning instead of an obsolete PR hand-off.
+    """
+    return (
+        isinstance(watcher, dict)
+        and isinstance(live, dict)
+        and watcher.get("run_id") == live.get("run_id")
+        and watcher.get("watcher_state") == "WAITING_FOR_OPERATOR_MERGE"
+        and watcher.get("current_phase") == "WAIT_FOR_OPERATOR_MERGE"
+        and isinstance(lifecycle, dict)
+        and lifecycle.get("current_step") in {
+            "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP",
+        }
+    )
+
+
 def _is_operator_merge_wait(live: object, lifecycle: object) -> bool:
     """Keep the durable PR hand-off visible during internal check polling.
 
@@ -299,6 +324,7 @@ def status(root: Path) -> bytes:
                 watcher.get("run_id") == live.get("run_id")
                 and watcher.get("watcher_state") in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING", "ENGINEERING_RUN_ACTIVE"}
             )
+            or _watcher_lags_live_phase(watcher, live, lifecycle)
         )
     ):
         # Lifecycle is intentionally retained for auditability, but a stale
@@ -315,6 +341,11 @@ def status(root: Path) -> bytes:
         stale_projection.update(
             {
                 "watcher_state": "ENGINEERING_RUN_STALE",
+                # The lifecycle is the canonical presentation mapping for
+                # internal polling. In particular, a finalization PR's check
+                # polling must never be labelled as the older implementation
+                # merge hand-off.
+                "current_phase": lifecycle.get("current_step") or live.get("phase"),
                 "current_action": "Execution Host ownership is stale; no execution is currently running.",
                 "recovery_action": recovery,
             }

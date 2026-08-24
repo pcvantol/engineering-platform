@@ -179,6 +179,36 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["execution_liveness"]["state"], "STALE")
         self.assertNotEqual(payload["current_action"], "Engineeringuitvoering is actief.")
 
+    def test_status_keeps_later_lifecycle_phase_visible_when_watcher_lags_merge_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {
+                "watcher_state": "WAITING_FOR_OPERATOR_MERGE",
+                "run_id": "inbox-finalizing",
+                "current_phase": "WAIT_FOR_OPERATOR_MERGE",
+                "current_action": "Waiting for the operator to merge the pull request.",
+            }
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+            (status / "current.json").write_text(json.dumps({
+                "run_id": "inbox-finalizing", "phase": "REPAIR_AGENT", "pull_request": 896,
+            }), encoding="utf-8")
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState(
+                    "inbox-finalizing", "repo", "prompt.md", "REPAIR_AGENT",
+                    transaction_kind="FINALIZATION", implementation_pull_request=895,
+                    finalization_pull_request=896, pull_request=896,
+                )
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_STALE")
+        self.assertEqual(payload["current_phase"], "REPAIR_AGENT")
+        self.assertEqual(payload["lifecycle"]["current_step"], "REPAIR_AGENT")
+        self.assertNotIn("merge the pull request", payload["current_action"])
+
     def test_status_ignores_a_stale_nonterminal_live_projection_after_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

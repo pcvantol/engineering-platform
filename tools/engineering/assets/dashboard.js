@@ -284,6 +284,11 @@ function renderEstimate(x, durationEstimate = latestDurationEstimate) {
 function isActiveRun(x = {}) {
   return ["ENGINEERING_RUN_ACTIVE", "WAITING_FOR_OPERATOR_MERGE"].includes(x.watcher_state) && Boolean(x.run_id);
 }
+function hasVisibleStaleLifecycle(x = {}) {
+  return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
+    x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED" &&
+    x.lifecycle?.available === true;
+}
 function checkBuild(build) {
   if (build === DASHBOARD_BUILD) {
     sessionStorage.removeItem(DASHBOARD_BUILD_KEY);
@@ -1363,6 +1368,7 @@ function renderHealthStatus(x, snapshot = {}) {
   latestStatus = x;
   latestDurationEstimate = snapshot.duration_estimate || {};
   let active = isActiveRun(x),
+    visibleStaleLifecycle = hasVisibleStaleLifecycle(x),
     statusTone = tone(x),
     indicator = $("indicator"),
     components = snapshot.component_versions || {},
@@ -1370,7 +1376,7 @@ function renderHealthStatus(x, snapshot = {}) {
   // A terminal current.json/status projection is historical evidence, not an
   // active prompt.  The watcher owns the operational view; history owns the
   // completed, failed or blocked execution.
-  $("currentRun").hidden = !(active || blockedPredecessor);
+  $("currentRun").hidden = !(active || visibleStaleLifecycle || blockedPredecessor);
   $("predecessorGate").hidden = !blockedPredecessor;
   $("predecessorRun").textContent =
     x.blocking_predecessor_run || t("format.not_available");

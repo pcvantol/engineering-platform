@@ -2125,10 +2125,19 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses the rose telemetry accent throughout the telemetry detail modal", async ({ page }) => {
+    // Keep the fixture-owned telemetry row from being replaced by the
+    // asynchronous initial dashboard snapshot while this modal is opened.
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE" } },
+    }));
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: { executions: 1, completed: 1, blocked: 0, failed: 0 }, phases: [], bottlenecks: {}, runs: [],
     } }));
+    const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await snapshotLoaded;
+    await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => window.executionTelemetry([{
       date: "2026-08-16", prompt_count: 1, average_execution_seconds: 0,
       average_total_execution_seconds: 0, average_queue_wait_seconds: 0,
@@ -3621,6 +3630,33 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
 
     await expect(page.locator("#currentRun")).toBeHidden();
+  });
+
+  test("keeps a stale finalization lifecycle visible without claiming an active runner", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: { watcher_state: "WATCHER_IDLE" } }),
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_STALE",
+      run_id: "inbox-finalization-stale",
+      current_phase: "FINALIZE_AGENT",
+      current_action: "Execution Host ownership is stale; no execution is currently running.",
+      lifecycle: {
+        available: true,
+        run_id: "inbox-finalization-stale",
+        current_step: "FINALIZE_AGENT",
+        steps: [{ id: "FINALIZE_AGENT", presentation_key: "lifecycle.step.finalize_agent", state: "ACTIVE" }],
+      },
+    }, {}));
+
+    await expect(page.locator("#currentRun")).toBeVisible();
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#currentRun .execution-lifecycle")).toBeVisible();
+    await expect(page.locator("#currentRun .execution-lifecycle__node--active")).toHaveCount(1);
+    await expect(page.locator("#indicator")).not.toHaveClass(/indicator--running/);
   });
 
   test("allows the AI question field to grow only vertically", async ({ page }) => {
