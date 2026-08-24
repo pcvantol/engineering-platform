@@ -232,3 +232,25 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
             )
         self.assertEqual(snapshot["fresh_submission"], "NO")
         self.assertIn("FRESH_SUBMISSION_UNPROVEN", snapshot["qualification_failure_reasons"])
+
+    def test_resume_parent_prevents_fresh_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            snapshot = terminal_snapshot(
+                root,
+                run_id="inbox-managed-proof",
+                execution_outcome="COMPLETE",
+                implementation_pr=101,
+                finalization_pr=102,
+                repository_state="MERGED_RECONCILED",
+                workspace_state="WORKSPACE_READY",
+                main_origin_sync="YES",
+                worktree_state="CLEAN",
+                active_blocker="NONE",
+                recovery_required="NO",
+                resume_parent="inbox-parent",
+            )
+        self.assertEqual(snapshot["fresh_submission"], "NO")
+        self.assertEqual(snapshot["resume_parent"], "inbox-parent")
+        self.assertIn("FRESH_SUBMISSION_UNPROVEN", snapshot["qualification_failure_reasons"])
