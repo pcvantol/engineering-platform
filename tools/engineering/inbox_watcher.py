@@ -1039,15 +1039,19 @@ def _publish_operator_merge_wait(repo: Path, state: TransactionState, *, queue_i
         job_id = job_id or (prior.get("job_id") if isinstance(prior.get("job_id"), str) else None)
         filename = filename or (prior.get("submitted_filename") if isinstance(prior.get("submitted_filename"), str) else None)
         title = title or (prior.get("prompt_title") if isinstance(prior.get("prompt_title"), str) else None)
+    post_merge_sync = state.next_action == "await_clean_synchronized_main"
     status(
         repo,
-        "WAITING_FOR_OPERATOR_MERGE",
+        "WAITING_FOR_POST_MERGE_SYNCHRONIZATION" if post_merge_sync else "WAITING_FOR_OPERATOR_MERGE",
         job_id=job_id,
         run_id=state.run_id,
         queued_jobs=queue_depth,
         queue_items=queue_items or [],
         runner_phase=state.phase,
-        current_action="Wacht op de operator om de pull request te mergen.",
+        current_action=(
+            "Wacht op een schone, gesynchroniseerde main-checkout voor automatische afronding."
+            if post_merge_sync else "Wacht op de operator om de pull request te mergen."
+        ),
         implementation_pr=state.implementation_pull_request,
         finalization_pr=state.finalization_pull_request,
         submitted_filename=filename,

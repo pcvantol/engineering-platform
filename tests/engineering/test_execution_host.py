@@ -2178,6 +2178,49 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("BLOCKED — no engineering changes were executed or delivered.", body)
         self.assertTrue(terminal_report_matches_state(body, state))
 
+    def test_blocked_post_merge_report_does_not_discard_verified_implementation_evidence(self) -> None:
+        state = TransactionState(
+            "post-merge-blocked",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "BLOCKED",
+            implementation_pull_request=908,
+            implementation_merge_commit="a" * 40,
+            diagnostic="Finalization requires a clean, synchronized main checkout.",
+            terminal=True,
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "BLOCKED — implementation merge was verified, but Finalization and end reconciliation did not complete.",
+            body,
+        )
+        self.assertIn(
+            "Completed work: implementation merge was verified; this is not a complete delivery.",
+            body,
+        )
+        self.assertNotIn("BLOCKED — no engineering changes were executed or delivered.", body)
+        self.assertTrue(terminal_report_matches_state(body, state))
+
+    def test_post_merge_workspace_drift_waits_for_safe_finalization_retry(self) -> None:
+        repository = FakeRepository(clean=False, branch="feature/other")
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None
+        )
+        state = TransactionState(
+            "post-merge-sync-wait", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_OPERATOR_MERGE",
+            owner_authorized=True, implementation_pull_request=908,
+            implementation_merge_commit="a" * 40,
+        )
+
+        result = runner._start_finalization(state, 908)
+
+        self.assertEqual(result.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertFalse(result.terminal)
+        self.assertEqual(result.next_action, "await_clean_synchronized_main")
+        self.assertEqual(result.terminal_condition, "post_merge_workspace_sync_required")
+
     def test_blocked_report_projects_structured_development_host_drift(self) -> None:
         status = self.root / ".engineering" / "status"
         status.mkdir(parents=True, exist_ok=True)
@@ -2233,6 +2276,17 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(reconciled_recommendations(results), ("Use canonical wording.",))
         records = records_for_storage(selections, results)
         self.assertEqual(records[0]["accepted_recommendations"], 1)
+        self.assertEqual(records[0]["codex_commands_executed"], 0)
+
+    def test_reviewer_record_keeps_its_own_safe_command_count(self) -> None:
+        selection = select_reviewers("documentation", self.prompt, "IMPLEMENTATION", {})
+        result = ReviewerResult(
+            "documentation", "Review complete.", churn={"tool_loop_operations": 4}
+        )
+
+        records = records_for_storage(selection, (result,))
+
+        self.assertEqual(records[0]["codex_commands_executed"], 4)
 
     def test_reviewer_prompt_reuses_bounded_run_scoped_facts_without_conclusions(self) -> None:
         selection = select_reviewers("validation", self.prompt, "IMPLEMENTATION", {})[0]

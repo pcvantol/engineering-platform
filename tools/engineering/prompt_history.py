@@ -399,6 +399,13 @@ def prompt_history(
                 COALESCE(
                     runs.total_execution_seconds,
                     ROUND((
+                        SELECT MAX(span.duration_ms) / 1000.0
+                        FROM execution_phase_spans AS span
+                        WHERE span.run_id = history.run_id
+                          AND span.phase_name = 'TOTAL_EXECUTION'
+                          AND span.outcome IN ('COMPLETE', 'FAILED')
+                    ), 3),
+                    ROUND((
                         SELECT MAX(
                             0.0,
                             (julianday(MAX(CASE

@@ -52,6 +52,7 @@ function formatPromptHistoryTimestamp(value, fallback = t("format.timestamp_unav
   }).format(new Date(timestamp));
 }
 function formatPromptHistoryDuration(value) {
+  if (value === null || value === undefined || value === "") return "";
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) return "";
   return t("history.total_duration_minutes", {
@@ -1410,12 +1411,17 @@ function renderHealthStatus(x, snapshot = {}) {
     x.current_action || t("ui.no_active_action"),
   );
   const workspaceProgress = x.workspace_progress || {};
+  const reviewerCommands = Array.isArray(x.reviewer_agents)
+    ? x.reviewer_agents.reduce((total, reviewer) =>
+      total + Math.max(0, Number(reviewer?.codex_commands_executed) || 0), 0)
+    : 0;
   $("workspaceProgress").hidden = !x.workspace_progress;
   $("workspaceProgressValue").textContent = [
     t("workspace_progress.modified", { count: Number(workspaceProgress.modified) || 0 }),
     t("workspace_progress.created", { count: Number(workspaceProgress.created) || 0 }),
     t("workspace_progress.deleted", { count: Number(workspaceProgress.deleted) || 0 }),
     t("workspace_progress.codex_commands", { count: Number(workspaceProgress.codex_commands_executed) || 0 }),
+    t("workspace_progress.reviewer_codex_commands", { count: reviewerCommands }),
   ].join(" · ");
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || t("format.not_available");

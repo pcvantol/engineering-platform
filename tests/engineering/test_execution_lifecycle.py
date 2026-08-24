@@ -28,7 +28,8 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertTrue(value["available"])
         self.assertEqual(value["steps"][0]["state"], "START")
         self.assertEqual(value["steps"][1]["state"], "COMPLETED")
-        self.assertEqual(value["steps"][2]["state"], "ACTIVE")
+        self.assertEqual(value["steps"][2]["state"], "PENDING")
+        self.assertEqual(value["steps"][3]["state"], "ACTIVE")
         self.assertEqual(value["steps"][-1]["state"], "PENDING")
 
     def test_terminal_outcome_keeps_later_steps_pending_and_repairs_bounded(self) -> None:
@@ -56,7 +57,7 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         path = intended_path("MANAGED", "RECONCILIATION", None)
         self.assertEqual(
             path,
-            ("START", "INITIALIZE", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL"),
+            ("START", "INITIALIZE", "CAPABILITY_REVIEW", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL"),
         )
         self.assertNotIn("EXECUTE_AGENT", path)
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", path)
@@ -205,6 +206,29 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(timing["finished_at"], "2026-08-16T14:00:12+00:00")
         self.assertEqual(timing["spans"], [{
             "phase": "PROVIDER_EXECUTION", "attempt": 1,
+            "started_at": "2026-08-16T14:00:00+00:00",
+            "finished_at": "2026-08-16T14:00:12+00:00",
+            "duration_ms": 12000, "outcome": "COMPLETE",
+        }])
+
+    def test_capability_review_has_its_own_persisted_timing_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc)
+            self._state(root, "CAPABILITY_REVIEW")
+            phase = start_phase(
+                root, "inbox-flow", "CAPABILITY_REVIEW", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(
+                root, phase, completed_at=started + timedelta(seconds=12), monotonic_clock=22.0,
+            )
+            self._state(root, "EXECUTE_AGENT")
+            value = projection(root, "inbox-flow")
+
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(by_id["CAPABILITY_REVIEW"]["state"], "COMPLETED")
+        self.assertEqual(by_id["CAPABILITY_REVIEW"]["timing"]["spans"], [{
+            "phase": "CAPABILITY_REVIEW", "attempt": 1,
             "started_at": "2026-08-16T14:00:00+00:00",
             "finished_at": "2026-08-16T14:00:12+00:00",
             "duration_ms": 12000, "outcome": "COMPLETE",

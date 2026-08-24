@@ -703,7 +703,7 @@ def format_terminal_management_summary(state: TransactionState) -> str:
     if state.phase == "COMPLETE":
         return format_management_summary(state)
     outcome = (
-        "BLOCKED — no engineering changes were executed or delivered."
+        _blocked_management_outcome(state)
         if state.phase == "BLOCKED"
         else "FAILED — the engineering transaction did not complete successfully."
     )
@@ -727,6 +727,16 @@ def format_terminal_management_summary(state: TransactionState) -> str:
     )
 
 
+def _blocked_management_outcome(state: TransactionState) -> str:
+    """State a verified implementation merge without overstating final delivery."""
+    if state.implementation_merge_commit:
+        return (
+            "BLOCKED — implementation merge was verified, but Finalization and "
+            "end reconciliation did not complete."
+        )
+    return "BLOCKED — no engineering changes were executed or delivered."
+
+
 def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
     """Reject report prose that conflicts with its immutable terminal checkpoint."""
     if f"- Terminal state: `{state.phase}`" not in body:
@@ -745,7 +755,7 @@ def terminal_report_matches_state(body: str, state: TransactionState) -> bool:
     if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
         return False
     if state.phase == "BLOCKED":
-        return "BLOCKED — no engineering changes were executed or delivered." in body and "COMPLETE —" not in body
+        return _blocked_management_outcome(state) in body and "COMPLETE —" not in body
     if state.phase == "FAILED":
         return "FAILED — the engineering transaction did not complete successfully." in body and "COMPLETE —" not in body
     return state.phase == "COMPLETE" and "COMPLETE —" in body
@@ -841,10 +851,15 @@ def _format_reviewer_records(records: tuple[dict[str, object], ...], phase: str)
 def _format_engineering_outcome(state: TransactionState) -> str:
     """Describe final delivery from checkpoint and repository evidence, never advice."""
     if state.phase != "COMPLETE":
+        completed_work = (
+            "- Completed work: implementation merge was verified; this is not a complete delivery."
+            if state.implementation_merge_commit
+            else "- Completed work: no successful engineering delivery is claimed."
+        )
         return "\n".join(
             (
                 f"- Final checkpoint: `{state.phase}`",
-                "- Completed work: no successful engineering delivery is claimed.",
+                completed_work,
                 f"- Remaining limitation: {state.diagnostic or 'Terminal outcome requires follow-up.'}",
             )
         )
@@ -1181,7 +1196,7 @@ def generate_terminal_report(
             "- Ready for Review, merge and Finalization authority remain runner-controlled.",
             "",
             "## Lifecycle Timeline",
-            f"`INITIALIZE → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`",
+            f"`INITIALIZE → CAPABILITY_REVIEW → IMPLEMENTATION → VALIDATION → REPAIR ({state.repair_iterations}) → MERGE → FINALIZATION → REPOSITORY_CLEANUP → {state.phase}`",
             "",
             *timing_lines,
             "",

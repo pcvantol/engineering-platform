@@ -186,8 +186,17 @@ def records_for_storage(selections: tuple[ReviewerSelection, ...], results: tupl
             "accepted_recommendations": len(result.recommendations) if not result.failed else 0,
             "rejected_recommendations": 0,
             "failed": result.failed,
+            "codex_commands_executed": _command_count(result.churn),
         })
     return tuple(records)
+
+
+def _command_count(churn: object) -> int:
+    """Return the safe, per-review command total without sharing agent state."""
+    if not isinstance(churn, dict):
+        return 0
+    value = churn.get("tool_loop_operations", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _reviewer_memory(memory: object) -> dict[str, float]:

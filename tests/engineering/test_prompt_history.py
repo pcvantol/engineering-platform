@@ -14,6 +14,7 @@ from tools.engineering.prompt_history import (
     report_for_prompt_history,
 )
 from tools.engineering.storage import record_submission
+from tools.engineering.execution_timing import record_phase
 from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
 
 
@@ -81,6 +82,25 @@ class PromptHistoryTest(unittest.TestCase):
             )
 
             self.assertEqual(prompt_history(root)[0]["total_execution_seconds"], 125.0)
+
+    def test_projects_total_execution_duration_from_terminal_phase_span_before_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+            record_phase(
+                root,
+                "inbox-phase-duration",
+                "TOTAL_EXECUTION",
+                started_at=started,
+                completed_at=started + timedelta(seconds=225),
+                outcome="FAILED",
+            )
+            record_prompt_execution(
+                root, run_id="inbox-phase-duration", terminal_state="BLOCKED",
+                prompt_title="Measured from terminal phase", executed_at="2026-08-15T12:03:45Z",
+            )
+
+            self.assertEqual(prompt_history(root)[0]["total_execution_seconds"], 225.0)
 
     def test_projects_persisted_submission_and_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
