@@ -47,6 +47,11 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", intended_path("GENESIS"))
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", intended_path("MANAGED"))
 
+    def test_managed_path_always_shows_automatic_reconciliation_before_cleanup(self) -> None:
+        path = intended_path("MANAGED")
+        self.assertLess(path.index("WAIT_FOR_FINALIZATION_MERGE"), path.index("RECONCILE_AGENT"))
+        self.assertLess(path.index("RECONCILE_AGENT"), path.index("REPOSITORY_CLEANUP"))
+
     def test_status_reconciliation_uses_its_own_merge_path(self) -> None:
         path = intended_path("MANAGED", "RECONCILIATION", None)
         self.assertEqual(

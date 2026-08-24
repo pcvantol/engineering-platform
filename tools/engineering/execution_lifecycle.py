@@ -17,7 +17,7 @@ TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 _MANAGED_PATH = (
     "START", "INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT",
     "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
-    "REPOSITORY_CLEANUP", "TERMINAL",
+    "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
 # Genesis has no pull-request merge boundary.  This is presentation of the
 # existing mode contract, not a new execution sequence.
