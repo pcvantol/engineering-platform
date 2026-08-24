@@ -38,12 +38,13 @@ _STEP_PHASES = {
     "INITIALIZE": frozenset({"INITIALIZATION", "HOST_PREFLIGHT", "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT"}),
     "CAPABILITY_REVIEW": frozenset({"CAPABILITY_REVIEW"}),
     "EXECUTE_AGENT": frozenset({"EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION"}),
-    "QUALITY_CONTROL_AGENT": frozenset({"QUALITY_CONTROL"}),
-    "REPAIR_AGENT": frozenset({"REPAIR"}),
+    "QUALITY_CONTROL_AGENT": frozenset({"QUALITY_CONTROL", "PROVIDER_EXECUTION", "VALIDATION"}),
+    "REPAIR_AGENT": frozenset({"REPAIR", "PROVIDER_EXECUTION", "VALIDATION"}),
     "WAIT_FOR_OPERATOR_MERGE": frozenset({"PR_OR_MERGE", "EXTERNAL_CI_WAIT"}),
     "FINALIZE_AGENT": frozenset({"REPOSITORY_FINALIZATION", "FINALIZATION"}),
     "RECONCILE_AGENT": frozenset({"RECONCILIATION", "REPORT_GENERATION", "EVIDENCE_PERSISTENCE"}),
     "REPOSITORY_CLEANUP": frozenset({"REPOSITORY_CLEANUP"}),
+    "TERMINAL": frozenset({"TOTAL_EXECUTION"}),
 }
 
 
@@ -126,7 +127,7 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 "SELECT execution_mode FROM execution_runs WHERE run_id=?", (run_id,)
             ).fetchone()
             phase_spans = connection.execute(
-                "SELECT phase_name,attempt,started_at,completed_at,duration_ms,outcome "
+                "SELECT phase_id,parent_phase_id,phase_name,attempt,started_at,completed_at,duration_ms,outcome "
                 "FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal",
                 (run_id,),
             ).fetchall()
@@ -218,6 +219,44 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 and ("REPOSITORY_CLEANUP" in observed or terminal_state == "COMPLETE" or status_reconciliation_block)
             )
         )
+    quality_phase_ids = {
+        str(phase_id) for phase_id, _, phase_name, *_ in phase_spans
+        if phase_name == "QUALITY_CONTROL"
+    }
+    repair_phase_ids = {
+        str(phase_id) for phase_id, _, phase_name, *_ in phase_spans
+        if phase_name == "REPAIR"
+    }
+    parent_by_phase_id = {
+        str(phase_id): str(parent_phase_id)
+        for phase_id, parent_phase_id, *_ in phase_spans
+        if parent_phase_id is not None
+    }
+
+    def is_nested_below(parent_phase_id: object, owner_phase_ids: set[str]) -> bool:
+        """Return whether a span is nested below a visible lifecycle owner."""
+        phase_id = str(parent_phase_id) if parent_phase_id is not None else None
+        seen: set[str] = set()
+        while phase_id and phase_id not in seen:
+            if phase_id in owner_phase_ids:
+                return True
+            seen.add(phase_id)
+            phase_id = parent_by_phase_id.get(phase_id)
+        return False
+
+    def belongs_to_step(step_id: str, parent_phase_id: object, phase_name: object) -> bool:
+        """Keep nested provider timing with its visible lifecycle owner."""
+        name = str(phase_name)
+        nested_in_quality = is_nested_below(parent_phase_id, quality_phase_ids)
+        nested_in_repair = is_nested_below(parent_phase_id, repair_phase_ids)
+        if step_id == "EXECUTE_AGENT":
+            return name in _STEP_PHASES[step_id] and not nested_in_quality and not nested_in_repair
+        if step_id == "QUALITY_CONTROL_AGENT":
+            return name == "QUALITY_CONTROL" or nested_in_quality
+        if step_id == "REPAIR_AGENT":
+            return name == "REPAIR" or nested_in_repair
+        return name in _STEP_PHASES.get(step_id, frozenset())
+
     steps: list[dict[str, object]] = []
     for order, step_id in enumerate(path):
         state = "PENDING"
@@ -265,7 +304,6 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             step["presentation_detail_key"] = "lifecycle.detail.not_part_of_reconciliation"
         if step_id == "REPAIR_AGENT" and repair_iterations:
             step["iteration_count"] = repair_iterations
-        phase_names = _STEP_PHASES.get(step_id, frozenset())
         spans = [
             {
                 "phase": phase_name,
@@ -275,8 +313,8 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 "duration_ms": duration_ms,
                 "outcome": outcome,
             }
-            for phase_name, attempt, started_at, completed_at, duration_ms, outcome in phase_spans
-            if phase_name in phase_names
+            for _, parent_phase_id, phase_name, attempt, started_at, completed_at, duration_ms, outcome in phase_spans
+            if belongs_to_step(step_id, parent_phase_id, phase_name)
         ]
         if spans:
             step["timing"] = {

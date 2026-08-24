@@ -213,6 +213,49 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
             "duration_ms": 12000, "outcome": "COMPLETE",
         }])
 
+    def test_quality_control_owns_its_nested_provider_timing_and_terminal_has_total_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc)
+            self._state(root, "EXECUTE_AGENT")
+            implementation = start_phase(
+                root, "inbox-flow", "PROVIDER_EXECUTION", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(root, implementation, completed_at=started + timedelta(seconds=12), monotonic_clock=22.0)
+            quality = start_phase(
+                root, "inbox-flow", "QUALITY_CONTROL", started_at=started + timedelta(seconds=13), monotonic_clock=23.0,
+            )
+            quality_provider = start_phase(
+                root, "inbox-flow", "PROVIDER_EXECUTION", parent_phase_id=quality.phase_id,
+                started_at=started + timedelta(seconds=14), monotonic_clock=24.0,
+            )
+            complete_phase(root, quality_provider, completed_at=started + timedelta(seconds=24), monotonic_clock=34.0)
+            quality_validation = start_phase(
+                root, "inbox-flow", "VALIDATION", parent_phase_id=quality_provider.phase_id,
+                started_at=started + timedelta(seconds=24), monotonic_clock=34.0,
+            )
+            complete_phase(root, quality_validation, completed_at=started + timedelta(seconds=25), monotonic_clock=35.0)
+            complete_phase(root, quality, completed_at=started + timedelta(seconds=26), monotonic_clock=36.0)
+            total = start_phase(
+                root, "inbox-flow", "TOTAL_EXECUTION", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(root, total, completed_at=started + timedelta(seconds=30), monotonic_clock=40.0)
+            self._state(root, "COMPLETE")
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(
+            [span["phase"] for span in by_id["EXECUTE_AGENT"]["timing"]["spans"]],
+            ["PROVIDER_EXECUTION"],
+        )
+        self.assertEqual(
+            [span["phase"] for span in by_id["QUALITY_CONTROL_AGENT"]["timing"]["spans"]],
+            ["QUALITY_CONTROL", "PROVIDER_EXECUTION", "VALIDATION"],
+        )
+        terminal = by_id["TERMINAL"]["timing"]
+        self.assertEqual(terminal["started_at"], "2026-08-16T14:00:00+00:00")
+        self.assertEqual(terminal["finished_at"], "2026-08-16T14:00:30+00:00")
+        self.assertEqual(terminal["spans"][0]["phase"], "TOTAL_EXECUTION")
+
     def test_capability_review_has_its_own_persisted_timing_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

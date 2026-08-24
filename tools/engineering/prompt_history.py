@@ -242,7 +242,7 @@ def _report_record(root: Path, report: Path) -> dict[str, object] | None:
     }
 
 
-def _submission_prompt_title(root: Path, run_id: str) -> str | None:
+def submission_prompt_title(root: Path, run_id: str) -> str | None:
     """Read the submitted title without deriving it from prompt content."""
     connection = open_storage(root)
     try:
@@ -275,7 +275,7 @@ def record_terminal_report(root: Path, report: Path) -> None:
     record = _report_record(root, report)
     if record is None:
         raise ValueError("terminal report cannot be projected into prompt history")
-    submitted_title = _submission_prompt_title(root, str(record["run_id"]))
+    submitted_title = submission_prompt_title(root, str(record["run_id"]))
     if submitted_title and record["prompt_title"] in {record["run_id"], "Engineering Report"}:
         record["prompt_title"] = submitted_title
     record_prompt_execution(root, **record)

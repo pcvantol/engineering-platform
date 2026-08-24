@@ -1137,6 +1137,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toBeVisible();
     await expect(modal).toContainText("Implementatie");
     await expect(modal.locator("#lifecycleDetailTitle")).toHaveAttribute("data-lifecycle-status", "active");
+    await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
     expect(await modal.locator("#lifecycleDetailTitle").evaluate(
       (title) => getComputedStyle(title, "::before").content,
     )).toBe('"●"');
@@ -1154,6 +1155,30 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).toContainText("12 sec");
     await page.locator("#lifecycleDetailClose").click();
     await expect(modal).not.toBeVisible();
+  });
+
+  test("shows autonomous quality control as its own workflow node and detail modal", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "quality-control-visible",
+      lifecycle: {
+        available: true, run_id: "quality-control-visible", terminal_state: "ACTIVE",
+        steps: [
+          { id: "execute", presentation_key: "lifecycle.step.execute_agent", state: "COMPLETED" },
+          { id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+            timing: { started_at: "2026-08-16T14:00:00Z", spans: [{ phase: "QUALITY_CONTROL", duration_ms: 1000, outcome: "ACTIVE" }] } },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    const qualityNode = page.locator(".execution-lifecycle__item").filter({ hasText: DASHBOARD_MESSAGES.nl["lifecycle.step.quality_control_agent"] });
+    await expect(qualityNode).toHaveCount(1);
+    await qualityNode.locator(".execution-lifecycle__node").click();
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.quality_control_agent"]);
+    await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
@@ -1983,6 +2008,8 @@ test.describe("Engineering Status browser smoke", () => {
         max_input_tokens_per_invocation: 300,
         actual_single_request_context_size: "UNAVAILABLE",
         active_context_size: "UNAVAILABLE",
+        speed_state: "UNKNOWN",
+        usage_authority: "AUTHORITATIVE",
       },
     }));
 
@@ -1996,8 +2023,10 @@ test.describe("Engineering Status browser smoke", () => {
       .toEqual([
         ["Run cumulative input tokens", "400"],
         ["Maximum provider invocation cumulative input", "300"],
-        ["Actual single-request context size", "UNAVAILABLE"],
-        ["Active context size", "UNAVAILABLE"],
+        ["Actual single-request context size", "Unavailable"],
+        ["Active context size", "Unavailable"],
+        ["Speed state", "Unknown"],
+        ["Usage authority", "Provider-observed"],
       ]);
   });
 

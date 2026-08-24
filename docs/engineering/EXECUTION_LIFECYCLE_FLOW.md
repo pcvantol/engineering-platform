@@ -39,6 +39,19 @@ Execution Projects, repository components, producers and a multi-repository
 Engineering Action. Such an action still has one top-level flow per Run ID;
 repository subflows remain out of scope.
 
+Autonomous quality control is a mandatory, separate lifecycle node immediately
+after implementation. It has its own selectable detail view and owns all of
+its nested provider and validation timing; that work is never projected as
+implementation activity. The terminal result node uses the persisted total
+execution span when present, so its detail view reports its real interval. If
+no authoritative span exists, the console presents timing as unavailable
+rather than zero.
+
+Each lifecycle detail view repeats the node status with the same colored
+indicator: green for completed, cyan for active, grey for pending or skipped,
+and orange for blocked. This is a display aid only; the persisted lifecycle
+checkpoint remains authoritative.
+
 For managed executions, reaching the pull-request hand-off is not merge
 evidence. The Merge node becomes completed only after persisted finalization
 evidence (or a successful terminal outcome). If required pull-request checks

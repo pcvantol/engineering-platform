@@ -1155,6 +1155,27 @@ function lifecycleDetailField(label, value) {
   );
   return field;
 }
+function lifecycleDetailStatusField(state) {
+  const normalized = String(state || "UNKNOWN").toLowerCase();
+  const indicator = document.createElement("span");
+  indicator.className = "indicator lifecycle-detail-modal__status-indicator";
+  indicator.setAttribute("aria-hidden", "true");
+  if (["completed", "complete"].includes(normalized)) indicator.classList.add("indicator--green");
+  else if (normalized === "active") indicator.classList.add("indicator--blue");
+  else if (normalized === "blocked") indicator.classList.add("indicator--orange");
+  else if (normalized === "failed") indicator.classList.add("indicator--red");
+  const value = document.createElement("span");
+  value.className = "lifecycle-detail-modal__status-value";
+  value.textContent = lifecycleStateLabel(state);
+  const field = document.createElement("div"); field.className = "field";
+  const label = document.createElement("span");
+  label.className = "label"; label.textContent = t("lifecycle.detail_state");
+  const status = document.createElement("span");
+  status.className = "lifecycle-detail-modal__status";
+  status.append(indicator, value);
+  field.append(label, status);
+  return field;
+}
 function lifecyclePhaseTiming(spans) {
   const phases = new Map();
   for (const span of spans) {
@@ -1199,7 +1220,7 @@ function openLifecycleDetail(step, trigger) {
   const overview = document.createElement("section"), grid = document.createElement("div");
   grid.className = "technical-grid";
   grid.append(
-    lifecycleDetailField(t("lifecycle.detail_state"), lifecycleStateLabel(step?.state)),
+    lifecycleDetailStatusField(step?.state),
     lifecycleDetailField(t("lifecycle.detail_started_at"), formatTimestamp(timing.started_at || step?.started_at)),
     lifecycleDetailField(t("lifecycle.detail_finished_at"), formatTimestamp(timing.finished_at, t("format.unavailable"))),
   );
@@ -4380,12 +4401,20 @@ function promptDetailUsageSection(usage) {
     usage_authority: t("detail.usage_authority"),
   };
   const visible = Object.entries(usage).filter(([key, value]) => labels[key] && value !== null && typeof value !== "object");
+  const displayValue = (key, value) => {
+    if (["actual_single_request_context_size", "active_context_size"].includes(key) && value === "UNAVAILABLE") {
+      return t("format.unavailable");
+    }
+    if (key === "speed_state") return t(`provider_usage.speed.${String(value).toLowerCase()}`, {}, String(value));
+    if (key === "usage_authority") return t(`provider_usage.authority.${String(value).toLowerCase()}`, {}, String(value));
+    return value;
+  };
   const fields = visible.map(([key, value]) =>
     detailField(
       labels[key] || key,
       key === "intermediate_usage_delta_available"
         ? (value ? t("detail.available") : t("format.unavailable"))
-        : value,
+        : displayValue(key, value),
     ),
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
@@ -4889,7 +4918,14 @@ function checkOperatorMergeStatus(button) {
         if ($("operatorMergeWaitModal").open) $("operatorMergeWaitModal").close();
         return refreshAfterOperatorAction();
       }
-      showDashboardError(t(`merge_wait.reason.${reason}`), t("merge_wait.status_check_failed"));
+      // Re-read the authoritative snapshot before retaining a failure modal:
+      // a background watcher can advance the same hand-off while this request
+      // is in flight. The control remains available when it is still waiting.
+      return refreshAfterOperatorAction().finally(() => {
+        if (latestStatus?.current_phase === "WAIT_FOR_OPERATOR_MERGE") {
+          showDashboardError(t(`merge_wait.reason.${reason}`), t("merge_wait.status_check_failed"));
+        }
+      });
     })
     .catch((error) => showDashboardError(error.message, t("merge_wait.status_check_failed")))
     .finally(() => { button.disabled = false; });

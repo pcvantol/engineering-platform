@@ -37,7 +37,7 @@ from .component_logging import (
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .telemetry import ExecutionTelemetry, persist_execution_async
-from .prompt_history import backfill_prompt_history, execution_metadata_from_terminal_report, record_prompt_execution
+from .prompt_history import backfill_prompt_history, execution_metadata_from_terminal_report, record_prompt_execution, submission_prompt_title
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
@@ -1211,7 +1211,19 @@ def _finalize_operator_merge_wait(repo: Path, state: TransactionState) -> None:
         original = Path(source.name.removeprefix(f"{job_id}__"))
         _move(source, _archive_path(target, job_id or state.run_id, original))
     report = _report(repo, state.run_id)
-    title = watcher.get("prompt_title") if isinstance(watcher.get("prompt_title"), str) else Path(state.prompt_path).stem
+    # A later run may own watcher_status. Never borrow its title for this
+    # resumed run; recover only title-safe evidence for the same transaction.
+    title = (
+        watcher.get("prompt_title")
+        if watcher.get("run_id") == state.run_id and isinstance(watcher.get("prompt_title"), str)
+        else submission_prompt_title(repo, state.run_id)
+    )
+    prompt_path = Path(state.prompt_path)
+    if not title:
+        try:
+            title = _prompt_title(prompt_path.read_text(encoding="utf-8"), prompt_path.name)
+        except (OSError, UnicodeDecodeError):
+            title = prompt_path.stem
     try:
         record_prompt_execution(
             repo,

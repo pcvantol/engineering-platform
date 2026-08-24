@@ -874,3 +874,5 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
 /* A blocked predecessor is a terminal warning, not a monitoring-cyan active
    execution card. Its amber boundary must stay continuous on all four sides. */
 #currentRun #predecessorGate{--category-color:var(--house-style);border-color:var(--house-style)}
+/* Lifecycle detail mirrors the workflow-node status colours without relying on text alone. */
+.indicator--blue{background:#65c5d9;box-shadow:0 0 8px #65c5d988}.lifecycle-detail-modal__status{align-items:center;display:inline-flex;gap:7px}.lifecycle-detail-modal__status-indicator{display:block;flex:none}.lifecycle-detail-modal__status-value{color:var(--dashboard-modal-ink)!important}

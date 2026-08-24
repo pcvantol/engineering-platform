@@ -628,6 +628,35 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertEqual(snapshot["last_executed_title"], "Merged prompt")
 
+    def test_operator_merge_wait_keeps_its_submitted_title_when_a_newer_run_is_current(self) -> None:
+        run_id = "inbox-merge-title"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-title__prompt.md"
+        source.write_text("# Durable merge title\n", encoding="utf-8")
+        state = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path=str(source),
+            phase="COMPLETE",
+            terminal=True,
+            implementation_pull_request=832,
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        report = self.repo / ".engineering" / "reports" / f"report_{run_id}.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("# Completed\n", encoding="utf-8")
+        inbox_watcher.status(
+            self.repo,
+            "RUNNER_STARTING",
+            run_id="inbox-newer-run",
+            prompt_title="Newer prompt",
+        )
+
+        inbox_watcher._finalize_operator_merge_wait(self.repo, state)
+
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["last_executed_run"], run_id)
+        self.assertEqual(snapshot["last_executed_title"], "Durable merge title")
+
     def test_operator_merge_wait_remains_queue_owner_until_its_poll_is_due(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState
 
