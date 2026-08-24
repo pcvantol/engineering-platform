@@ -24,7 +24,7 @@ from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run, load_run_lineage
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 
@@ -373,7 +373,11 @@ def _branch_traceability(state: TransactionState, bundle: TerminalEvidenceBundle
     return (
         f"- Initial Repository Baseline: `{bundle.transaction_baseline}`",
         f"- Repository Mutation: `{mutation}`",
-        f"- Files Changed By This Execution: {', '.join(f'`{path}`' for path in bundle.changed_files) or 'NONE'}",
+        "- Files Changed By Provider Execution: UNAVAILABLE (provider-stage mutation is not persisted by the terminal checkpoint).",
+        f"- Files Changed In Run Delivery Diff: `{len(bundle.changed_files)}`",
+        f"- Run Delivery Files: {', '.join(f'`{path}`' for path in bundle.changed_files) or 'NONE'}",
+        "- Generated / Projection Files: UNAVAILABLE unless classified by repository evidence.",
+        "- Pre-existing Local Changes: NONE when the terminal worktree is clean; otherwise UNAVAILABLE.",
         f"- Preflight branch: `{preflight}`",
         f"- Execution branch: `{execution}`",
         f"- Final repository branch: `{final_branch}`",
@@ -411,14 +415,17 @@ def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBu
     records.append({"command": "git diff --check", "result": bundle.diff_check})
     records.append({"command": "Transaction Baseline", "result": bundle.transaction_baseline})
     records.append({"command": "Documentation validation", "result": "report documentation is rendered from the canonical reporting contract"})
+    regression_files = tuple(path for path in bundle.changed_files if path.startswith("tests/"))
     return tuple(
         line
         for record in records
         for line in (
-            f"- Executed validation: `{record['command']}`",
-            "  - Purpose: repository regression, quality or documentation evidence.",
+            f"- Executed Validation Command: `{record['command']}`",
+            "  - Validated Test/Control: UNAVAILABLE unless the canonical command identifies it.",
+            f"  - Regression Evidence File(s): {', '.join(f'`{path}`' for path in regression_files) or 'NONE'} (changed files are not execution proof).",
+            f"  - Delivery File(s): {', '.join(f'`{path}`' for path in bundle.changed_files) or 'NONE'}.",
             f"  - Result: {record['result']}",
-            "  - Repository evidence: persisted terminal checkpoint and Evidence Bundle.",
+            "  - Execution inclusion: UNAVAILABLE without canonical suite membership evidence.",
         )
     )
 
@@ -440,7 +447,9 @@ def _validation_control_projection(state: TransactionState, bundle: TerminalEvid
     records = tuple(state.validation_evidence) + ({"command": "git diff --check", "result": bundle.diff_check},)
     lines = ["## Validation Control Results", "- Engineering Platform Qualification is reported separately from these individual controls."]
     for control_id, name, category, source, markers in _VALIDATION_CONTROLS:
-        match = next((record for record in records if any(marker in record["command"].casefold() for marker in markers)), None)
+        # The terminal Evidence Bundle is appended last and therefore wins over
+        # historical checkpoint entries for the current projection.
+        match = next((record for record in reversed(records) if any(marker in record["command"].casefold() for marker in markers)), None)
         if match is None:
             result, reference = "NOT_EXECUTED", "not recorded"
         else:
@@ -639,6 +648,26 @@ def report_consistency_errors(body: str, state: TransactionState, bundle: Termin
         errors.append("repository commit is missing")
     if state.phase == "COMPLETE" and "## Evidence Bundle" not in body:
         errors.append("complete report is missing Evidence Bundle")
+    fresh = re.search(r"^- Fresh Submission: `([^`]+)`$", body, re.MULTILINE)
+    retry = re.search(r"^- Retry Parent: `([^`]+)`$", body, re.MULTILINE)
+    resume = re.search(r"^- Resume Parent: `([^`]+)`$", body, re.MULTILINE)
+    if fresh and fresh.group(1) == "YES" and (
+        not retry or retry.group(1) != "NONE" or not resume or resume.group(1) != "NONE"
+    ):
+        errors.append("fresh submission conflicts with retry or resume parent")
+    for role in ("IMPLEMENTATION", "FINALIZATION"):
+        pattern = rf"- PR Role: `{role}`(?P<details>.*?)(?=^- PR Role:|^- Autonomous EP Action Count:|\Z)"
+        match = re.search(pattern, body, re.MULTILINE | re.DOTALL)
+        if match and "- Current PR State: `MERGED`" in match.group("details"):
+            checks = re.search(r"- Required Checks State: `([^`]+)`", match.group("details"))
+            reference = re.search(r"- Required Checks Evidence Reference: `([^`]+)`", match.group("details"))
+            if checks and checks.group(1) == "PASS" and (not reference or reference.group(1) == "UNAVAILABLE"):
+                errors.append(f"{role.lower()} required checks pass lacks evidence")
+    if bundle.changed_files and re.search(r"^- Files Modified: `0`$", body, re.MULTILINE):
+        errors.append("ambiguous zero changed-file projection")
+    diff_states = set(re.findall(r"^- git diff --check: `(PASS|FAIL)`", body, re.MULTILINE))
+    if len(diff_states) > 1:
+        errors.append("current git diff --check state conflicts")
     return tuple(errors)
 
 
@@ -876,6 +905,14 @@ def _format_engineering_outcome(state: TransactionState) -> str:
 
 def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: TerminalEvidenceBundle, reviewer_records: tuple[dict[str, object], ...]) -> tuple[str, ...]:
     """Project canonical evidence only; legacy runs intentionally fail closed."""
+    try:
+        lineage = load_run_lineage(root, state.run_id)
+    except EngineeringStorageError:
+        lineage = None
+    try:
+        submission = load_submission_for_run(root, state.run_id)
+    except EngineeringStorageError:
+        submission = None
     snapshot = managed_autonomy_snapshot(
         root, run_id=state.run_id, execution_outcome=state.phase,
         implementation_pr=state.implementation_pull_request, finalization_pr=state.finalization_pull_request,
@@ -883,13 +920,42 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         workspace_state="WORKSPACE_READY" if state.phase == "COMPLETE" and bundle.worktree_state == "clean" else "UNAVAILABLE",
         main_origin_sync="YES" if bundle.target_branch == "main" else "UNAVAILABLE",
         worktree_state=bundle.worktree_state.upper(), active_blocker="NONE" if state.phase == "COMPLETE" else "UNAVAILABLE",
-        recovery_required="NO" if state.phase == "COMPLETE" else "UNAVAILABLE", reviewer_records=reviewer_records,
+        recovery_required="NO" if state.phase == "COMPLETE" else "UNAVAILABLE",
+        retry_parent=lineage.get("retry_parent") if lineage else None,
+        # Resume reuses the canonical run ID. No separate resume parent is persisted
+        # by the existing lifecycle, so retain an explicit unavailable boundary.
+        resume_parent=None,
+        submission_id=str(submission["submission_id"]) if submission else None,
+        lineage_available=lineage is not None,
+        reviewer_records=reviewer_records,
     )
+    def pr_lines(role: str) -> tuple[str, ...]:
+        item = snapshot["pr_checks"].get(role, {})
+        return (
+            f"- PR Role: `{role}`",
+            f"  - PR Number: `{item.get('pr_number') or snapshot[f'{role.lower()}_pr'] or 'UNAVAILABLE'}`",
+            f"  - Current PR State: `{item.get('pr_state', 'UNAVAILABLE')}`",
+            f"  - Merge State: `{item.get('merge_state', 'UNAVAILABLE')}`",
+            f"  - Merge Commit: `{item.get('merge_commit') or 'UNAVAILABLE'}`",
+            f"  - Required Checks State: `{item.get('required_checks_state', 'UNAVAILABLE')}`",
+            f"  - Required Checks Observed At: `{item.get('observed_at', 'UNAVAILABLE')}`",
+            f"  - Required Checks Evidence Reference: `{item.get('evidence_ref', 'UNAVAILABLE')}`",
+            f"  - Historical Check Observations: `{item.get('historical_observation_count', 'UNAVAILABLE')}`",
+        )
     return (
         "## Managed Autonomy Qualification",
         f"- Execution: `{snapshot['terminal_execution_state']}`",
         f"- Managed Autonomy: `{snapshot['managed_autonomy_qualification']}`",
+        f"- Fresh Submission: `{snapshot['fresh_submission']}`",
+        f"- Retry Parent: `{snapshot['retry_parent']}`",
+        f"- Resume Parent: `{snapshot['resume_parent']}`",
+        f"- Submission Lineage / Submission ID: `{snapshot['submission_id']}`",
+        "### Current Terminal Required Checks",
+        *pr_lines("IMPLEMENTATION"),
+        *pr_lines("FINALIZATION"),
+        f"- Autonomous EP Action Count: `{snapshot['autonomous_ep_action_count']}`",
         f"- Expected Operator Gates: `{snapshot['expected_operator_gate_count']}`",
+        f"- External Platform Event Count: `{snapshot['external_platform_event_count']}`",
         f"- Unexpected Manual Interventions: `{snapshot['unplanned_manual_intervention_count']}`",
         f"- Unknown Authority Actions: `{snapshot['unknown_authority_count']}`",
         f"- Required Validation State: `{snapshot['required_validation_state']}`",
@@ -1138,9 +1204,10 @@ def generate_terminal_report(
             f"- Codex CLI Version: `{detected_cli or 'unavailable'}`",
             "",
             "## Execution Metadata",
-            f"- Files Modified: `{safe_execution_metadata.get('modified', 0)}`",
-            f"- Files Created: `{safe_execution_metadata.get('created', 0)}`",
-            f"- Files Deleted: `{safe_execution_metadata.get('deleted', 0)}`",
+            f"- Provider-Stage Files Modified: `{safe_execution_metadata.get('modified', 0)}`",
+            f"- Provider-Stage Files Created: `{safe_execution_metadata.get('created', 0)}`",
+            f"- Provider-Stage Files Deleted: `{safe_execution_metadata.get('deleted', 0)}`",
+            f"- Files Changed In Run Delivery Diff: `{len(bundle.changed_files)}`",
             f"- Codex Commands Executed: `{safe_execution_metadata.get('codex_commands_executed', 0)}`",
             "",
             "## Engineering Platform Qualification",

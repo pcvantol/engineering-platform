@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 26
+ENGINEERING_STORAGE_SCHEMA_VERSION = 27
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -739,6 +739,24 @@ def _schema_v26(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _schema_v27(connection: sqlite3.Connection) -> None:
+    """Append terminal PR-check observations used by Managed report projections."""
+    for statement in """
+        CREATE TABLE IF NOT EXISTS managed_pr_check_observations (
+            id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, pr_number INTEGER NOT NULL,
+            pr_role TEXT NOT NULL CHECK(pr_role IN ('IMPLEMENTATION','FINALIZATION')),
+            pr_state TEXT NOT NULL, merge_state TEXT NOT NULL,
+            merge_commit TEXT, required_checks_state TEXT NOT NULL
+                CHECK(required_checks_state IN ('PASS','FAIL','WAITING','UNAVAILABLE')),
+            evidence_ref TEXT NOT NULL, observed_at TEXT NOT NULL, currentness INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS managed_pr_check_observations_run_lookup
+            ON managed_pr_check_observations(run_id,pr_role,currentness,id);
+    """.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -812,6 +830,7 @@ MIGRATIONS: dict[int, Migration] = {
     24: _schema_v24,
     25: _schema_v25,
     26: _schema_v26,
+    27: _schema_v27,
 }
 
 
@@ -1054,6 +1073,20 @@ def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None
         "mission_id": row[6], "engineering_action_id": row[7], "execution_context_version": row[8], "execution_context": snapshot,
         "forge_governance_handoff_version": row[10], "forge_governance_handoff": handoff,
     }
+
+
+def load_run_lineage(root: Path, run_id: str) -> dict[str, object] | None:
+    """Load only canonical execution-lineage identifiers for terminal projection."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT retry_of,original_run_id FROM execution_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return {"retry_parent": row[0], "submission_lineage": row[1]}
 
 
 def record_artifact(

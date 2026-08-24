@@ -1786,9 +1786,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = EngineeringPlatformManifest.load(
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
-        self.assertEqual(manifest.storage_schema, 26)
+        self.assertEqual(manifest.storage_schema, 27)
         validate_compatibility(
-            manifest, RunnerCompatibility(storage_schemas=frozenset({26})), "0.146.0"
+            manifest, RunnerCompatibility(storage_schemas=frozenset({27})), "0.146.0"
         )
 
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:
@@ -2105,7 +2105,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Execution Status: `COMPLETE`", body)
         self.assertIn("Receipt ID: `evidence-2`", body)
         self.assertIn("### Mission Statistics", body)
-        self.assertIn("Executed validation: `Documentation validation`", body)
+        self.assertIn("Executed Validation Command: `Documentation validation`", body)
         self.assertIn('"deliverable_answer": "YES / PASS / GO', body)
 
     def test_component_inventory_is_derived_from_implementation_evidence(self) -> None:
@@ -2136,6 +2136,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("missing required section: ## Qualification Projection", errors)
         self.assertIn("missing required section: ## Statistics Projection", errors)
         self.assertIn("explicit deliverable answer is missing", errors)
+
+    def test_report_consistency_rejects_contradictory_fresh_submission(self) -> None:
+        state = TransactionState("lineage-conflict", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        bundle = collect_terminal_evidence(self.root, state)
+        body = "\n".join((
+            "## Component Inventory", "## Deliverable Projection", "## Qualification Projection",
+            "## Runtime Projection", "## Execution Receipt Projection", "## Decision Evidence Projection",
+            "## Statistics Projection", "## Commit Strategy", "## Branch Traceability", "## Requirement Traceability",
+            "## Validation Traceability", "## Execution Statistics", "## Engineering Evidence Summary",
+            "## Evidence Bundle", f"{bundle.target_commit}", "- Fresh Submission: `YES`",
+            "- Retry Parent: `inbox-parent`", "- Resume Parent: `NONE`",
+        ))
+        self.assertIn("fresh submission conflicts with retry or resume parent", report_consistency_errors(body, state, bundle, ""))
 
     def test_complete_genesis_report_keeps_host_and_target_identities_distinct(self) -> None:
         target = self.root / "genesis-report-target"

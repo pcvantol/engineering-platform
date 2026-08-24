@@ -21,6 +21,8 @@ GATE_STATUSES = frozenset({"NOT_REQUIRED", "WAITING", "SATISFIED", "UNAVAILABLE"
 VALIDATION_STATES = frozenset(
     {"PASS", "FAIL", "NOT_EXECUTED", "NOT_APPLICABLE", "UNAVAILABLE", "WAITING"}
 )
+PR_CHECK_STATES = frozenset({"PASS", "FAIL", "WAITING", "UNAVAILABLE"})
+PR_ROLES = frozenset({"IMPLEMENTATION", "FINALIZATION"})
 
 
 def _now() -> str:
@@ -133,6 +135,44 @@ def append_validation_observation(
         connection.close()
 
 
+def append_pr_check_observation(
+    root,
+    *,
+    run_id: str,
+    pr_number: int,
+    pr_role: str,
+    pr_state: str,
+    merge_commit: str | None,
+    required_checks_state: str,
+    evidence_ref: str,
+    currentness: int = 0,
+    observed_at: str | None = None,
+) -> None:
+    """Append a bounded GitHub required-check observation without changing lifecycle."""
+    if (
+        pr_role not in PR_ROLES
+        or required_checks_state not in PR_CHECK_STATES
+        or isinstance(pr_number, bool)
+        or not isinstance(pr_number, int)
+        or pr_number < 1
+        or currentness < 0
+        or (merge_commit is not None and (not isinstance(merge_commit, str) or len(merge_commit) != 40))
+    ):
+        raise EngineeringStorageError("Managed PR check observation is invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT INTO managed_pr_check_observations(run_id,pr_number,pr_role,pr_state,merge_state,merge_commit,required_checks_state,evidence_ref,observed_at,currentness) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                _safe(run_id), pr_number, pr_role, _safe(pr_state),
+                "MERGED" if pr_state == "MERGED" else "NOT_MERGED", merge_commit,
+                required_checks_state, _safe(evidence_ref), observed_at or _now(), currentness,
+            ),
+        )
+    finally:
+        connection.close()
+
+
 def _current(rows: Iterable[tuple[object, ...]]) -> tuple[dict[str, str], bool]:
     grouped: dict[str, list[tuple[str, int]]] = {}
     for control, state, _required, currentness, _at in rows:
@@ -143,6 +183,31 @@ def _current(rows: Iterable[tuple[object, ...]]) -> tuple[dict[str, str], bool]:
         states = {item[0] for item in values if item[1] == latest}
         conflict |= len(states) != 1
         result[control] = next(iter(states)) if len(states) == 1 else "UNAVAILABLE"
+    return result, conflict
+
+
+def _current_pr_checks(rows: Iterable[tuple[object, ...]]) -> tuple[dict[str, dict[str, object]], bool]:
+    """Keep historical observations append-only while selecting current terminal evidence."""
+    grouped: dict[str, list[tuple[object, ...]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row[2]), []).append(row)
+    result: dict[str, dict[str, object]] = {}
+    conflict = False
+    for role, values in grouped.items():
+        latest = max((int(row[9]), int(row[0])) for row in values)
+        current = [row for row in values if (int(row[9]), int(row[0])) == latest]
+        signatures = {(row[3], row[4], row[5], row[6], row[7]) for row in current}
+        if len(signatures) != 1:
+            conflict = True
+            result[role] = {"required_checks_state": "UNAVAILABLE", "conflict": True}
+            continue
+        row = current[-1]
+        result[role] = {
+            "pr_number": row[1], "pr_state": row[3], "merge_state": row[4],
+            "merge_commit": row[5], "required_checks_state": row[6],
+            "evidence_ref": row[7], "observed_at": row[8], "conflict": False,
+            "historical_observation_count": len(values) - len(current),
+        }
     return result, conflict
 
 
@@ -161,6 +226,8 @@ def terminal_snapshot(
     recovery_required: str,
     retry_parent: str | None = None,
     resume_parent: str | None = None,
+    submission_id: str | None = None,
+    lineage_available: bool = False,
     reviewer_records: tuple[dict[str, object], ...] = (),
 ) -> dict[str, object]:
     connection = open_storage(root)
@@ -177,9 +244,14 @@ def terminal_snapshot(
             "SELECT control,state,required,currentness,observed_at FROM managed_validation_observations WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()
+        pr_rows = connection.execute(
+            "SELECT id,pr_number,pr_role,pr_state,merge_state,merge_commit,required_checks_state,evidence_ref,observed_at,currentness FROM managed_pr_check_observations WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
     finally:
         connection.close()
     validation, conflict = _current(rows)
+    pr_checks, pr_check_conflict = _current_pr_checks(pr_rows)
     required = {str(row[0]) for row in rows if int(row[2])}
     required_state = (
         "PASS"
@@ -193,9 +265,13 @@ def terminal_snapshot(
         "run_id": run_id,
         "terminal_execution_state": execution_outcome,
         "managed_authority_profile": "OPERATOR_OWNED_PR_MERGE",
-        "fresh_submission": "YES" if retry_parent is None and resume_parent is None else "NO",
-        "retry_parent": retry_parent or "NONE",
-        "resume_parent": resume_parent or "NONE",
+        "fresh_submission": (
+            "YES" if lineage_available and retry_parent is None and resume_parent is None
+            else "NO" if lineage_available else "UNAVAILABLE"
+        ),
+        "retry_parent": retry_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
+        "resume_parent": resume_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
+        "submission_id": submission_id or "UNAVAILABLE",
         "implementation_pr": implementation_pr,
         "finalization_pr": finalization_pr,
         "gates": [{"gate_type": row[0], "status": row[1], "related_pr": row[2]} for row in gates],
@@ -203,6 +279,8 @@ def terminal_snapshot(
         "validation_current": validation,
         "required_validation_state": required_state,
         "validation_projection_conflict": conflict,
+        "pr_checks": pr_checks,
+        "pr_check_projection_conflict": pr_check_conflict,
         "repository_state": repository_state,
         "workspace_state": workspace_state,
         "main_origin_sync": main_origin_sync,
@@ -210,6 +288,8 @@ def terminal_snapshot(
         "active_blocking_predecessor": active_blocker,
         "recovery_required": recovery_required,
         "expected_operator_gate_count": len(gates),
+        "autonomous_ep_action_count": authorities.count("AUTONOMOUS_EP_ACTION"),
+        "external_platform_event_count": authorities.count("EXTERNAL_PLATFORM_EVENT"),
         "unplanned_manual_intervention_count": authorities.count("UNPLANNED_MANUAL_INTERVENTION"),
         "unknown_authority_count": authorities.count("UNKNOWN_AUTHORITY"),
         "reviewer_independence": "NOT_APPLICABLE"
@@ -264,6 +344,13 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         reasons.append("REQUIRED_VALIDATION_UNRESOLVED")
     if snapshot.get("validation_projection_conflict"):
         reasons.append("EVIDENCE_CONFLICT")
+    if snapshot.get("pr_check_projection_conflict"):
+        reasons.append("EVIDENCE_CONFLICT")
+    for role in ("IMPLEMENTATION", "FINALIZATION"):
+        if snapshot.get(f"{role.lower()}_pr") is not None:
+            check = snapshot.get("pr_checks", {}).get(role, {})
+            if check.get("required_checks_state") != "PASS":
+                reasons.append(f"{role}_REQUIRED_CHECKS_UNRESOLVED")
     for key, wanted in {
         "repository_state": "MERGED_RECONCILED",
         "workspace_state": "WORKSPACE_READY",

@@ -97,6 +97,7 @@ from .execution_timing import start_or_resume_phase as _start_or_resume_phase
 from .execution_timing import start_phase as _start_phase
 from .managed_autonomy import (
     append_action as record_managed_action,
+    append_pr_check_observation as record_managed_pr_check,
     append_validation_observation as record_managed_validation,
     record_gate as record_managed_gate,
 )
@@ -489,6 +490,22 @@ class EngineeringRunner:
             record_managed_gate(self.root, run_id=state.run_id, gate_type=gate_type, status=status, related_pr=pr, phase=state.phase, resolution_actor="operator" if resolved else None, resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None)
         except EngineeringStorageError:
             LOGGER.warning("Managed governance-gate evidence is unavailable for run %s", state.run_id)
+
+    def _managed_pr_check(self, state: TransactionState, pr: PullRequestEvidence) -> None:
+        """Persist current GitHub required-check evidence separately from historical waits."""
+        role = state.transaction_kind
+        if role not in {"IMPLEMENTATION", "FINALIZATION"}:
+            return
+        check_state = "PASS" if pr.checks_terminal and pr.checks_passed else "FAIL" if pr.checks_terminal else "WAITING"
+        try:
+            record_managed_pr_check(
+                self.root, run_id=state.run_id, pr_number=pr.number, pr_role=role,
+                pr_state=pr.state, merge_commit=pr.merge_commit,
+                required_checks_state=check_state, evidence_ref="github_pr_status_check_rollup",
+                currentness=state.repair_iterations,
+            )
+        except EngineeringStorageError:
+            LOGGER.warning("Managed PR check evidence is unavailable for run %s", state.run_id)
 
     def _record_repair_audit(self, state: TransactionState, *, failed_checks: str, objective: str, result: AgentResult | None, outcome: str) -> TransactionState:
         """Append bounded per-repair evidence; never overwrite prior attempts."""
@@ -1130,6 +1147,7 @@ class EngineeringRunner:
                 complete_phase(self.root, wait)
                 continue
             complete_phase(self.root, pr_operation)
+            self._managed_pr_check(state, pr)
             if not pr.checks_terminal:
                 self._managed_action(state, "GITHUB_REQUIRED_CHECK", "EXTERNAL_PLATFORM_EVENT", actor="github", evidence_ref="required_check_waiting")
                 wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
