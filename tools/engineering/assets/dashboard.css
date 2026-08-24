@@ -313,6 +313,8 @@ html[data-theme="light"] #promptHistory .execution-history-action{background:#ff
 /* Confirmation actions remain anchored inside the dialog on compact iPhone
    viewports. Long explanatory copy scrolls above them instead of pushing the
    cancel/confirm controls behind the browser's bottom chrome. */
+/* Read-only GitHub check projection for the open pull-request context. */
+.open-pr-status{align-items:center;display:inline-flex;font-size:12px;font-weight:700;gap:6px;width:max-content}.open-pr-status__dot{background:#a6a6b2;border-radius:50%;box-shadow:0 0 8px #a6a6b266;height:9px;width:9px}.open-pr-status--ready{color:#62dfa0}.open-pr-status--ready .open-pr-status__dot{background:#62dfa0;box-shadow:0 0 8px #62dfa099}.open-pr-status--busy{color:#f7bc64}.open-pr-status--busy .open-pr-status__dot{background:#f7bc64;box-shadow:0 0 8px #f7bc6499}.open-pr-status--issues{color:#ff8585}.open-pr-status--issues .open-pr-status__dot{background:#ff8585;box-shadow:0 0 8px #ff858599}
 @media (max-width:620px){
   .confirmation-modal{box-sizing:border-box;height:100dvh;inset:0;margin:0;max-height:none;max-width:none;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));width:100vw}
   .confirmation-modal[open]{display:grid;place-items:center}

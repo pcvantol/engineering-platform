@@ -1671,6 +1671,73 @@ function renderWorkspaceGit(workspaceGit) {
   $("workspaceOriginMain").hidden = !workspaceGit.origin_main_available;
   $("workspaceBranchMain").hidden = !workspaceGit.main_action_available;
 }
+const OPEN_PULL_REQUEST_MONITOR_INTERVAL_MS = 30_000;
+let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;
+function openPullRequestStatusKey(status) {
+  return {
+    ready: "workspace.open_pull_request.merge_ready",
+    busy: "workspace.open_pull_request.checks_running",
+    issues: "workspace.open_pull_request.issues",
+  }[status] || "workspace.open_pull_request.checks_running";
+}
+function localizeOpenPullRequestStatuses() {
+  document.querySelectorAll(".open-pr-status").forEach((element) => {
+    const status = element.classList.contains("open-pr-status--ready") ? "ready"
+      : element.classList.contains("open-pr-status--issues") ? "issues" : "busy";
+    const label = t(openPullRequestStatusKey(status));
+    element.querySelector(".open-pr-status__label").textContent = label;
+    element.setAttribute("aria-label", label);
+  });
+}
+function renderOpenPullRequests(pullRequests) {
+  const section = $("workspaceOpenPullRequests");
+  if (!section || !Array.isArray(pullRequests)) return;
+  const list = section.querySelector("ul");
+  if (!list) return;
+  list.replaceChildren(...pullRequests.map((pullRequest) => {
+    const item = document.createElement("li"), link = document.createElement("a"), status = document.createElement("span"), dot = document.createElement("span"), label = document.createElement("span"), branch = document.createElement("code");
+    const state = ["ready", "busy", "issues"].includes(pullRequest.status) ? pullRequest.status : "busy";
+    item.dataset.openPullRequest = String(pullRequest.number || "");
+    link.href = String(pullRequest.url || "");
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = `PR #${pullRequest.number} — ${pullRequest.title || ""}`;
+    status.className = `open-pr-status open-pr-status--${state}`;
+    dot.className = "open-pr-status__dot";
+    dot.setAttribute("aria-hidden", "true");
+    label.className = "open-pr-status__label";
+    status.append(dot, label);
+    branch.textContent = String(pullRequest.branch || "");
+    item.append(link, status, branch);
+    return item;
+  }));
+  localizeOpenPullRequestStatuses();
+}
+function scheduleOpenPullRequestMonitor(pullRequests) {
+  clearTimeout(openPullRequestMonitorTimer);
+  openPullRequestMonitorTimer = null;
+  if (Array.isArray(pullRequests) && pullRequests.some((pullRequest) => pullRequest.status === "busy")) {
+    openPullRequestMonitorTimer = setTimeout(() => void refreshOpenPullRequests(), OPEN_PULL_REQUEST_MONITOR_INTERVAL_MS);
+  }
+}
+async function refreshOpenPullRequests() {
+  if (openPullRequestMonitorInFlight) return;
+  openPullRequestMonitorInFlight = true;
+  try {
+    const response = await fetch("/api/open-pull-requests", { cache: "no-store" });
+    const payload = response.ok ? await response.json() : null;
+    const pullRequests = payload && Array.isArray(payload.pull_requests) ? payload.pull_requests : null;
+    if (!pullRequests) return;
+    renderOpenPullRequests(pullRequests);
+    scheduleOpenPullRequestMonitor(pullRequests);
+  } catch {
+    // Keep the last known, non-authoritative projection visible and retry only
+    // while it says that GitHub checks are still in progress.
+    scheduleOpenPullRequestMonitor([...document.querySelectorAll(".open-pr-status--busy")].map(() => ({ status: "busy" })));
+  } finally {
+    openPullRequestMonitorInFlight = false;
+  }
+}
 let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
   updateModeKey = key;
@@ -3912,6 +3979,7 @@ function applyDashboardLocale() {
   });
   setUpdateMode(updateModeKey);
   providerNeutralLabels();
+  localizeOpenPullRequestStatuses();
   localizeTechnicalDetails();
   localizeLogControls();
   localizePromptHistoryTable();
@@ -5329,6 +5397,9 @@ Object.assign(window, {
   renderPromptHistoryDetail,
   renderPlatformHealth,
   renderPromptHistory,
+  refreshOpenPullRequests,
+  renderOpenPullRequests,
+  scheduleOpenPullRequestMonitor,
   showComponentModal,
   showDashboardError,
   showCopyToast,
@@ -5371,4 +5442,6 @@ for (const binding of [
 }
 
 // Start after every DOM-dependent dashboard feature has completed setup.
+localizeOpenPullRequestStatuses();
+void refreshOpenPullRequests();
 startDashboardUpdates();

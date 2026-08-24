@@ -125,6 +125,44 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("shows and monitors the bounded open pull-request check status", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const timerDelay = await page.evaluate(() => {
+      const section = document.createElement("section");
+      section.id = "workspaceOpenPullRequests";
+      section.innerHTML = "<ul></ul>";
+      document.body.append(section);
+      renderOpenPullRequests([{
+        number: 925,
+        title: "Check projection",
+        url: "https://github.com/pcvantol/djconnect/pull/925",
+        branch: "codex/check-projection",
+        status: "busy",
+      }]);
+      const originalSetTimeout = window.setTimeout;
+      let delay = null;
+      window.setTimeout = (_, value) => {
+        delay = value;
+        return 1;
+      };
+      scheduleOpenPullRequestMonitor([{ status: "busy" }]);
+      window.setTimeout = originalSetTimeout;
+      return delay;
+    });
+    await expect(page.locator(".open-pr-status")).toHaveClass(/open-pr-status--busy/);
+    await expect(page.locator(".open-pr-status")).toHaveText("Controles worden uitgevoerd");
+    expect(timerDelay).toBe(30_000);
+    await page.evaluate(() => renderOpenPullRequests([{
+      number: 925,
+      title: "Check projection",
+      url: "https://github.com/pcvantol/djconnect/pull/925",
+      branch: "codex/check-projection",
+      status: "issues",
+    }]));
+    await expect(page.locator(".open-pr-status")).toHaveClass(/open-pr-status--issues/);
+    await expect(page.locator(".open-pr-status")).toHaveText("Pull request heeft problemen");
+  });
+
   test("translates every operational phase and status in every supported locale", () => {
     for (const locale of SUPPORTED_LOCALES) {
       for (const key of OPERATIONAL_TRANSLATION_KEYS) {

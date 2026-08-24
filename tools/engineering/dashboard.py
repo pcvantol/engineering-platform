@@ -1013,7 +1013,7 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
             return []
         payload = GitHubProvider().github(
             "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "open",
-            "--json", "number,title,url,headRefName", "--limit", "20",
+            "--json", "number,title,url,headRefName,isDraft,mergeStateStatus,statusCheckRollup", "--limit", "20",
         )
         candidates = json.loads(payload)
     except (OSError, RuntimeError, json.JSONDecodeError):
@@ -1026,8 +1026,48 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
             continue
         number, title, url, branch = candidate.get("number"), candidate.get("title"), candidate.get("url"), candidate.get("headRefName")
         if isinstance(number, int) and number > 0 and all(isinstance(value, str) for value in (title, url, branch)) and url.startswith("https://github.com/"):
-            result.append({"number": number, "title": title, "url": url, "branch": branch})
+            result.append({
+                "number": number,
+                "title": title,
+                "url": url,
+                "branch": branch,
+                "status": _open_pull_request_status(candidate),
+            })
     return result
+
+
+def _open_pull_request_status(pull_request: dict[str, object]) -> str:
+    """Classify GitHub's read-only PR check projection for dashboard display.
+
+    An unavailable or incomplete check projection deliberately stays ``busy``:
+    the dashboard must never imply that a PR is ready to merge until GitHub has
+    reported a terminal, successful result.
+    """
+    if pull_request.get("isDraft") is True:
+        return "busy"
+    if str(pull_request.get("mergeStateStatus") or "").upper() in {"DIRTY", "BLOCKED", "BEHIND"}:
+        return "issues"
+    check_rollup = pull_request.get("statusCheckRollup")
+    if not isinstance(check_rollup, list):
+        return "busy"
+    failed_conclusions = {"ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"}
+    successful_conclusions = {"NEUTRAL", "SKIPPED", "SUCCESS"}
+    conclusions: list[str] = []
+    for check in check_rollup:
+        if not isinstance(check, dict):
+            return "busy"
+        conclusion = str(check.get("conclusion") or "").upper()
+        state = str(check.get("status") or check.get("state") or "").upper()
+        if conclusion in failed_conclusions:
+            return "issues"
+        if conclusion not in successful_conclusions or state not in {"COMPLETED", "SUCCESS"}:
+            return "busy"
+        conclusions.append(conclusion)
+    # A repository without required checks can still be merge-ready when GitHub
+    # explicitly reports its merge state as clean.  An absent/unknown value is
+    # treated as busy rather than presented as a false green result.
+    merge_state = str(pull_request.get("mergeStateStatus") or "").upper()
+    return "ready" if conclusions or merge_state == "CLEAN" else "busy"
 
 
 def _cleanup_stale_local_branches(root: Path, expected_branches: list[str]) -> dict[str, object]:
@@ -1521,11 +1561,11 @@ def _dashboard_html(
 </body>
 </html>"""
     pull_request_items = "".join(
-        f'<li><a href="{escape(str(pull_request["url"]), quote=True)}" target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a><code>{escape(str(pull_request["branch"]))}</code></li>'
+        f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a><span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "busy")), quote=True)}"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span><code>{escape(str(pull_request["branch"]))}</code></li>'
         for pull_request in workspace_open_pull_requests or []
     )
     workspace_open_pull_requests_html = (
-        f'<section class="workspace-open-prs"><strong data-i18n="workspace.open_pull_requests"></strong><ul>{pull_request_items}</ul></section>'
+        f'<section id="workspaceOpenPullRequests" class="workspace-open-prs" aria-live="polite"><strong data-i18n="workspace.open_pull_requests"></strong><ul>{pull_request_items}</ul></section>'
         if pull_request_items else ""
     )
     return (
@@ -2059,6 +2099,11 @@ def handler(root: Path, logger: logging.Logger | None = None):
             if self.path == "/api/dashboard-snapshot":
                 return self._send(
                     _sse_snapshot(root), "application/json; charset=utf-8"
+                )
+            if self.path == "/api/open-pull-requests":
+                return self._send(
+                    json.dumps({"pull_requests": _workspace_open_pull_requests(root)}, ensure_ascii=False, separators=(",", ":")).encode(),
+                    "application/json; charset=utf-8",
                 )
             if request.path.startswith("/api/telemetry/"):
                 execution_date = request.path.removeprefix("/api/telemetry/").strip("/")
