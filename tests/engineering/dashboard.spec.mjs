@@ -126,6 +126,20 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("shows a GitHub rate-limit banner on page load and clears it on refresh", async ({ page }) => {
+    let limited = true;
+    await page.route("**/api/github-rate-limit", (route) => route.fulfill({
+      json: limited ? { limited: true, reset_at: 1_786_162_124 } : { limited: false },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const banner = page.getByTestId("github-rate-limit-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("GitHub-ratelimiet bereikt");
+    limited = false;
+    await banner.getByRole("button", { name: "GitHub-status opnieuw controleren" }).click();
+    await expect(banner).toBeHidden();
+  });
+
   test("shows and monitors the bounded open pull-request check status", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const timerDelay = await page.evaluate(() => {
