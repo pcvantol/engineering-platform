@@ -537,9 +537,12 @@ class EngineeringRunner:
             return "tests"
         return None
 
-    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False) -> AgentResult:
+    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
-        parent = start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations}) if repair else None
+        parent = (
+            start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
+            if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
+        )
         provider = start_phase(
             self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
             attempt=max(1, state.repair_iterations + 1), metadata={"provider": "codex_cli"},
@@ -569,7 +572,7 @@ class EngineeringRunner:
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
-            self._persist_provider_invocation(state, phase="REPAIR" if repair else "PROVIDER_EXECUTION", started_at=invocation_started)
+            self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", started_at=invocation_started)
             for active in validation_spans.values():
                 complete_phase(self.root, active, outcome="INTERRUPTED")
             complete_phase(self.root, provider, outcome="FAILED")
@@ -579,11 +582,71 @@ class EngineeringRunner:
         finally:
             if callable(command_callback):
                 command_callback(None)
-        self._persist_provider_invocation(state, phase="REPAIR" if repair else "PROVIDER_EXECUTION", started_at=invocation_started)
+        self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", started_at=invocation_started)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)
         return result
+
+    def _run_autonomous_quality_control(
+        self, state: TransactionState, implementation: AgentResult
+    ) -> tuple[TransactionState, AgentResult]:
+        """Run the required post-implementation refactor and quality boundary.
+
+        The controller is autonomous but cannot widen delivery scope: it may
+        amend only the current transaction branch and its existing PR.
+        """
+        quality = replace(
+            state,
+            phase="QUALITY_CONTROL_AGENT",
+            branch=implementation.branch or state.branch,
+            pull_request=implementation.pull_request or state.pull_request,
+            next_action="autonomous_refactor_and_quality_control",
+        )
+        self.store.save(quality)
+        write_live_status(self.root, quality, quality.next_action)
+        prompt = assemble_prompt(
+            Path(quality.prompt_path), quality,
+            managed_target=self.root if quality.execution_mode == "MANAGED" else None,
+        ) + """
+
+Mandatory autonomous refactor and quality-control stage:
+- Inspect the implementation now present on this transaction branch.
+- Autonomously make only demonstrable maintainability, clarity, safety, or
+  test-coverage improvements within the original bounded objective.
+- Assess test coverage for every changed behavior. Add or strengthen focused
+  regression tests whenever existing coverage does not prove that behavior.
+- Assess the applicable operator, contract, and implementation documentation.
+  Update it whenever the bounded change affects documented behavior; only
+  leave documentation unchanged when the inspection proves it is unaffected.
+- Run the relevant focused validation, including the added or affected tests,
+  and `git diff --check`.
+- Preserve the existing transaction branch and pull request. If changes are
+  needed, commit and push them to that same branch; do not create another PR,
+  merge, alter authority, or expand scope.
+- Return the same pull-request number and branch after the quality boundary.
+"""
+        try:
+            result = self._invoke_agent_with_timing(quality, prompt, quality=True)
+            quality = self._record_agent_execution_time(quality)
+            quality = self._record_validation_evidence(quality, result)
+            self._persist_agent_usage(quality.run_id)
+        except CodexInvocationError as error:
+            quality = self._record_agent_execution_time(quality)
+            self.console_detail = error.console_detail
+            return self._save_terminal(quality, "BLOCKED", error.next_action, str(error), terminal_condition=error.terminal_condition), implementation
+        if result.terminal_state in {"BLOCKED", "FAILED"}:
+            return self._save_terminal(quality, result.terminal_state, "autonomous_quality_control_failed", result.diagnostic or "Autonomous quality control did not complete."), implementation
+        if implementation.pull_request and result.pull_request and result.pull_request != implementation.pull_request:
+            return self._save_terminal(quality, "BLOCKED", "autonomous_quality_control_scope", "Autonomous quality control returned a different pull request."), implementation
+        if implementation.branch and result.branch and result.branch != implementation.branch:
+            return self._save_terminal(quality, "BLOCKED", "autonomous_quality_control_scope", "Autonomous quality control returned a different branch."), implementation
+        return quality, replace(
+            implementation,
+            branch=result.branch or implementation.branch,
+            pull_request=result.pull_request or implementation.pull_request,
+            validation_evidence=implementation.validation_evidence + result.validation_evidence,
+        )
 
     def _reject_historical_agent_pull_request(
         self, state: TransactionState
@@ -953,6 +1016,10 @@ class EngineeringRunner:
             )
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
+        if state.transaction_kind == "IMPLEMENTATION" and result.terminal_state not in {"BLOCKED", "FAILED"}:
+            state, result = self._run_autonomous_quality_control(state, result)
+            if state.terminal:
+                return state
         state = replace(
             state,
             phase="WAIT_FOR_TERMINAL_EVIDENCE",

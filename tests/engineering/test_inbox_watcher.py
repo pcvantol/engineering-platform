@@ -19,6 +19,7 @@ from tools.engineering.host_preflight import HostPreflightCheck, HostPreflightRe
 from tools.engineering.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
 from tools.engineering.capability_preflight import CapabilityCheck, CapabilityPreflightResult
 from tools.engineering.execution_timing import phase_spans, timing_summary
+from tools.engineering.execution_models import PullRequestEvidence
 from tools.engineering.storage import open_storage, store_projection
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
@@ -501,6 +502,96 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["prompt_title"], "Merge poll")
         self.assertEqual(snapshot["implementation_pr"], 832)
         self.assertEqual(snapshot["queue_depth"], 1)
+
+    def test_direct_operator_merge_status_check_requires_remote_merge_and_ancestry(self) -> None:
+        run_id = "inbox-direct-merge-check"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "direct-check.md"
+        source.write_text("# Direct merge check\n", encoding="utf-8")
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(
+            TransactionState(
+                run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
+                phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
+            )
+        )
+        open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
+        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+            github.return_value.pull_request.return_value = open_pr
+            self.assertEqual(
+                inbox_watcher.check_operator_merge_status(self.repo, run_id),
+                {"verified": False, "reason": "pull_request_not_merged", "pull_request": 832},
+            )
+
+        merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
+        with (
+            patch("tools.engineering.inbox_watcher.GhCliClient") as github,
+            patch("tools.engineering.inbox_watcher.SubprocessRepositoryClient") as repository,
+            patch("threading.Timer") as timer,
+        ):
+            github.return_value.pull_request.return_value = merged_pr
+            repository.return_value.remote_main_contains.return_value = True
+            outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
+
+        self.assertEqual(outcome, {"verified": True, "continuation": "scheduled", "pull_request": 832})
+        repository.return_value.refresh_main_reference.assert_called_once_with(self.repo)
+        timer.return_value.start.assert_called_once_with()
+
+    def test_direct_operator_merge_status_check_fails_closed_when_evidence_is_incomplete(self) -> None:
+        run_id = "inbox-merge-evidence"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-evidence.md"
+        source.write_text("# Merge evidence\n", encoding="utf-8")
+        store = StateStore(self.repo / ".engineering" / "engineering-runs")
+
+        with self.assertRaises(inbox_watcher.RetrySubmissionError):
+            inbox_watcher.check_operator_merge_status(self.repo, "not-a-run-id")
+        self.assertEqual(
+            inbox_watcher.check_operator_merge_status(self.repo, run_id),
+            {"verified": False, "reason": "not_waiting"},
+        )
+
+        store.save(TransactionState(
+            run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE",
+        ))
+        self.assertEqual(
+            inbox_watcher.check_operator_merge_status(self.repo, run_id),
+            {"verified": False, "reason": "pull_request_unavailable"},
+        )
+
+        store.save(TransactionState(
+            run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
+        ))
+        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+            github.return_value.pull_request.side_effect = RuntimeError("GitHub unavailable")
+            self.assertEqual(
+                inbox_watcher.check_operator_merge_status(self.repo, run_id),
+                {"verified": False, "reason": "github_evidence_unavailable", "pull_request": 832},
+            )
+
+        missing_commit = PullRequestEvidence(832, "MERGED", True, True, None)
+        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+            github.return_value.pull_request.return_value = missing_commit
+            self.assertEqual(
+                inbox_watcher.check_operator_merge_status(self.repo, run_id),
+                {"verified": False, "reason": "merge_commit_unavailable", "pull_request": 832},
+            )
+
+        merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
+        with (
+            patch("tools.engineering.inbox_watcher.GhCliClient") as github,
+            patch("tools.engineering.inbox_watcher.SubprocessRepositoryClient") as repository,
+        ):
+            github.return_value.pull_request.return_value = merged_pr
+            repository.return_value.remote_main_contains.return_value = False
+            self.assertEqual(
+                inbox_watcher.check_operator_merge_status(self.repo, run_id),
+                {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": 832},
+            )
+            repository.return_value.refresh_main_reference.side_effect = RuntimeError("git unavailable")
+            self.assertEqual(
+                inbox_watcher.check_operator_merge_status(self.repo, run_id),
+                {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": 832},
+            )
 
     def test_operator_merge_wait_finalization_archives_completed_prompt_and_report(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState

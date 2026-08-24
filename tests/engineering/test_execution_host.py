@@ -761,7 +761,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("do not rerun the development-host bootstrap", agent.prompts[0])
         self.assertIn(f"The only repository checkout for this transaction is `{self.root.resolve()}`", agent.prompts[0])
         self.assertIn("producer provenance only", agent.prompts[0])
-        self.assertEqual(agent.roots, [self.root])
+        self.assertEqual(agent.roots, [self.root, self.root])
+        self.assertIn("Mandatory autonomous refactor and quality-control stage", agent.prompts[1])
+        self.assertIn("Assess test coverage for every changed behavior", agent.prompts[1])
+        self.assertIn("Assess the applicable operator, contract, and implementation documentation", agent.prompts[1])
         self.assertEqual(repository.synchronize_calls, [self.root])
 
     def test_reviewer_recommendations_do_not_enter_the_primary_prompt(self) -> None:
@@ -794,7 +797,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
         ).run(self.prompt, run_id="managed-target-boundary")
 
-        self.assertEqual(agent.roots, [self.root])
+        self.assertEqual(agent.roots, [self.root, self.root])
         self.assertIn(
             f"The only repository checkout for this transaction is `{self.root.resolve()}`",
             agent.prompts[0],
@@ -836,9 +839,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
         runner.run(self.prompt, run_id="live-phase-run")
-        self.assertEqual(agent.live_phase, "EXECUTE_AGENT")
-        self.assertEqual(agent.live_action, "invoke_agent")
+        self.assertEqual(agent.live_phase, "QUALITY_CONTROL_AGENT")
+        self.assertEqual(agent.live_action, "autonomous_refactor_and_quality_control")
         self.assertEqual(agent.activity_action, "Codex bewerkt bestanden")
+
+    def test_autonomous_quality_control_cannot_replace_the_implementation_pr(self) -> None:
+        agent = SequencedFakeAgent([
+            AgentResult("COMPLETE", "codex/implementation", 701),
+            AgentResult("COMPLETE", "codex/implementation", 702),
+        ])
+        state = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None
+        ).run(self.prompt, run_id="quality-scope-run")
+
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "autonomous_quality_control_scope")
 
     def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
         class UsageLimitedAgent:

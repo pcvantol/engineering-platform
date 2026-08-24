@@ -15,19 +15,20 @@ from .status_reconciliation import is_stale_rolling_status_block
 
 TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 _MANAGED_PATH = (
-    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "REPAIR_AGENT",
+    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT",
     "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
     "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
 # Genesis has no pull-request merge boundary.  This is presentation of the
 # existing mode contract, not a new execution sequence.
 _GENESIS_PATH = (
-    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "REPAIR_AGENT",
+    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT",
     "FINALIZE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
-_STATUS_RECONCILIATION_PATH = (
-    "START", "INITIALIZE", "CAPABILITY_REVIEW", "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
-)
+# A reconciliation-only run remains part of the full delivery narrative.  Its
+# earlier delivery phases are explicitly skipped rather than silently omitted,
+# so the dashboard never renders a misleading half-workflow.
+_STATUS_RECONCILIATION_PATH = _MANAGED_PATH
 
 # This is a presentation-only association. The Execution Host stays the
 # authority for phase timing; this projection only groups persisted evidence
@@ -37,6 +38,7 @@ _STEP_PHASES = {
     "INITIALIZE": frozenset({"INITIALIZATION", "HOST_PREFLIGHT", "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT"}),
     "CAPABILITY_REVIEW": frozenset({"CAPABILITY_REVIEW"}),
     "EXECUTE_AGENT": frozenset({"EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION"}),
+    "QUALITY_CONTROL_AGENT": frozenset({"QUALITY_CONTROL"}),
     "REPAIR_AGENT": frozenset({"REPAIR"}),
     "WAIT_FOR_OPERATOR_MERGE": frozenset({"PR_OR_MERGE", "EXTERNAL_CI_WAIT"}),
     "FINALIZE_AGENT": frozenset({"REPOSITORY_FINALIZATION", "FINALIZATION"}),
@@ -254,6 +256,13 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             step["state"] = "ACTIVE" if display_phase == step_id and terminal_state is None else "COMPLETED"
         elif step_id == display_phase and terminal_state is None:
             step["state"] = "ACTIVE"
+        if (
+            transaction_kind == "RECONCILIATION"
+            and step_id in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE"}
+            and step_id not in observed
+        ):
+            step["state"] = "SKIPPED"
+            step["presentation_detail_key"] = "lifecycle.detail.not_part_of_reconciliation"
         if step_id == "REPAIR_AGENT" and repair_iterations:
             step["iteration_count"] = repair_iterations
         phase_names = _STEP_PHASES.get(step_id, frozenset())

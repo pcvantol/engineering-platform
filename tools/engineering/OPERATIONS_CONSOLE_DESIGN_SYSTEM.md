@@ -487,7 +487,9 @@ Before accepting a console UI change, review it against this list:
 4. Is the action reversible or confirmed? Does its copy state what is retained?
 5. Are aria labels, keyboard focus, non-selectable glyphs and reduced-motion
    behavior correct?
-6. Are all five localizations present and free of legacy terminology?
+6. Are all five localizations present and free of legacy terminology, including
+   dynamic lifecycle, telemetry, watcher-status and Execution Host activity
+   labels?
 7. Does a table/log action operate on exactly the state the user can see?
 
 ## 10. Required verification

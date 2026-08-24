@@ -2086,6 +2086,30 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(response.read()), {"error": "De wachtende uitvoering kon niet veilig worden afgebroken."})
+            with (
+                patch("tools.engineering.dashboard.check_operator_merge_status", return_value={"verified": True, "continuation": "scheduled", "pull_request": 915}) as check,
+                patch("tools.engineering.dashboard.log_event") as check_log_event,
+            ):
+                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read())["continuation"], "scheduled")
+                check.assert_called_once_with(root, "inbox-merge-wait")
+                check_log_event.assert_any_call(ANY, logging.INFO, "operator_merge_status_checked", run_id="inbox-merge-wait", diagnostic="scheduled")
+            with patch("tools.engineering.dashboard.check_operator_merge_status", return_value={"verified": False, "reason": "pull_request_not_merged", "pull_request": 915}):
+                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read())["reason"], "pull_request_not_merged")
+            with patch("tools.engineering.dashboard.check_operator_merge_status", side_effect=dashboard.RetrySubmissionError("Ongeldige run-ID.")):
+                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {"error": "Ongeldige run-ID."})
+            connection.request("POST", "/api/execution-merge-status-check", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(json.loads(response.read()), {"error": "De pull request-status kon niet veilig worden gecontroleerd."})
             connection.request("POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)

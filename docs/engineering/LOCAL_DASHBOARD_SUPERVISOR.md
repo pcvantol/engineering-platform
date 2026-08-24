@@ -419,10 +419,33 @@ npm run test:engineering-dashboard
 npm run test:engineering-dashboard-logic
 ```
 
+Dynamic operational labels are part of that same five-language contract. Every
+phase rendered from execution timing or lifecycle state, watcher status and
+Execution Host activity must resolve through a catalog key; raw identifiers and
+English fallback sentences are not permitted on the operator surface. The
+browser suite maintains an explicit operational-key inventory so that adding a
+new phase or status without all five translations fails CI.
+
 The dashboard suite also covers the managed PR hand-off semantics: a failed
 required PR check leaves Merge blocked without a completion checkmark and
 renders the localized “Fix pull request checks” current action. This guards
 against presenting a reached PR wait as an already completed merge.
+
+At an operator merge hand-off, **Check pull request status** performs an
+immediate read-only GitHub check. Continuation is scheduled only after the PR
+is merged and its merge commit is proven reachable from `origin/main`; it never
+merges a PR. Any missing proof is shown as a localized reason and leaves the
+button available for a later check.
+
+Every implementation run has a mandatory **Autonomous quality control** step
+after implementation and before the pull-request checks and operator merge
+handoff. It may refactor and improve tests only within the original bounded
+objective, and it must retain the same branch and pull request; a different
+branch or PR blocks the run. The step does not merge or grant new authority.
+It must assess changed-behavior test coverage and add or strengthen focused
+regressions when needed. It must also assess applicable operator, contract and
+implementation documentation, updating it whenever the bounded change affects
+documented behavior.
 
 CI runs the browser suite with four isolated workers. Each worker starts its
 own temporary dashboard root and local server, so status fixtures, browser

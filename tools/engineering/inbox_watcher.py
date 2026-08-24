@@ -45,6 +45,7 @@ from .producer import ProducerSubmissionError, parse_producer_metadata, parse_pr
 from .drift_diagnostics import summary as drift_summary
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
+from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
 from .status_reconciliation import is_stale_rolling_status_block
 
@@ -1150,6 +1151,50 @@ def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "d
             last_executed_phase="FAILED",
         )
         return record
+
+
+def check_operator_merge_status(repo: Path, run_id: str) -> dict[str, object]:
+    """Verify a waiting PR hand-off now and schedule its normal continuation.
+
+    This is deliberately evidence-only: it never merges a pull request and it
+    only starts the existing, owner-authorized resume path after GitHub's merge
+    commit is proven to be reachable from ``origin/main``.
+    """
+    if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
+        raise RetrySubmissionError("De opgegeven run-ID is ongeldig.")
+    with _lock(repo):
+        state = _operator_merge_wait(repo)
+        if state is None or state.run_id != run_id:
+            return {"verified": False, "reason": "not_waiting"}
+        pull_request = (
+            state.pull_request
+            or state.reconciliation_pull_request
+            or state.finalization_pull_request
+            or state.implementation_pull_request
+        )
+        if not isinstance(pull_request, int) or pull_request <= 0:
+            return {"verified": False, "reason": "pull_request_unavailable"}
+        try:
+            evidence = GhCliClient().pull_request(pull_request)
+        except Exception:
+            return {"verified": False, "reason": "github_evidence_unavailable", "pull_request": pull_request}
+        if evidence.state != "MERGED":
+            return {"verified": False, "reason": "pull_request_not_merged", "pull_request": pull_request}
+        if not evidence.merge_commit:
+            return {"verified": False, "reason": "merge_commit_unavailable", "pull_request": pull_request}
+        try:
+            repository = SubprocessRepositoryClient()
+            repository.refresh_main_reference(repo)
+            merged_to_main = repository.remote_main_contains(repo, evidence.merge_commit)
+        except Exception:
+            return {"verified": False, "reason": "main_ancestry_unavailable", "pull_request": pull_request}
+        if not merged_to_main:
+            return {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": pull_request}
+        # The browser returns immediately. The regular runner still owns all
+        # state transitions, finalization and reconciliation.
+        from threading import Timer
+        Timer(0.25, _execute_runner_command, args=(repo, Path(state.prompt_path), run_id)).start()
+        return {"verified": True, "continuation": "scheduled", "pull_request": pull_request}
 
 
 def _finalize_operator_merge_wait(repo: Path, state: TransactionState) -> None:

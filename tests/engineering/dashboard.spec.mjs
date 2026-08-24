@@ -7,6 +7,7 @@ import { test, expect } from "@playwright/test";
 import {
   createTranslator,
   DASHBOARD_MESSAGES,
+  OPERATIONAL_TRANSLATION_KEYS,
   SUPPORTED_LOCALES,
 } from "../../tools/engineering/assets/dashboard_locales.mjs";
 
@@ -121,6 +122,14 @@ test.describe("Engineering Status browser smoke", () => {
     for (const locale of SUPPORTED_LOCALES) {
       expect(Object.keys(DASHBOARD_MESSAGES[locale]).sort(), locale).toEqual(canonicalKeys);
       for (const key of canonicalKeys) expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
+    }
+  });
+
+  test("translates every operational phase and status in every supported locale", () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const key of OPERATIONAL_TRANSLATION_KEYS) {
+        expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
+      }
     }
   });
 
@@ -828,7 +837,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(wait.locator("span").first()).toHaveText("⌛");
     await expect(wait.locator("span").first()).toHaveCSS("font-size", "20px");
     await expect(page.locator(".execution-lifecycle__summary")).toContainText(
-      DASHBOARD_MESSAGES.nl["lifecycle.state.waiting_for_operator_merge"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"],
     );
   });
 
@@ -1279,6 +1288,7 @@ test.describe("Engineering Status browser smoke", () => {
     const mergeModal = page.locator("#operatorMergeWaitModal");
     const modalPullRequest = page.locator("#operatorMergeWaitModalPullRequest");
     const modalAbort = page.locator("#operatorMergeWaitModalAbort");
+    const modalStatusCheck = page.locator("#operatorMergeWaitModalStatusCheck");
     await expect(modalPullRequest).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/832");
     await expect(mergeModal.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
       `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_operator_merge"]} voor pull request #832.`,
@@ -1296,10 +1306,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modalPullRequest).toHaveCSS("justify-content", "center");
     await expect(modalPullRequest).toHaveCSS("font-weight", "400");
     await expect(modalAbort).toHaveCSS("font-weight", "400");
+    await expect(modalStatusCheck).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.check_status"]);
+    await expect(modalStatusCheck).toHaveCSS("display", "flex");
+    await expect(modalStatusCheck).toHaveCSS("justify-content", "center");
+    expect(await modalStatusCheck.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↻"');
     const mergeActionHeights = await mergeModal.locator(".dashboard-modal-shell__action").evaluateAll(
       (actions) => actions.map((action) => action.getBoundingClientRect().height),
     );
-    expect(mergeActionHeights).toEqual([44, 44]);
+    expect(mergeActionHeights).toEqual([44, 44, 44]);
     expect(await modalPullRequest.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"↗"');
     expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"⊘"');
     expect(await modalAbort.evaluate((element) => getComputedStyle(element, "::before").fontWeight)).toBe("700");
@@ -1310,7 +1324,7 @@ test.describe("Engineering Status browser smoke", () => {
     const confirmationActionHeights = await page.locator("#confirmationModal .dashboard-modal-shell__action").evaluateAll(
       (actions) => actions.map((action) => action.getBoundingClientRect().height),
     );
-    expect(confirmationActionHeights).toEqual(mergeActionHeights);
+    expect(confirmationActionHeights).toEqual([44, 44]);
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => abortRequested).toBe(true);
   });
@@ -3286,7 +3300,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#platformVersion")).toHaveText("1.5.0");
     await expect(page.locator("#action")).toHaveText("Codex bewerkt bestanden");
     await expect(page.locator("#action")).toHaveCSS("font-style", "italic");
-    await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 Codex-opdrachten uitgevoerd · 0 reviewer-Codex-opdrachten uitgevoerd");
+    await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 primaire Codex-opdrachten uitgevoerd · 0 reviewer-Codex-opdrachten uitgevoerd");
   });
 
   test("lays out operational-overview cards in two columns only when its container has room", async ({ page }) => {
