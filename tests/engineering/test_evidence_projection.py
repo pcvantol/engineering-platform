@@ -35,6 +35,7 @@ class EvidenceProjectionTests(unittest.TestCase):
         projected = project_output(("pytest",), raw, 1)
         self.assertIn("FAILED test_name", projected.text)
         self.assertIn("AssertionError", projected.text)
+        self.assertIn("MORE_EVIDENCE_AVAILABLE", projected.text)
         self.assertLessEqual(projected.projected_bytes, FAILED_DIAGNOSTIC_LIMIT)
 
     def test_search_is_bounded_and_explicitly_expandable(self) -> None:
@@ -85,6 +86,40 @@ class EvidenceProjectionTests(unittest.TestCase):
             self.assertEqual(expanded.returncode, 0)
             self.assertEqual(expanded.stdout, expected)
             self.assertFalse(proxy_directory.exists())
+
+    def test_proxy_failure_keeps_diagnostics_and_expands_exact_output(self) -> None:
+        with TemporaryDirectory() as temporary:
+            executable_directory = Path(temporary) / "bin"
+            executable_directory.mkdir()
+            expected = "FAILED test_name\nAssertionError: expected\n" + "trace\n" * 4000
+            executable = executable_directory / "pytest"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                f"sys.stdout.write({expected!r})\n"
+                "raise SystemExit(1)\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+            with ToolProxyEnvironment() as environment:
+                environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = str(executable_directory)
+                bounded = subprocess.run(  # nosec B603
+                    ("pytest",), capture_output=True, check=False, env=environment, text=True
+                )
+                expanded = subprocess.run(  # nosec B603
+                    ("pytest",),
+                    capture_output=True,
+                    check=False,
+                    env={**environment, "DJCONNECT_EVIDENCE_EXPAND": "1"},
+                    text=True,
+                )
+            self.assertEqual(bounded.returncode, 1)
+            self.assertIn("FAILED test_name", bounded.stdout)
+            self.assertIn("AssertionError", bounded.stdout)
+            self.assertIn("MORE_EVIDENCE_AVAILABLE", bounded.stdout)
+            self.assertLessEqual(len(bounded.stdout.encode("utf-8")), FAILED_DIAGNOSTIC_LIMIT)
+            self.assertEqual(expanded.returncode, 1)
+            self.assertEqual(expanded.stdout, expected)
 
     def test_broad_git_and_github_outputs_become_bounded_facts(self) -> None:
         git = project_output(("git", "log"), "commit\n" * 1000, 0)

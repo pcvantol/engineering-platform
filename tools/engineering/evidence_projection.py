@@ -82,6 +82,9 @@ def project_output(command: Iterable[str], output: str, exit_code: int) -> Evide
         if exit_code:
             text = _failure_tail(output)
             more = text != output
+            if more:
+                marker = "\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
+                text = f"{text[:FAILED_DIAGNOSTIC_LIMIT - _bytes(marker)]}{marker}"
         elif raw_bytes > PASSING_TEST_LIMIT:
             passed = next((line for line in output.splitlines() if "passed" in line.casefold()), "PASS")
             text = f"PASSING_TEST_OUTPUT_BOUNDED\n{passed[:PASSING_TEST_LIMIT // 2]}\nMORE_EVIDENCE_AVAILABLE: set DJCONNECT_EVIDENCE_EXPAND=1 for this command."
