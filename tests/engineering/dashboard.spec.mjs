@@ -2172,6 +2172,8 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("puts preflight diagnostic clauses on separate lines", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       diagnostic: "Workspace Preflight blocked by worktree_unstaged (Repository). Expected: worktree_unstaged: PASS. Observed: Unstaged changes are present. Required action: Commit, stash, or remove unstaged changes before execution.",

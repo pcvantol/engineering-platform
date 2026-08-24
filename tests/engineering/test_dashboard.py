@@ -1794,7 +1794,8 @@ class DashboardStatusTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_http_dashboard_status_routes(self) -> None:
+    @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])
+    def test_http_dashboard_status_routes(self, _open_pull_requests: object) -> None:
         with self._dashboard_http_connection() as (_, connection):
             for route, content_type in (
                 ("/", "text/html"),
