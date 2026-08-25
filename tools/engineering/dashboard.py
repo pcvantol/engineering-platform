@@ -1038,7 +1038,7 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
             return []
         payload = GitHubProvider().github(
             "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "open",
-            "--json", "number,title,url,headRefName,isDraft,mergeStateStatus,statusCheckRollup", "--limit", "20",
+            "--json", "number,title,url,headRefName,isDraft,mergeStateStatus,reviewDecision,reviews,statusCheckRollup", "--limit", "20",
         )
         candidates = json.loads(payload)
     except (OSError, RuntimeError, json.JSONDecodeError):
@@ -1057,42 +1057,73 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
                 "url": url,
                 "branch": branch,
                 "status": _open_pull_request_status(candidate),
+                "owner_approval": _owner_approval_status(candidate, match.group(1)),
             })
     return result
+
+
+def _owner_approval_status(pull_request: dict[str, object], repository_owner: str) -> str:
+    """Project the latest repository-owner review without changing merge authority."""
+    reviews = pull_request.get("reviews")
+    if not isinstance(reviews, list) or not repository_owner:
+        return "pending"
+    owner_reviews = [
+        review for review in reviews
+        if isinstance(review, dict) and isinstance(review.get("author"), dict)
+        and str(review["author"].get("login") or "").casefold() == repository_owner.casefold()
+    ]
+    if not owner_reviews:
+        return "pending"
+    latest = max(owner_reviews, key=lambda review: str(review.get("submittedAt") or ""))
+    state = str(latest.get("state") or "").upper()
+    if state == "APPROVED":
+        return "approved"
+    if state == "CHANGES_REQUESTED":
+        return "changes_requested"
+    return "pending"
 
 
 def _open_pull_request_status(pull_request: dict[str, object]) -> str:
     """Classify GitHub's read-only PR check projection for dashboard display.
 
-    An unavailable or incomplete check projection deliberately stays ``busy``:
-    the dashboard must never imply that a PR is ready to merge until GitHub has
-    reported a terminal, successful result.
+    An unavailable or incomplete check projection deliberately stays
+    ``waiting_for_checks``: the dashboard must never imply that a PR is ready
+    to review or merge until GitHub has reported enough terminal evidence.
     """
     if pull_request.get("isDraft") is True:
-        return "busy"
-    if str(pull_request.get("mergeStateStatus") or "").upper() in {"DIRTY", "BLOCKED", "BEHIND"}:
+        return "draft"
+    merge_state = str(pull_request.get("mergeStateStatus") or "").upper()
+    if merge_state == "BEHIND":
+        return "branch_update_required"
+    if merge_state in {"DIRTY", "BLOCKED"}:
+        return "issues"
+    review_decision = str(pull_request.get("reviewDecision") or "").upper()
+    if review_decision == "CHANGES_REQUESTED":
         return "issues"
     check_rollup = pull_request.get("statusCheckRollup")
     if not isinstance(check_rollup, list):
-        return "busy"
+        return "waiting_for_checks"
     failed_conclusions = {"ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"}
     successful_conclusions = {"NEUTRAL", "SKIPPED", "SUCCESS"}
     conclusions: list[str] = []
     for check in check_rollup:
         if not isinstance(check, dict):
-            return "busy"
-        conclusion = str(check.get("conclusion") or "").upper()
-        state = str(check.get("status") or check.get("state") or "").upper()
+            return "waiting_for_checks"
+        # Check runs expose ``status`` + ``conclusion``; legacy status
+        # contexts expose their terminal result only as ``state``.
+        conclusion = str(check.get("conclusion") or check.get("state") or "").upper()
+        status = str(check.get("status") or "").upper()
         if conclusion in failed_conclusions:
             return "issues"
-        if conclusion not in successful_conclusions or state not in {"COMPLETED", "SUCCESS"}:
-            return "busy"
+        if conclusion not in successful_conclusions or (status and status != "COMPLETED"):
+            return "waiting_for_checks"
         conclusions.append(conclusion)
-    # A repository without required checks can still be merge-ready when GitHub
-    # explicitly reports its merge state as clean.  An absent/unknown value is
-    # treated as busy rather than presented as a false green result.
-    merge_state = str(pull_request.get("mergeStateStatus") or "").upper()
-    return "ready" if conclusions or merge_state == "CLEAN" else "busy"
+    if review_decision == "REVIEW_REQUIRED":
+        return "ready_for_review"
+    # A repository without required checks can still be ready to merge when
+    # GitHub explicitly reports its merge state as clean. An absent/unknown
+    # state remains fail-closed rather than presented as a false green result.
+    return "ready_to_merge" if merge_state == "CLEAN" else "waiting_for_checks"
 
 
 def _cleanup_stale_local_branches(root: Path, expected_branches: list[str]) -> dict[str, object]:
@@ -1545,7 +1576,7 @@ def _dashboard_html(
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" data-i18n-aria-label="status.unknown"></span><strong data-i18n="detail.prompt_status"></strong></div><p class="field"><span class="label" data-i18n="ui.watcher"></span><span id="watcher" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.phase"></span><span id="phase" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.current_activity"></span><span id="action" data-i18n="format.loading"></span></p></div>
 <div class="card execution-context" id="executionContext" hidden><strong data-i18n="ui.execution_context"></strong><p class="field"><span class="label" data-i18n="field.execution_mode"></span><span id="executionMode"></span></p><p class="field"><span class="label" data-i18n="field.repository"></span><span id="targetRepository"></span></p><div class="field"><span class="label" data-i18n="detail.target_checkout"></span><pre id="checkoutPath"></pre></div><p class="field"><span class="label" data-i18n="ui.active_branch"></span><span id="activeBranch"></span></p></div>
 <div class="card" id="processMetrics" hidden><strong data-i18n="ui.local_ai_processes"></strong><p class="field"><span class="label">CPU</span><span id="codexCpu" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.process_count"></span><span id="codexProcesses" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.gpu_usage"></span><span id="codexGpu" data-i18n="format.loading"></span></p></div>
-<div class="card operator-merge-wait" id="operatorMergeWait" hidden><strong data-i18n="merge_wait.title"></strong><p id="operatorMergeWaitDescription"></p><p class="estimate-meta" id="operatorMergeWaitLastCheck" hidden></p><div class="operator-merge-wait__actions"><a class="dashboard-action dashboard-action--primary" id="operatorMergePullRequest" target="_blank" rel="noopener noreferrer"></a><button class="dashboard-action" id="operatorMergeStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-action dashboard-action--destructive" id="operatorMergeAbort" type="button" data-i18n="action.abort_execution"></button></div></div>
+<div class="card operator-merge-wait" id="operatorMergeWait" hidden><strong id="operatorMergeWaitTitle" data-i18n="merge_wait.title"></strong><p id="operatorMergeWaitDescription"></p><p class="open-pr-status operator-merge-wait__pr-status" id="operatorMergeWaitPullRequestStatus"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></p><p class="open-pr-approval" id="operatorMergeWaitOwnerApproval"></p><p class="estimate-meta" id="operatorMergeWaitLastCheck" hidden></p><div class="operator-merge-wait__actions"><a class="dashboard-action dashboard-action--primary" id="operatorMergePullRequest" target="_blank" rel="noopener noreferrer"></a><button class="dashboard-action" id="operatorMergeStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-action dashboard-action--destructive" id="operatorMergeAbort" type="button" data-i18n="action.abort_execution"></button></div></div>
 <div class="card operator-merge-wait" id="emergencyRecovery" hidden><strong data-i18n="emergency_recovery.title"></strong><p data-i18n="emergency_recovery.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--destructive" id="emergencyRecoveryStart" type="button" data-i18n="emergency_recovery.action"></button></div></div>
 <div class="card status-reconciliation-card" id="statusReconciliation" hidden><strong data-i18n="status_reconciliation.title"></strong><p data-i18n="status_reconciliation.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--primary" id="statusReconciliationStart" type="button" data-i18n="status_reconciliation.action"></button></div><p id="statusReconciliationResult" role="status" aria-live="polite"></p></div>
 <div class="card" id="workspaceProgress"><strong data-i18n="detail.workspace_changes"></strong><p class="field"><span id="workspaceProgressValue" data-i18n="format.loading"></span></p></div>
@@ -1560,7 +1591,7 @@ def _dashboard_html(
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence telemetry-detail-modal" id="telemetryDetailModal" aria-labelledby="telemetryDetailTitle"><section class="dashboard-modal-shell__panel telemetry-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="telemetryDetailTitle"></h2><button class="dashboard-modal-shell__close" id="telemetryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="telemetryDetailDescription" class="prompt-detail-modal__description"></p><div id="telemetryDetailContent" class="telemetry-detail-modal__content" aria-live="polite"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence lifecycle-detail-modal" id="lifecycleDetailModal" aria-labelledby="lifecycleDetailTitle"><section class="dashboard-modal-shell__panel lifecycle-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="lifecycleDetailTitle"></h2><button class="dashboard-modal-shell__close" id="lifecycleDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="lifecycleDetailContent" class="lifecycle-detail-modal__content" aria-live="polite"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence execution-mode-modal" id="executionModeModal" aria-labelledby="executionModeModalTitle"><section class="dashboard-modal-shell__panel execution-mode-modal__panel"><header class="dashboard-modal-shell__header execution-mode-modal__header"><h2 id="executionModeModalTitle" data-i18n="execution_mode_info.title"></h2><button class="dashboard-modal-shell__close execution-mode-modal__close" id="executionModeModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div class="execution-mode-modal__content"><p data-i18n="execution_mode_info.intro"></p><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.managed_title"></h3><p data-i18n="execution_mode_info.managed_body"></p></section><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.genesis_title"></h3><p data-i18n="execution_mode_info.genesis_body"></p></section></div></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence confirmation-modal" id="operatorMergeWaitModal" aria-labelledby="operatorMergeWaitModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="operatorMergeWaitModalTitle" data-i18n="merge_wait.title"></h2><button class="dashboard-modal-shell__close" id="operatorMergeWaitModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="operatorMergeWaitModalDescription"></p><p class="estimate-meta" id="operatorMergeWaitModalLastCheck" hidden></p><section class="merge-wait-context" data-i18n-aria-label="merge_wait.context_label"><p id="operatorMergeWaitModalContextIntro"></p><dl><div><dt data-i18n="merge_wait.context_run"></dt><dd id="operatorMergeWaitModalRunId"></dd></div><div><dt data-i18n="merge_wait.context_prompt"></dt><dd id="operatorMergeWaitModalPrompt"></dd></div></dl></section><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="operatorMergeWaitModalStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--destructive" id="operatorMergeWaitModalAbort" type="button" data-i18n="action.abort_execution"></button><a class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="operatorMergeWaitModalPullRequest" target="_blank" rel="noopener noreferrer"></a></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence confirmation-modal" id="operatorMergeWaitModal" aria-labelledby="operatorMergeWaitModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="operatorMergeWaitModalTitle" data-i18n="merge_wait.title"></h2><button class="dashboard-modal-shell__close" id="operatorMergeWaitModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="operatorMergeWaitModalDescription"></p><p class="estimate-meta" id="operatorMergeWaitModalLastCheck" hidden></p><section class="merge-wait-context" data-i18n-aria-label="merge_wait.context_label"><p id="operatorMergeWaitModalContextIntro"></p><dl><div><dt data-i18n="merge_wait.context_run"></dt><dd id="operatorMergeWaitModalRunId"></dd></div><div><dt data-i18n="merge_wait.context_prompt"></dt><dd id="operatorMergeWaitModalPrompt"></dd></div><div><dt data-i18n="merge_wait.pull_request_status"></dt><dd><span class="open-pr-status" id="operatorMergeWaitModalPullRequestStatus"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span></dd></div><div><dt data-i18n="merge_wait.owner_approval"></dt><dd><span class="open-pr-approval" id="operatorMergeWaitModalOwnerApproval"></span></dd></div></dl></section><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="operatorMergeWaitModalStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--destructive" id="operatorMergeWaitModalAbort" type="button" data-i18n="action.abort_execution"></button><a class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="operatorMergeWaitModalPullRequest" target="_blank" rel="noopener noreferrer"></a></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="confirmationModal" aria-labelledby="confirmationModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="confirmationModalTitle" data-i18n="ui.confirm_action"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="confirmationModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="confirmationModalText"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="confirmationModalCancel" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="confirmationModalConfirm" type="button" data-i18n="action.confirm"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="dashboardErrorModalRecover" type="button" hidden></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchCleanupResultModal" aria-labelledby="workspaceBranchCleanupResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchCleanupResultTitle" data-i18n="workspace.branch_cleanup_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchCleanupResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchCleanupResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchCleanupResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
@@ -1587,7 +1618,7 @@ def _dashboard_html(
 </body>
 </html>"""
     pull_request_items = "".join(
-        f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a><span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "busy")), quote=True)}"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span><code>{escape(str(pull_request["branch"]))}</code></li>'
+        f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a><span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "waiting_for_checks")), quote=True)}"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span><code>{escape(str(pull_request["branch"]))}</code></li>'
         for pull_request in workspace_open_pull_requests or []
     )
     workspace_open_pull_requests_html = (

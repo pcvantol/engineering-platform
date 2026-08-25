@@ -152,7 +152,8 @@ test.describe("Engineering Status browser smoke", () => {
         title: "Check projection",
         url: "https://github.com/pcvantol/djconnect/pull/925",
         branch: "codex/check-projection",
-        status: "busy",
+        status: "waiting_for_checks",
+        owner_approval: "pending",
       }]);
       const originalSetTimeout = window.setTimeout;
       let delay = null;
@@ -160,12 +161,14 @@ test.describe("Engineering Status browser smoke", () => {
         delay = value;
         return 1;
       };
-      scheduleOpenPullRequestMonitor([{ status: "busy" }]);
+      scheduleOpenPullRequestMonitor([{ status: "waiting_for_checks" }]);
       window.setTimeout = originalSetTimeout;
       return delay;
     });
-    await expect(page.locator(".open-pr-status")).toHaveClass(/open-pr-status--busy/);
-    await expect(page.locator(".open-pr-status")).toHaveText("Controles worden uitgevoerd");
+    const openPullRequestStatus = page.locator("#workspaceOpenPullRequests .open-pr-status");
+    await expect(openPullRequestStatus).toHaveClass(/open-pr-status--waiting_for_checks/);
+    await expect(openPullRequestStatus).toHaveText("Wacht op afronden van controles");
+    await expect(page.locator("#workspaceOpenPullRequests .open-pr-approval")).toHaveText("Owner approval wacht");
     expect(timerDelay).toBe(30_000);
     await page.evaluate(() => renderOpenPullRequests([{
       number: 925,
@@ -174,8 +177,35 @@ test.describe("Engineering Status browser smoke", () => {
       branch: "codex/check-projection",
       status: "issues",
     }]));
-    await expect(page.locator(".open-pr-status")).toHaveClass(/open-pr-status--issues/);
-    await expect(page.locator(".open-pr-status")).toHaveText("Pull request heeft problemen");
+    await expect(openPullRequestStatus).toHaveClass(/open-pr-status--issues/);
+    await expect(openPullRequestStatus).toHaveText("Pull request heeft problemen");
+    await page.evaluate(() => renderOpenPullRequests([{
+      number: 925,
+      title: "Check projection",
+      url: "https://github.com/pcvantol/djconnect/pull/925",
+      branch: "codex/check-projection",
+      status: "branch_update_required",
+    }]));
+    await expect(openPullRequestStatus).toHaveClass(/open-pr-status--branch_update_required/);
+    await expect(openPullRequestStatus).toHaveText("Branch bijwerken vereist");
+    await page.evaluate(() => renderOpenPullRequests([{
+      number: 925,
+      title: "Check projection",
+      url: "https://github.com/pcvantol/djconnect/pull/925",
+      branch: "codex/check-projection",
+      status: "ready_for_review",
+    }]));
+    await expect(openPullRequestStatus).toHaveClass(/open-pr-status--ready_for_review/);
+    await expect(openPullRequestStatus).toHaveText("Klaar voor review");
+    await page.evaluate(() => renderOpenPullRequests([{
+      number: 925,
+      title: "Check projection",
+      url: "https://github.com/pcvantol/djconnect/pull/925",
+      branch: "codex/check-projection",
+      status: "ready_to_merge",
+    }]));
+    await expect(openPullRequestStatus).toHaveClass(/open-pr-status--ready_to_merge/);
+    await expect(openPullRequestStatus).toHaveText("Klaar om te mergen");
   });
 
   test("translates every operational phase and status in every supported locale", () => {
@@ -1326,6 +1356,11 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps a green pull request visible until the operator merges or aborts it", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [{
+      number: 832, title: "Merge wait fixture", url: "https://github.com/pcvantol/djconnect/pull/832",
+      branch: "codex/merge-wait", status: "ready_to_merge",
+      owner_approval: "approved",
+    }] } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: {
         watcher_state: "WAITING_FOR_OPERATOR_MERGE",
@@ -1353,6 +1388,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const wait = page.locator("#operatorMergeWait");
     await expect(wait).toBeVisible();
+    await expect(wait.locator("#operatorMergeWaitTitle")).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.title.implementation"]);
+    await expect(wait.locator("#operatorMergeWaitPullRequestStatus")).toHaveClass(/open-pr-status--ready_to_merge/);
+    await expect(wait.locator("#operatorMergeWaitPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_to_merge"]);
+    await expect(wait.locator("#operatorMergeWaitOwnerApproval")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.owner_approval_approved"]);
     await expect(page.locator(".execution-lifecycle + #operatorMergeWait")).toBeVisible();
     const mergeLink = wait.locator("a");
     const abort = wait.getByRole("button", { name: DASHBOARD_MESSAGES.nl["action.abort_execution"] });
@@ -1380,6 +1419,9 @@ test.describe("Engineering Status browser smoke", () => {
     );
     await expect(mergeModal.locator("#operatorMergeWaitModalRunId")).toHaveText("inbox-merge-wait");
     await expect(mergeModal.locator("#operatorMergeWaitModalPrompt")).toHaveText("Merge wait fixture");
+    await expect(mergeModal.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveClass(/open-pr-status--ready_to_merge/);
+    await expect(mergeModal.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_to_merge"]);
+    await expect(mergeModal.locator("#operatorMergeWaitModalOwnerApproval")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.owner_approval_approved"]);
     await expect(modalPullRequest).toHaveCSS("text-decoration-line", "none");
     await expect(modalPullRequest).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(modalAbort).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
@@ -1449,6 +1491,10 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("opens a new handoff modal for the finalization pull request in the same run", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [{
+      number: 841, title: "Finalization merge", url: "https://github.com/pcvantol/djconnect/pull/841",
+      branch: "codex/finalization", status: "ready_for_review",
+    }] } }));
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -1478,6 +1524,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#operatorMergeWaitModalContextIntro")).toHaveText(
       `Deze hand-off is de ${DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]} voor pull request #841.`,
     );
+    await expect(page.locator("#operatorMergeWaitTitle")).toHaveText(DASHBOARD_MESSAGES.nl["merge_wait.title.finalization"]);
+    await expect(page.locator("#operatorMergeWaitPullRequestStatus")).toHaveClass(/open-pr-status--ready_for_review/);
+    await expect(page.locator("#operatorMergeWaitModalPullRequestStatus")).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.ready_for_review"]);
     await expect(page.locator(".execution-lifecycle__item")).toHaveCount(3);
     await expect(page.locator(".execution-lifecycle__item--active .execution-lifecycle__node"))
       .toContainText(DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"]);
@@ -2285,6 +2334,8 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses the full rose row treatment for telemetry runs in the detail modal", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.abort());
+    await page.route("**/api/prompt-history**", (route) => route.abort());
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [{
         run_id: "inbox-telemetry-row", status: "COMPLETE", total_duration_ms: 1000,
