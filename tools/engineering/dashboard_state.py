@@ -248,6 +248,10 @@ def status(root: Path) -> bytes:
         live_liveness = lease_liveness(root, live.get("run_id"))
         transient_action = _transient_live_action(root, live.get("run_id"))
         lifecycle = lifecycle_projection(root, live.get("run_id"))
+        if isinstance(lifecycle, dict) and transient_action:
+            # Ephemeral, redacted CLI progress is presentation-only.  It is
+            # deliberately not persisted in lifecycle, reports or telemetry.
+            lifecycle["live_activity"] = transient_action
         fallback_filename, fallback_prompt_title = _active_prompt_metadata(root, live.get("run_id"))
         projection = json.dumps(
             {

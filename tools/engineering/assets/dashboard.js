@@ -1417,6 +1417,11 @@ function lifecycleFlow(projection, { historical = false } = {}) {
     if (isLifecycleStartStep(step)) button.classList.add("execution-lifecycle__node--start");
     const name = lifecycleLabel(step), status = lifecycleStateLabel(step?.state);
     button.setAttribute("aria-label", name + " — " + status);
+    if (state === "active" && !historical && typeof projection.live_activity === "string") {
+      const activity = projection.live_activity.slice(0, 160);
+      button.title = t("lifecycle.live_activity", { activity });
+      button.setAttribute("aria-label", name + " — " + status + ". " + button.title);
+    }
     button.addEventListener("click", () => openLifecycleDetail(step, button));
     node.setAttribute("aria-hidden", "true"); node.textContent = state === "completed" ? "✓" : state === "complete" ? "✓" : state === "blocked" ? "!" : state === "failed" ? "×" : operatorWait ? "⌛" : isLifecycleStartStep(step) ? "🚀" : "";
     label.textContent = name;

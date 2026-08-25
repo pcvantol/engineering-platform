@@ -33,6 +33,7 @@ class DashboardStateTest(unittest.TestCase):
                     {
                         "run_id": "run-1",
                         "phase": "EXECUTE_AGENT",
+                        "transient_action": "Inspect the configuration boundary",
                         "workspace_progress": {
                             "modified": 3,
                             "created": 2,
@@ -59,6 +60,7 @@ class DashboardStateTest(unittest.TestCase):
             payload["workspace_progress"],
             {"modified": 3, "created": 2, "deleted": 1, "codex_commands_executed": 17},
         )
+        self.assertEqual(payload["lifecycle"]["live_activity"], "Inspect the configuration boundary")
 
     def test_status_projects_only_the_persisted_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
