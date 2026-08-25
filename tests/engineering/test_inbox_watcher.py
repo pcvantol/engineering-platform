@@ -52,6 +52,10 @@ class InboxWatcherTest(unittest.TestCase):
             return_value=CapabilityPreflightResult("PASS", "now", 1, (), "RETRYABLE", None, "Capability admission passed."),
         )
         self.capability_preflight.start()
+        self.dependabot_admission = patch(
+            "tools.engineering.inbox_watcher._admit_dependabot_pull_requests", return_value=0
+        )
+        self.dependabot_admission.start()
         # CI deliberately has no Codex CLI.  Every watcher fixture receives a
         # harmless executable so the tests exercise watcher admission rather
         # than host installation.
@@ -67,6 +71,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.preflight.stop()
         self.workspace_preflight.stop()
         self.capability_preflight.stop()
+        self.dependabot_admission.stop()
         self.runtime_environment.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()

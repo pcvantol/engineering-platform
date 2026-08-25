@@ -19,7 +19,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 28
+ENGINEERING_STORAGE_SCHEMA_VERSION = 29
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -777,6 +777,27 @@ def _schema_v28(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v29(connection: sqlite3.Connection) -> None:
+    """Retain append-only Dependabot Inbox-admission evidence before execution."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS dependabot_admission_events ("
+        "id INTEGER PRIMARY KEY,repository TEXT NOT NULL,pull_request INTEGER NOT NULL,"
+        "head_sha TEXT NOT NULL,head_branch TEXT NOT NULL,submission_id TEXT NOT NULL,"
+        "event_type TEXT NOT NULL CHECK(event_type IN ('ENQUEUED')),observed_at TEXT NOT NULL,"
+        "UNIQUE(repository,pull_request,event_type))"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS dependabot_admission_events_immutable_update "
+        "BEFORE UPDATE ON dependabot_admission_events BEGIN "
+        "SELECT RAISE(ABORT, 'Dependabot admission evidence is immutable.'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER IF NOT EXISTS dependabot_admission_events_immutable_delete "
+        "BEFORE DELETE ON dependabot_admission_events BEGIN "
+        "SELECT RAISE(ABORT, 'Dependabot admission evidence is immutable.'); END"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -852,6 +873,7 @@ MIGRATIONS: dict[int, Migration] = {
     26: _schema_v26,
     27: _schema_v27,
     28: _schema_v28,
+    29: _schema_v29,
 }
 
 

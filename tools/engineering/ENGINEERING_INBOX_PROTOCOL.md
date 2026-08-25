@@ -32,6 +32,28 @@ metadata only. Missing metadata remains compatible with existing prompts and
 records `Producer Type: HUMAN` and `Producer ID: legacy`. Producer identity
 never changes admission, scheduling, preflight, lifecycle or execution.
 
+### Dependabot admission
+
+On each watcher cycle, the Engineering Platform performs a bounded, read-only
+REST discovery of open pull requests in its configured GitHub repository. Only
+PRs whose author is `dependabot[bot]` or `app/dependabot` are eligible. For an
+eligible PR not previously admitted, the watcher publishes one atomic JSON
+Producer Submission Envelope into the same Inbox with `Producer Type:
+EXTERNAL` and `Producer ID: github-dependabot`.
+
+The generated objective binds the Managed transaction to that existing
+Dependabot PR and branch. It requires compatibility/release-note review and
+normal validation, and directs any bounded required-check repair to the same
+PR. It never creates a replacement PR, changes approvals, enables auto-merge,
+or merges. The existing implementation and Finalization operator merge gates,
+repair-attempt limit, terminal report, Prompt History and post-Finalization
+reconciliation remain authoritative.
+
+Each publication receives one append-only local admission record containing
+the repository, PR number, observed head commit, branch, submission ID and
+timestamp. Discovery failures are logged with a bounded diagnostic but do not
+block already submitted Inbox work and do not create an uncertain prompt.
+
 ## Execution Host Preflight Level 1
 
 Before claiming a discovered Inbox item, the watcher runs fail-closed **Execution

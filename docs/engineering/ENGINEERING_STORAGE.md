@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `28`**. The required version is declared as `storage_schema` in
+schema `29`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -97,6 +97,12 @@ Forge owns Producer Contract semantics; Engineering Platform owns these local
 execution receipts. This metadata supports operations and analytics only and
 never affects scheduling or execution. It does not become Forge Decision
 Evidence, Mission planning state or Runtime planning state.
+
+Schema `29` adds immutable `dependabot_admission_events` before a generated
+Dependabot envelope can be claimed. Each record identifies only the configured
+repository, pull-request number, observed head SHA and branch, submission ID
+and observation time. It prevents duplicate automatic admission while leaving
+the normal submission, run, repair and terminal evidence contracts unchanged.
 
 Schema `14` adds the canonical active-run lease. A lease binds one Run ID to a
 stable Execution Host identity and a unique host-instance ID; a process ID is
