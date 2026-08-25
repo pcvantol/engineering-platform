@@ -528,9 +528,13 @@ credit is available. This is the dashboard's sole account-side effect: it
 cannot access the Inbox, alter repository files, start a runner, create a pull
 request, merge, release or deploy.
 
-Above the quota values, the category identifies the active AI provider and the
-locally detected CLI version. This identity is cached briefly, excludes paths
-and account data, and remains visible even when quota retrieval is unavailable.
+Above the quota values, the category identifies the active AI provider, the
+locally detected CLI version and its installation path. For an EP-managed CLI,
+the path is the user-owned managed installation prefix; for another local
+installation, it is the resolved executable path. This identity is cached
+briefly, excludes account data, and remains visible even when quota retrieval
+is unavailable. When no executable path can be resolved, the dashboard shows
+an explicit unavailable value rather than guessing.
 
 The active and last execution cards use provider-neutral wording. The last
 execution card reads the exact report-bound runtime provenance for that run:

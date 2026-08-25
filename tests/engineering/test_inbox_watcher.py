@@ -270,6 +270,27 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertNotIn("StandardOutPath", rendered)
         self.assertNotIn("StandardErrorPath", rendered)
 
+    def test_launch_agent_keeps_the_persisted_log_level_over_an_inherited_value(self) -> None:
+        with patch.dict(os.environ, {inbox_watcher.LOG_LEVEL_ENVIRONMENT: "DEBUG"}), patch(
+            "tools.engineering.inbox_watcher.Path.home", return_value=Path(self.temp.name)
+        ):
+            connection = open_storage(self.repo)
+            try:
+                connection.execute(
+                    "INSERT INTO engineering_metadata(key, value) VALUES (?, ?)",
+                    ("dashboard_configuration.log_level", '"INFO"'),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            rendered = inbox_watcher.launch_agent(self.repo).read_text(encoding="utf-8")
+
+        self.assertIn(
+            f"<key>{inbox_watcher.LOG_LEVEL_ENVIRONMENT}</key><string>INFO</string>",
+            rendered,
+        )
+
     def test_filename_neutral_markdown_prompts_are_discovered_oldest_first(self) -> None:
         oldest = self.inbox / "first-submission"
         newest = self.inbox / "project-brief.upload"

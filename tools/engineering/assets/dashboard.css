@@ -1,5 +1,10 @@
 /* Prevent iOS/iPadOS double-tap zoom while preserving native pinch zoom. */
 html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manipulation}
+/* Tables use horizontal swipe navigation on small screens. Explicit pan
+   gestures keep that navigation while preventing WebKit's tap-to-zoom paint
+   and text-callout overlay from being captured by the scrolling surface. */
+:is(.log-table-wrap,.telemetry-scroll){-webkit-overflow-scrolling:auto;overscroll-behavior:contain;touch-action:pan-x pan-y}
+:is(.log-table,.telemetry-table){-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%;-webkit-touch-callout:none;text-size-adjust:100%;touch-action:manipulation}
 /* Shared product chrome: change the hue here to retheme controls, notices and status metadata. */
 :root{
   --house-style:#f0b66a;
@@ -38,6 +43,7 @@ html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manip
 html[data-theme="light"]{
   --house-style-contrast:#653a13;
   --house-style-surface:#fff4e6;
+  --dashboard-surface-base:#fff;
   --dashboard-expanded-content-surface:#fff;
   --dashboard-modal-surface:#fff;
   --dashboard-modal-document-surface:#f7fbff;
@@ -47,7 +53,7 @@ html[data-theme="light"]{
   --operations-console-blue-ink:#182230;
 }
 .log-controls label:has(#logSort){display:none}.log-table th.log-sortable{cursor:pointer;user-select:none}.log-table th.log-sortable::after{color:#8dc7ff;content:attr(data-sort-indicator);font-size:11px;margin-left:6px}.log-table th.log-sortable:focus-visible{outline:2px solid #8dc7ff;outline-offset:-2px}
-.component-log-row,.prompt-history-row{cursor:pointer}.component-log-row{--dashboard-selected-row-color:var(--category-color,#f0b66a)}.prompt-history-row{--dashboard-selected-row-color:var(--category-color,#f29ab2)}.component-log-row:hover>td,.prompt-history-row:hover>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)}.component-log-row>td,.prompt-history-row>td{box-shadow:none!important;outline:0!important;user-select:none}.prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}
+.component-log-row,.prompt-history-row{cursor:pointer}.component-log-row{--dashboard-selected-row-color:var(--category-color,#f0b66a)}.prompt-history-row{--dashboard-selected-row-color:var(--category-color,#f29ab2)}.component-log-row:hover>td,.prompt-history-row:hover>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))}.component-log-row>td,.prompt-history-row>td{box-shadow:none!important;outline:0!important;user-select:none}.prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}
 .current-run .card:has(#indicator){background:#2a2530;border-left:3px solid #c7a6ff}.current-run .card:has(#predecessorRun),#currentDiagnostic,.technical-details--diagnostic{background:#302a24;border-left:3px solid #f0b66a}.current-run .card:has(#queueList),.current-run .card:has(#runId),.current-run .card:has(#executionMode){background:#28263a;border-left:3px solid #a78bfa}.current-run .card:has(#currentTime),.current-run .card:has(#executionEstimate){background:#202b34;border-left:3px solid #65c5d9}#processMetrics,#usage,#rateLimits{background:#20332f;border-left:3px solid #54d6a0}#commits{background:#202a36;border-left:3px solid #8dc7ff}#codexChat{background:#292336;border-left:3px solid #d0a4ff}
 body{margin:0;background:#121217;color:#f7f3ee;font:14px system-ui;padding:max(18px,env(safe-area-inset-top)) calc(28px + env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) calc(28px + env(safe-area-inset-left))}.dashboard-grid{display:grid;gap:10px}h1{font-size:28px;line-height:1.1;margin:0 0 18px}.card,.technical-details{background:#24242d;border-left:3px solid #c7a6ff;border-radius:14px;padding:14px;box-shadow:0 4px 18px #0005}.card p{margin:7px 0}.card--operation{background:#2a2530;border-left:3px solid #c7a6ff}.card--monitoring{background:#202b34;border-left:3px solid #65c5d9}.card--context{background:#28263a;border-left:3px solid #a78bfa}.card--resource{background:#20332f;border-left:3px solid #54d6a0}.card--evidence{background:#202a36;border-left:3px solid #8dc7ff}.card--diagnostic,.technical-details--diagnostic{background:#302a24;border-left:3px solid #f0b66a}.card--conversation{background:#292336;border-left:3px solid #d0a4ff}.current-run{background:#1d1d25;border:1px solid #3d3651;border-left:3px solid #c7a6ff;border-radius:18px;padding:14px;box-shadow:0 5px 24px #0006}.current-run__title{border-bottom:1px solid #3d3651;padding:2px 2px 13px}.current-run__title h2{font-size:18px;line-height:1.25;margin:3px 0 0}.current-run__grid{display:grid;gap:10px;margin-top:10px}.current-run .card{box-shadow:none}.field{margin:8px 0 0}.label{display:block;color:#c7a6ff;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:2px}.estimate-primary{font-size:18px;font-weight:650;margin:8px 0 0}.estimate-meta{color:#b9b6c0;font-size:12px;line-height:1.35;margin:6px 0 0}.final-status{align-items:center;display:flex;gap:7px;margin:0 0 8px}.final-status .label{margin-bottom:0}.indicator--small{height:9px;width:9px}.footer{color:#b9b6c0;font-size:12px;margin:14px 0 4px;text-align:center}.copy,.chat-send{background:#353541;color:#f7f3ee;border:1px solid #57576a;border-radius:8px;padding:6px 9px;font:13px system-ui}.copy{float:right}.technical-details{cursor:pointer}.technical-details summary{list-style:none}.technical-details summary::-webkit-details-marker{display:none}.technical-details summary::before{content:"▸ ";color:#c7a6ff;display:inline-block;font-size:20px;line-height:1;vertical-align:-2px}.technical-details[open] summary::before{content:"▾ "}.technical-grid{display:grid;gap:10px;margin-top:12px}.codex-chat{grid-column:1 / -1}.chat-messages{display:grid;gap:9px;max-height:420px;overflow:auto;margin:12px 0;padding:2px}.chat-message{border-radius:9px;font-family:"Unispace",ui-monospace,monospace;max-width:min(880px,92%);padding:9px 10px;white-space:pre-wrap}.chat-message--user{background:#353541;justify-self:end}.chat-message--assistant{background:#202a36;border:1px solid #37506a;justify-self:start}.chat-message__role{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:4px;text-transform:uppercase}.chat-message--user .chat-message__role{color:#c7a6ff}.chat-message--assistant .chat-message__role{color:#8dc7ff}.chat-message__body{line-height:1.4}.chat-input{box-sizing:border-box;width:100%;min-height:110px;border:1px solid #57576a;border-radius:8px;background:#18181f;color:#f7f3ee;padding:8px;font:13px "Unispace",ui-monospace,monospace}.chat-status{color:#b9b6c0;font-size:12px}
 strong{color:#c7a6ff}.status{display:flex;align-items:center;gap:8px}.queue-list{display:grid;gap:7px;list-style:none;margin:10px 0 0;padding:0;padding-inline-start:0}.queue-item{align-items:start;border-top:1px solid #3d3651;display:grid;gap:6px;grid-template-columns:1.25rem minmax(0,1fr);padding-left:0;padding-top:7px}.queue-item:first-child{border-top:0;padding-top:0}.queue-item__number{color:var(--category-color);font:700 12px ui-monospace,monospace;padding-top:1px;text-align:left}.queue-item__title{display:block;font-weight:600}.queue-item__meta{color:#b9b6c0;font:12px ui-monospace,monospace;margin-top:2px}.queue-empty{color:#b9b6c0;font-size:12px}.indicator{width:12px;height:12px;border-radius:50%;background:#9a9aa3;box-shadow:0 0 8px #9a9aa388;flex:none}.indicator--green{background:#51d88a;box-shadow:0 0 8px #51d88a88}.indicator--yellow{background:#f4d35e;box-shadow:0 0 8px #f4d35e88}.indicator--orange{background:#ff9f43;box-shadow:0 0 8px #ff9f4388}.indicator--red{background:#ff6b6b;box-shadow:0 0 8px #ff6b6b88}.indicator--running{background:transparent;border:3px solid #ff6b6b;border-right-color:transparent;box-sizing:border-box;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
@@ -58,8 +64,9 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 #componentLogs{position:relative}#componentLogs>summary{padding-right:150px}#loadComponentLogs{position:absolute;right:14px;top:14px}#componentLogs .log-card-header strong{color:var(--category-color)}#componentLogs .log-table-wrap{border-color:color-mix(in srgb,var(--category-color) 55%,#3d3651)}#componentLogs .log-table th,#componentLogs .log-table td{border-bottom-color:color-mix(in srgb,var(--category-color) 30%,#3d3651)}.technical-details>summary>strong,.codex-chat>summary>strong{font-size:18px;line-height:1.25}.card>strong,.card>summary,.technical-details>summary{display:block;padding-bottom:10px}.dashboard-grid>#componentLogs,.dashboard-grid>#codexChat,.dashboard-grid>.technical-details:not(#componentLogs){margin-top:8px}.footer{align-items:baseline;display:flex;gap:6px;justify-content:center;overflow-x:auto;white-space:nowrap}.footer .label{display:inline;margin:0}.technical-details>summary>strong,.codex-chat>summary>strong{font-size:18px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.dashboard-grid>#componentLogs>summary::before,.dashboard-grid>#codexChat>summary::before,.dashboard-grid>.technical-details:not(#componentLogs)>summary::before{font-size:24px;padding-right:8px}#engineering-dashboard-content>.technical-details:not(#componentLogs){--category-color:#65c5d9;background:#202b34;border-left-color:#65c5d9}.footer .label{color:#65c5d9}#rateLimits{cursor:pointer}#rateLimits>summary{cursor:pointer;list-style:none}#rateLimits>summary::-webkit-details-marker{display:none}#rateLimits>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}#rateLimits[open]>summary::before{content:"▾ "}#rateLimits>summary>strong{font-size:18px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}#engineering-dashboard-content>.technical-details:not(#componentLogs) .card,#componentLogs .card,.current-run .card{border:1px solid var(--category-color);border-left:3px solid var(--category-color)}.workspace-card{margin-bottom:16px;cursor:pointer}.workspace-card>summary{cursor:pointer;list-style:none}.workspace-card>summary::-webkit-details-marker{display:none}.workspace-card>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.workspace-card[open]>summary::before{content:"▾ "}.workspace-card>summary>strong{font-size:18px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.dashboard-grid{gap:16px}.dashboard-grid>#componentLogs,.dashboard-grid>#codexChat,.dashboard-grid>.technical-details:not(#componentLogs){margin-top:0}
 .workspace-card,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs),.telemetry,.platform-health,.current-run{box-shadow:0 10px 28px rgb(15 23 42 / .18),0 3px 9px rgb(15 23 42 / .12)}
 .workspace-branch-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.workspace-branch-cleanup,.workspace-branch-main{background:#3c351f;border:1px solid var(--category-color);border-radius:8px;color:#ffe7a0;cursor:pointer;font:600 13px system-ui;padding:9px 12px}.workspace-branch-cleanup::before{content:"⌕"}.workspace-branch-main::before{content:"⇄"}.workspace-branch-cleanup::before,.workspace-branch-main::before{font-size:16px;font-weight:800;line-height:0;margin-right:7px;vertical-align:-1px}.workspace-branch-cleanup:hover:not(:disabled),.workspace-branch-main:hover:not(:disabled){background:var(--category-color);color:#2a2415}.workspace-branch-cleanup:disabled,.workspace-branch-main:disabled{cursor:wait;opacity:.7}.workspace-branch-cleanup__spinner{animation:spin .8s linear infinite;border:2px solid color-mix(in srgb,var(--modal-accent) 32%,transparent);border-radius:50%;border-top-color:var(--modal-accent);display:inline-block;height:16px;margin-top:14px;width:16px}.workspace-branch-cleanup__preview-list,.workspace-branch-cleanup__result-list{border-top:1px solid color-mix(in srgb,var(--modal-accent) 40%,transparent);margin:14px 0 0;padding:12px 0 0 24px}.workspace-branch-cleanup__preview-list{display:grid;gap:8px;max-height:min(42vh,320px);overflow:auto;overscroll-behavior:contain;padding-right:8px}.workspace-branch-cleanup__preview-list li{display:grid;gap:3px;overflow-wrap:anywhere}.workspace-branch-cleanup__preview-list code{color:var(--modal-secondary-accent);font:600 12px ui-monospace,monospace}.workspace-branch-cleanup__preview-list span{color:var(--dashboard-modal-muted);font-size:13px;line-height:1.35}.workspace-branch-cleanup__preview-list a{color:var(--modal-accent);font-size:13px;font-weight:700;text-decoration-thickness:1px;text-underline-offset:3px;width:max-content}.workspace-branch-cleanup__preview-list a:hover{color:var(--modal-secondary-accent)}.workspace-branch-cleanup__result-list li{overflow-wrap:anywhere;padding:2px 0}html[data-theme="light"] .workspace-branch-cleanup,html[data-theme="light"] .workspace-branch-main{background:#fff8dc;border-color:var(--category-color);color:#725311}
-#currentRun .reviewer-agents{grid-column:1/-1}.reviewer-agents__list{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));margin-top:10px}.reviewer-agent{background:#202b34;border:1px solid var(--category-color);border-left-width:1px;border-radius:8px;min-width:0;padding:10px}.reviewer-agent__header{align-items:center;display:flex;gap:8px;justify-content:space-between}.reviewer-agent__name{color:var(--category-color);font-weight:700;margin:0 0 4px;overflow-wrap:anywhere}.reviewer-agent__status{align-items:center;border-radius:50%;display:inline-flex;flex:0 0 auto;justify-content:center}.reviewer-agent__status--running{border:2px solid color-mix(in srgb,var(--category-color) 34%,transparent);border-top-color:var(--category-color);height:14px;width:14px;animation:spin .8s linear infinite}.reviewer-agent__status--completed{background:#51d88a;color:#11261d;font:800 11px/1 system-ui;height:16px;width:16px;box-shadow:0 0 8px #51d88a66}.reviewer-agent__meta{color:#d3d0d8;font-size:13px;line-height:1.4;margin:0;overflow-wrap:anywhere}.reviewer-agent__meta+.reviewer-agent__meta{margin-top:3px}.workspace-open-prs{background:color-mix(in srgb,var(--category-color) 10%,#202027);border:1px solid color-mix(in srgb,var(--category-color) 48%,transparent);border-radius:10px;margin-top:12px;padding:10px}.workspace-open-prs>strong{color:var(--category-color);display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase}.workspace-open-prs ul{display:grid;gap:8px;list-style:none;margin:8px 0 0;padding:0}.workspace-open-prs li{display:grid;gap:3px;min-width:0}.workspace-open-prs a{color:#ffe7a0;font-weight:700;overflow-wrap:anywhere;text-underline-offset:3px}.workspace-open-prs code{color:var(--modal-secondary-accent);font-size:12px;overflow-wrap:anywhere}
-.telemetry{--category-color:#fb7185;background:#351f2a;border:1px solid var(--category-color);border-left-width:3px;border-radius:18px;box-shadow:0 5px 24px #0006;cursor:pointer;padding:14px}.telemetry>summary{border-bottom:1px solid var(--category-color);cursor:pointer;display:block;list-style:none;margin-bottom:12px;padding:2px 2px 13px}.telemetry>summary::-webkit-details-marker{display:none}.telemetry>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.telemetry[open]>summary::before{content:"▾ "}.telemetry>summary>strong{color:var(--category-color);font-size:17px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.telemetry .category-description{color:#d8c3ca;font-size:14px;line-height:1.4;margin:12px 0}.telemetry-table{border-collapse:collapse;font-size:13px;width:100%}.telemetry-table th,.telemetry-table td{border-bottom:1px solid #fb718555;padding:7px;text-align:left;white-space:nowrap}.telemetry-table th{color:var(--category-color)}.telemetry-scroll{overflow-x:auto}.telemetry-empty{color:#b9b6c0;margin:0}
+.workspace-database__content{align-items:start;display:flex;gap:10px;justify-content:space-between;min-width:0}.workspace-database__content pre{min-width:0}.workspace-database__download{flex:0 0 auto;position:static;text-decoration:none}@media(max-width:560px){.workspace-database__content{align-items:flex-start;flex-direction:column}.workspace-database__download{align-self:flex-end}}
+#currentRun .reviewer-agents{grid-column:1/-1}.reviewer-agents__list{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));margin-top:10px}.reviewer-agent{background:#202b34;border:1px solid var(--category-color);border-left-width:1px;border-radius:8px;min-width:0;padding:10px}.reviewer-agent__header{align-items:center;display:flex;gap:8px;justify-content:space-between}.reviewer-agent__name{color:var(--category-color);font-weight:700;margin:0 0 4px;overflow-wrap:anywhere}.reviewer-agent__status{align-items:center;border-radius:50%;display:inline-flex;flex:0 0 auto;justify-content:center}.reviewer-agent__status--running{border:2px solid color-mix(in srgb,var(--category-color) 34%,transparent);border-top-color:var(--category-color);height:14px;width:14px;animation:spin .8s linear infinite}.reviewer-agent__status--completed{background:#51d88a;color:#11261d;font:800 11px/1 system-ui;height:16px;width:16px;box-shadow:0 0 8px #51d88a66}.reviewer-agent__meta{color:#d3d0d8;font-size:13px;line-height:1.4;margin:0;overflow-wrap:anywhere}.reviewer-agent__meta+.reviewer-agent__meta{margin-top:3px}.workspace-open-prs{background:color-mix(in srgb,var(--category-color) 10%,#202027);border:1px solid color-mix(in srgb,var(--category-color) 48%,transparent);border-radius:10px;margin-top:12px;padding:10px}.workspace-open-prs>strong{color:var(--category-color);display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase}.workspace-open-prs ul{display:grid;gap:8px;list-style:none;margin:8px 0 0;padding:0}.workspace-open-prs li{display:grid;gap:3px;min-width:0}.workspace-open-prs a{color:#ffe7a0;font-weight:700;overflow-wrap:anywhere;text-underline-offset:3px}.workspace-open-prs code{color:var(--modal-secondary-accent);font-size:12px;overflow-wrap:anywhere}.open-pr-owner-authorization{align-self:start;background:#1c5b42;border:1px solid #54d6a0;border-radius:7px;color:#f1fff7;cursor:pointer;font:400 12px/1.2 system-ui;min-height:30px;padding:6px 9px;width:max-content}.open-pr-owner-authorization:hover:not(:disabled){background:#54d6a0;color:#112a20}.open-pr-owner-authorization:focus-visible{outline:2px solid #54d6a0;outline-offset:2px}.open-pr-owner-authorization:disabled{cursor:wait;opacity:.65}
+.telemetry{--category-color:#fb7185;background:#351f2a;border:1px solid var(--category-color);border-left-width:3px;border-radius:18px;box-shadow:0 5px 24px #0006;cursor:pointer;padding:14px}.telemetry>summary{border-bottom:1px solid var(--category-color);cursor:pointer;display:block;list-style:none;margin-bottom:12px;padding:2px 2px 13px}.telemetry>summary::-webkit-details-marker{display:none}.telemetry>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.telemetry[open]>summary::before{content:"▾ "}.telemetry>summary>strong{color:var(--category-color);font-size:17px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.telemetry .category-description{color:#d8c3ca;font-size:14px;line-height:1.4;margin:12px 0}.telemetry-table{border-collapse:collapse;font:12px ui-monospace,monospace;width:100%}.telemetry-table th,.telemetry-table td{border-bottom:1px solid #fb718555;padding:7px;text-align:left;white-space:nowrap}.telemetry-table th{color:var(--category-color)}.telemetry-scroll{overflow-x:auto}.telemetry-empty{color:#b9b6c0;margin:0}
 .platform-health{--category-color:#a3e635;background:#29331d;border:1px solid var(--category-color);border-left-width:3px;border-radius:18px;box-shadow:0 5px 24px #0006;cursor:pointer;padding:14px}.platform-health>summary{border-bottom:1px solid var(--category-color);cursor:pointer;display:block;list-style:none;margin-bottom:12px;padding:2px 2px 13px}.platform-health>summary::-webkit-details-marker{display:none}.platform-health>summary::before{color:var(--category-color);content:"▸ ";display:inline-block;font-size:24px;line-height:1;padding-right:8px;vertical-align:-2px}.platform-health[open]>summary::before{content:"▾ "}.platform-health>summary>strong{color:var(--category-color);font-size:17px;font-weight:700;letter-spacing:.04em;line-height:1.25;text-transform:uppercase}.platform-health .category-description{color:#d4ddc7;font-size:14px;line-height:1.4;margin:12px 0}.platform-health__summary{color:#d4ddc7;font-size:12px;margin-left:8px}.platform-health__components{display:grid;gap:8px}.platform-health__component{align-items:center;background:#1e2518;border:1px solid color-mix(in srgb,var(--category-color) 64%,transparent);border-radius:9px;column-gap:10px;display:grid;grid-template-columns:auto 1fr;padding:9px 10px;row-gap:3px}.platform-health__component .indicator{grid-row:span 2}.platform-health__component-name{color:var(--category-color);font-weight:700}.platform-health__component-detail{color:#d4ddc7;font-size:12px;grid-column:2;line-height:1.35}.platform-health__empty{color:#d4ddc7;margin:0}.platform-health__component[data-health="false"]{--category-color:#ff8585;background:#351f24}
 #codexChat .chat-input,#codexChat .chat-send{border-color:#d0a4ff}
 #codexChat .codex-chat__details{position:relative}#codexChat .codex-chat__details>.estimate-meta{padding-right:52px}
@@ -91,6 +98,8 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 .queue-blocker--error{align-items:center;background:#4a202b;border:1px solid #ff718f;border-radius:10px;color:#ffe9ef;display:flex;gap:12px;justify-content:space-between;margin:0 0 14px;padding:10px 12px}.queue-blocker--error p{color:inherit;font-size:13px;line-height:1.4;margin:0}.queue-blocker__repair{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;flex:none;font:13px system-ui;min-height:32px;padding:8px 10px}.queue-blocker__repair:hover:not(:disabled){background:#543721;color:#fff0dc}.queue-blocker__repair:disabled{cursor:wait;opacity:.7}html[data-theme="light"] .queue-blocker--error{background:#fff0f4;color:#8c243b}html[data-theme="light"] .queue-blocker__repair{background:#fff8ef;border-color:#d68b23;color:#643a13}html[data-theme="light"] .queue-blocker__repair:hover:not(:disabled){background:#fff0dc;color:#643a13}
 .workspace-card,#rateLimits,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs){border:1px solid var(--category-color);border-left-width:3px}
 .rate-limit-reset{background:#173c31;border:1px solid #54d6a0;border-radius:8px;color:#d9fff0;font:13px system-ui;margin-top:12px;padding:8px 10px}.rate-limit-reset:disabled{cursor:wait;opacity:.7}.rate-limit-reset-status{color:#b9b6c0;font-size:12px;margin:8px 0 0}
+.rate-limit-update-status{color:#b9b6c0;font-size:12px;margin:8px 0 0}
+.rate-limit-provider-path code{display:block;overflow-wrap:anywhere;white-space:pre-wrap}
 .predecessor-retry{background:#3b281b;border:1px solid #f0b66a;border-radius:8px;color:#fff0dc;font:13px system-ui;margin-top:12px;padding:8px 10px}.predecessor-retry:hover:not(:disabled){background:#543721}.predecessor-retry:disabled{cursor:wait;opacity:.7}.predecessor-retry-status{color:#d6c5a8;font-size:12px;margin:8px 0 0}
 .estimate-primary{font-size:inherit}#executionEstimateMeta{white-space:pre-line}
 .workspace-card>summary>strong,#rateLimits>summary>strong,#componentLogs>summary>strong,#codexChat>summary>strong,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary>strong{font-size:17px;line-height:1.25}.workspace-card>summary,#rateLimits>summary,#componentLogs>summary,#codexChat>summary,#engineering-dashboard-content>.technical-details:not(#componentLogs)>summary{margin-bottom:8px;padding-bottom:10px}
@@ -101,7 +110,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;font:12px ui-monos
 .log-card-header{align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:10px}.log-card-actions{align-items:center;display:flex;gap:8px}.log-card-actions .dashboard-action{position:static}.clear-component-log:disabled{cursor:wait;opacity:.7}
 .copy.copy--glyph:hover,.download.download--glyph:hover,.prompt-history-report:hover,.prompt-history-analysis:hover,.report-view-modal__close:hover{background:var(--category-color);color:#17151a}
 button:not(.theme-toggle):not(.section-state-toggle):hover:not(:disabled){background:var(--category-color,var(--house-style));color:#17151a}
-.log-pagination{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin-top:10px;min-height:32px}.log-pagination__summary{color:#d6c5a8;font-size:12px;margin-right:auto}.log-pagination button{background:#33281d;border:1px solid var(--category-color);border-radius:7px;color:#fff0dc;font:12px system-ui;min-height:32px;padding:5px 9px}.log-pagination button:disabled{cursor:not-allowed;opacity:.45}
+.dashboard-grid :is(button,input,select,textarea,[tabindex]){scroll-margin-top:220px}.log-pagination{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin-top:10px;min-height:32px}.log-pagination__summary{color:#d6c5a8;font-size:12px;margin-right:auto}.log-pagination button{background:#33281d;border:1px solid var(--category-color);border-radius:7px;color:#fff0dc;font:12px system-ui;min-height:32px;padding:5px 9px}.log-pagination button:disabled{cursor:not-allowed;opacity:.45}
 #pullRefresh{align-items:center;background:var(--house-style-surface);border:1px solid var(--house-style);border-radius:999px;box-shadow:0 8px 24px #0009;color:var(--house-style-contrast);display:flex;font:13px system-ui;gap:8px;left:50%;opacity:0;padding:8px 13px;pointer-events:none;position:fixed;top:10px;transform:translate(-50%,-80px);transition:opacity .15s ease,transform .15s ease;z-index:20}#pullRefresh.pull-refresh--visible{opacity:1;transform:translate(-50%,0)}#pullRefresh::before{content:"↓";font-size:18px;line-height:1}@media (prefers-reduced-motion:reduce){#pullRefresh{transition:none}}
 #dashboardSplash{align-items:center;background:#101015;display:flex;inset:0;justify-content:center;padding:24px;position:fixed;text-align:center;transition:opacity .25s ease,visibility .25s ease;z-index:100}#dashboardSplash[hidden]{display:none}body.dashboard-ready #dashboardSplash{opacity:0;pointer-events:none;visibility:hidden}.dashboard-splash__content{align-items:center;display:flex;flex-direction:column;gap:12px;max-width:360px}.dashboard-splash__title{color:#f7f3ee;font:700 clamp(28px,8vw,42px)/1.1 system-ui;margin:0}.dashboard-splash__version{color:#b79aff;font:600 14px/1.3 system-ui;letter-spacing:.04em;text-transform:uppercase}.dashboard-splash__loading{color:#c8c4cc;font:14px system-ui}.dashboard-splash__spinner{animation:dashboard-splash-spin .85s linear infinite;border:3px solid #332a44;border-radius:50%;border-top-color:#b79aff;height:34px;width:34px}@keyframes dashboard-splash-spin{to{transform:rotate(360deg)}}
 .dashboard-splash__icon{border-radius:18px;display:block;height:72px;width:72px}
@@ -123,7 +132,15 @@ body{overflow-x:hidden}.dashboard-grid,.dashboard-grid>*{min-width:0}.telemetry,
   #promptHistory .log-table th:nth-child(7),#promptHistory .log-table td:nth-child(7){width:24rem}
   #promptHistory .log-table th:nth-child(2),#promptHistory .log-table td:nth-child(2){overflow-wrap:anywhere;white-space:normal;width:auto}
 }
-@media (max-width:620px){#promptHistory .log-table{min-width:1080px;table-layout:auto;width:max-content}}
+.history-scroll-hint{display:none}@media (max-width:620px){#promptHistory .log-table{min-width:1080px;table-layout:auto;width:max-content}.history-scroll-hint{align-items:center;color:#dfc3ce;display:flex;font-size:12px;gap:6px;margin:10px 0 0}.history-scroll-hint::before{content:"↔";font-size:16px;line-height:1}#promptHistory .log-table th:first-child,#promptHistory .log-table td:first-child{left:0;position:sticky}#promptHistory .log-table th:first-child{background:#36232d;z-index:3}#promptHistory .log-table td:first-child{background:#36232d;box-shadow:2px 0 8px #1a0f14b3;z-index:1}#promptHistory .prompt-history-row:hover>td:first-child{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)!important}html[data-theme="light"] .history-scroll-hint{color:#7d4057}html[data-theme="light"] #promptHistory .log-table th:first-child{background:#fff1f5}html[data-theme="light"] #promptHistory .log-table td:first-child{background:#fff1f5;box-shadow:2px 0 8px #6f345a2e}}
+/* Run IDs are the stable rose anchor of history rows at every table width.
+   They must not inherit the neutral or alternating row surface on wide screens. */
+#promptHistory .log-table th:first-child{background:#36232d}
+#promptHistory .log-table td:first-child{background:#36232d}
+/* A sticky cell needs an opaque surface while its row is hovered; transparent
+   colour mixing otherwise lets scrolled columns show through the Run-ID. */
+@media (max-width:620px){#promptHistory .prompt-history-row:hover>td:first-child{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))!important}}
+html[data-theme="light"] #promptHistory .log-table th:first-child,html[data-theme="light"] #promptHistory .log-table td:first-child{background:#fff1f5}
 @media (min-width:621px) and (max-width:1024px){#promptHistory .log-table{min-width:1120px;table-layout:auto;width:max-content}#promptHistory .log-table th:nth-child(3),#promptHistory .log-table td:nth-child(3){min-width:19rem;overflow-wrap:normal;white-space:normal}}
 /* A Run-ID column adds a ninth field.  Keep all operational columns at their
    natural readable widths on laptops and use the existing table scroller
@@ -146,7 +163,7 @@ html[data-theme="light"] .reviewer-agent__name,html[data-theme="light"] #current
 /* Reviewer cards are generated inside the active prompt and must retain the
    explicit cyan heading even when a broad light-surface text rule applies. */
 html[data-theme="light"] #activeReviewerAgents .reviewer-agent__name{color:var(--active-execution-label-ink,#187884)!important}
-.dashboard-locale{align-items:center;color:#b9b6c0;display:flex;font:12px system-ui;gap:6px;white-space:nowrap}.dashboard-locale select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}html[data-theme="light"] .dashboard-locale{color:#415168}html[data-theme="light"] .dashboard-locale select{background:#fff;border-color:#9aabc3}@media (max-width:620px){.dashboard-locale span{display:none}}
+.dashboard-locale{align-items:center;color:#b9b6c0;display:flex;font:12px system-ui;gap:6px;white-space:nowrap}.dashboard-locale select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}html[data-theme="light"] .dashboard-locale{color:#415168}html[data-theme="light"] .dashboard-locale select{background:#fff;border-color:#9aabc3}@media (max-width:620px){.dashboard-locale>span:first-child{display:none}}
 .theme-toggle{align-items:center;background:transparent;border:0;color:#b9b6c0;cursor:pointer;display:flex;font:12px system-ui;gap:7px;margin:0;min-height:44px;min-width:44px;padding:0;position:relative}.theme-toggle::before{background:#4a4a55;border-radius:999px;content:"";height:24px;transition:background .18s ease;width:42px}.theme-toggle::after{background:#f7f3ee;border-radius:50%;box-shadow:0 1px 3px #0008;content:"☀";font-size:12px;height:18px;left:3px;line-height:18px;position:absolute;text-align:center;top:13px;transform:translateX(0);transition:transform .18s ease;width:18px}.theme-toggle[aria-checked="true"]::before{background:#f0b66a}.theme-toggle[aria-checked="true"]::after{content:"☾";transform:translateX(18px)}.theme-toggle:focus-visible{box-shadow:none;outline:2px solid #8dc7ff;outline-offset:3px}html[data-theme="light"] .theme-toggle{color:#415168}html[data-theme="light"] .theme-toggle::before{background:#f0b66a}@media (max-width:620px){.theme-toggle__label{display:none}}
 :where(button,input,select,textarea,summary,[role="button"],[tabindex]):focus-visible{outline:3px solid var(--category-color,#8dc7ff);outline-offset:3px;box-shadow:0 0 0 6px color-mix(in srgb,var(--category-color,#8dc7ff) 24%,transparent)}
 html[data-theme="light"] .rate-limit-reset{background:#e8fff5;border-color:#259b70;color:#145a42}html[data-theme="light"] .rate-limit-reset:hover{background:#d6f8e8}html[data-theme="light"] :where(button,input,select,textarea,summary,[role="button"],[tabindex]):focus-visible{box-shadow:0 0 0 5px color-mix(in srgb,var(--category-color,#8dc7ff) 24%,transparent)}
@@ -169,7 +186,7 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 .download.download--glyph::before{content:"↓";font:700 21px/1 system-ui}.download.download--glyph::after{content:none}.markdown-copy-wrap .download.download--glyph{align-items:center;justify-content:center;line-height:1}
 .footer .label{color:var(--house-style)}
 #action{font-style:italic}
-.configuration-field .label{align-items:center;display:flex;gap:6px}.configuration-info{align-items:center;border:1px solid currentColor;border-radius:50%;cursor:help;display:inline-flex;font:700 11px/1 system-ui;height:15px;justify-content:center;position:relative;text-transform:none;width:15px}.configuration-info::after{background:#161c27;border:1px solid var(--category-color);border-radius:7px;color:#f7f3ee;content:attr(aria-label);display:none;font:12px/1.35 system-ui;left:22px;min-width:210px;padding:8px;position:absolute;text-transform:none;top:50%;transform:translateY(-50%);width:min(280px,calc(100vw - 80px));z-index:20}.configuration-info:hover::after,.configuration-info:focus-visible::after{display:block}.configuration-info:focus-visible{outline:2px solid var(--category-color);outline-offset:2px}html[data-theme="light"] .configuration-info::after{background:#fff;color:#182230}
+.configuration-field .label{align-items:center;display:flex;gap:6px}.configuration-info{align-items:center;border:1px solid currentColor;border-radius:50%;cursor:help;display:inline-flex;font:700 11px/1 system-ui;height:15px;justify-content:center;position:relative;text-transform:none;width:15px}.configuration-info::after{background:#161c27;border:1px solid var(--category-color);border-radius:7px;box-sizing:border-box;color:#f7f3ee;content:attr(aria-label);display:none;font:12px/1.35 system-ui;left:22px;min-width:210px;padding:8px;position:absolute;text-transform:none;top:50%;transform:translateY(-50%);width:min(280px,calc(100vw - 80px));z-index:20}.configuration-info:hover::after,.configuration-info:focus-visible::after{display:block}.configuration-info:focus-visible{outline:2px solid var(--category-color);outline-offset:2px}html[data-theme="light"] .configuration-info::after{background:#fff;color:#182230}@media (max-width:620px){.configuration-info[data-tooltip-side]::after{min-width:0;width:var(--configuration-tooltip-width,280px)}.configuration-info[data-tooltip-side="left"]::after{left:auto;right:22px}.configuration-info[data-tooltip-side="right"]::after{left:22px;right:auto}}
 /* Product controls share the house style rather than individual category colours. */
 .theme-toggle[aria-checked="true"]::before,.section-state-toggle[aria-checked="true"]::before,.auto-refresh-toggle input:checked{background:var(--house-style)}.theme-toggle:focus-visible,.section-state-toggle:focus-visible{outline-color:var(--house-style);box-shadow:0 0 0 5px var(--house-style-focus)}.rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}.rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}html[data-theme="light"] .rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}html[data-theme="light"] .rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}
 /* Component cards use symmetric vertical padding; the info action belongs at the card centre. */
@@ -198,7 +215,7 @@ html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68
 
 /* Shared action controls. */
 .dashboard-grid button:not(.component-modal__close):not(.report-view-modal__close):hover{background:var(--category-color,var(--button-fill,#8dc7ff));border-color:var(--category-color,var(--button-fill,#8dc7ff));color:var(--button-ink)}
-#rateLimitReset{--button-fill:#51d88a;background:#1f5b42;border-color:#51d88a;color:#effff5}
+#rateLimitReset,#codexCliUpdate{--button-fill:#51d88a;background:#1f5b42;border-color:#51d88a;color:#effff5}
 
 /* Advisory-chat controls. */
 .chat-actions{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin:0 0 18px;min-height:44px;padding-top:12px}
@@ -211,17 +228,17 @@ html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68
 .dashboard-titlebar{border-radius:0}
 
 /* The dashboard chrome remains visible while its workspace and categories scroll. */
-body{box-sizing:border-box;display:flex;flex-direction:column;height:100vh;height:100lvh;min-height:100dvh;overflow:hidden}
+body{box-sizing:border-box;display:flex;flex-direction:column;height:100vh;height:100dvh;min-height:100dvh;overflow:hidden}
 html:has(body.dashboard-modal-open){overflow:hidden}
 body.dashboard-modal-open{left:0;overflow:hidden!important;position:fixed;right:0;top:var(--dashboard-modal-scroll-top,0);width:100%}
-.dashboard-titlebar{flex:none;position:sticky}
+.dashboard-sticky-header{align-self:start;background:#121217;flex:none;position:sticky;top:0;width:100%;z-index:15}.dashboard-sticky-header:has(:is(#codexUsageLimitBanner,#githubRateLimitBanner):not([hidden])){padding-bottom:7px}.dashboard-titlebar{flex:none;position:relative;z-index:auto}.dashboard-sticky-header .dashboard-status-banner{position:relative;top:auto;z-index:auto}@media (min-width:621px) and (max-width:1400px){.dashboard-sticky-header{z-index:30}}html[data-theme="light"] .dashboard-sticky-header{background:#e8edf4}
 .dashboard-scroll-region{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 4px}
 .footer{background:#121217;flex:none;margin:14px 0 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));position:relative;z-index:15}
 html[data-theme="light"] .footer{background:#f4f7fb}
 html[data-theme="light"] body,html[data-theme="light"] .dashboard-titlebar,html[data-theme="light"] .footer{background:#e8edf4}
 
 /* Keep the reset action light in the light theme while preserving its green affordance. */
-html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
+html[data-theme="light"] :is(#rateLimitReset,#codexCliUpdate){background:#e8fff5;color:#145a42}
 
 /* The advisory conversation's send action always fills with its purple category. */
 .chat-compose .chat-send:hover:not(:disabled){background:#d0a4ff!important;border-color:#d0a4ff!important;color:#17151a!important}
@@ -258,7 +275,7 @@ html[data-theme="light"] #rateLimitReset{background:#e8fff5;color:#145a42}
 .report-view-modal,.report-view-modal__panel{box-sizing:border-box;max-height:min(90vh,calc(100dvh - 36px))}.report-view-modal{overflow:hidden}.report-view-modal__panel{overflow:auto}
 
 /* Reset consumption is available only intentionally; its hover state must remain unmistakable. */
-#rateLimitReset:hover:not(:disabled){background:#51d88a!important;border-color:#51d88a!important;color:#112a20!important}
+:is(#rateLimitReset,#codexCliUpdate):hover:not(:disabled){background:#51d88a!important;border-color:#51d88a!important;color:#112a20!important}
 
 /* Report disclosures use the same right-aligned affordance as the main categories. */
 
@@ -336,6 +353,7 @@ html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#e
 
 /* Account limits are readable status copy, not diagnostic output. */
 #rateLimitDetails{font:14px/1.4 system-ui}
+.rate-limit-trend{--rate-limit-trend-label:#f7f3ee;border-top:1px solid color-mix(in srgb,var(--category-color,#54d6a0) 34%,transparent);margin-top:14px;padding-top:14px}.rate-limit-trend__title{color:var(--category-color,#54d6a0);font-size:11px;font-weight:700;letter-spacing:.04em;margin:0 0 3px;text-transform:uppercase}.rate-limit-trend__description{color:var(--dashboard-modal-muted);font-size:12px;line-height:1.45;margin:0}.rate-limit-trend__chart{margin-top:8px;max-width:38rem}.rate-limit-trend__chart svg{display:block;height:auto;width:100%}.rate-limit-trend__grid{stroke:rgb(148 163 184 / .32);stroke-width:1}.rate-limit-trend__line{fill:none;stroke:#48cf99;stroke-linecap:round;stroke-linejoin:round;stroke-width:2}.rate-limit-trend__point{fill:var(--dashboard-surface-base);stroke:#48cf99;stroke-width:1.5}.rate-limit-trend__axis-label{fill:var(--rate-limit-trend-label);font:7px system-ui}html[data-theme="light"] .rate-limit-trend{--rate-limit-trend-label:#182230}html[data-theme="light"] .rate-limit-trend__grid{stroke:rgb(100 116 139 / .24)}
 
 /* The splash spinner belongs to the generic Engineering Platform house style. */
 .dashboard-splash__spinner{border-color:#5a4325;border-top-color:#f0b66a}
@@ -359,17 +377,19 @@ html[data-theme="light"] .report-view-modal__content :is(pre,code){background:#e
 .dashboard-titlebar__brand{align-items:center;display:flex;flex:1 1 260px;gap:10px;min-width:0}
 .dashboard-titlebar__actions{align-items:center;display:flex;flex:none;gap:12px}
 .page-refresh{align-items:center;background:transparent;border:1px solid var(--house-style);border-radius:50%;color:var(--house-style);cursor:pointer;display:inline-flex;font:22px/1 system-ui;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;width:32px}.page-refresh:hover{background:var(--house-style);color:var(--button-ink)}.page-refresh:focus-visible{outline:3px solid var(--house-style);outline-offset:3px}
-.dashboard-locale{align-items:center;color:#b9b6c0;display:flex;font:12px system-ui;gap:6px;white-space:nowrap}
-.dashboard-locale select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}
-.dashboard-locale__native{height:1px!important;margin:-1px!important;opacity:0!important;pointer-events:none!important;position:absolute!important;width:1px!important}
-.dashboard-locale__picker{position:relative}.dashboard-locale__button{align-items:center;background:#fff;border:1px solid #9aabc3;border-radius:7px;color:#1b2b38;cursor:pointer;display:flex;font:inherit;gap:14px;justify-content:space-between;min-height:32px;min-width:132px;padding:4px 10px}.dashboard-locale__button:focus-visible{outline:3px solid var(--house-style);outline-offset:3px}.dashboard-locale__menu{background:#fff;border:1px solid #9aabc3;border-radius:0 0 7px 7px;box-shadow:0 8px 18px #0003;display:grid;left:0;min-width:100%;overflow:hidden;position:absolute;top:calc(100% + 2px);z-index:20}.dashboard-locale__menu[hidden]{display:none}.dashboard-locale__menu button{background:#fff;border:0;color:#1b2b38;cursor:pointer;font:inherit;padding:8px 10px;text-align:left}.dashboard-locale__menu button[aria-selected="true"]{background:var(--house-style);color:var(--button-ink)}.dashboard-locale__menu button:hover,.dashboard-locale__menu button:focus-visible{background:var(--operations-console-mark-blue);color:var(--button-ink);outline:0}
+.dashboard-locale,.dashboard-project{align-items:center;color:#b9b6c0;display:flex;font:12px system-ui;gap:6px;white-space:nowrap}.dashboard-locale select,.dashboard-project select{background:#252530;border:1px solid #747484;border-radius:7px;color:inherit;font:inherit;min-height:32px;padding:4px 7px}
+.dashboard-locale__native{display:none!important}
+.dashboard-select__native{height:1px!important;margin:-1px!important;opacity:0!important;pointer-events:none!important;position:absolute!important;width:1px!important}.dashboard-select-picker{min-width:132px;position:relative}.dashboard-select-picker .dashboard-locale__button{width:100%}.configuration-controls .dashboard-select-picker{max-width:14rem}.log-controls .dashboard-select-picker{min-width:132px}
+.dashboard-locale__picker{position:relative}.dashboard-locale__button{align-items:center;background:#fff;border:1px solid #9aabc3;border-radius:7px;color:#1b2b38;cursor:pointer;display:flex;font:400 inherit;gap:14px;justify-content:space-between;min-height:32px;min-width:132px;padding:4px 10px}.dashboard-locale__button:focus-visible{outline:3px solid var(--house-style);outline-offset:3px}.dashboard-locale__menu{background:#fff;border:1px solid #9aabc3;border-radius:0 0 7px 7px;box-shadow:0 8px 18px #0003;display:grid;left:0;min-width:100%;overflow:hidden;position:absolute;top:calc(100% + 2px);z-index:20}.dashboard-locale__menu[hidden]{display:none}.dashboard-locale__menu button{background:#fff;border:0;color:#1b2b38;cursor:pointer;font:400 inherit;padding:8px 10px;text-align:left}.dashboard-locale__menu button[aria-selected="true"]{background:var(--house-style);color:var(--button-ink)}.dashboard-locale__menu button:hover,.dashboard-locale__menu button:focus-visible{background:var(--operations-console-mark-blue);color:var(--button-ink);outline:0}
 html[data-theme="dark"] .dashboard-locale__button{background:#252530;border-color:#747484;color:#f7f3ee;color-scheme:dark}html[data-theme="dark"] .dashboard-locale__menu{background:#252530;border-color:#747484;box-shadow:0 10px 22px #0009;color-scheme:dark}html[data-theme="dark"] .dashboard-locale__menu button{background:#252530;color:#f7f3ee}
 html[data-theme="light"] :is(body,.dashboard-titlebar,.footer){background:var(--dashboard-page-surface-light)}
-html[data-theme="light"] .dashboard-locale{color:#415168}
-html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-surface-light);border-color:#9aabc3}
+html[data-theme="light"] :is(.dashboard-locale,.dashboard-project){color:#415168}html[data-theme="light"] :is(.dashboard-locale,.dashboard-project) select{background:var(--dashboard-surface-light);border-color:#9aabc3}
 @media (max-width:1400px){.dashboard-titlebar{align-items:flex-start;flex-wrap:wrap}.dashboard-titlebar__actions{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-end}}
+/* The compact desktop title bar wraps its settings below the brand. Lift the
+   refresh action slightly so it remains optically aligned with that brand. */
+@media (min-width:621px) and (max-width:1400px){.page-refresh{transform:translateY(-8px)}}
 @media (max-width:760px){.dashboard-titlebar__actions{justify-content:flex-start}}
-@media (max-width:620px){.dashboard-titlebar h1{font-size:25px}.dashboard-titlebar__actions{gap:8px}.dashboard-locale span{display:none}}
+@media (max-width:620px){.dashboard-titlebar h1{font-size:25px}.dashboard-titlebar__actions{gap:8px}:is(.dashboard-locale,.dashboard-project)>span:first-child{display:none}}
 
 /* Main sections */
 .dashboard-grid{gap:var(--dashboard-section-gap)}
@@ -383,6 +403,7 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
 /* The body already owns the iOS safe area. Do not reserve it a second time
    inside the scrolling region, especially in landscape where it is wide. */
 .dashboard-scroll-region{padding-inline:var(--dashboard-scroll-gutter);scrollbar-gutter:auto}
+#engineering-dashboard-content{overflow-anchor:none}
 .footer__item{align-items:baseline;display:inline-flex;gap:4px;min-width:0}
 .technical-grid>.card,.log-table-wrap{min-width:0}.log-table-wrap{box-sizing:border-box;width:100%}
 #promptHistory .log-table-wrap{
@@ -393,10 +414,10 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
   min-height:0;
   overflow-y:hidden;
 }
-@media (max-width:620px) and (orientation:portrait){
+@media (max-width:620px) and (orientation:portrait) and (hover:none) and (pointer:coarse){
   /* iOS handles a document scroll more reliably than a nested flex scroller.
      It also lets the title naturally leave the viewport with the content. */
-  .dashboard-titlebar{position:static}
+  .dashboard-sticky-header{position:static}.dashboard-titlebar{position:static}
   body{display:block;height:auto;min-height:100dvh;overflow-x:hidden;overflow-y:auto;padding-inline:max(12px,env(safe-area-inset-left)) max(12px,env(safe-area-inset-right))}
   .dashboard-scroll-region{min-height:auto;overflow:visible;padding-inline:6px;scrollbar-gutter:stable both-edges}
   .footer{box-sizing:border-box;display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;overflow:visible;padding-inline:6px;text-align:center;white-space:normal}
@@ -414,21 +435,24 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
    labelled disclosure, then presented as full-width rows rather than unlabeled
    switch glyphs. Desktop keeps the existing inline control strip. */
 .dashboard-titlebar__options{align-items:center;display:flex;flex:0 0 auto;min-width:0}.dashboard-titlebar__options-toggle{display:none}.dashboard-titlebar__options-content{align-items:center;display:flex;flex:0 0 auto;gap:12px}
-@media (max-width:620px){
+@media (max-width:1240px){
   .dashboard-titlebar{align-items:flex-start;flex-wrap:wrap;position:relative}
   .dashboard-titlebar__brand{flex-basis:100%;padding-right:48px}
   .dashboard-titlebar__actions{align-items:center;flex:1 1 100%;justify-content:flex-start;width:100%}
   .page-refresh{position:absolute;right:16px;top:16px}
   .dashboard-titlebar__options{display:block;flex:1 1 100%;min-width:0;width:100%}
-  .dashboard-titlebar__options-toggle{align-items:center;background:color-mix(in srgb,var(--operations-console-icon-surface) 82%,#fff 18%);border:1px solid var(--house-style);border-radius:999px;color:var(--operations-console-blue-ink)!important;cursor:pointer;display:flex;font:600 13px/1 system-ui;justify-content:space-between;min-height:44px;padding:0 14px;width:100%}
+  .dashboard-titlebar__options-toggle{-webkit-appearance:none;appearance:none;align-items:center;background-color:#3f4049!important;background-image:none!important;border:1px solid var(--house-style);border-radius:999px;color:var(--operations-console-blue-ink)!important;cursor:pointer;display:flex;font:600 13px/1 system-ui;justify-content:space-between;min-height:44px;padding:0 14px;width:100%}
   .dashboard-titlebar__options-toggle::after{content:"▾";font-size:16px;line-height:1;transition:transform .18s ease}
   .dashboard-titlebar__options-toggle[aria-expanded="true"]::after{transform:rotate(180deg)}
   .dashboard-titlebar__options-content{border-top:1px solid color-mix(in srgb,var(--operations-console-blue-ink) 35%,transparent);display:grid;gap:8px;margin-top:10px;padding-top:10px}
   .dashboard-titlebar__options-content[hidden]{display:none}
-  .dashboard-titlebar__options-content>.dashboard-locale,.dashboard-titlebar__options-content>.theme-toggle,.dashboard-titlebar__options-content>.section-state-toggle,.dashboard-titlebar__options-content>.auto-refresh-toggle{align-items:center;box-sizing:border-box;display:flex;justify-content:space-between;min-height:44px;width:100%}
-  .dashboard-titlebar__options-content>.dashboard-locale{font:600 13px/1 system-ui}
-  .dashboard-titlebar__options-content>.dashboard-locale>span:first-child{display:block}
-  .dashboard-titlebar__options-content>.dashboard-locale>.dashboard-locale__picker{display:flex}
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.dashboard-project),.dashboard-titlebar__options-content>.theme-toggle,.dashboard-titlebar__options-content>.section-state-toggle,.dashboard-titlebar__options-content>.auto-refresh-toggle{align-items:center;box-sizing:border-box;display:flex;font:600 13px/1 system-ui;justify-content:space-between;min-height:44px;width:100%}
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.dashboard-project)>span:first-child{display:block}
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.dashboard-project)>span:first-child,
+  .dashboard-titlebar__options-content>.theme-toggle .theme-toggle__label,
+  .dashboard-titlebar__options-content>.section-state-toggle .section-state-toggle__label,
+  .dashboard-titlebar__options-content>.auto-refresh-toggle span{font:600 13px/1 system-ui}
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.dashboard-project)>.dashboard-locale__picker{display:flex}
   .dashboard-titlebar__options-content>.dashboard-locale>.dashboard-locale__picker :is(#dashboardLocaleValue,[aria-hidden]){display:inline}
   .dashboard-titlebar__options-content>.theme-toggle,.dashboard-titlebar__options-content>.section-state-toggle{flex-direction:row;gap:12px;padding:0}
   /* Keep both pseudo-elements on the same end of the full-width row. Without
@@ -442,7 +466,7 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
   /* Option rows are flat navigation controls, not raised cards. A direct-touch
      browser may otherwise apply the generic glass shadow to a full-width row
      or locale picker. The switch thumbs keep their own compact elevation. */
-  .dashboard-titlebar__options-content>:is(.dashboard-locale,.theme-toggle,.section-state-toggle,.auto-refresh-toggle),
+  .dashboard-titlebar__options-content>:is(.dashboard-locale,.dashboard-project,.theme-toggle,.section-state-toggle,.auto-refresh-toggle),
   .dashboard-titlebar__options-content .dashboard-locale__button{
     -webkit-backdrop-filter:none!important;
     backdrop-filter:none!important;
@@ -451,6 +475,7 @@ html[data-theme="light"] .dashboard-locale select{background:var(--dashboard-sur
     filter:none!important;
   }
   .dashboard-titlebar__options-content>:is(.theme-toggle,.section-state-toggle):active{transform:none!important}
+  html[data-theme="light"] .dashboard-titlebar__options-toggle{background-color:#f1f3f7!important}
 }
 
 /* Log controls */
@@ -474,7 +499,7 @@ html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;co
 .prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}
 /* The shared modal shell owns the chat frame, header and safe-area sizing.
    Conversation-specific rules begin at the chat surface inside that frame. */
-.prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:transparent;border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
+.prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:var(--modal-surface);border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}html[data-theme="light"] .prompt-chat-modal #codexChat{background:var(--modal-surface)}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
 .prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
@@ -535,6 +560,29 @@ html[data-theme="light"] #currentRun>.current-run__title>.label{color:color-mix(
    from its parent category's secondary accent rather than a neutral black. */
 :is(.log-table,.telemetry-table){--dashboard-table-divider:color-mix(in srgb,var(--modal-secondary-accent,var(--category-secondary,var(--category-color,#9aabc3))) 52%,transparent)}
 :is(.log-table,.telemetry-table) th,:is(.log-table,.telemetry-table) tbody tr:not(:last-child)>td{border-bottom-color:var(--dashboard-table-divider)!important}
+/* Data cells must paint their own opaque surface. Leaving them transparent
+   lets Mobile Safari composite the card behind a horizontally-scrolled table
+   as a misleading glass gradient. */
+:is(.log-table,.telemetry-table){background:var(--dashboard-expanded-content-surface);background-image:none!important}
+:is(.log-table,.telemetry-table) tbody td{background:var(--dashboard-expanded-content-surface);background-image:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+/* Tables share a neutral header band; the first-column rule below deliberately
+   replaces it with the category tint to preserve the anchored identifier. */
+:is(.log-table,.telemetry-table) th:not(:first-child){background:#2d2d38}
+html[data-theme="light"] :is(.log-table,.telemetry-table) th:not(:first-child){background:#eaf0f8}
+html[data-theme="light"] :is(.log-table,.telemetry-table) tbody td{background:#fff}
+/* Detail telemetry is rendered inside a modal with its own surface tokens.
+   Keep every non-identifier header on the same opaque grey band as its
+   dashboard counterpart, rather than inheriting the modal body surface. */
+.telemetry-detail-modal .telemetry-table th:not(:first-child){background-color:#2d2d38!important}
+html[data-theme="light"] .telemetry-detail-modal .telemetry-table th:not(:first-child){background-color:#eaf0f8!important}
+/* Each table keeps its first field visually anchored to its own category.
+   Prompt History supplies its stronger rose variant above; the shared rule
+   gives logs and telemetry the same readable column structure. */
+:is(.log-table,.telemetry-table) th:first-child,:is(.log-table,.telemetry-table) td:first-child:not([colspan]){background:color-mix(in srgb,var(--category-color,#9aabc3) 12%,var(--dashboard-expanded-content-surface))}
+html[data-theme="light"] :is(.log-table,.telemetry-table) th:first-child,html[data-theme="light"] :is(.log-table,.telemetry-table) td:first-child:not([colspan]){background:color-mix(in srgb,var(--category-color,#9aabc3) 12%,#fff)}
+:is(.log-table,.telemetry-table) tbody tr:hover>td:first-child:not([colspan]){background:color-mix(in srgb,var(--category-color,#9aabc3) 18%,var(--dashboard-expanded-content-surface))}
+html[data-theme="light"] :is(.log-table,.telemetry-table) tbody tr:hover>td:first-child:not([colspan]){background:color-mix(in srgb,var(--category-color,#9aabc3) 18%,#fff)}
+.telemetry-table th.log-sortable{cursor:pointer;user-select:none}.telemetry-table th.log-sortable::after{color:var(--category-color,#fb7185);content:attr(data-sort-indicator);font-size:11px;margin-left:6px}.telemetry-table th.log-sortable:focus-visible{outline:2px solid var(--category-color,#fb7185);outline-offset:-2px}
 
 /* Swap the active-operation and technical-detail palettes: live execution is
    monitoring-cyan; static technical evidence is operation-pink. */
@@ -554,6 +602,11 @@ html[data-theme="light"] #engineering-dashboard-content>#technicalDetails{backgr
 html:not([data-theme="light"]) .platform-health__component,
 html:not([data-theme="light"]) .platform-health__component[data-health="false"]{background:#202126}
 html:not([data-theme="light"]) .platform-health[open]>summary{background:color-mix(in srgb,var(--category-color) 6%,var(--dashboard-expanded-content-surface))}
+/* Health components are status cards, not glass tiles. Give Safari explicit
+   opaque paint layers so the parent section cannot bleed through them while
+   the page is scrolled on a narrow touch screen. */
+.platform-health,.platform-health>summary,.platform-health__component{background-image:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+.platform-health__component{isolation:isolate}
 
 /* Expanded main categories separate their coloured heading from neutral content.
    Collapsed summaries retain their full category surface as a compact cue. */
@@ -630,14 +683,41 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
 .dashboard-modal-shell--component{--modal-default-accent:#a3e635}
 .dashboard-modal-shell--confirmation{--modal-default-accent:var(--house-style);--modal-panel-max-width:30rem}
 .dashboard-modal-shell--evidence{--modal-default-accent:#8dc7ff;--category-color:var(--modal-accent)}
-.configuration-controls{display:grid;gap:12px;margin:16px 0}.configuration-controls h2{font-size:16px;margin:0}.configuration-controls label{align-items:center;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.configuration-controls label:has(input[type="checkbox"]){display:flex;grid-template-columns:none}.configuration-controls select{max-width:14rem}.configuration-inbox-open{justify-self:start}.configuration-inbox-modal pre{overflow-wrap:anywhere;white-space:pre-wrap}
+.configuration-controls{display:grid;gap:12px;margin:16px 0}.configuration-controls h2{font-size:16px;margin:0}.configuration-controls label{align-items:center;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.configuration-controls .label{align-items:center;display:flex;gap:6px;margin:0}.configuration-controls label:has(input[type="checkbox"]){display:flex;grid-template-columns:none}.configuration-controls select{max-width:14rem}.configuration-inbox-field{align-items:center;display:grid;gap:4px 8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.configuration-inbox-field>.label,.configuration-inbox-location{grid-column:1}.configuration-inbox-location{color:var(--dashboard-modal-muted);font:12px ui-monospace,monospace;overflow-wrap:anywhere}.configuration-inbox-open{align-self:center;background:#25243a;border:1px solid #818cf8;border-radius:8px;color:#ececff;font:400 13px system-ui;grid-column:2;grid-row:1 / span 2;justify-self:stretch;padding:9px 12px}.configuration-inbox-open::before{content:"⌖";font:16px/1 system-ui;margin-right:7px;vertical-align:-1px}.configuration-inbox-open:hover:not(:disabled){background:#818cf8;color:#171729}.configuration-inbox-open:disabled{cursor:not-allowed;opacity:.55}.configuration-inbox-unavailable{color:var(--dashboard-modal-muted);font-size:12px;grid-column:1 / -1;margin:4px 0 0}.configuration-inbox-modal .dashboard-modal-shell__panel{overflow:hidden}.configuration-inbox-modal__field{display:grid;gap:8px;margin:18px 0}.configuration-inbox-modal__field label{color:var(--modal-secondary-accent);font-size:13px;font-weight:700}.configuration-inbox-modal__field input{box-sizing:border-box;min-width:0;width:100%}.configuration-inbox-modal__browse{justify-self:start}.configuration-inbox-modal__browse::before{content:"⌖";font:16px/1 system-ui;margin-right:7px;vertical-align:-1px}.configuration-inbox-modal pre{overflow-wrap:anywhere;white-space:pre-wrap}html[data-theme="light"] .configuration-inbox-open{background:#f1f2ff;border-color:#6366c9;color:#3b3d82}html[data-theme="light"] .configuration-inbox-open:hover:not(:disabled){background:#c9cdfd;color:#171729}
+.inbox-queue>.configuration-inbox-field,.inbox-queue>.queue-project-settings{border-top:1px solid color-mix(in srgb,var(--category-color) 40%,transparent);margin-top:16px;padding-top:16px}.inbox-queue>.queue-project-settings{margin-bottom:0}
+.configuration-status--saved{color:#54d6a0!important}
+@media (max-width:620px){
+  /* Long configuration labels and their values must each own a full row on
+     direct-touch screens. This prevents the controls from squeezing into—or
+     visually overlapping—the label column. */
+  .configuration-controls label{grid-template-columns:minmax(0,1fr)}
+  .configuration-inbox-field{grid-template-columns:minmax(0,1fr)}
+  .configuration-inbox-open{grid-column:1;grid-row:auto;justify-self:stretch;width:100%}
+  .configuration-controls .dashboard-select-picker{max-width:none;width:100%}
+  .configuration-controls .dashboard-locale__button{
+    -webkit-backdrop-filter:none!important;
+    backdrop-filter:none!important;
+    background-image:none!important;
+    box-shadow:none!important;
+    filter:none!important;
+    transform:none!important;
+  }
+  .configuration-controls .dashboard-locale__menu{box-shadow:none}
+}
+@media (max-width:900px){
+  /* The version, refresh time and connection state are independent status
+     facts. Stack them before the narrow layout can make their text overlap. */
+  .footer{display:grid;gap:4px;justify-items:center;overflow:visible;white-space:normal}
+  .footer__item{justify-content:center;max-width:100%;overflow-wrap:anywhere;text-align:center}
+  .footer__separator{display:none}
+}
 .execution-mode-modal__panel{max-height:min(700px,100%);overflow:auto;width:min(680px,100%)}.execution-mode-modal__content{display:grid;gap:16px;padding-top:18px}.execution-mode-modal__content>p{color:var(--dashboard-modal-muted);line-height:1.5;margin:0}.execution-mode-modal__definition{background:var(--modal-subcontainer-surface);border:1px solid var(--modal-subcontainer-border);border-radius:12px;padding:14px}.execution-mode-modal__definition h3{color:var(--modal-accent);font-size:16px;margin:0 0 7px}.execution-mode-modal__definition p{line-height:1.5;margin:0}
 
 /* Operations Console chrome: the blue title bar distinguishes the persistent
    application controls from the execution cards below it in both themes. */
 .dashboard-titlebar{background:var(--operations-console-icon-surface);box-shadow:0 10px 18px rgb(4 52 78 / .38)}
 .dashboard-titlebar h1{color:var(--operations-console-blue-ink)}
-.dashboard-titlebar .auto-refresh-toggle,.dashboard-titlebar .section-state-toggle,.dashboard-titlebar .dashboard-locale{color:var(--operations-console-blue-ink)}
+.dashboard-titlebar .auto-refresh-toggle,.dashboard-titlebar .theme-toggle,.dashboard-titlebar .section-state-toggle,.dashboard-titlebar :is(.dashboard-locale,.dashboard-project){color:var(--operations-console-blue-ink)}
 .dashboard-titlebar select{background:#fff;color:#1b2b38}
 .dashboard-titlebar .section-state-toggle::before{background:#4a4a55}
 .dashboard-titlebar .section-state-toggle::after{background:#f7f3ee}
@@ -657,6 +737,7 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
 .dashboard-modal-shell.report-view-modal{--modal-panel-max-width:1000px}.dashboard-modal-shell.prompt-detail-modal{--modal-panel-max-width:1100px}
 .dashboard-modal-shell__header{align-items:start;background:var(--modal-header-surface);border-bottom:1px solid var(--modal-accent);display:grid;gap:16px;grid-template-columns:minmax(0,1fr) max-content;margin:calc(-1 * var(--modal-header-inset)) calc(-1 * var(--modal-header-inset)) 0;padding:var(--modal-header-bottom) var(--modal-header-inset);position:relative;z-index:2}
 .dashboard-modal-shell__header h2{color:var(--modal-accent);margin:0;min-width:0}
+.prompt-detail-modal__actions{align-items:center;display:flex;gap:8px}.prompt-detail-modal__actions .dashboard-action{position:static}.prompt-detail-download{font-size:12px!important;font-weight:700!important}
 .dashboard-modal-shell__close{align-items:center;background:#24242d!important;border:1px solid #92919b!important;border-radius:50%;color:#f7f3ee!important;cursor:pointer;display:inline-flex;font:18px/1 system-ui;grid-column:2;grid-row:1;height:32px;justify-content:center;min-height:32px;min-width:32px;padding:0;position:static;width:32px}
 .dashboard-modal-shell__close:hover{background:#4a4a55!important;border-color:#b9b6c0!important;color:#fff!important}
 .dashboard-modal-shell__actions{align-items:center;display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
@@ -696,6 +777,7 @@ html:not([data-theme="light"]) .dashboard-modal-shell{--modal-header-surface:col
 :is(.report-view-modal__content,.prompt-detail-modal__content){margin-top:12px}
 .component-modal__restart::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
 .rate-limit-reset::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
+#codexCliUpdate::before{content:"↓";font-size:21px}
 .predecessor-retry::before{content:"↻";font:700 17px/1 system-ui;margin-right:8px;vertical-align:-1px}
 .execution-dismiss::before{content:"⊘"}
 #componentLogs .log-table{table-layout:auto;width:100%}#componentLogs .log-table th:last-child,#componentLogs .log-table td:last-child{width:100%}
@@ -740,41 +822,19 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* Button labels and glyphs are controls, not selectable page content. */
 :where(button,[role="button"]),:where(button,[role="button"]) *{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 
-/* Direct-touch controls intentionally sit as a small glass layer above their
-   surface. The pressed state lasts for the touch itself, giving iPhone users
-   immediate tactile confirmation without changing desktop pointer behaviour. */
+/* Touch controls stay on their authored, opaque surface. Mobile Safari must
+   not add a shared glass gradient or blur that changes button/pulldown colour. */
 @media (hover:none) and (pointer:coarse){
-  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.auto-refresh-toggle input){touch-action:manipulation}
+  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.auto-refresh-toggle input,.dashboard-locale__button){touch-action:manipulation}
   button:not(:disabled):not(.execution-lifecycle__node),[role="button"]:not([aria-disabled="true"]):not(.execution-lifecycle__node){
     -webkit-tap-highlight-color:transparent;
-    -webkit-backdrop-filter:blur(12px) saturate(150%);
-    backdrop-filter:blur(12px) saturate(150%);
-    background-image:linear-gradient(135deg,rgb(255 255 255 / .20),rgb(255 255 255 / 0) 58%);
-    box-shadow:0 6px 14px rgb(15 23 42 / .28),0 2px 4px rgb(15 23 42 / .20),inset 0 1px 0 rgb(255 255 255 / .42);
-    transition:transform 120ms ease-out,box-shadow 120ms ease-out,filter 120ms ease-out;
-    will-change:transform;
+    transition:background-color 120ms ease-out,color 120ms ease-out,filter 120ms ease-out;
   }
   button:not(:disabled):not(.execution-lifecycle__node):active,[role="button"]:not([aria-disabled="true"]):not(.execution-lifecycle__node):active{
-    filter:brightness(1.08) saturate(1.08);
-    transform:translateY(-1px) scale(1.045);
-    box-shadow:0 10px 20px rgb(15 23 42 / .34),0 3px 6px rgb(15 23 42 / .22),inset 0 1px 0 rgb(255 255 255 / .58);
+    filter:brightness(1.06);
   }
   .reset-log-filters:not(:disabled):active{transform:translateX(4px) translateY(-1px) scale(1.045)}
-  /* The title-bar switches already draw their own compact tracks. Applying
-     the generic glass layer to their button housings creates square plates. */
-  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle){
-    -webkit-backdrop-filter:none;
-    backdrop-filter:none;
-    background-image:none;
-    box-shadow:none;
-    will-change:auto;
-  }
-  .dashboard-titlebar :is(.theme-toggle,.section-state-toggle):active{
-    box-shadow:none;
-  }
-  /* WebKit may blend the generic glass layer from off-screen row actions
-     through a momentum-scrolling table. Keep the history surface opaque and
-     opt those controls out so iOS renders the table as a stable document. */
+  /* Keep the history surface opaque during momentum scrolling. */
   #promptHistory .log-table-wrap,
   #promptHistory .log-table,
   #promptHistory .log-table tbody,
@@ -821,7 +881,7 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* Keep the input contract last: individual cards may colour their content,
    but they must never replace the selected-control border. */
 :where(input,select,textarea):is(:focus,:focus-visible){border-color:var(--dashboard-input-focus-border)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
-:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle)):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+:where(button,summary,[role="button"],[tabindex]):not(#engineering-dashboard-content):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable)):is(:focus,:focus-visible){outline:var(--dashboard-focus-outline-width) solid var(--dashboard-input-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
 /* Every dialog owns a full-viewport, safe-area-aware shell. The visible panel
    is therefore always separated from iPhone edges, including modal families
    added after the original report/detail implementations. */
@@ -830,10 +890,10 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* A dialog shell is not a selected input. Its heading is the neutral focus
    target; controls retain the visible keyboard focus treatment. */
 .dashboard-modal-shell:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
-.telemetry-row{--dashboard-selected-row-color:var(--category-color,#f29ab2);cursor:pointer}.telemetry-row>td{box-shadow:none!important;outline:0!important}.telemetry-row:hover>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)}.telemetry-detail-modal__panel{max-width:min(1120px,94vw)}.telemetry-detail-modal__content{display:grid;gap:18px;max-height:72vh;overflow:auto}.telemetry-detail-modal__content section{min-width:0}.telemetry-detail-modal__content h3{color:var(--category-color,#8dc7ff);font-size:16px;margin:0 0 10px}.telemetry-detail-modal__content .telemetry-table{min-width:700px}.telemetry-detail-modal__content .technical-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}@media(max-width:620px){.telemetry-detail-modal__panel{max-width:100vw;width:100vw}.telemetry-detail-modal__content{max-height:78vh}.telemetry-detail-modal__content section{overflow-x:auto}.telemetry-table{font-size:12px}}
+.telemetry-row{--dashboard-selected-row-color:var(--category-color,#f29ab2);cursor:pointer;scroll-margin-top:12rem}.telemetry-row>td{box-shadow:none!important;outline:0!important}.telemetry-row:hover>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))}.telemetry-detail-modal__panel{max-width:min(1120px,94vw)}.telemetry-detail-modal__content{display:grid;gap:18px;max-height:72vh;overflow-x:hidden;overflow-y:auto}.telemetry-detail-modal__content section{min-width:0}.telemetry-detail-modal__content h3{color:var(--category-color,#8dc7ff);font-size:16px;margin:0 0 10px}.telemetry-detail-modal__content .telemetry-table{min-width:700px}.telemetry-detail-table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}.telemetry-detail-modal__content .technical-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}@media(max-width:620px){.telemetry-row{scroll-margin-top:9rem}.telemetry-detail-modal__panel{max-width:100vw;width:100vw}.telemetry-detail-modal__content{max-height:78vh}.telemetry-detail-modal__content section{overflow-x:visible}.telemetry-table{font-size:12px}}
 /* Telemetry can contain multiple long tables. Keep its outer dialog within
    the visual viewport and scroll only its evidence body on small screens. */
-.telemetry-detail-modal{--modal-accent:#fb7185;--category-color:var(--modal-accent);--modal-outer-gutter:24px;--modal-panel-max-width:1120px;--modal-shell-inset:24px;--modal-shell-padding:0}.telemetry-detail-modal__panel{--modal-header-inset:var(--dashboard-modal-panel-padding);display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;max-height:100%;overflow:hidden;width:min(1120px,100%)}.telemetry-detail-modal__content{max-height:none;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 4px 4px}@media(max-width:620px){.telemetry-detail-modal__panel{--modal-header-inset:18px;padding:18px}.telemetry-detail-modal__content{padding-inline:2px}}
+.telemetry-detail-modal{--modal-accent:#fb7185;--category-color:var(--modal-accent);--modal-outer-gutter:24px;--modal-panel-max-width:1120px;--modal-shell-inset:24px;--modal-shell-padding:0}.telemetry-detail-modal__panel{--modal-header-inset:var(--dashboard-modal-panel-padding);display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;max-height:100%;overflow:hidden;width:min(1120px,100%)}.telemetry-detail-modal__content{max-height:none;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:0 4px 4px}@media(max-width:620px){.telemetry-detail-modal__panel{--modal-header-inset:18px;padding:18px}.telemetry-detail-modal__content{padding-inline:2px}}
 .lifecycle-detail-modal{--modal-default-accent:#65c5d9}.lifecycle-detail-modal__panel{background:var(--modal-surface);border:2px solid var(--modal-accent);border-radius:var(--dashboard-modal-radius);box-sizing:border-box;color:var(--dashboard-modal-ink);display:grid;grid-template-rows:auto minmax(0,1fr);max-width:min(680px,calc(100vw - 32px));overflow:hidden;padding:var(--dashboard-modal-panel-padding);width:100%}.lifecycle-detail-modal__content{color:var(--dashboard-modal-ink);display:grid;gap:18px;max-height:none;min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px}.lifecycle-detail-modal__content .field>span:last-child{color:var(--dashboard-modal-ink)}.lifecycle-detail-modal__content h3{color:var(--modal-accent);font-size:16px;margin:0 0 8px}.lifecycle-detail-modal :is(.label,.lifecycle-detail-modal__phase-list strong){color:var(--modal-secondary-accent)}.lifecycle-detail-modal__phase-list{display:grid;gap:8px;list-style:none;margin:0;padding:0}.lifecycle-detail-modal__phase-list li{align-items:baseline;border-bottom:1px solid color-mix(in srgb,var(--modal-accent) 32%,transparent);display:flex;gap:12px;justify-content:space-between;padding:8px 0}.lifecycle-detail-modal__phase-list span{color:var(--dashboard-modal-muted);text-align:end}html[data-theme="light"] .lifecycle-detail-modal :is(.label,.lifecycle-detail-modal__phase-list strong){color:color-mix(in srgb,var(--modal-secondary-accent) 76%,#182230)}@media(max-width:620px){.lifecycle-detail-modal__panel{max-width:calc(100vw - 32px);padding:18px}.lifecycle-detail-modal__phase-list li{align-items:flex-start;flex-direction:column;gap:4px}.lifecycle-detail-modal__phase-list span{text-align:start}}
 /* A telemetry Run-ID is a redundant activator inside an interactive row.
    The row owns its continuous rose selection surface, never the text itself. */
@@ -846,24 +906,29 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 :is(.workspace-card,.inbox-queue,.prompt-history,#currentRun,#rateLimits,.platform-health,.telemetry,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs))>summary:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
 /* Open pull-request states distinguish review readiness from merge readiness. */
 .open-pr-status--draft{color:#a6a6b2}.open-pr-status--draft .open-pr-status__dot{background:#a6a6b2;box-shadow:0 0 8px #a6a6b266}.open-pr-status--waiting_for_checks{color:#f7bc64}.open-pr-status--waiting_for_checks .open-pr-status__dot{background:#f7bc64;box-shadow:0 0 8px #f7bc6499}.open-pr-status--ready_for_review{color:#8dc7ff}.open-pr-status--ready_for_review .open-pr-status__dot{background:#8dc7ff;box-shadow:0 0 8px #8dc7ff99}.open-pr-status--ready_to_merge{color:#62dfa0}.open-pr-status--ready_to_merge .open-pr-status__dot{background:#62dfa0;box-shadow:0 0 8px #62dfa099}.open-pr-status--branch_update_required{color:#ff8585}.open-pr-status--branch_update_required .open-pr-status__dot{background:#ff8585;box-shadow:0 0 8px #ff858599}
-.open-pr-approval{font-size:12px;font-weight:700}.open-pr-approval--pending{color:#8dc7ff}.open-pr-approval--approved{color:#62dfa0}.open-pr-approval--changes_requested{color:#ff8585}.operator-merge-wait__pr-status{margin-bottom:4px}.operator-merge-wait>.open-pr-approval{margin-top:0}
+.open-pr-approval{font-size:12px;font-weight:700}.open-pr-approval--not_required{color:#62dfa0}.open-pr-approval--pending{color:#8dc7ff}.open-pr-approval--approved{color:#62dfa0}.open-pr-approval--changes_requested{color:#ff8585}.operator-merge-wait__pr-status{margin-bottom:4px}.operator-merge-wait>.open-pr-approval{margin-top:0}
+/* The Workspace PR projection is nested in a context card.  Its dark base
+   surface needs its own light-theme treatment; otherwise it remains a dark
+   block when the surrounding Workspace card is light. */
+html[data-theme="light"] .workspace-open-prs{background:#fffdf3;border-color:#d3b349}html[data-theme="light"] .workspace-open-prs a{color:#725311}html[data-theme="light"] .workspace-open-prs code{color:#415168}html[data-theme="light"] .workspace-open-prs .open-pr-status--draft{color:#5e6470}html[data-theme="light"] .workspace-open-prs .open-pr-status--waiting_for_checks{color:#8f5700}html[data-theme="light"] .workspace-open-prs .open-pr-status--ready_for_review{color:#1763aa}html[data-theme="light"] .workspace-open-prs .open-pr-status--ready_to_merge{color:#187843}html[data-theme="light"] .workspace-open-prs .open-pr-status--issues,html[data-theme="light"] .workspace-open-prs .open-pr-status--branch_update_required{color:#b42335}html[data-theme="light"] .workspace-open-prs .open-pr-approval--not_required,html[data-theme="light"] .workspace-open-prs .open-pr-approval--approved{color:#187843}html[data-theme="light"] .workspace-open-prs .open-pr-approval--pending{color:#1763aa}html[data-theme="light"] .workspace-open-prs .open-pr-approval--changes_requested{color:#b42335}html[data-theme="light"] .open-pr-owner-authorization{background:#e9fff4;color:#145a42}
 /* GitHub quota is an external delivery blocker, displayed directly below the title bar. */
-.dashboard-titlebar:has(~#githubRateLimitBanner:not([hidden])){margin-bottom:0}.dashboard-status-banner--github-rate-limit{align-items:center;background:#5b1d27;border-bottom:1px solid #ff6b7d;color:#ffe9ed}.dashboard-status-banner--github-rate-limit strong{color:#ff99a7}.github-rate-limit-banner__refresh{align-items:center;background:transparent;border:1px solid #ff99a7;border-radius:50%;color:#ffe9ed;cursor:pointer;display:inline-flex;flex:none;font:700 17px/1 system-ui;height:30px;justify-content:center;margin-left:auto;min-height:30px;min-width:30px;padding:0;width:30px}.github-rate-limit-banner__refresh:hover:not(:disabled){background:#ff99a733}.github-rate-limit-banner__refresh:disabled{cursor:wait;opacity:.65}html[data-theme="light"] .dashboard-status-banner--github-rate-limit{background:#ffe8eb;color:#7d1726}html[data-theme="light"] .dashboard-status-banner--github-rate-limit strong{color:#a51e3d}html[data-theme="light"] .github-rate-limit-banner__refresh{border-color:#a51e3d;color:#7d1726}@media (max-width:620px){.github-rate-limit-banner__refresh{align-self:flex-end;margin-top:-2px}}
+.dashboard-titlebar:has(~:is(#codexUsageLimitBanner,#githubRateLimitBanner):not([hidden])){margin-bottom:0}.dashboard-status-banner:is(.dashboard-status-banner--usage-limit,.dashboard-status-banner--github-rate-limit){align-items:center;background:#5b1d27;border-bottom:1px solid #ff6b7d;color:#ffe9ed}.dashboard-status-banner:is(.dashboard-status-banner--usage-limit,.dashboard-status-banner--github-rate-limit) strong{color:#ff99a7}.github-rate-limit-banner__refresh{align-items:center;background:#7a2230!important;border:1px solid #ff91a1!important;border-radius:50%;color:#fff0f2!important;cursor:pointer;display:inline-flex;flex:none;font:400 17px/1 system-ui;height:30px;justify-content:center;margin-left:auto;min-height:30px;min-width:30px;padding:0;width:30px}.github-rate-limit-banner__refresh:hover:not(:disabled){background:#a92b40!important;border-color:#ffc0c9!important;color:#fff!important}.github-rate-limit-banner__refresh:focus-visible{box-shadow:0 0 0 4px #ff91a188!important;outline:2px solid #ff91a1!important;outline-offset:2px}.github-rate-limit-banner__refresh:disabled{cursor:wait;opacity:.65}html[data-theme="light"] .dashboard-status-banner:is(.dashboard-status-banner--usage-limit,.dashboard-status-banner--github-rate-limit){background:#ffe8eb;color:#7d1726}html[data-theme="light"] .dashboard-status-banner:is(.dashboard-status-banner--usage-limit,.dashboard-status-banner--github-rate-limit) strong{color:#a51e3d}html[data-theme="light"] .github-rate-limit-banner__refresh{background:#fff0f2!important;border-color:#b42335!important;color:#8a1728!important}html[data-theme="light"] .github-rate-limit-banner__refresh:hover:not(:disabled){background:#ffd6dc!important;border-color:#8a1728!important;color:#6d1020!important}html[data-theme="light"] .github-rate-limit-banner__refresh:focus-visible{box-shadow:0 0 0 4px #b4233544!important;outline-color:#b42335!important}@media (max-width:620px){.github-rate-limit-banner__refresh{align-self:flex-end;margin-top:-2px}}
 /* A table row is a selection surface, not a focused control.  Keep the
    category tint continuous across cells and use just one leading marker. */
 :where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
-:where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,transparent)!important;box-shadow:none!important;outline:0!important}
+:where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td{background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))!important;box-shadow:none!important;outline:0!important}
 :where(.component-log-row,.prompt-history-row,.telemetry-row):is([aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td:first-child{box-shadow:inset 2px 0 0 var(--dashboard-selected-row-color)!important}
-/* Sort headers stay within their own cell, even when sticky at the top of a
-   scroll container. This matches the thin selected-table-row edge. */
-#engineering-dashboard-content .log-table th.log-sortable:focus,#engineering-dashboard-content .log-table th.log-sortable:focus-visible{box-shadow:none!important;outline:1px solid var(--dashboard-input-focus-border)!important;outline-offset:-1px!important;z-index:2}
+:where(.component-log-row,.prompt-history-row,.telemetry-row):is(:hover,[aria-selected="true"],[data-selected="true"],:focus,:focus-visible)>td:first-child:not([colspan]){background:color-mix(in srgb,var(--dashboard-selected-row-color) 16%,var(--dashboard-surface-base))!important}
 /* Native dialog autofocus must never become a visible selected border. */
 dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
 /* Focus is product-wide navigation language, never a category accent.  Keep
    every visible interactive focus treatment in the house-style orange,
    including anchor actions inside dialogs. Deliberately non-focusing shells,
    table-row selection surfaces and lifecycle geometry remain excluded above. */
-:where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+:where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
+/* Table-header focus is deliberately more compact than the global control
+   ring: one complete inset orange edge, on every table surface. */
+.log-table th.log-sortable:focus,.log-table th.log-sortable:focus-visible,.telemetry-table th.log-sortable:focus,.telemetry-table th.log-sortable:focus-visible{box-shadow:inset 0 0 0 1px var(--dashboard-input-focus-border)!important;outline:0!important;outline-offset:0!important;z-index:2}
 /* Title-bar labels are part of their switch control, not a separate focus
    target. Keep the compact house-style ring on the track for all three. */
 .dashboard-titlebar .theme-toggle:is(:focus,:focus-visible),.dashboard-titlebar .section-state-toggle:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-color:var(--house-style)!important}
@@ -873,6 +938,15 @@ dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visib
    focus rules have been applied. */
 #telemetryDetailContent .telemetry-run-link{-webkit-tap-highlight-color:transparent;user-select:none}
 #telemetryDetailContent .telemetry-run-link:is(:focus,:focus-visible,:active){border-color:transparent!important;box-shadow:none!important;outline:0!important}
+/* Phase timing is comparative evidence: retain the neutral table surface at
+   rest and show the complete row accent only while it is being inspected. */
+.telemetry-detail-modal .telemetry-phase-table tbody tr:is(:hover,:focus,:focus-visible)>td{background:color-mix(in srgb,var(--category-color,#fb7185) 16%,transparent)!important}
+/* Run IDs are compact identifiers.  Fixing their width keeps the first mobile
+   column narrow while the execution title receives the remaining table space. */
+#promptHistory .log-table{--prompt-history-run-id-width:7rem}#promptHistory .log-table th:nth-child(1),#promptHistory .log-table td:nth-child(1){max-width:var(--prompt-history-run-id-width);min-width:var(--prompt-history-run-id-width);overflow:hidden;text-overflow:ellipsis;width:var(--prompt-history-run-id-width)}
+/* Actions communicate through their shape, colour and iconography.  Button
+   labels stay at the normal text weight across every dashboard surface. */
+:is(button,input[type="button"],input[type="submit"],input[type="reset"],.dashboard-action,.dashboard-modal-shell__action){font-weight:400!important}
 
 /* Historical lifecycle evidence belongs to the same neutral card family as
    the other prompt-detail evidence. The active execution lifecycle keeps its
@@ -886,3 +960,29 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
 #currentRun #predecessorGate{--category-color:var(--house-style);border-color:var(--house-style)}
 /* Lifecycle detail mirrors the workflow-node status colours without relying on text alone. */
 .indicator--blue{background:#65c5d9;box-shadow:0 0 8px #65c5d988}.lifecycle-detail-modal__status{align-items:center;display:inline-flex;gap:7px}.lifecycle-detail-modal__status-indicator{display:block;flex:none}.lifecycle-detail-modal__status-value{color:var(--dashboard-modal-ink)!important}
+/* A completed check can become pending after a new push.  Keep the manual
+   refresh beside the PR heading, without turning the whole card into an action. */
+.workspace-open-prs__header{align-items:center;display:flex;gap:8px;justify-content:space-between}.workspace-open-prs__header>strong{color:var(--category-color);display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase}.workspace-open-prs__refresh{align-items:center;background:transparent;border:1px solid color-mix(in srgb,var(--category-color) 72%,transparent);border-radius:50%;color:var(--category-color);cursor:pointer;display:inline-flex;font:400 16px/1 system-ui;height:28px;justify-content:center;min-height:28px;min-width:28px;padding:0;width:28px}.workspace-open-prs__refresh:hover:not(:disabled){background:var(--category-color);color:#2a2415}.workspace-open-prs__refresh:focus-visible{outline:2px solid var(--category-color);outline-offset:2px}.workspace-open-prs__refresh:disabled{cursor:wait;opacity:.65}
+
+/* Local worktrees are a read-only workspace projection and intentionally
+   share the bounded, flat treatment of the adjacent pull-request summary. */
+.workspace-worktrees{background:color-mix(in srgb,var(--category-color) 10%,#202027);border:1px solid color-mix(in srgb,var(--category-color) 48%,transparent);border-radius:10px;margin-top:12px;padding:10px}.workspace-worktrees>strong{color:var(--category-color);display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase}.workspace-worktrees ul{display:grid;gap:8px;list-style:none;margin:8px 0 0;padding:0}.workspace-worktrees li{display:grid;gap:3px;min-width:0}.workspace-worktrees__branch{color:#ffe7a0;font-size:13px;font-weight:700;overflow-wrap:anywhere}.workspace-worktrees__path,.workspace-worktrees__commit{color:var(--modal-secondary-accent);font-size:12px;overflow-wrap:anywhere}.workspace-worktrees__empty{color:var(--dashboard-modal-muted);font-size:13px;margin:8px 0 0}html[data-theme="light"] .workspace-worktrees{background:#fffdf3;border-color:#d3b349}html[data-theme="light"] .workspace-worktrees__branch{color:#725311}html[data-theme="light"] .workspace-worktrees__path,html[data-theme="light"] .workspace-worktrees__commit{color:#415168}
+
+/* The Inbox location chooser inherits the exact indigo accent of its queue. */
+.configuration-inbox-modal{--modal-default-accent:#818cf8;--category-color:#818cf8}.configuration-inbox-modal .dashboard-modal-shell__close,.configuration-inbox-modal .dashboard-modal-shell__action{background:#25243a!important;border-color:#818cf8!important;color:#ececff!important}.configuration-inbox-modal .dashboard-modal-shell__action--primary{background:#313052!important}.configuration-inbox-modal :is(.dashboard-modal-shell__close,.dashboard-modal-shell__action):hover:not(:disabled){background:#818cf8!important;border-color:#818cf8!important;color:#171729!important}html[data-theme="light"] .configuration-inbox-modal .dashboard-modal-shell__close,html[data-theme="light"] .configuration-inbox-modal .dashboard-modal-shell__action{background:#f1f2ff!important;border-color:#6366c9!important;color:#3b3d82!important}html[data-theme="light"] .configuration-inbox-modal .dashboard-modal-shell__action--primary{background:#dde0ff!important}html[data-theme="light"] .configuration-inbox-modal :is(.dashboard-modal-shell__close,.dashboard-modal-shell__action):hover:not(:disabled){background:#c9cdfd!important;border-color:#6366c9!important;color:#171729!important}
+
+/* Owner approval is a Workspace action.  Keep its affordance and confirmation
+   in the same yellow family as the surrounding pull-request controls. */
+.open-pr-owner-authorization{background:#3c351f;border-color:#f3d36a;color:#ffe7a0}.open-pr-owner-authorization:hover:not(:disabled){background:#f3d36a;color:#2a2415}.open-pr-owner-authorization:focus-visible{outline-color:#f3d36a}html[data-theme="light"] .open-pr-owner-authorization{background:#fff8dc;color:#725311}
+
+#confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action{background:#3c351f!important;border-color:#f3d36a!important;color:#ffe7a0!important}#confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action--primary{background:#4b4323!important}#confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action:hover:not(:disabled){background:#f3d36a!important;border-color:#f3d36a!important;color:#2a2415!important}html[data-theme="light"] #confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action{background:#fffdf3!important;border-color:#d3b349!important;color:#725311!important}html[data-theme="light"] #confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action--primary{background:#fff8dc!important}html[data-theme="light"] #confirmationModal.dashboard-modal-shell--owner-authorization .dashboard-modal-shell__action:hover:not(:disabled){background:#f3d36a!important;border-color:#b89025!important;color:#2a2415!important}
+
+/* Telemetry actions belong to the table toolbar. Align them with the log
+   actions so exports and destructive controls consistently sit at the right. */
+.telemetry-actions{justify-content:flex-end;margin:0 0 10px}
+
+/* Keep every export action on the same modest arrow glyph. The visible text in
+   older controls is intentionally suppressed so historic markup cannot drift. */
+.dashboard-action--download{font-size:0!important}.dashboard-action--download::before{content:"↓";display:block;font:18px/1 system-ui}
+#promptHistoryDetailDownloadJson{font:14px/1 ui-monospace,SFMono-Regular,Menlo,monospace!important}
+#promptHistoryDetailDownloadJson::before{content:none;display:none}

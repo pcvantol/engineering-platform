@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 import sqlite3
@@ -15,10 +16,12 @@ from tools.engineering.storage import (
     EngineeringStorageError,
     WORKSPACE_DIRECTORY,
     database_path,
+    ai_capacity_history,
     load_projection,
     load_execution_context_snapshot,
     load_forge_governance_handoff_snapshot,
     open_storage,
+    record_ai_capacity_bi_hourly,
     record_artifact,
     record_submission,
     record_readiness_evaluation,
@@ -38,6 +41,29 @@ class EngineeringStorageTest(unittest.TestCase):
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
+
+    def test_ai_capacity_history_keeps_one_lowest_measurement_per_two_hour_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_bucket = datetime(2026, 8, 25, 10, 5, tzinfo=timezone.utc)
+            record_ai_capacity_bi_hourly(
+                root, provider="Codex CLI", remaining_percent=86, observed_at=first_bucket
+            )
+            record_ai_capacity_bi_hourly(
+                root, provider="Codex CLI", remaining_percent=72, observed_at=first_bucket.replace(hour=11, minute=55)
+            )
+            record_ai_capacity_bi_hourly(
+                root, provider="Codex CLI", remaining_percent=91, observed_at=first_bucket.replace(hour=12)
+            )
+            with patch("tools.engineering.storage.datetime") as mocked_datetime:
+                mocked_datetime.now.return_value = datetime(2026, 8, 25, 12, 15, tzinfo=timezone.utc)
+                mocked_datetime.fromtimestamp.side_effect = datetime.fromtimestamp
+                mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+                history = ai_capacity_history(root, provider="Codex CLI")
+            self.assertEqual(history, [
+                {"at": "2026-08-25T10:00:00+00:00", "remaining_percent": 72.0},
+                {"at": "2026-08-25T12:00:00+00:00", "remaining_percent": 91.0},
+            ])
 
     def test_submission_persists_an_immutable_forge_governance_handoff_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

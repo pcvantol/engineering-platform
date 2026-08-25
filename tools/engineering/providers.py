@@ -74,11 +74,24 @@ class PrivateRemoteAccessProvider(Protocol):
     def status(self) -> ProviderStatus: ...
 
 
+def engineering_platform_codex_cli_prefix() -> Path:
+    """Return the user-owned prefix reserved for Engineering Platform's CLI."""
+    return Path.home() / ".local" / "share" / "engineering-platform" / "codex-cli"
+
+
+def codex_cli_executable() -> str | None:
+    """Prefer EP's managed CLI over a system-wide installation when present."""
+    managed = engineering_platform_codex_cli_prefix() / "bin" / "codex"
+    if managed.is_file() and os.access(managed, os.X_OK):
+        return str(managed)
+    return shutil.which("codex")
+
+
 class CodexCliProvider(LocalProcessProvider):
     """Codex process adapter pinned to the host-admitted launcher when present."""
 
     def __init__(self, executable: str | None = None) -> None:
-        self._executable = executable or os.environ.get("DJCONNECT_ENGINEERING_CODEX_EXECUTABLE") or "codex"
+        self._executable = executable or os.environ.get("DJCONNECT_ENGINEERING_CODEX_EXECUTABLE") or codex_cli_executable() or "codex"
 
     def _arguments(self, arguments: Sequence[str]) -> tuple[str, ...]:
         if arguments and arguments[0] == "codex":

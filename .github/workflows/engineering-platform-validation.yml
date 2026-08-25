@@ -82,7 +82,9 @@ jobs:
       - name: Install Chromium for browser validation
         run: npx playwright install --with-deps chromium
       - name: Browser smoke test for Engineering Status
-        run: npm run test:engineering-dashboard
+        # Keep successful runs compact; Playwright's dot reporter still emits
+        # the full failure diagnostics, traces and artifact references.
+        run: npm run test:engineering-dashboard -- --reporter=dot
       - name: Upload Engineering Status browser screenshots
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -7,7 +7,7 @@ transaction checkpoints and cannot change an engineering outcome.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from math import sqrt
 from pathlib import Path
@@ -235,10 +235,10 @@ def wait_for_pending_telemetry(*, timeout: float = 5.0) -> None:
             worker.join(timeout=remaining)
 
 
-def daily_statistics(root: Path, *, days: int = 7) -> list[dict[str, object]]:
+def daily_statistics(root: Path, *, days: int = 90) -> list[dict[str, object]]:
     """Return generic daily aggregates, newest day first, for the private dashboard."""
-    if not 1 <= days <= 31:
-        raise ValueError("telemetry days must be between 1 and 31")
+    if not 1 <= days <= 360:
+        raise ValueError("telemetry days must be between 1 and 360")
     connection = open_storage(root)
     try:
         rows = connection.execute(
@@ -262,11 +262,53 @@ def daily_statistics(root: Path, *, days: int = 7) -> list[dict[str, object]]:
     )
     result = [dict(zip(keys, row, strict=True)) for row in rows]
     # Phase detail remains on demand. Keep the legacy trend shape stable
-    # without expanding the seven-day refresh into per-day run projections.
+    # without expanding the ninety-day refresh into per-day run projections.
     for row in result:
         row["average_provider_execution_seconds"] = None
         row["average_validation_seconds"] = None
     return result
+
+
+def prune_telemetry(root: Path, retention_days: int) -> dict[str, int]:
+    """Remove expired rebuildable telemetry projections without deleting evidence."""
+    if retention_days not in {30, 60, 90, 120, 180, 360}:
+        raise ValueError("telemetry retention must be an approved interval")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date().isoformat()
+    connection = open_storage(root)
+    try:
+        with connection:
+            daily_rows = connection.execute(
+                "DELETE FROM daily_execution_statistics WHERE execution_date < ?", (cutoff,)
+            ).rowcount
+            run_rows = connection.execute(
+                "DELETE FROM execution_runs WHERE execution_date < ?", (cutoff,)
+            ).rowcount
+    finally:
+        connection.close()
+    return {
+        "daily_statistics": max(0, int(daily_rows or 0)),
+        "execution_runs": max(0, int(run_rows or 0)),
+    }
+
+
+def clear_telemetry(root: Path) -> dict[str, int]:
+    """Clear rebuildable telemetry projections without touching execution evidence.
+
+    Execution receipts, reports, prompt history and lifecycle checkpoints are
+    evidence records. They are intentionally outside this operator control;
+    only the local telemetry projections displayed by the dashboard are reset.
+    """
+    connection = open_storage(root)
+    try:
+        with connection:
+            daily_rows = connection.execute("DELETE FROM daily_execution_statistics").rowcount
+            run_rows = connection.execute("DELETE FROM execution_runs").rowcount
+    finally:
+        connection.close()
+    return {
+        "daily_statistics": max(0, int(daily_rows or 0)),
+        "execution_runs": max(0, int(run_rows or 0)),
+    }
 
 
 _DASHBOARD_PHASES = (

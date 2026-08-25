@@ -877,6 +877,117 @@ MIGRATIONS: dict[int, Migration] = {
 }
 
 
+AI_CAPACITY_HISTORY_BUCKET_HOURS = 2
+
+
+def record_ai_capacity_bi_hourly(
+    root: Path, *, provider: str, remaining_percent: float, observed_at: datetime | None = None
+) -> None:
+    """Keep the lowest remaining capacity in each two-hour UTC bucket.
+
+    This intentionally stores only a percentage and a provider label: no
+    account, credit, or request detail is retained. The bounded series uses
+    existing observability projection storage, so it does not alter the
+    Execution Host's active schema contract.
+    """
+    normalized_provider = provider.strip()[:120]
+    if not normalized_provider:
+        return
+    try:
+        remaining = float(remaining_percent)
+    except (TypeError, ValueError):
+        return
+    if not 0 <= remaining <= 100:
+        return
+    timestamp = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bucket = timestamp.replace(
+        hour=timestamp.hour - (timestamp.hour % AI_CAPACITY_HISTORY_BUCKET_HOURS),
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    connection = open_storage(root, journal_mode="MEMORY")
+    try:
+        row = connection.execute(
+            "SELECT payload FROM execution_projections WHERE projection_name='ai_capacity_hourly'"
+        ).fetchone()
+        try:
+            payload = json.loads(row[0]) if row else {}
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        providers = payload.get("providers") if isinstance(payload, dict) else None
+        providers = providers if isinstance(providers, dict) else {}
+        samples = providers.get(normalized_provider)
+        samples = samples if isinstance(samples, dict) else {}
+        bucket_key = bucket.isoformat()
+        existing = samples.get(bucket_key)
+        if isinstance(existing, (int, float)) and not isinstance(existing, bool):
+            remaining = min(remaining, float(existing))
+            if remaining == float(existing):
+                return
+        samples[bucket_key] = remaining
+        cutoff = bucket.timestamp() - 7 * 24 * 3600
+        providers[normalized_provider] = {
+            key: value
+            for key, value in samples.items()
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (_capacity_timestamp(key) or 0) >= cutoff
+        }
+        store_projection(
+            connection,
+            "ai_capacity_hourly",
+            {"providers": providers, "updated_at": timestamp.isoformat()},
+            classification="OBSERVABILITY",
+        )
+    finally:
+        connection.close()
+
+
+def ai_capacity_history(root: Path, *, provider: str, hours: int = 168) -> list[dict[str, object]]:
+    """Return the rolling two-hour local capacity series for a provider."""
+    normalized_provider = provider.strip()[:120]
+    if not normalized_provider or hours < 1:
+        return []
+    cutoff = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    earliest = cutoff.timestamp() - (hours - 1) * 3600
+    connection = open_storage(root, journal_mode="MEMORY")
+    try:
+        row = connection.execute(
+            "SELECT payload FROM execution_projections WHERE projection_name='ai_capacity_hourly'"
+        ).fetchone()
+    finally:
+        connection.close()
+    try:
+        payload = json.loads(row[0]) if row else {}
+    except (TypeError, json.JSONDecodeError):
+        return []
+    providers = payload.get("providers") if isinstance(payload, dict) else None
+    samples = providers.get(normalized_provider) if isinstance(providers, dict) else None
+    if not isinstance(samples, dict):
+        return []
+    return [
+        {"at": key, "remaining_percent": float(value)}
+        for key, value in sorted(samples.items())
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0 <= float(value) <= 100
+        and (_capacity_timestamp(key) or 0) >= earliest
+        and int((_capacity_timestamp(key) or 0) // 3600) % AI_CAPACITY_HISTORY_BUCKET_HOURS == 0
+    ]
+
+
+def _capacity_timestamp(value: object) -> float | None:
+    """Parse a bounded UTC capacity bucket without accepting malformed data."""
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return timestamp.astimezone(timezone.utc).timestamp() if timestamp.tzinfo else None
+
+
 def dismissal_for_run(root: Path, run_id: object) -> dict[str, object] | None:
     """Return immutable operator-handling evidence from canonical SQLite."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):

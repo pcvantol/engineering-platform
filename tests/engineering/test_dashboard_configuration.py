@@ -18,6 +18,16 @@ class DashboardConfigurationTest(unittest.TestCase):
             self.assertEqual(event["previous"], 30)
             self.assertEqual(event["value"], 180)
             self.assertEqual(get(root)["log_retention_days"], 180)
+            telemetry_event = update(root, "telemetry_retention_days", 180)
+            self.assertEqual(telemetry_event["previous"], 90)
+            self.assertEqual(telemetry_event["value"], 180)
+            for key, value in (
+                ("inbox_scan_interval_seconds", 30),
+                ("open_pr_check_interval_seconds", 60),
+                ("platform_health_refresh_seconds", 60),
+                ("component_details_refresh_seconds", 15),
+            ):
+                self.assertEqual(update(root, key, value)["value"], value)
 
     def test_rejects_unknown_or_unbounded_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -61,5 +71,8 @@ class DashboardConfigurationTest(unittest.TestCase):
                 update_inbox_root(root, str(candidate))
             (candidate / "Inbox").mkdir()
             event = update_inbox_root(root, str(candidate))
+            self.assertEqual(event["value"], str(candidate.resolve()))
+            self.assertEqual(inbox_root(root), candidate.resolve())
+            event = update_inbox_root(root, str(candidate / "Inbox"))
             self.assertEqual(event["value"], str(candidate.resolve()))
             self.assertEqual(inbox_root(root), candidate.resolve())

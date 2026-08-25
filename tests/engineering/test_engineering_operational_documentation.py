@@ -36,6 +36,7 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("Private read-only AI advice", dashboard)
         self.assertIn("Runtime Provider", dashboard)
         self.assertIn("Codex CLI Version", dashboard)
+        self.assertIn("its installation path", dashboard)
         self.assertIn("Dashboard module boundaries", dashboard)
         self.assertIn("dashboard_state.py", dashboard)
         self.assertIn("## Browser state and evidence views", dashboard)

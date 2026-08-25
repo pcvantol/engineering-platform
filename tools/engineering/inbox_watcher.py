@@ -54,6 +54,7 @@ from .dependabot_admission import (
 )
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
 from .execution_lease import liveness as lease_liveness, reconcile_stale
+from .dashboard_configuration import get as dashboard_configuration
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
 from .status_reconciliation import is_stale_rolling_status_block
@@ -76,6 +77,13 @@ RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
+
+
+def _configured_scan_interval(repo: Path, fallback: float) -> float:
+    try:
+        return float(dashboard_configuration(repo)["inbox_scan_interval_seconds"])
+    except (EngineeringStorageError, KeyError, TypeError, ValueError):
+        return max(5, fallback)
 
 
 class RetrySubmissionError(ValueError):
@@ -2002,7 +2010,12 @@ def launch_agent(repo: Path) -> Path:
     runtime_environment = execution_host_configuration(repo).runtime_environment()
     environment = runtime_environment["PATH"]
     runtime_executable = runtime_environment[RUNTIME_EXECUTABLE_ENVIRONMENT]
-    log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
+    try:
+        # Keep the watcher aligned with the durable dashboard preference when
+        # its LaunchAgent is regenerated during setup or an upgrade.
+        log_level = str(dashboard_configuration(repo)["log_level"]).upper()
+    except (EngineeringStorageError, KeyError, TypeError, ValueError):
+        log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
     if log_level not in VALID_LEVELS:
         log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
@@ -2114,8 +2127,9 @@ def main(argv: list[str] | None = None) -> int:
                     log_event(logger, logging.INFO, "watcher_started", context=lifecycle_context)
                     try:
                         while True:
+                            interval = _configured_scan_interval(repo, args.interval)
                             try:
-                                once(repo, root, 1.0, background=True)
+                                once(repo, root, interval, background=True)
                             except RuntimeError as error:
                                 # An older detached runner may still own the
                                 # pre-fix lock.  Its lock must not prevent this
@@ -2141,7 +2155,7 @@ def main(argv: list[str] | None = None) -> int:
                                         diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                                     )
                                     log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
-                            time.sleep(max(5, args.interval))
+                            time.sleep(interval)
                     finally:
                         log_event(
                             logger,

@@ -33,6 +33,26 @@ resolver. It selects Runtime Prompt transport, local evidence stores, runtime
 and safe host identity. The current iCloud Inbox is transport only; Forge never
 receives its path or any dashboard, launchd or local-storage detail.
 
+## Telemetry retention and exports
+
+Execution Host telemetry is operational observability, not repository evidence.
+The dashboard keeps it for a configurable rolling period of **30, 60, 90, 120,
+180 or 360 days**; the default is 90 days. The selected period determines both
+the retained daily and per-run telemetry and the period shown in the telemetry
+dashboard.
+
+Lowering the period always asks for explicit confirmation before the
+transactional cleanup runs. Cleanup removes only expired rebuildable telemetry
+rows (`execution_runs` and daily execution statistics). It never removes
+Execution Receipts, Engineering Reports, Prompt History, retry lineage or
+repository evidence. Operators can export telemetry and download a consistent
+database snapshot for offline backup before changing retention.
+
+The daily telemetry detail keeps wide per-run evidence in its own horizontally
+scrollable table region. This prevents a wide table from making the complete
+detail dialog scroll sideways, while retaining access to every column on narrow
+screens.
+
 ## Operator actions
 
 - **Pull-request merge hand-off** is shown as a persistent, dashboard-native

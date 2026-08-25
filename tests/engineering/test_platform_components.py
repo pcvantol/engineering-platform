@@ -53,7 +53,10 @@ class PlatformBootstrapTest(unittest.TestCase):
 
 class ProviderContractTest(unittest.TestCase):
     @patch("tools.engineering.providers.shutil.which", return_value=None)
-    def test_unavailable_runtime_and_service_providers_are_unqualified(self, _: object) -> None:
+    @patch("tools.engineering.providers.codex_cli_executable", return_value=None)
+    def test_unavailable_runtime_and_service_providers_are_unqualified(
+        self, _: object, __: object
+    ) -> None:
         self.assertFalse(CodexCliProvider().status().qualified)
         self.assertFalse(LaunchdProvider().status().qualified)
         self.assertFalse(TailscaleProvider().status().qualified)

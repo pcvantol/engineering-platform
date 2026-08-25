@@ -373,7 +373,88 @@ function usage(x) {
     )
     .join(String.fromCharCode(10));
 }
-function rateLimits(x) {
+function renderCapacityTrend(history) {
+  const card = $("rateLimits"), details = $("rateLimitDetails");
+  if (!card || !details) return;
+  let trend = $("rateLimitTrend");
+  if (!trend) {
+    trend = document.createElement("section");
+    trend.className = "rate-limit-trend";
+    trend.id = "rateLimitTrend";
+    const heading = document.createElement("h3"), description = document.createElement("p"), chart = document.createElement("div");
+    heading.className = "rate-limit-trend__title";
+    heading.id = "rateLimitTrendTitle";
+    description.className = "rate-limit-trend__description";
+    chart.className = "rate-limit-trend__chart";
+    chart.id = "rateLimitTrendChart";
+    trend.append(heading, description, chart);
+    details.closest(".field")?.after(trend);
+  }
+  $("rateLimitTrendTitle").textContent = t("rate_limit.trend_title");
+  trend.querySelector(".rate-limit-trend__description").textContent = t("rate_limit.trend_description");
+  const points = (Array.isArray(history) ? history : [])
+    .map((point) => ({ at: Date.parse(String(point?.at || "")), remaining: Number(point?.remaining_percent) }))
+    .filter((point) => Number.isFinite(point.at) && Number.isFinite(point.remaining) && point.remaining >= 0 && point.remaining <= 100)
+    .sort((left, right) => left.at - right.at);
+  const chart = $("rateLimitTrendChart");
+  chart.replaceChildren();
+  if (!points.length) return;
+  const latest = points.at(-1), latestPercent = locale.number(latest.remaining, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const namespace = "http://www.w3.org/2000/svg", svg = document.createElementNS(namespace, "svg"), title = document.createElementNS(namespace, "title"), width = 336, height = 120, padding = { top: 10, right: 8, bottom: 22, left: 32 }, now = Date.now(), start = now - 7 * 24 * 60 * 60 * 1000;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-labelledby", "rateLimitTrendSvgTitle");
+  title.id = "rateLimitTrendSvgTitle";
+  title.textContent = t("rate_limit.trend_aria", { percent: latestPercent });
+  svg.append(title);
+  const innerWidth = width - padding.left - padding.right, innerHeight = height - padding.top - padding.bottom;
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const grid = document.createElementNS(namespace, "line"), y = padding.top + innerHeight * fraction;
+    grid.setAttribute("class", "rate-limit-trend__grid");
+    grid.setAttribute("x1", String(padding.left)); grid.setAttribute("x2", String(width - padding.right));
+    grid.setAttribute("y1", String(y)); grid.setAttribute("y2", String(y)); svg.append(grid);
+    const label = document.createElementNS(namespace, "text");
+    label.setAttribute("class", "rate-limit-trend__axis-label"); label.setAttribute("text-anchor", "end");
+    label.setAttribute("x", String(padding.left - 5)); label.setAttribute("y", String(y + 3));
+    label.textContent = `${locale.number((1 - fraction) * 100, { maximumFractionDigits: 0 })}%`; svg.append(label);
+  }
+  for (let day = 0; day <= 7; day += 1) {
+    const grid = document.createElementNS(namespace, "line"), x = padding.left + innerWidth * (day / 7);
+    grid.setAttribute("class", "rate-limit-trend__grid");
+    grid.setAttribute("x1", String(x)); grid.setAttribute("x2", String(x));
+    grid.setAttribute("y1", String(padding.top)); grid.setAttribute("y2", String(height - padding.bottom)); svg.append(grid);
+  }
+  const coordinates = points.map((point) => ({
+    ...point,
+    x: padding.left + Math.max(0, Math.min(1, (point.at - start) / (now - start))) * innerWidth,
+    y: padding.top + (1 - point.remaining / 100) * innerHeight,
+  }));
+  let pathData = "", previous;
+  for (const point of coordinates) {
+    pathData += !previous || point.at - previous.at > 90 * 60 * 1000
+      ? `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
+      : ` L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    previous = point;
+  }
+  const path = document.createElementNS(namespace, "path");
+  path.setAttribute("class", "rate-limit-trend__line"); path.setAttribute("d", pathData); svg.append(path);
+  for (const point of coordinates) {
+    const marker = document.createElementNS(namespace, "circle");
+    marker.setAttribute("class", "rate-limit-trend__point"); marker.setAttribute("cx", point.x.toFixed(2)); marker.setAttribute("cy", point.y.toFixed(2)); marker.setAttribute("r", "2.4"); svg.append(marker);
+  }
+  const dayFormatter = new Intl.DateTimeFormat(dashboardLocale, { weekday: "short" });
+  // Label every day boundary: the rolling window runs from seven days ago through now.
+  for (let day = 0; day <= 7; day += 1) {
+    const label = document.createElementNS(namespace, "text"), x = padding.left + innerWidth * (day / 7);
+    label.setAttribute("class", "rate-limit-trend__axis-label");
+    if (day === 7) label.setAttribute("text-anchor", "end");
+    else if (day > 0) label.setAttribute("text-anchor", "middle");
+    label.setAttribute("x", String(x)); label.setAttribute("y", String(height - 4));
+    label.textContent = dayFormatter.format(new Date(start + day * 24 * 60 * 60 * 1000)); svg.append(label);
+  }
+  chart.append(svg);
+}
+function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   const windows = Array.isArray(x?.windows) ? x.windows : [],
     credits = Number.isInteger(x?.reset_credits) ? x.reset_credits : null,
     provider =
@@ -382,10 +463,15 @@ function rateLimits(x) {
       typeof x?.provider_version === "string"
         ? x.provider_version
         : t("format.version_unavailable"),
+    providerPath =
+      typeof x?.provider_path === "string" && x.provider_path.trim()
+        ? x.provider_path.trim()
+        : t("format.not_available"),
     button = $("rateLimitReset");
   $("rateLimits").hidden =
     !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
+  $("rateLimitProviderPath").textContent = providerPath;
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -400,8 +486,72 @@ function rateLimits(x) {
   });
   if (credits !== null) lines.push(t("ui.available_resets", { count: credits }));
   $("rateLimitDetails").textContent = lines.join(String.fromCharCode(10));
+  renderCapacityTrend(history);
   button.hidden = !(credits > 0);
   button.disabled = false;
+}
+let latestCodexCliUpdateStatus = null;
+function renderCodexCliUpdate(status) {
+  const button = $("codexCliUpdate"), message = $("codexCliUpdateStatus");
+  if (!button || !message) return;
+  latestCodexCliUpdateStatus = status;
+  const current = typeof status?.current_version === "string" ? status.current_version : null,
+    latest = typeof status?.latest_version === "string" ? status.latest_version : null,
+    executionActive = isActiveRun(latestStatus || {});
+  button.hidden = !status?.update_available;
+  button.disabled = Boolean(status?.update_available && executionActive);
+  button.title = button.disabled ? t("ui.codex_cli_update_execution_active") : "";
+  if (status?.update_available && executionActive) {
+    message.textContent = t("ui.codex_cli_update_execution_active");
+  } else if (status?.update_available && latest) {
+    message.textContent = t("ui.codex_cli_update_available", { version: latest });
+  } else if (status?.state === "current" && current) {
+    message.textContent = t("ui.codex_cli_current", { version: current });
+  } else {
+    message.textContent = t("ui.codex_cli_update_unavailable");
+  }
+}
+async function checkCodexCliUpdate() {
+  try {
+    const response = await fetch("/api/codex-cli-update", { cache: "no-store" });
+    if (!response.ok) throw Error();
+    renderCodexCliUpdate(await response.json());
+  } catch {
+    renderCodexCliUpdate({ state: "unavailable", update_available: false });
+  }
+}
+function installCodexCliUpdate() {
+  const button = $("codexCliUpdate"), message = $("codexCliUpdateStatus");
+  if (!button || button.hidden || button.disabled) return;
+  confirmDashboardAction(
+    t("ui.codex_cli_update"),
+    t("ui.codex_cli_update_confirmation"),
+    t("ui.codex_cli_update"),
+  ).then((confirmed) => {
+    if (!confirmed) return;
+    button.disabled = true;
+    message.textContent = t("ui.codex_cli_update_installing");
+    fetch("/api/codex-cli-update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+      .then((result) => {
+        if (!result.ok) throw Error(result.body?.error || "codex_cli_update_failed");
+        const version = typeof result.body?.current_version === "string" ? result.body.current_version : "";
+        if (version) $("rateLimitProvider").textContent = t("ui.codex_cli_provider", { version });
+        button.hidden = true;
+        message.textContent = result.body?.updated
+          ? t("ui.codex_cli_updated", { version })
+          : t("ui.codex_cli_current", { version });
+      })
+      .catch((error) => {
+        const key = error instanceof Error ? error.message : "codex_cli_update_failed";
+        message.textContent = t("ui." + key, {}, t("ui.codex_cli_update_failed"));
+      })
+      .finally(() => { button.disabled = false; });
+  });
 }
 function consumeRateLimitReset() {
   const button = $("rateLimitReset"),
@@ -534,6 +684,7 @@ function queueItems(x, queueDepth) {
       Number.isInteger(queueDepth) && queueDepth >= 0
         ? queueDepth
         : items.length;
+  syncInboxLocationChangeAvailability(depth);
   $("queueSummary").textContent =
     depth === 0
       ? t("queue.summary_zero")
@@ -666,6 +817,14 @@ function renderMarkdownDocument(target, value) {
 }
 let componentLogsLoaded = false,
   componentLogEntries = { inbox: [], dashboard: [] };
+function isUnhelpfulHttpServerDebugLog(entry) {
+  return (
+    String(entry?.level || "").toUpperCase() === "DEBUG" &&
+    String(entry?.event || "").trim().toLowerCase() ===
+      "http_server_message" &&
+    String(entry?.diagnostic || "").trim() === '"%s" %s %s'
+  );
+}
 function structuredLogEntries(text) {
   const normalized = String(text ?? "").trim();
   if (!normalized || !normalized.startsWith("{")) return [];
@@ -677,6 +836,7 @@ function structuredLogEntries(text) {
         const entry = JSON.parse(line);
         if (!entry || typeof entry !== "object" || Array.isArray(entry))
           throw Error("not an object");
+        if (isUnhelpfulHttpServerDebugLog(entry)) return null;
         const known = new Set([
             "timestamp",
             "level",
@@ -711,7 +871,8 @@ function structuredLogEntries(text) {
           details: line,
         };
       }
-    });
+    })
+    .filter(Boolean);
 }
 function logEventLabel(value) {
   const event = String(value || "").trim();
@@ -1578,6 +1739,7 @@ function renderHealthStatus(x, snapshot = {}) {
   clock();
   x = x && typeof x === "object" ? x : fallback;
   latestStatus = x;
+  if (latestCodexCliUpdateStatus) renderCodexCliUpdate(latestCodexCliUpdateStatus);
   latestDashboardSnapshot = snapshot;
   latestDurationEstimate = snapshot.duration_estimate || {};
   let active = isActiveRun(x),
@@ -1671,7 +1833,7 @@ function renderHealthStatus(x, snapshot = {}) {
     components.dashboard || t("format.not_available");
   $("workerVersion").textContent = components.worker || t("format.not_available");
   usage(snapshot.usage);
-  rateLimits(snapshot.rate_limits);
+  rateLimits(snapshot.rate_limits, snapshot.ai_capacity_history);
   activeReviewerAgents(x.reviewer_agents, x);
 }
 let activePromptCategoryRun;
@@ -1726,12 +1888,55 @@ function renderWorkspaceGit(workspaceGit) {
   $("workspaceOriginMain").hidden = !workspaceGit.origin_main_available;
   $("workspaceBranchMain").hidden = !workspaceGit.main_action_available;
 }
-const OPEN_PULL_REQUEST_MONITOR_INTERVAL_MS = 30_000;
+function renderWorkspaceWorktrees(projection) {
+  const workspace = $("workspaceCard");
+  if (!workspace) return;
+  let section = $("workspaceWorktrees");
+  if (!section) {
+    section = document.createElement("section");
+    section.id = "workspaceWorktrees";
+    section.className = "workspace-worktrees";
+    const anchor = $("workspaceOpenPullRequests") || workspace.querySelector(".workspace-branch-actions");
+    workspace.insertBefore(section, anchor || null);
+  }
+  section.replaceChildren();
+  const heading = document.createElement("strong");
+  heading.textContent = t("workspace.local_worktrees");
+  section.append(heading);
+  const available = projection?.available === true;
+  const worktrees = Array.isArray(projection?.worktrees) ? projection.worktrees : [];
+  if (!available || !worktrees.length) {
+    const empty = document.createElement("p");
+    empty.className = "workspace-worktrees__empty";
+    empty.textContent = available
+      ? t("workspace.no_local_worktrees")
+      : t("workspace.worktrees_unavailable");
+    section.append(empty);
+    return;
+  }
+  const list = document.createElement("ul");
+  worktrees.forEach((worktree) => {
+    const item = document.createElement("li");
+    const branch = document.createElement("code");
+    const path = document.createElement("code");
+    const commit = document.createElement("code");
+    branch.className = "workspace-worktrees__branch";
+    path.className = "workspace-worktrees__path";
+    commit.className = "workspace-worktrees__commit";
+    branch.textContent = worktree?.branch || t("workspace.detached_head");
+    path.textContent = String(worktree?.path || t("format.not_available"));
+    commit.textContent = String(worktree?.commit || t("format.not_available"));
+    item.append(branch, path, commit);
+    list.append(item);
+  });
+  section.append(list);
+}
+let openPullRequestMonitorIntervalMs = 30_000;
 let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;
 const openPullRequestStatusByNumber = new Map();
 const openPullRequestOwnerApprovalByNumber = new Map();
 const OPEN_PULL_REQUEST_STATES = ["draft", "waiting_for_checks", "ready_for_review", "ready_to_merge", "branch_update_required", "issues"];
-const OPEN_PULL_REQUEST_OWNER_APPROVAL_STATES = ["pending", "approved", "changes_requested"];
+const OPEN_PULL_REQUEST_OWNER_APPROVAL_STATES = ["not_required", "pending", "approved", "changes_requested"];
 function openPullRequestStatusKey(status) {
   return {
     draft: "workspace.open_pull_request.draft",
@@ -1798,7 +2003,17 @@ function renderOpenPullRequests(pullRequests) {
     approval.className = "open-pr-approval";
     setOpenPullRequestOwnerApproval(approval, pullRequest.owner_approval);
     branch.textContent = String(pullRequest.branch || "");
-    item.append(link, status, approval, branch);
+    item.append(link, status, approval);
+    if (pullRequest.owner_authorization_requested === true) {
+      const authorize = document.createElement("button");
+      authorize.className = "open-pr-owner-authorization";
+      authorize.dataset.openPullRequestOwnerAuthorization = String(pullRequest.number || "");
+      authorize.type = "button";
+      authorize.textContent = t("workspace.open_pull_request.authorize_owner");
+      authorize.title = t("workspace.open_pull_request.authorize_owner");
+      item.append(authorize);
+    }
+    item.append(branch);
     return item;
   }));
   localizeOpenPullRequestStatuses();
@@ -1806,13 +2021,15 @@ function renderOpenPullRequests(pullRequests) {
 function scheduleOpenPullRequestMonitor(pullRequests) {
   clearTimeout(openPullRequestMonitorTimer);
   openPullRequestMonitorTimer = null;
-  if (Array.isArray(pullRequests) && pullRequests.some((pullRequest) => pullRequest.status === "waiting_for_checks")) {
-    openPullRequestMonitorTimer = setTimeout(() => void refreshOpenPullRequests(), OPEN_PULL_REQUEST_MONITOR_INTERVAL_MS);
+  if (Array.isArray(pullRequests) && pullRequests.length > 0) {
+    openPullRequestMonitorTimer = setTimeout(() => void refreshOpenPullRequests(), openPullRequestMonitorIntervalMs);
   }
 }
 async function refreshOpenPullRequests() {
   if (openPullRequestMonitorInFlight) return;
   openPullRequestMonitorInFlight = true;
+  const refreshButton = $("workspaceOpenPullRequestsRefresh");
+  if (refreshButton) refreshButton.disabled = true;
   try {
     const response = await fetch("/api/open-pull-requests", { cache: "no-store" });
     const payload = response.ok ? await response.json() : null;
@@ -1821,13 +2038,62 @@ async function refreshOpenPullRequests() {
     renderOpenPullRequests(pullRequests);
     scheduleOpenPullRequestMonitor(pullRequests);
   } catch {
-    // Keep the last known, non-authoritative projection visible and retry only
-    // while it says that GitHub checks are still in progress.
-    scheduleOpenPullRequestMonitor([...document.querySelectorAll(".open-pr-status--waiting_for_checks")].map(() => ({ status: "waiting_for_checks" })));
+    // Keep the last known, non-authoritative projection visible and continue
+    // checking every open PR: a new push can change a green status at any time.
+    scheduleOpenPullRequestMonitor([...document.querySelectorAll(".open-pr-status")]);
   } finally {
     openPullRequestMonitorInFlight = false;
+    if (refreshButton) refreshButton.disabled = false;
   }
 }
+function ownerAuthorizationErrorMessage(error) {
+  const code = String(error || "").trim();
+  const key = `workspace.open_pull_request.${code}`;
+  return DASHBOARD_MESSAGES[dashboardLocale]?.[key] || t("ui.action_failed");
+}
+function refreshOpenPullRequestsAfterOwnerAuthorization() {
+  void refreshOpenPullRequests();
+  // GitHub dispatch is accepted before its status check is materialized.  Read
+  // the authoritative projection again shortly afterwards instead of leaving
+  // an owner-approval control stale until the normal polling interval.
+  // The workflow dispatch is asynchronous: GitHub can accept it while the
+  // exact-SHA status is still one projection cycle away. Keep a final retry at
+  // twice the previous wait so the user does not see a false failure at the
+  // edge of that propagation window.
+  for (const delay of [900, 2500, 6000, 12000]) {
+    setTimeout(() => void refreshOpenPullRequests(), delay);
+  }
+}
+async function requestOpenPullRequestOwnerAuthorization(button) {
+  const number = Number(button?.dataset.openPullRequestOwnerAuthorization);
+  if (!Number.isInteger(number) || number < 1) return;
+  const confirmed = await confirmDashboardAction(
+    t("workspace.open_pull_request.authorize_owner"),
+    t("workspace.open_pull_request.authorize_owner_confirmation"),
+    t("workspace.open_pull_request.authorize_owner"),
+    { accent: "#f3d36a", variant: "owner-authorization" },
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/open-pull-requests/${number}/owner-authorization`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw Error(payload?.error);
+    showDashboardToast(t("workspace.open_pull_request.owner_authorization_queued"));
+    refreshOpenPullRequestsAfterOwnerAuthorization();
+  } catch (error) {
+    showDashboardToast(ownerAuthorizationErrorMessage(error?.message));
+  } finally {
+    button.disabled = false;
+  }
+}
+document.addEventListener("click", (event) => {
+  const authorize = event.target.closest("[data-open-pull-request-owner-authorization]");
+  if (authorize) void requestOpenPullRequestOwnerAuthorization(authorize);
+  else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests();
+});
 let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
   updateModeKey = key;
@@ -1845,6 +2111,7 @@ async function loadInitialDashboardStatus() {
     if (receivedDashboardServerPush) return;
     dashboardStatusStore.update(snapshot.status, snapshot);
     renderWorkspaceGit(snapshot.workspace_git);
+    renderWorkspaceWorktrees(snapshot.workspace_worktrees);
     humanize();
     checkBuild(snapshot.build_commit);
     setUpdateMode("refresh.connecting");
@@ -1869,6 +2136,7 @@ function startDashboardUpdates() {
       receivedDashboardServerPush = true;
       dashboardStatusStore.update(snapshot.status, snapshot);
       renderWorkspaceGit(snapshot.workspace_git);
+      renderWorkspaceWorktrees(snapshot.workspace_worktrees);
       const terminalRun = snapshot.status?.last_executed_run;
       if (terminalRun && terminalRun !== promptHistoryTerminalRun) {
         promptHistoryTerminalRun = terminalRun;
@@ -2014,7 +2282,7 @@ function localizeLogControls() {
 }
 function localizePromptHistoryTable() {
   const headers = [
-    "table.status", "table.prompt_title", "table.executed_at", "table.report",
+    "table.run_suffix", "table.status", "table.prompt_title", "table.executed_at", "table.report",
     "table.analysis", "table.chat", "table.action", "table.details",
   ];
   document.querySelectorAll("#promptHistory .log-table thead th").forEach((header, index) => {
@@ -2063,6 +2331,7 @@ function addCategoryIcons() {
     ["#executionTelemetry", "▥", "section.execution_host_telemetry"],
     ["#technicalDetails", "⌘", "section.technical_details"],
     ["#componentLogs", "≡", "section.logs"],
+    ["#configuration", "⚙︎", "section.configuration"],
     ["#currentRun", "▤", "section.active_prompt"],
   ]) {
     const summary = document.querySelector(selector + ">summary"),
@@ -2089,6 +2358,7 @@ function addCategoryDescriptions() {
     ["#promptHistory", "description.prompt_history"],
     ["#rateLimits", "description.remaining_usage"],
     ["#componentLogs", "description.logs"],
+    ["#configuration", "description.configuration"],
     ["#engineering-dashboard-content>.technical-details:not(#componentLogs)", "description.technical_details"],
     ["#platformHealth", "description.platform_components"],
   ];
@@ -2134,6 +2404,10 @@ function arrangeOperationalCategories() {
 }
 arrangeOperationalCategories();
 $("rateLimitReset").addEventListener("click", consumeRateLimitReset);
+$("codexCliUpdate")?.addEventListener("click", installCodexCliUpdate);
+$("rateLimits")?.addEventListener("toggle", () => {
+  if ($("rateLimits").open) void checkCodexCliUpdate();
+});
 function addTestIds() {
   const toTestId = (value) =>
     "engineering-" +
@@ -2390,8 +2664,8 @@ function healthComponentLabel(component) {
     dashboard_relay: t("component.dashboard_relay"),
   }[component] || component;
 }
-let healthRequestInFlight = false;
-const componentDetailsRefreshIntervalMs = 5e3;
+let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;
+let componentDetailsRefreshIntervalMs = 5e3;
 let activeComponentDetails = null,
   componentDetailsRefreshTimer = null,
   componentDetailsRefreshInFlight = false;
@@ -2663,7 +2937,11 @@ async function refreshPlatformHealth() {
   }
 }
 refreshPlatformHealth();
-window.setInterval(refreshPlatformHealth, 15e3);
+function schedulePlatformHealthRefresh() {
+  if (platformHealthRefreshTimer !== null) window.clearInterval(platformHealthRefreshTimer);
+  platformHealthRefreshTimer = window.setInterval(refreshPlatformHealth, platformHealthRefreshIntervalMs);
+}
+schedulePlatformHealthRefresh();
 function arrangeCurrentRunCategory() {
   const current = $("currentRun"),
     summary = current?.querySelector(":scope>summary"),
@@ -2728,7 +3006,7 @@ function renderLegacyExecutionTelemetry(rows) {
       tableBody = document.createElement("tbody");
     title.textContent = t("telemetry.title");
     description.className = "category-description";
-    description.textContent = t("telemetry.description");
+    description.textContent = t("telemetry.description", { days: dashboardConfiguration.telemetry_retention_days || 90 });
     scroll.className = "telemetry-scroll";
     table.className = "telemetry-table";
     table.setAttribute("aria-label", t("telemetry.table_label"));
@@ -2796,9 +3074,101 @@ function telemetryDate(value) {
   const match = typeof value === "string" && value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return match ? match[3] + "-" + match[2] + "-" + match[1] : String(value ?? "—");
 }
+const executionTelemetryColumns = [
+  ["date", "telemetry.day"], ["prompt_count", "telemetry.prompts"],
+  ["average_total_execution_seconds", "telemetry.average_total"],
+  ["average_queue_wait_seconds", "telemetry.average_wait"],
+  ["input_tokens", "telemetry.input"], ["output_tokens", "telemetry.output"],
+  ["total_tokens", "telemetry.total"], ["complete_count", "telemetry.complete"],
+  ["blocked_count", "telemetry.blocked"], ["failed_count", "telemetry.failed"],
+];
+const EXECUTION_TELEMETRY_PAGE_SIZE = 7;
+let executionTelemetryRows = [], executionTelemetryPage = 1, executionTelemetrySort = { key: "date", direction: "desc" };
+function telemetryComparableValue(row, key) {
+  const value = row?.[key];
+  return key === "date" ? String(value || "") : Number.isFinite(Number(value)) ? Number(value) : -1;
+}
+function sortedExecutionTelemetryRows() {
+  const { key, direction } = executionTelemetrySort, multiplier = direction === "asc" ? 1 : -1;
+  return [...executionTelemetryRows].sort((left, right) => {
+    const leftValue = telemetryComparableValue(left, key), rightValue = telemetryComparableValue(right, key);
+    return typeof leftValue === "number"
+      ? (leftValue - rightValue) * multiplier
+      : (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0) * multiplier;
+  });
+}
+function updateExecutionTelemetrySortHeaders() {
+  document.querySelectorAll("#executionTelemetry .telemetry-table th[data-sort-key]").forEach((header) => {
+    const active = header.dataset.sortKey === executionTelemetrySort.key;
+    // Keep exactly the same text arrows as the component log table. Unlike
+    // emoji variation glyphs, these inherit the header's mono font and baseline.
+    header.dataset.sortIndicator = active
+      ? executionTelemetrySort.direction === "asc" ? "↑" : "↓"
+      : "↕";
+    header.setAttribute("aria-sort", active ? executionTelemetrySort.direction === "asc" ? "ascending" : "descending" : "none");
+  });
+}
+function blurSortableHeaderAfterPointerClick(event) {
+  // Pointer activation should not leave a visual selection behind. Keyboard
+  // activation keeps focus so the header remains operable and discoverable.
+  if (event.detail > 0 && event.currentTarget instanceof HTMLElement)
+    event.currentTarget.blur();
+}
+function setExecutionTelemetrySort(key) {
+  executionTelemetrySort = executionTelemetrySort.key === key
+    ? { key, direction: executionTelemetrySort.direction === "asc" ? "desc" : "asc" }
+    : { key, direction: key === "date" ? "desc" : "asc" };
+  executionTelemetryPage = 1;
+  executionTelemetry(executionTelemetryRows);
+}
+function executionTelemetryText(rows = sortedExecutionTelemetryRows()) {
+  const headings = executionTelemetryColumns.map(([, label]) => t(label));
+  const values = rows.map((row) => [
+    telemetryDate(row.date), row.prompt_count, telemetryDuration(row.average_total_execution_seconds),
+    telemetryDuration(row.average_queue_wait_seconds), row.input_tokens ?? "—", row.output_tokens ?? "—",
+    row.total_tokens ?? "—", row.complete_count, row.blocked_count, row.failed_count,
+  ]);
+  return [headings, ...values].map((line) => line.map((value) => String(value ?? "—").replaceAll("\t", " ").replaceAll("\n", " ")).join("\t")).join("\n");
+}
+function downloadExecutionTelemetry() {
+  if (!executionTelemetryRows.length) return;
+  const blob = new Blob([executionTelemetryText()], { type: "text/tab-separated-values;charset=utf-8" });
+  const url = URL.createObjectURL(blob), link = document.createElement("a");
+  link.href = url;
+  link.download = "execution-host-telemetry.tsv";
+  link.click();
+  URL.revokeObjectURL(url);
+  void recordUserAction("telemetry_downloaded");
+}
+async function copyExecutionTelemetry() {
+  if (!executionTelemetryRows.length) return;
+  await copyText(executionTelemetryText());
+  void recordUserAction("telemetry_copied");
+}
+async function clearExecutionTelemetry() {
+  if (!executionTelemetryRows.length) return;
+  const confirmed = await confirmDashboardAction(
+    t("telemetry.clear_title"), t("telemetry.clear_description"), t("telemetry.clear_title"),
+    { destructive: true, accent: "#fb7185" },
+  );
+  if (!confirmed) return;
+  try {
+    const response = await fetch("/api/telemetry/clear", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.cleared) throw new Error(payload.error || t("telemetry.clear_failed"));
+    executionTelemetryPage = 1;
+    executionTelemetry([]);
+    void recordUserAction("telemetry_cleared");
+  } catch (error) {
+    showDashboardToast(error instanceof Error && error.message ? error.message : t("telemetry.clear_failed"));
+  }
+}
 function executionTelemetry(rows) {
   let panel = $("executionTelemetry"),
-    body = $("executionTelemetryRows");
+    body = $("executionTelemetryRows"),
+    pagination = $("executionTelemetryPagination");
   if (!panel) {
     panel = document.createElement("details");
     panel.id = "executionTelemetry";
@@ -2810,37 +3180,109 @@ function executionTelemetry(rows) {
       table = document.createElement("table"),
       head = document.createElement("thead"),
       headRow = document.createElement("tr"),
-      tableBody = document.createElement("tbody");
+      tableBody = document.createElement("tbody"),
+      navigation = document.createElement("nav"),
+      actions = document.createElement("div"),
+      download = document.createElement("button"),
+      copy = document.createElement("button"),
+      clear = document.createElement("button"),
+      retention = document.createElement("div"),
+      retentionLabel = document.createElement("label"),
+      retentionText = document.createElement("span"),
+      retentionSelect = document.createElement("select"),
+      retentionStatus = document.createElement("p");
     title.textContent = t("telemetry.title");
     description.className = "category-description";
-    description.textContent = t("telemetry.description");
+    description.textContent = t("telemetry.description", { days: dashboardConfiguration.telemetry_retention_days || 90 });
+    retention.className = "configuration-controls telemetry-retention";
+    retentionText.className = "label";
+    retentionText.textContent = t("configuration.telemetry_retention");
+    retentionSelect.id = "configurationTelemetryRetention";
+    retentionSelect.setAttribute("aria-label", t("configuration.telemetry_retention"));
+    for (const days of [30, 60, 90, 120, 180, 360]) {
+      const option = document.createElement("option");
+      option.value = String(days);
+      option.textContent = t("configuration.days", { days });
+      retentionSelect.append(option);
+    }
+    retentionSelect.value = String(dashboardConfiguration.telemetry_retention_days || 90);
+    retentionSelect.dataset.savedValue = retentionSelect.value;
+    retentionSelect.disabled = !dashboardConfigurationLoaded;
+    retentionSelect.addEventListener("change", (event) => void saveDashboardConfiguration(event.currentTarget));
+    retentionLabel.append(retentionText, retentionSelect);
+    retentionStatus.id = "telemetryRetentionStatus";
+    retentionStatus.setAttribute("role", "status");
+    retentionStatus.setAttribute("aria-live", "polite");
+    retention.append(retentionLabel, retentionStatus);
     scroll.className = "telemetry-scroll";
     table.className = "telemetry-table";
     table.setAttribute("aria-label", t("telemetry.table_label"));
-    for (const label of [
-      "telemetry.day", "telemetry.prompts", "telemetry.average_total",
-      "telemetry.average_wait",
-      "telemetry.input", "telemetry.output", "telemetry.total", "telemetry.complete",
-      "telemetry.blocked", "telemetry.failed",
-    ].map((key) => t(key))) {
+    for (const [key, label] of executionTelemetryColumns) {
       const cell = document.createElement("th");
       cell.scope = "col";
-      cell.textContent = label;
+      cell.className = "log-sortable";
+      cell.dataset.sortKey = key;
+      cell.tabIndex = 0;
+      cell.textContent = t(label);
+      cell.setAttribute("aria-label", t("table.sort_by", { column: cell.textContent }));
+      cell.addEventListener("click", (event) => {
+        setExecutionTelemetrySort(key);
+        blurSortableHeaderAfterPointerClick(event);
+      });
+      cell.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setExecutionTelemetrySort(key); }
+      });
       headRow.append(cell);
     }
     head.append(headRow);
     tableBody.id = "executionTelemetryRows";
     table.append(head, tableBody);
     scroll.append(table);
+    navigation.id = "executionTelemetryPagination";
+    navigation.className = "log-pagination telemetry-pagination";
+    navigation.setAttribute("aria-label", t("telemetry.pagination_label"));
+    actions.className = "log-card-actions telemetry-actions";
+    for (const [button, className, glyph, label, handler] of [
+      [download, "dashboard-action dashboard-action--download telemetry-download", "↓", "telemetry.download", downloadExecutionTelemetry],
+      [copy, "dashboard-action dashboard-action--copy telemetry-copy", "⧉", "telemetry.copy", copyExecutionTelemetry],
+      [clear, "dashboard-action dashboard-action--destructive telemetry-clear", "⊠", "telemetry.clear_title", clearExecutionTelemetry],
+    ]) {
+      button.type = "button";
+      button.className = className;
+      button.textContent = glyph;
+      button.title = t(label);
+      button.setAttribute("aria-label", t(label));
+      button.addEventListener("click", handler);
+      actions.append(button);
+    }
     summary.append(title, description);
-    panel.append(summary, scroll);
+    panel.append(summary, retention, actions, scroll, navigation);
     const rate = $("rateLimits");
     rate?.insertAdjacentElement("afterend", panel);
     body = tableBody;
+    pagination = navigation;
+    enhanceDashboardSelectPicker(retentionSelect);
+    addConfigurationControlInfo();
   }
+  const telemetryRetention = $("configurationTelemetryRetention");
+  if (telemetryRetention) {
+    telemetryRetention.value = String(dashboardConfiguration.telemetry_retention_days || 90);
+    telemetryRetention.dataset.savedValue = telemetryRetention.value;
+    syncDashboardSelectPicker(telemetryRetention);
+  }
+  panel.querySelector(".category-description").textContent = t(
+    "telemetry.description", { days: dashboardConfiguration.telemetry_retention_days || 90 },
+  );
+  executionTelemetryRows = (Array.isArray(rows) ? rows : []).filter((row) => row && typeof row === "object");
+  panel.querySelectorAll(".telemetry-actions button").forEach((button) => button.disabled = !executionTelemetryRows.length);
+  const sorted = sortedExecutionTelemetryRows(), pageCount = Math.max(1, Math.ceil(sorted.length / EXECUTION_TELEMETRY_PAGE_SIZE));
+  executionTelemetryPage = Math.min(Math.max(1, executionTelemetryPage), pageCount);
+  const visibleRows = sorted.slice(
+    (executionTelemetryPage - 1) * EXECUTION_TELEMETRY_PAGE_SIZE,
+    executionTelemetryPage * EXECUTION_TELEMETRY_PAGE_SIZE,
+  );
   body.replaceChildren();
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!row || typeof row !== "object") continue;
+  for (const row of visibleRows) {
     const line = document.createElement("tr");
     line.className = "telemetry-row";
     line.tabIndex = 0;
@@ -2883,6 +3325,21 @@ function executionTelemetry(rows) {
     line.append(cell);
     body.append(line);
   }
+  pagination.replaceChildren();
+  if (sorted.length > EXECUTION_TELEMETRY_PAGE_SIZE) {
+    const summary = document.createElement("span"), previous = document.createElement("button"), next = document.createElement("button");
+    summary.className = "log-pagination__summary";
+    summary.textContent = t("telemetry.page", { page: executionTelemetryPage, pages: pageCount, count: sorted.length });
+    previous.type = next.type = "button";
+    previous.textContent = t("history.previous");
+    next.textContent = t("history.next");
+    previous.disabled = executionTelemetryPage <= 1;
+    next.disabled = executionTelemetryPage >= pageCount;
+    previous.addEventListener("click", () => { executionTelemetryPage -= 1; executionTelemetry(executionTelemetryRows); });
+    next.addEventListener("click", () => { executionTelemetryPage += 1; executionTelemetry(executionTelemetryRows); });
+    pagination.append(summary, previous, next);
+  }
+  updateExecutionTelemetrySortHeaders();
 }
 let telemetryDetailTrigger = null;
 function telemetryMs(value) { return typeof value === "number" && value >= 0 ? telemetryDuration(value / 1000) : t("format.unavailable"); }
@@ -2902,6 +3359,54 @@ function telemetryRunMetric(value, phaseTelemetry) {
   return phaseTelemetry === "RECORDED" ? t("telemetry.not_executed") : t("telemetry.not_recorded_short");
 }
 function telemetryLabel(phase) { return t("telemetry.phase." + String(phase || "").toLowerCase(), {}, String(phase || t("format.unavailable"))); }
+function telemetryDetailSortableTable(columns, rows, initialSort, appendRow) {
+  let sort = initialSort;
+  const table = document.createElement("table"), head = document.createElement("thead"), headRow = document.createElement("tr"), body = document.createElement("tbody"), headers = new Map();
+  table.className = "telemetry-table";
+  const compare = (left, right) => {
+    if (typeof left === "number" && typeof right === "number") return left - right;
+    return locale.compare(String(left ?? ""), String(right ?? ""));
+  };
+  const updateHeaders = () => headers.forEach((header, key) => {
+    const active = sort.key === key;
+    header.dataset.sortIndicator = active ? sort.direction === "asc" ? "↑" : "↓" : "↕";
+    header.setAttribute("aria-sort", active ? sort.direction === "asc" ? "ascending" : "descending" : "none");
+  });
+  const renderRows = () => {
+    const multiplier = sort.direction === "asc" ? 1 : -1;
+    const ordered = [...rows].sort((left, right) => compare(
+      columns.find((column) => column.key === sort.key).value(left),
+      columns.find((column) => column.key === sort.key).value(right),
+    ) * multiplier);
+    body.replaceChildren();
+    ordered.forEach((item) => appendRow(item, body));
+    updateHeaders();
+  };
+  columns.forEach((column) => {
+    const header = document.createElement("th");
+    header.scope = "col";
+    header.className = "log-sortable";
+    header.dataset.sortKey = column.key;
+    header.tabIndex = 0;
+    header.textContent = t(column.label);
+    header.setAttribute("aria-label", t("table.sort_by", { column: header.textContent }));
+    const activate = (event) => {
+      sort = sort.key === column.key
+        ? { key: column.key, direction: sort.direction === "asc" ? "desc" : "asc" }
+        : { key: column.key, direction: column.defaultDirection || "asc" };
+      renderRows();
+      blurSortableHeaderAfterPointerClick(event);
+    };
+    header.addEventListener("click", activate);
+    header.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(event); }
+    });
+    headers.set(column.key, header);
+    headRow.append(header);
+  });
+  head.append(headRow); table.append(head, body); renderRows();
+  return table;
+}
 function closeTelemetryDetail() { const modal = $("telemetryDetailModal"); if (modal.open) modal.close(); }
 function openTelemetryDetail(date, trigger) {
   if (!date) return;
@@ -2927,7 +3432,21 @@ function renderTelemetryDetail(detail, content) {
   const phases = Array.isArray(detail?.phases) ? detail.phases : [];
   const phaseSection = document.createElement("section"); phaseSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.phase_timing") }));
   if (!phases.length) phaseSection.append(Object.assign(document.createElement("p"), { textContent: detail?.phase_telemetry_available ? t("telemetry.not_executed") : t("telemetry.not_recorded") }));
-  else { const table = document.createElement("table"); table.className = "telemetry-table"; table.innerHTML = `<thead><tr>${["telemetry.phase", "telemetry.average", "telemetry.median", "telemetry.accumulated", "telemetry.share", "telemetry.runs"].map((key) => `<th>${t(key)}</th>`).join("")}</tr></thead>`; const body = document.createElement("tbody"); for (const phase of phases) { const row = document.createElement("tr"); [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs].forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value) }))); body.append(row); } table.append(body); phaseSection.append(table); } content.append(phaseSection);
+  else {
+    const phaseColumns = [
+      ["phase", "telemetry.phase"], ["average_ms", "telemetry.average"], ["median_ms", "telemetry.median"],
+      ["total_ms", "telemetry.accumulated"], ["share_percent", "telemetry.share"], ["runs", "telemetry.runs"],
+    ].map(([key, label]) => ({ key, label, value: (phase) => key === "phase" ? telemetryLabel(phase.phase) : Number(phase[key]) || 0 }));
+    const phaseTable = telemetryDetailSortableTable(phaseColumns, phases, { key: "phase", direction: "asc" }, (phase, body) => {
+      const row = document.createElement("tr");
+      [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs]
+        .forEach((value) => row.append(Object.assign(document.createElement("td"), { textContent: String(value) })));
+      body.append(row);
+    });
+    phaseTable.classList.add("telemetry-phase-table");
+    phaseSection.append(phaseTable);
+  }
+  content.append(phaseSection);
   const bottlenecks = document.createElement("section"), top = detail?.bottlenecks?.top_time_consumers || [];
   bottlenecks.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.bottlenecks") }));
   const fields = document.createElement("div"); fields.className = "technical-grid";
@@ -2937,8 +3456,13 @@ function renderTelemetryDetail(detail, content) {
   const list = document.createElement("ol"); for (const item of top) list.append(Object.assign(document.createElement("li"), { textContent: `${telemetryLabel(item.phase)} — ${telemetryPercent(item.share_percent)}` })); bottlenecks.append(list); content.append(bottlenecks);
   const runSection = document.createElement("section"), runs = Array.isArray(detail?.runs) ? detail.runs : [];
   runSection.append(Object.assign(document.createElement("h3"), { textContent: t("telemetry.runs") }));
-  const runTable = document.createElement("table"); runTable.className = "telemetry-table"; runTable.innerHTML = `<thead><tr>${["telemetry.run_id", "telemetry.start_time", "telemetry.status", "telemetry.average_total", "telemetry.average_wait", "telemetry.provider", "telemetry.validation", "telemetry.external_wait", "telemetry.largest_phase", "telemetry.producer_type", "telemetry.target_repository", "telemetry.model"].map((key) => `<th>${t(key)}</th>`).join("")}</tr></thead>`; const runBody = document.createElement("tbody");
-  for (const run of runs) {
+  const runColumns = [
+    ["run_id", "telemetry.run_id"], ["started_at", "telemetry.start_time", "desc"], ["status", "telemetry.status"],
+    ["total_duration_ms", "telemetry.average_total"], ["queue_wait_ms", "telemetry.average_wait"], ["provider_duration_ms", "telemetry.provider"],
+    ["validation_duration_ms", "telemetry.validation"], ["external_wait_ms", "telemetry.external_wait"], ["largest_phase", "telemetry.largest_phase"],
+    ["producer_type", "telemetry.producer_type"], ["repository", "telemetry.target_repository"], ["model", "telemetry.model"],
+  ].map(([key, label, defaultDirection]) => ({ key, label, defaultDirection, value: (run) => key === "largest_phase" ? telemetryLabel(run[key]) : key === "started_at" ? Date.parse(run[key]) || 0 : Number.isFinite(Number(run[key])) ? Number(run[key]) : String(run[key] || "") }));
+  const runTable = telemetryDetailSortableTable(runColumns, runs, { key: "started_at", direction: "desc" }, (run, runBody) => {
     const row = document.createElement("tr"), id = document.createElement("button");
     row.className = "telemetry-row";
     row.tabIndex = 0;
@@ -2966,8 +3490,13 @@ function renderTelemetryDetail(detail, content) {
       row.append(cell);
     });
     runBody.append(row);
-  }
-  runTable.append(runBody); runSection.append(runTable); content.append(runSection);
+  });
+  const runScroll = document.createElement("div");
+  runScroll.className = "telemetry-detail-table-scroll";
+  runScroll.setAttribute("role", "region");
+  runScroll.setAttribute("aria-label", t("telemetry.runs"));
+  runScroll.append(runTable);
+  runSection.append(runScroll); content.append(runSection);
 }
 $("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
 $("telemetryDetailModal").addEventListener("close", () => { telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; });
@@ -3037,9 +3566,10 @@ document.querySelectorAll(".log-table").forEach((table) => {
     header.classList.add("log-sortable");
     header.dataset.sortKey = key;
     header.tabIndex = 0;
-    header.addEventListener("click", () =>
-      setIndependentLogSort(component, key),
-    );
+    header.addEventListener("click", (event) => {
+      setIndependentLogSort(component, key);
+      blurSortableHeaderAfterPointerClick(event);
+    });
     header.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -3278,6 +3808,7 @@ resetLogFiltersButton.setAttribute("aria-label", resetLogFiltersLabel);
 resetLogFiltersButton.addEventListener("click", () => {
   $("logFilter").value = "";
   $("logLevelFilter").value = "";
+  syncDashboardSelectPicker($("logLevelFilter"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
   independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
   clearAllComponentLogSelections();
@@ -3536,7 +4067,121 @@ let promptHistoryEntries = [],
   promptHistorySelectedRunId = null,
   promptHistorySort = { key: "executed_at", direction: "desc" },
   promptHistoryDetailRunId = "",
-  promptHistoryDetailLocationSyncing = false;
+  promptHistoryDetailLocationSyncing = false,
+  promptHistoryDetailPayload = null;
+function promptHistoryDetailFilename(extension) {
+  return "execution-details-" + String(promptHistoryDetailRunId || "unknown").replace(/[^a-z0-9._-]+/gi, "-") + "." + extension;
+}
+function promptHistoryMarkdownText(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return value.map(promptHistoryMarkdownText).join(", ");
+  if (typeof value === "object") return Object.entries(value)
+    .map(([key, item]) => `${promptHistoryMarkdownLabel(key)}: ${promptHistoryMarkdownText(item)}`)
+    .join("; ");
+  return String(value).replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|");
+}
+function promptHistoryMarkdownLabel(key) {
+  return String(key || "")
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+function promptHistoryMarkdownTable(fields) {
+  const rows = fields.filter(([, value]) => value !== null && value !== undefined && value !== "");
+  if (!rows.length) return "";
+  return ["| " + t("history.markdown_field") + " | " + t("history.markdown_value") + " |", "| --- | --- |", ...rows.map(([label, value]) => `| ${promptHistoryMarkdownText(label)} | ${promptHistoryMarkdownText(value)} |`)].join("\n") + "\n";
+}
+function promptHistoryMarkdownSection(title, fields) {
+  const table = promptHistoryMarkdownTable(fields);
+  return table ? `## ${promptHistoryMarkdownText(title)}\n\n${table}\n` : "";
+}
+function promptHistoryMarkdownList(title, values) {
+  const items = Array.isArray(values) ? values.filter((value) => value !== null && value !== undefined && value !== "") : [];
+  return items.length
+    ? `## ${promptHistoryMarkdownText(title)}\n\n${items.map((value) => `- ${promptHistoryMarkdownText(value)}`).join("\n")}\n`
+    : "";
+}
+function promptHistoryDetailMarkdown(payload, title) {
+  const history = payload?.history && typeof payload.history === "object" ? payload.history : {};
+  const execution = payload?.execution && typeof payload.execution === "object" ? payload.execution : {};
+  const runtime = payload?.runtime && typeof payload.runtime === "object" ? payload.runtime : {};
+  const usage = payload?.usage && typeof payload.usage === "object" ? payload.usage : {};
+  const metadata = history.execution_metadata && typeof history.execution_metadata === "object" ? history.execution_metadata : {};
+  const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : {};
+  const timestamp = Date.parse(String(history.executed_at || ""));
+  const sections = [
+    promptHistoryMarkdownSection(t("detail.execution"), [
+      [t("detail.prompt_title"), history.title || title],
+      [t("detail.run_id"), history.run_id || promptHistoryDetailRunId],
+      [t("detail.prompt_status"), promptHistoryStatus(history.status)],
+      [t("detail.executed_at"), Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : history.executed_at],
+      [t("detail.execution_mode"), history.execution_mode],
+      [t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")],
+      [t("detail.execution_diagnostic"), history.execution_diagnostic],
+    ]),
+    promptHistoryMarkdownSection(t("detail.duration"), [
+      [t("detail.agent_duration"), Number.isFinite(Number(execution.seconds)) ? durationText(Number(execution.seconds)) : null],
+      [t("detail.total_duration"), Number.isFinite(Number(execution.total_seconds)) ? durationText(Number(execution.total_seconds)) : null],
+    ]),
+    promptHistoryMarkdownSection(t("ui.execution_context"), [
+      [t("detail.producer"), history.producer_id],
+      [t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : null],
+      [t("detail.producer_version"), history.producer_version],
+      [t("detail.target_repository"), history.target_repository],
+      [t("ui.active_branch"), history.target_branch],
+      [t("detail.target_checkout"), history.target_checkout_path],
+      [t("detail.tracked_files"), history.tracked_file_count],
+      [t("detail.files_modified"), metadata.modified],
+      [t("detail.files_created"), metadata.created],
+      [t("detail.files_deleted"), metadata.deleted],
+      [t("detail.codex_commands"), metadata.codex_commands_executed],
+      ...Object.entries(context).map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
+    ]),
+    promptHistoryMarkdownSection(t("detail.runtime"), [
+      [t("detail.runtime_provider"), runtime.runtime_provider],
+      [t("detail.model"), runtime.model],
+      [t("detail.reasoning_profile"), runtime.reasoning_profile],
+      [t("detail.configuration_profile"), runtime.configuration_profile],
+      [t("detail.codex_cli_version"), runtime.codex_cli_version],
+    ]),
+    promptHistoryMarkdownSection(t("detail.provider_usage"), Object.entries(usage)
+      .filter(([, value]) => value !== null && typeof value !== "object")
+      .map(([key, value]) => [promptHistoryMarkdownLabel(key), value])),
+    promptHistoryMarkdownSection(t("detail.git_commit"), Object.entries(payload?.commits || {})),
+    promptHistoryMarkdownList(t("detail.execution_evidence"), payload?.evidence),
+  ].filter(Boolean);
+  return [`# ${promptHistoryMarkdownText(history.title || title || promptHistoryDetailRunId)}`, "", t("history.details_description"), "", ...sections].join("\n").trimEnd() + "\n";
+}
+function downloadPromptHistoryDetail(format) {
+  if (!promptHistoryDetailPayload || !promptHistoryDetailRunId) return;
+  const json = JSON.stringify(promptHistoryDetailPayload, null, 2);
+  const title = String($("promptHistoryDetailTitle").textContent || promptHistoryDetailRunId).trim();
+  const isMarkdown = format === "markdown";
+  const content = isMarkdown ? promptHistoryDetailMarkdown(promptHistoryDetailPayload, title) : json + "\n";
+  const url = URL.createObjectURL(new Blob([content], {
+    type: isMarkdown ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8",
+  }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = promptHistoryDetailFilename(isMarkdown ? "md" : "json");
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  void recordUserAction(isMarkdown ? "prompt_history_details_markdown_downloaded" : "prompt_history_details_json_downloaded");
+}
+function setPromptHistoryDetailDownloads(payload) {
+  promptHistoryDetailPayload = payload && typeof payload === "object" ? payload : null;
+  const title = String($("promptHistoryDetailTitle").textContent || promptHistoryDetailRunId).trim();
+  const markdown = $("promptHistoryDetailDownloadMarkdown"), json = $("promptHistoryDetailDownloadJson");
+  for (const [button, label] of [[markdown, "history.download_details_markdown"], [json, "history.download_details_json"]]) {
+    button.hidden = !promptHistoryDetailPayload;
+    button.disabled = !promptHistoryDetailPayload;
+    button.title = t(label, { title });
+    button.setAttribute("aria-label", t(label, { title }));
+  }
+}
 function promptHistoryDetailUrl(runId = "") {
   const url = new URL(window.location.href);
   if (runId) url.searchParams.set(PROMPT_HISTORY_DEEPLINK_PARAMETER, String(runId));
@@ -3603,6 +4248,8 @@ function updatePromptHistoryColumnWidths(entries) {
   // space first, so a long terminal/dismissed status never paints into it.
   const statusWidth = Math.max(120, Math.ceil(widestStatus + 16));
   const titleWidth = Math.max(144, 288 - Math.max(0, statusWidth - 120));
+  const runIdWidth = 112;
+  table.style.setProperty("--prompt-history-run-id-width", `${runIdWidth}px`);
   table.style.setProperty("--prompt-history-status-width", `${statusWidth}px`);
   table.style.setProperty("--prompt-history-title-width", `${titleWidth}px`);
   const header = table.tHead?.rows[0];
@@ -3620,9 +4267,13 @@ function updatePromptHistoryColumnWidths(entries) {
   const statusIndex = headers.findIndex(
     (cell) => cell.dataset.historySortKey === "status",
   );
+  const runIdIndex = headers.findIndex(
+    (cell) => cell.dataset.historySortKey === "run_id",
+  );
   const titleIndex = headers.findIndex(
     (cell) => cell.dataset.historySortKey === "title",
   );
+  if (runIdIndex >= 0) columns.children[runIdIndex].style.width = `${runIdWidth}px`;
   if (statusIndex >= 0) columns.children[statusIndex].style.width = `${statusWidth}px`;
   if (titleIndex >= 0) columns.children[titleIndex].style.width = `${titleWidth}px`;
 }
@@ -3664,16 +4315,6 @@ function renderPromptHistory() {
     navigation = $("promptHistoryPagination"),
     pageCount = Math.max(1, Math.ceil(rows.length / PROMPT_HISTORY_PAGE_SIZE));
   promptHistoryPage = Math.min(Math.max(1, promptHistoryPage), pageCount);
-  const showRunSuffix = window.matchMedia("(min-width: 621px)").matches,
-    headerRow = document.querySelector("#promptHistory .log-table thead tr");
-  if (showRunSuffix && headerRow && !headerRow.querySelector("[data-run-suffix]")) {
-    const header = document.createElement("th");
-    header.dataset.runSuffix = "true";
-    header.dataset.i18n = "table.run_suffix";
-    header.scope = "col";
-    header.textContent = t("table.run_suffix");
-    headerRow.children[0]?.before(header);
-  }
   body.replaceChildren();
   const visible = rows.slice(
     (promptHistoryPage - 1) * PROMPT_HISTORY_PAGE_SIZE,
@@ -3832,7 +4473,7 @@ function renderPromptHistory() {
         });
         details.append(button);
       } else details.textContent = "—";
-      if (showRunSuffix) row.append(runSuffix);
+      row.append(runSuffix);
       row.append(status);
       row.append(title, executed, report, analysis, chat, action, details);
       body.append(row);
@@ -3934,7 +4575,10 @@ document
       promptHistoryPage = 1;
       renderPromptHistory();
     };
-    header.addEventListener("click", sort);
+    header.addEventListener("click", (event) => {
+      sort();
+      blurSortableHeaderAfterPointerClick(event);
+    });
     header.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -3956,12 +4600,35 @@ function loadDashboardClientState() {
   }
 }
 const dashboardClientState = loadDashboardClientState();
+function installDashboardProjectSelector() {
+  const options = $("dashboardTitlebarOptionsContent");
+  const localeLabel = $("dashboardLocale")?.closest("label");
+  if (!options || !localeLabel || $("dashboardProject")) return;
+  const projectName = document.body.dataset.projectName?.trim() || "—";
+  const projectId = document.body.dataset.projectId?.trim() || "legacy";
+  const label = document.createElement("label");
+  label.className = "dashboard-project";
+  label.htmlFor = "dashboardProject";
+  const text = document.createElement("span");
+  text.dataset.i18n = "project.label";
+  const select = document.createElement("select");
+  select.id = "dashboardProject";
+  select.dataset.i18nAriaLabel = "project.label";
+  select.setAttribute("aria-label", t("project.label"));
+  const option = document.createElement("option");
+  option.value = projectId;
+  option.textContent = projectName;
+  select.append(option);
+  label.append(text, select);
+  options.insertBefore(label, localeLabel);
+}
+installDashboardProjectSelector();
 const dashboardLocaleSelector = $("dashboardLocale");
 const dashboardLocaleButton = $("dashboardLocaleButton"), dashboardLocaleMenu = $("dashboardLocaleMenu");
 const dashboardTitlebarOptions = $("dashboardTitlebarOptions");
 const dashboardTitlebarOptionsToggle = $("dashboardTitlebarOptionsToggle");
 const dashboardTitlebarOptionsContent = $("dashboardTitlebarOptionsContent");
-const compactTitlebarMedia = window.matchMedia("(max-width: 620px)");
+const compactTitlebarMedia = window.matchMedia("(max-width: 1240px)");
 function syncTitlebarOptions() {
   const compact = compactTitlebarMedia.matches;
   const expanded = !compact || dashboardClientState.titlebarOptionsOpen === true;
@@ -4008,6 +4675,7 @@ function applyDashboardLocale() {
     [".section-state-toggle__label", "header.expand"],
     [".auto-refresh-toggle span", "header.auto_refresh"],
     [".dashboard-titlebar__options > summary span", "header.options"],
+    [".dashboard-project > span", "project.label"],
     [".dashboard-locale span", "language.label"],
     ["#dashboardTitle", "dashboard.title"],
     ["#dashboardSplashTitle", "dashboard.title"],
@@ -4051,13 +4719,8 @@ function applyDashboardLocale() {
     const element = document.querySelector(selector);
     if (element) element.textContent = t(key);
   });
-  const workspaceKeys = [
-    "workspace.name", "ui.workspace_location",
-    "workspace.free_disk_space", "detail.tracked_files", "workspace.database",
-    "workspace.database_size", "workspace.schema_version", "workspace.current_branch", "workspace.current_commit", "workspace.origin_main_commit",
-  ];
-  document.querySelectorAll("#workspaceCard .field .label").forEach((label, index) => {
-    if (workspaceKeys[index]) label.textContent = t(workspaceKeys[index]);
+  document.querySelectorAll("[data-workspace-label]").forEach((label) => {
+    label.textContent = t(label.dataset.workspaceLabel);
   });
   document.querySelectorAll("#dashboardLocale option").forEach((option) => {
     option.textContent = t("language." + option.value);
@@ -4083,7 +4746,15 @@ function applyDashboardLocale() {
 dashboardLocaleSelector.addEventListener("change", () => {
   changeDashboardLocale(dashboardLocaleSelector.value);
 });
-dashboardLocaleButton.addEventListener("click", () => setLocaleMenuOpen(dashboardLocaleMenu.hidden));
+dashboardLocaleButton.addEventListener("click", (event) => {
+  // The picker is deliberately nested in its label so the native select keeps
+  // an accessible name. Prevent the label's default activation from reopening
+  // its visually-hidden native control and immediately dismissing the menu on
+  // narrow direct-touch browsers.
+  event.preventDefault();
+  event.stopPropagation();
+  setLocaleMenuOpen(dashboardLocaleMenu.hidden);
+});
 dashboardLocaleButton.addEventListener("keydown", (event) => {
   if (event.key === "Escape") setLocaleMenuOpen(false);
 });
@@ -4096,64 +4767,381 @@ dashboardLocaleMenu.addEventListener("click", (event) => {
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
+const workspaceDatabaseField = $("workspaceDatabaseField");
+if (workspaceDatabaseField) {
+  const content = document.createElement("div"), download = document.createElement("a");
+  content.className = "workspace-database__content";
+  const path = workspaceDatabaseField.querySelector("pre");
+  if (path) content.append(path);
+  download.className = "dashboard-action dashboard-action--download workspace-database__download";
+  download.id = "workspaceDatabaseDownload";
+  download.href = "/api/engineering-database/download?audit=download";
+  download.download = "";
+  download.dataset.i18nTitle = "workspace.download_database";
+  download.dataset.i18nAriaLabel = "workspace.download_database";
+  download.textContent = "↓";
+  content.append(download);
+  workspaceDatabaseField.append(content);
+}
 applyDashboardLocale();
+let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
   configurationLogRetention: ["log_retention_days", Number],
+  configurationTelemetryRetention: ["telemetry_retention_days", Number],
   configurationLogLevel: ["log_level", String],
+  configurationInboxScanInterval: ["inbox_scan_interval_seconds", Number],
+  configurationOpenPrInterval: ["open_pr_check_interval_seconds", Number],
+  configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
+  configurationComponentDetailsInterval: ["component_details_refresh_seconds", Number],
 });
-function localizeConfigurationOptions() {
-  document.querySelectorAll("#configurationLogRetention option").forEach((option) => {
-    option.textContent = t("configuration.days", { days: option.value });
+const dashboardSelectPickers = new Map();
+function syncDashboardSelectPicker(select) {
+  const picker = dashboardSelectPickers.get(select);
+  if (!picker) return;
+  const selected = select.selectedOptions[0];
+  picker.value.textContent = selected?.textContent || "";
+  picker.button.disabled = select.disabled;
+  picker.menu.querySelectorAll("[data-dashboard-select-value]").forEach((option, index) => {
+    const nativeOption = select.options[index];
+    option.textContent = nativeOption?.textContent || "";
+    option.disabled = select.disabled || nativeOption?.disabled === true;
+    option.setAttribute("aria-selected", String(option.dataset.dashboardSelectValue === select.value));
   });
 }
+function setDashboardSelectPickerOpen(picker, open) {
+  picker.menu.hidden = !open;
+  picker.button.setAttribute("aria-expanded", String(open));
+}
+function enhanceDashboardSelectPicker(select) {
+  // The locale control already has its own accessible custom picker in the
+  // title bar.  Treating it as a generic select would render a second one.
+  if (!(select instanceof HTMLSelectElement) || select.id === "dashboardLocale" || select.multiple || dashboardSelectPickers.has(select)) return;
+  select.classList.add("dashboard-select__native");
+  const picker = document.createElement("span"), button = document.createElement("button"), value = document.createElement("span"), arrow = document.createElement("span"), menu = document.createElement("span");
+  const menuId = `${select.id}Menu`;
+  picker.className = "dashboard-locale__picker dashboard-select-picker";
+  button.className = "dashboard-locale__button";
+  button.type = "button";
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-controls", menuId);
+  button.setAttribute("aria-label", select.getAttribute("aria-label") || select.labels?.[0]?.textContent?.trim() || "");
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "⌄";
+  button.append(value, arrow);
+  menu.className = "dashboard-locale__menu";
+  menu.id = menuId;
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+  [...select.options].forEach((nativeOption) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.setAttribute("role", "option");
+    option.dataset.dashboardSelectValue = nativeOption.value;
+    option.disabled = nativeOption.disabled;
+    menu.append(option);
+  });
+  picker.append(button, menu);
+  select.after(picker);
+  const state = { picker, button, value, menu };
+  dashboardSelectPickers.set(select, state);
+  const refresh = () => syncDashboardSelectPicker(select);
+  select.addEventListener("change", refresh);
+  button.addEventListener("click", (event) => {
+    // Avoid the parent label activating the visually-hidden native select on
+    // mobile Safari after the custom button has opened its listbox.
+    event.preventDefault();
+    event.stopPropagation();
+    setDashboardSelectPickerOpen(state, menu.hidden);
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setDashboardSelectPickerOpen(state, false);
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-dashboard-select-value]");
+    if (!option || option.disabled) return;
+    select.value = option.dataset.dashboardSelectValue;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    setDashboardSelectPickerOpen(state, false);
+    // Mobile Safari may still change the visual viewport when focus returns
+    // to this control after a pointer selection, despite preventScroll.
+    // A pointer user does not need a new focus target; keyboard activation
+    // does, and retains the accessible, scroll-safe return target.
+    if (event.detail === 0) button.focus({ preventScroll: true });
+    else option.blur();
+  });
+  refresh();
+}
+function syncInboxLocationChangeAvailability(queueDepth) {
+  const button = $("configurationInboxOpen");
+  if (!button) return;
+  const field = button.closest(".configuration-field");
+  let notice = $("configurationInboxUnavailable");
+  if (!notice && field) {
+    notice = document.createElement("p");
+    notice.id = "configurationInboxUnavailable";
+    notice.className = "configuration-inbox-unavailable";
+    notice.setAttribute("role", "status");
+    button.after(notice);
+  }
+  const inboxIsEmpty = Number.isInteger(queueDepth) && queueDepth === 0;
+  button.disabled = !inboxIsEmpty;
+  if (notice) {
+    notice.hidden = inboxIsEmpty;
+    notice.textContent = inboxIsEmpty ? "" : t("configuration.inbox_location_queue_not_empty");
+    button.setAttribute("aria-describedby", notice.id);
+  }
+}
+function enhanceDashboardSelectPickers() {
+  document.querySelectorAll("select:not([multiple]):not(#dashboardLocale)").forEach(enhanceDashboardSelectPicker);
+}
+document.addEventListener("pointerdown", (event) => {
+  dashboardSelectPickers.forEach((picker) => {
+    if (!event.target.closest(".dashboard-select-picker")) setDashboardSelectPickerOpen(picker, false);
+  });
+});
+function addConfigurationControlInfo() {
+  for (const [id, helpKey] of [
+    ["configurationLogRetention", "configuration.log_retention_help"],
+    ["configurationTelemetryRetention", "configuration.telemetry_retention_help"],
+    ["configurationLogLevel", "configuration.log_level_help"],
+    ["configurationInboxScanInterval", "configuration.inbox_scan_interval_help"],
+    ["configurationOpenPrInterval", "configuration.open_pr_interval_help"],
+    ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
+    ["configurationComponentDetailsInterval", "configuration.component_details_interval_help"],
+  ]) {
+    const control = $(id), label = control?.closest("label"), text = label?.querySelector(":scope > span");
+    if (!text) continue;
+    text.classList.add("label");
+    let info = text.querySelector(".configuration-info");
+    if (!info) {
+      info = document.createElement("span");
+      info.className = "configuration-info";
+      info.setAttribute("role", "img");
+      info.tabIndex = 0;
+      info.textContent = "i";
+      text.append(info);
+    }
+    const help = t(helpKey);
+    info.title = help;
+    info.setAttribute("aria-label", help);
+  }
+}
+function renderConfigurationInboxLocation() {
+  const button = $("configurationInboxOpen"), location = $("configurationInbox")?.textContent.trim();
+  const field = button?.closest(".configuration-field"), label = field?.querySelector(".label");
+  if (!field || !label) return;
+  field.classList.add("configuration-inbox-field");
+  let value = $("configurationInboxLocation");
+  if (!value) {
+    value = document.createElement("code");
+    value.id = "configurationInboxLocation";
+    value.className = "configuration-inbox-location";
+    label.after(value);
+  }
+  value.textContent = location || "—";
+}
+const MACHINE_SCOPED_WORKSPACE_FIELD_IDS = Object.freeze([
+  "workspaceFreeDiskSpace",
+  "workspaceDatabaseField",
+  "workspaceDatabaseSize",
+  "workspaceSchemaVersion",
+]);
+const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
+  {
+    containerClass: "queue-project-settings",
+    fieldIds: ["configurationInboxScanInterval", "configurationOpenPrInterval"],
+    parentId: "queueItems",
+    statusId: "queueProjectSettingsStatus",
+  },
+  {
+    beforeId: "componentLogControls",
+    containerClass: "log-settings",
+    fieldIds: ["configurationLogRetention", "configurationLogLevel"],
+    parentId: "componentLogs",
+    statusId: "logSettingsStatus",
+  },
+  {
+    beforeId: "platformHealthComponents",
+    containerClass: "platform-settings",
+    fieldIds: ["configurationPlatformHealthInterval"],
+    parentId: "platformHealth",
+    statusId: "platformSettingsStatus",
+  },
+]);
+function moveConfigurationControls({ beforeId, containerClass, fieldIds, parentId, statusId }) {
+  const parent = $(parentId), before = beforeId ? $(beforeId) : null;
+  if (!parent || (beforeId && !before)) return;
+  let controls = parent.querySelector(`.${containerClass}`);
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.className = `configuration-controls ${containerClass}`;
+    const status = document.createElement("p");
+    status.id = statusId;
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    controls.append(status);
+    parent.insertBefore(controls, before);
+  }
+  const status = $(statusId);
+  fieldIds.forEach((id) => {
+    const label = $(id)?.closest("label");
+    if (label) controls.insertBefore(label, status);
+  });
+}
+function moveProjectScopedConfiguration() {
+  const queue = $("queueItems");
+  const inboxField = $("configurationInboxOpen")?.closest(".configuration-field");
+  if (!queue || !inboxField) return;
+  queue.append(inboxField);
+  moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
+}
+function moveMachineScopedWorkspaceDetails() {
+  const configuration = $("configuration"), controls = configuration?.querySelector(".configuration-controls");
+  if (!configuration || !controls) return;
+  MACHINE_SCOPED_WORKSPACE_FIELD_IDS.forEach((id) => {
+    const field = $(id);
+    if (field) configuration.insertBefore(field, controls);
+  });
+}
+function localizeConfigurationOptions() {
+  moveMachineScopedWorkspaceDetails();
+  moveProjectScopedConfiguration();
+  CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
+  addConfigurationControlInfo();
+  renderConfigurationInboxLocation();
+  document.querySelectorAll("#configurationLogRetention option, #configurationTelemetryRetention option").forEach((option) => {
+    option.textContent = t("configuration.days", { days: option.value });
+  });
+  dashboardSelectPickers.forEach((_, select) => syncDashboardSelectPicker(select));
+}
+function setDashboardConfigurationControlsDisabled(disabled) {
+  Object.keys(configurationFields).forEach((id) => {
+    const control = $(id);
+    if (!control) return;
+    control.disabled = disabled;
+    syncDashboardSelectPicker(control);
+  });
+}
+function positionConfigurationTooltip(info) {
+  if (!window.matchMedia("(max-width:620px)").matches) {
+    info.removeAttribute("data-tooltip-side");
+    info.style.removeProperty("--configuration-tooltip-width");
+    return;
+  }
+  const rect = info.getBoundingClientRect();
+  const leftSpace = rect.left, rightSpace = window.innerWidth - rect.right;
+  const side = leftSpace >= rightSpace ? "left" : "right";
+  const available = Math.max(leftSpace, rightSpace) - 22;
+  const width = Math.max(160, Math.min(280, window.innerWidth - 32, available));
+  info.dataset.tooltipSide = side;
+  info.style.setProperty("--configuration-tooltip-width", `${width}px`);
+}
+addConfigurationControlInfo();
+const configurationInfoTooltips = [...document.querySelectorAll(".configuration-info")];
+configurationInfoTooltips.forEach((info) => {
+  info.addEventListener("pointerenter", () => positionConfigurationTooltip(info));
+  info.addEventListener("focus", () => positionConfigurationTooltip(info));
+});
+window.addEventListener("resize", () => {
+  configurationInfoTooltips.forEach((info) => positionConfigurationTooltip(info));
+});
 async function saveDashboardConfiguration(control) {
   const [key, normalizer] = configurationFields[control.id] || [];
   if (!key) return;
   const value = normalizer(control.type === "checkbox" ? control.checked : control.value);
-  if (key === "log_retention_days" && Number(value) < Number(control.dataset.savedValue || value)) {
+  const previous = control.dataset.savedValue || String(value);
+  const retentionKey = key === "log_retention_days" || key === "telemetry_retention_days";
+  if (retentionKey && Number(value) < Number(control.dataset.savedValue || value)) {
     const confirmed = await confirmDashboardAction(
-      t("configuration.log_retention"),
-      t("configuration.retention_confirm"),
+      t(key === "telemetry_retention_days" ? "configuration.telemetry_retention" : "configuration.log_retention"),
+      t(key === "telemetry_retention_days" ? "configuration.telemetry_retention_confirm" : "configuration.retention_confirm"),
       t("action.confirm"),
       { destructive: true },
     );
     if (!confirmed) {
       control.value = control.dataset.savedValue || String(value);
+      syncDashboardSelectPicker(control);
       return;
     }
   }
   control.disabled = true;
+  syncDashboardSelectPicker(control);
   try {
     const response = await fetch("/api/configuration", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
+      body: JSON.stringify({ key, value, previous: normalizer(previous) }),
     });
-    if (!response.ok) throw Error();
-    control.dataset.savedValue = String(value);
-    $("configurationStatus").textContent = t("configuration.saved");
+    const payload = await response.json();
+    if (!response.ok) {
+      if (response.status === 409 && payload.value !== undefined) {
+        control.value = String(payload.value);
+        control.dataset.savedValue = control.value;
+        syncDashboardSelectPicker(control);
+      }
+      throw Error(payload.error || "");
+    }
+    control.value = String(payload.value);
+    control.dataset.savedValue = control.value;
+    dashboardConfiguration = { ...dashboardConfiguration, [key]: payload.value };
+    if (key === "open_pr_check_interval_seconds") {
+      openPullRequestMonitorIntervalMs = Number(value) * 1e3;
+      scheduleOpenPullRequestMonitor([...openPullRequestStatusByNumber.values()].map((status) => ({ status })));
+    }
+    if (key === "platform_health_refresh_seconds") {
+      platformHealthRefreshIntervalMs = Number(value) * 1e3;
+      schedulePlatformHealthRefresh();
+    }
+    if (key === "component_details_refresh_seconds") {
+      componentDetailsRefreshIntervalMs = Number(value) * 1e3;
+      if (activeComponentDetails) startComponentDetailsRefresh(activeComponentDetails);
+    }
+    const status = control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus");
+    if (status) {
+      status.textContent = t("configuration.saved");
+      status.classList.add("configuration-status--saved");
+    }
+    if (key === "telemetry_retention_days") refreshDashboard();
   } catch {
-    $("configurationStatus").textContent = t("configuration.save_failed");
+    const status = control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus");
+    if (status) {
+      status.textContent = t("configuration.save_failed");
+      status.classList.remove("configuration-status--saved");
+    }
   } finally {
     control.disabled = false;
+    syncDashboardSelectPicker(control);
   }
 }
 async function initializeDashboardConfiguration() {
   localizeConfigurationOptions();
+  setDashboardConfigurationControlsDisabled(true);
   try {
     const response = await fetch("/api/configuration", { cache: "no-store" });
     if (!response.ok) throw Error();
     const configuration = await response.json();
+    dashboardConfiguration = configuration;
     Object.entries(configurationFields).forEach(([id, [key]]) => {
       const control = $(id);
+      if (!control || configuration[key] === undefined) return;
       if (control.type === "checkbox") control.checked = configuration[key] === true;
       else {
         control.value = String(configuration[key]);
         control.dataset.savedValue = control.value;
       }
+      syncDashboardSelectPicker(control);
     });
+    openPullRequestMonitorIntervalMs = Number(configuration.open_pr_check_interval_seconds) * 1e3;
+    platformHealthRefreshIntervalMs = Number(configuration.platform_health_refresh_seconds) * 1e3;
+    componentDetailsRefreshIntervalMs = Number(configuration.component_details_refresh_seconds) * 1e3;
+    schedulePlatformHealthRefresh();
   } catch {
     $("configurationStatus").textContent = t("configuration.load_failed");
+    $("configurationStatus").classList.remove("configuration-status--saved");
+  } finally {
+    dashboardConfigurationLoaded = true;
+    setDashboardConfigurationControlsDisabled(false);
   }
 }
 Object.keys(configurationFields).forEach((id) => {
@@ -4161,17 +5149,40 @@ Object.keys(configurationFields).forEach((id) => {
 });
 $("configurationInboxOpen")?.addEventListener("click", () => {
   const modal = $("configurationInboxModal");
-  $("configurationInboxRoot").value = $("configurationInbox").textContent.trim();
+  const inbox = $("configurationInbox").textContent.trim();
+  $("configurationInboxRoot").value = inbox.endsWith("/Inbox") ? inbox.slice(0, -"/Inbox".length) : inbox;
   $("configurationInboxStatus").textContent = "";
   if (!modal.open) modal.showModal();
   resetDashboardModalInitialFocus(modal);
 });
+syncInboxLocationChangeAvailability();
 $("configurationInboxModalClose")?.addEventListener("click", () => $("configurationInboxModal").close());
 $("configurationInboxModalCloseAction")?.addEventListener("click", () => $("configurationInboxModal").close());
 $("configurationInboxModal")?.addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
+$("configurationInboxBrowse")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  $("configurationInboxStatus").textContent = "";
+  try {
+    const response = await fetch("/api/configuration/inbox-location/browse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw Error(payload.error || t("configuration.inbox_location_failed"));
+    if (!payload.cancelled && typeof payload.value === "string")
+      $("configurationInboxRoot").value = payload.value;
+  } catch (error) {
+    $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
+  } finally {
+    button.disabled = false;
+  }
+});
 $("configurationInboxSave")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
   const root = $("configurationInboxRoot").value.trim();
   const confirmed = await confirmDashboardAction(
     t("configuration.inbox_location"),
@@ -4179,7 +5190,6 @@ $("configurationInboxSave")?.addEventListener("click", async (event) => {
     t("configuration.inbox_location_save"),
   );
   if (!confirmed) return;
-  const button = event.currentTarget;
   button.disabled = true;
   try {
     const response = await fetch("/api/configuration/inbox-location", {
@@ -4188,16 +5198,24 @@ $("configurationInboxSave")?.addEventListener("click", async (event) => {
       body: JSON.stringify({ inbox_root: root }),
     });
     const payload = await response.json();
-    if (!response.ok) throw Error(payload.error || t("configuration.inbox_location_failed"));
+    if (!response.ok) throw Error(
+      payload.error_code === "inbox_not_empty"
+        ? t("configuration.inbox_location_queue_not_empty")
+        : payload.error || t("configuration.inbox_location_failed"),
+    );
     $("configurationInbox").textContent = `${payload.value}/Inbox`;
+    renderConfigurationInboxLocation();
     $("configurationInboxStatus").textContent = t("configuration.inbox_location_saved");
+    $("configurationInboxStatus").classList.add("configuration-status--saved");
     setTimeout(() => $("configurationInboxModal").close(), 700);
   } catch (error) {
     $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
+    $("configurationInboxStatus").classList.remove("configuration-status--saved");
   } finally {
     button.disabled = false;
   }
 });
+enhanceDashboardSelectPickers();
 initializeDashboardConfiguration();
 function loadAllSectionsIntent() {
   try {
@@ -4244,6 +5262,7 @@ const autoRefreshToggle = $("autoRefresh"),
   allSectionsToggle = $("toggleAllSections"),
   dashboardCategoryIds = [
     "workspaceCard",
+    "configuration",
     "queueItems",
     "currentRun",
     "rateLimits",
@@ -4892,6 +5911,9 @@ function renderPromptHistoryDetail(payload) {
     evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
     reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [],
     recommendationHandoff = payload?.recommendation_handoff;
+  if (typeof history.title === "string" && history.title.trim())
+    $("promptHistoryDetailTitle").textContent = history.title.trim();
+  setPromptHistoryDetailDownloads(payload);
   content.replaceChildren();
   content.append(
     ...[
@@ -4919,8 +5941,12 @@ function openPromptHistoryDetail(entry, { updateUrl = true } = {}) {
   if (updateUrl) updatePromptHistoryDetailUrl(runId);
   promptHistoryDetailRunId = runId;
   const modal = $("promptHistoryDetailModal"), content = $("promptHistoryDetailContent");
-  $("promptHistoryDetailTitle").textContent = String(entry.title || runId);
+  const title = typeof entry.title === "string" ? entry.title.trim() : "";
+  $("promptHistoryDetailTitle").textContent = title && title !== runId
+    ? title
+    : t("history.details_loading");
   $("promptHistoryDetailDescription").textContent = t("history.details_description");
+  setPromptHistoryDetailDownloads(null);
   content.textContent = t("history.details_loading");
   if (!modal.open) modal.showModal();
   resetDashboardModalInitialFocus(modal);
@@ -4959,6 +5985,8 @@ $("promptHistoryDetailClose").addEventListener("click", (event) => {
   event.stopPropagation();
   closePromptHistoryDetail();
 });
+$("promptHistoryDetailDownloadMarkdown").addEventListener("click", () => downloadPromptHistoryDetail("markdown"));
+$("promptHistoryDetailDownloadJson").addEventListener("click", () => downloadPromptHistoryDetail("json"));
 $("promptHistoryDetailModal").addEventListener("click", (event) => {
   if (event.target.closest?.("#promptHistoryDetailClose")) {
     event.preventDefault();
@@ -4970,6 +5998,7 @@ $("promptHistoryDetailModal").addEventListener("click", (event) => {
 });
 $("promptHistoryDetailModal").addEventListener("close", () => {
   promptHistoryDetailRunId = "";
+  setPromptHistoryDetailDownloads(null);
   if (!promptHistoryDetailLocationSyncing && promptHistoryDetailRunFromUrl())
     updatePromptHistoryDetailUrl("");
 });
@@ -5362,7 +6391,7 @@ function workspaceBranchCleanupDetails(details) {
   }
   return list;
 }
-function confirmDashboardAction(title, text, confirmLabel, { destructive = false, accent = "", details = [], loading = false } = {}) {
+function confirmDashboardAction(title, text, confirmLabel, { destructive = false, accent = "", details = [], loading = false, variant = "" } = {}) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),
     body = $("confirmationModalText"),
@@ -5386,11 +6415,13 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
   confirm.classList.toggle("dashboard-modal-shell__action--primary", !destructive);
   confirm.classList.toggle("dashboard-modal-shell__action--destructive", destructive);
   modal.classList.toggle("dashboard-modal-shell--destructive", destructive);
+  modal.classList.toggle("dashboard-modal-shell--owner-authorization", variant === "owner-authorization");
   modal.style.setProperty("--modal-accent", accent || (destructive ? "#ff718f" : "#f0b66a"));
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.close();
       modal.classList.remove("dashboard-modal-shell--destructive");
+      modal.classList.remove("dashboard-modal-shell--owner-authorization");
       confirm.classList.add("dashboard-modal-shell__action--primary");
       confirm.classList.remove("dashboard-modal-shell__action--destructive");
       confirm.disabled = false;
@@ -5615,6 +6646,7 @@ Object.assign(window, {
   renderPromptHistory,
   refreshOpenPullRequests,
   renderOpenPullRequests,
+  renderWorkspaceWorktrees,
   scheduleOpenPullRequestMonitor,
   showComponentModal,
   showDashboardError,

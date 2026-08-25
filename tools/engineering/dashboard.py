@@ -18,13 +18,14 @@ import sqlite3
 import socket
 import subprocess  # Compatibility mock target; process execution is provider-owned.
 import sys
+import tempfile
 from threading import Lock, Timer
 import time
 import uuid
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_workspace
-from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider
+from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
@@ -44,15 +45,21 @@ from .component_logging import (
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .agent_state import redact_diagnostic
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
-from .telemetry import daily_statistics, daily_timing_detail, execution_timing
+from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
 from .prompt_history import prompt_history, report_for_prompt_history
 from .recommendation_handoff import handoff_from_report
-from .storage import EngineeringStorageError, open_storage
+from .storage import (
+    EngineeringStorageError,
+    ai_capacity_history,
+    open_storage,
+    record_ai_capacity_bi_hourly,
+)
 from .provider_usage import provider_usage_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
 from .dashboard_configuration import (
+    DashboardConfigurationConflict,
     get as dashboard_configuration,
     update as update_dashboard_configuration,
     update_inbox_root,
@@ -74,9 +81,14 @@ RATE_LIMIT_CACHE_SECONDS = 60
 _rate_limit_cache_lock = Lock()
 _rate_limit_cache: tuple[float, bytes] | None = None
 CODEX_IDENTITY_CACHE_SECONDS = 300
+CODEX_UPDATE_CACHE_SECONDS = 900
+CODEX_CLI_PACKAGE = "@openai/codex"
 GIT_INDEX_LOCK_STALE_SECONDS = 300
 _codex_identity_cache_lock = Lock()
 _codex_identity_cache: tuple[float, dict[str, str]] | None = None
+_codex_update_cache_lock = Lock()
+_codex_update_cache: tuple[float, dict[str, object]] | None = None
+_codex_update_install_lock = Lock()
 _snapshot_revision_lock = Lock()
 _snapshot_fingerprint: bytes | None = None
 _snapshot_revision = 0
@@ -91,10 +103,16 @@ AUDITABLE_USER_ACTIONS = frozenset(
     {
         "chat_downloaded",
         "component_log_downloaded",
+        "telemetry_cleared",
+        "telemetry_copied",
+        "telemetry_downloaded",
         "prompt_history_report_copied",
         "prompt_history_report_downloaded",
         "prompt_history_analysis_copied",
         "prompt_history_analysis_downloaded",
+        "prompt_history_details_json_downloaded",
+        "prompt_history_details_markdown_downloaded",
+        "engineering_database_downloaded",
         "report_copied",
         "report_analysis_copied",
     }
@@ -170,7 +188,9 @@ def _sse_snapshot(root: Path) -> bytes:
         execution_reader=_last_executed_agent_execution,
         runtime_metadata_reader=_last_executed_runtime_metadata,
         report_analysis_available_reader=_report_analysis_available_for_run,
-        telemetry_reader=lambda workspace: daily_statistics(workspace, days=7),
+        telemetry_reader=lambda workspace: daily_statistics(
+            workspace, days=int(dashboard_configuration(workspace)["telemetry_retention_days"])
+        ),
         process_metrics_reader=_codex_process_metrics,
         build_commit_reader=_build_commit,
         component_log_versions_reader=_component_log_versions,
@@ -192,6 +212,19 @@ def _sse_snapshot(root: Path) -> bytes:
     # being fixed in the initial HTML response. A managed execution can switch
     # to its transaction branch after the operator opens the dashboard.
     payload["workspace_git"] = _workspace_git_projection(root)
+    payload["workspace_worktrees"] = _workspace_worktrees(root)
+    rate_limits = payload.get("rate_limits")
+    if isinstance(rate_limits, dict):
+        provider = rate_limits.get("provider")
+        remaining = _remaining_rate_limit_capacity(rate_limits)
+        if isinstance(provider, str) and remaining is not None:
+            try:
+                record_ai_capacity_bi_hourly(root, provider=provider, remaining_percent=remaining)
+                payload["ai_capacity_history"] = ai_capacity_history(root, provider=provider)
+            except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+                # The live quota status remains useful if local history is
+                # temporarily unavailable; a chart must never block it.
+                payload["ai_capacity_history"] = []
     fingerprint = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     # HTTP refreshes and SSE delivery can complete out of order in a browser.
     # Attach one process-scoped monotone revision to every changed projection,
@@ -426,17 +459,51 @@ def _normalize_rate_limits(payload: object) -> dict[str, object]:
     return normalized if windows or "reset_credits" in normalized else {}
 
 
-def _codex_provider_identity() -> dict[str, str]:
-    """Return the active provider identity without exposing local paths or account data."""
+def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | None:
+    """Return the most restrictive safe remaining quota percentage."""
+    windows = rate_limits.get("windows")
+    if not isinstance(windows, list):
+        return None
+    remaining_values: list[float] = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        if not isinstance(used, (int, float)) or isinstance(used, bool):
+            continue
+        remaining_values.append(max(0.0, min(100.0, 100.0 - float(used))))
+    return min(remaining_values) if remaining_values else None
+
+
+def _codex_cli_installation_path(executable: str | None) -> str | None:
+    """Return the managed prefix or resolved executable used by the active CLI."""
+    if not executable:
+        return None
+    managed_prefix = engineering_platform_codex_cli_prefix()
+    if Path(executable).expanduser() == managed_prefix / "bin" / "codex":
+        return str(managed_prefix)
+    resolved_executable = shutil.which(executable)
+    if not resolved_executable:
+        return None
+    try:
+        return str(Path(resolved_executable).resolve())
+    except OSError:
+        return resolved_executable
+
+
+def _codex_provider_identity(*, refresh: bool = False) -> dict[str, str]:
+    """Return the active provider identity and its locally resolved executable path."""
     global _codex_identity_cache
     now = time.monotonic()
     with _codex_identity_cache_lock:
-        if _codex_identity_cache and now - _codex_identity_cache[0] < CODEX_IDENTITY_CACHE_SECONDS:
+        if not refresh and _codex_identity_cache and now - _codex_identity_cache[0] < CODEX_IDENTITY_CACHE_SECONDS:
             return dict(_codex_identity_cache[1])
 
     identity = {"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"}
-    executable = shutil.which("codex")
+    executable = codex_cli_executable()
     if executable:
+        if installation_path := _codex_cli_installation_path(executable):
+            identity["provider_path"] = installation_path
         try:
             completed = LocalProcessProvider().execute(Path.cwd(), (executable, "--version"))
         except OSError:
@@ -543,6 +610,131 @@ def _github_rate_limit_status() -> dict[str, object]:
 
 class RateLimitResetError(RuntimeError):
     """Raised when Codex cannot safely consume a reset credit."""
+
+
+class CodexCliUpdateError(RuntimeError):
+    """Raised when the local Codex CLI cannot be updated and verified safely."""
+
+
+_CODEX_CLI_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def _codex_cli_version(value: object) -> str | None:
+    candidate = str(value or "").strip().removeprefix("v")
+    return candidate if _CODEX_CLI_VERSION.fullmatch(candidate) else None
+
+
+def _codex_cli_version_key(value: str) -> tuple[int, int, int, int, str]:
+    """Compare normal releases above prereleases without accepting arbitrary text."""
+    base, separator, prerelease = value.partition("-")
+    major, minor, patch = (int(part) for part in base.split("."))
+    return major, minor, patch, 1 if not separator else 0, prerelease
+
+
+def _npm_executable() -> str | None:
+    """Resolve npm from PATH or beside the admitted local Codex executable."""
+    if npm := shutil.which("npm"):
+        return npm
+    if codex := shutil.which("codex"):
+        sibling = Path(codex).with_name("npm")
+        if sibling.is_file() and os.access(sibling, os.X_OK):
+            return str(sibling)
+    return None
+
+
+def _execution_active(root: Path) -> bool:
+    """Return whether an Execution Host lifecycle is actively using this installation."""
+    try:
+        status = json.loads(_status(root))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(status, dict)
+        and status.get("watcher_state") in {"ENGINEERING_RUN_ACTIVE", "WAITING_FOR_OPERATOR_MERGE"}
+        and isinstance(status.get("run_id"), str)
+        and bool(status["run_id"])
+    )
+
+
+def _inbox_has_items(inbox: Path) -> bool:
+    """Return whether the active Inbox contains work, conservatively on errors."""
+    try:
+        return any(not item.name.startswith(".") for item in inbox.iterdir())
+    except OSError:
+        return True
+
+
+def _codex_cli_update_status(root: Path, *, refresh: bool = False) -> dict[str, object]:
+    """Read the published Codex CLI version without exposing account or npm output."""
+    global _codex_update_cache
+    now = time.monotonic()
+    with _codex_update_cache_lock:
+        if not refresh and _codex_update_cache and now - _codex_update_cache[0] < CODEX_UPDATE_CACHE_SECONDS:
+            return dict(_codex_update_cache[1])
+
+    current = _codex_cli_version(_codex_provider_identity(refresh=refresh).get("provider_version"))
+    npm = _npm_executable()
+    if current is None or npm is None:
+        status: dict[str, object] = {"state": "unavailable", "update_available": False}
+    else:
+        try:
+            completed = LocalProcessProvider().execute(root, (npm, "view", CODEX_CLI_PACKAGE, "version", "--json"))
+            latest_raw = json.loads(completed.stdout) if completed.returncode == 0 else None
+            candidates = latest_raw if isinstance(latest_raw, list) else [latest_raw]
+            versions = [version for value in candidates if (version := _codex_cli_version(value)) is not None]
+            latest = max(versions, key=_codex_cli_version_key, default=None)
+        except (OSError, ValueError, json.JSONDecodeError):
+            latest = None
+        if latest is None:
+            status = {"state": "unavailable", "update_available": False, "current_version": current}
+        else:
+            update_available = _codex_cli_version_key(latest) > _codex_cli_version_key(current)
+            status = {
+                "state": "update_available" if update_available else "current",
+                "update_available": update_available,
+                "current_version": current,
+                "latest_version": latest,
+            }
+    with _codex_update_cache_lock:
+        _codex_update_cache = (now, status)
+    return dict(status)
+
+
+def _install_codex_cli_update(root: Path) -> dict[str, object]:
+    """Install the exact checked release, then verify the executable's version."""
+    global _codex_identity_cache, _codex_update_cache
+    with _codex_update_install_lock:
+        if _execution_active(root):
+            raise CodexCliUpdateError("codex_cli_update_execution_active")
+        status = _codex_cli_update_status(root, refresh=True)
+        if status.get("state") == "unavailable":
+            raise CodexCliUpdateError("codex_cli_update_unavailable")
+        if not status.get("update_available"):
+            return {"updated": False, "current_version": status.get("current_version")}
+        latest = status.get("latest_version")
+        npm = _npm_executable()
+        if not isinstance(latest, str) or npm is None:
+            raise CodexCliUpdateError("codex_cli_update_unavailable")
+        try:
+            completed = LocalProcessProvider().execute(
+                root,
+                (npm, "install", "--global", "--prefix", str(engineering_platform_codex_cli_prefix()), f"{CODEX_CLI_PACKAGE}@{latest}"),
+            )
+        except OSError as error:
+            raise CodexCliUpdateError("codex_cli_update_failed") from error
+        if completed.returncode:
+            diagnostic = f"{completed.stdout}\n{completed.stderr}".lower()
+            if "eacces" in diagnostic or "permission denied" in diagnostic:
+                raise CodexCliUpdateError("codex_cli_update_permissions_required")
+            raise CodexCliUpdateError("codex_cli_update_failed")
+        with _codex_identity_cache_lock:
+            _codex_identity_cache = None
+        with _codex_update_cache_lock:
+            _codex_update_cache = None
+        installed = _codex_cli_version(_codex_provider_identity(refresh=True).get("provider_version"))
+        if installed is None or _codex_cli_version_key(installed) < _codex_cli_version_key(latest):
+            raise CodexCliUpdateError("codex_cli_update_failed")
+        return {"updated": True, "current_version": installed}
 
 
 def _consume_codex_rate_limit_reset_credit() -> str:
@@ -794,6 +986,23 @@ def _restart_component(component: str) -> None:
         raise OSError("De herstart is niet gelukt.") from error
 
 
+def _choose_local_directory(root: Path) -> str | None:
+    """Open the host's native directory picker after an explicit dashboard action."""
+    if sys.platform != "darwin":
+        raise RuntimeError("Een lokale mapkiezer is alleen op deze machine beschikbaar.")
+    result = LocalProcessProvider().execute(
+        root, ("osascript", "-e", "POSIX path of (choose folder)")
+    )
+    if result.returncode:
+        if "-128" in (result.stderr or ""):
+            return None
+        raise RuntimeError("De lokale mapkiezer kon niet worden geopend.")
+    location = result.stdout.strip()
+    if not location or not Path(location).is_dir():
+        raise RuntimeError("De gekozen lokale map is niet beschikbaar.")
+    return location
+
+
 def _restart_component_after_response(component: str, logger: logging.Logger) -> None:
     """Restart after the acknowledgement and retain only a bounded failure event."""
     try:
@@ -1035,22 +1244,22 @@ def _stale_local_branch_pull_request(root: Path, branch: str) -> dict[str, objec
     return None
 
 
-def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
-    """Return bounded, display-safe GitHub PR context without affecting operations."""
+def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
+    """Return PR context, or ``None`` when GitHub cannot authoritatively answer."""
     try:
         remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
         match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
         if not match:
-            return []
+            return None
         payload = GitHubProvider().github(
             "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "open",
             "--json", "number,title,url,headRefName,isDraft,mergeStateStatus,reviewDecision,reviews,statusCheckRollup", "--limit", "20",
         )
         candidates = json.loads(payload)
     except (OSError, RuntimeError, json.JSONDecodeError):
-        return []
+        return None
     if not isinstance(candidates, list):
-        return []
+        return None
     result: list[dict[str, object]] = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -1064,12 +1273,28 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]]:
                 "branch": branch,
                 "status": _open_pull_request_status(candidate),
                 "owner_approval": _owner_approval_status(candidate, match.group(1)),
+                "owner_authorization_requested": _owner_authorization_requested(candidate),
             })
     return result
 
 
 def _owner_approval_status(pull_request: dict[str, object], repository_owner: str) -> str:
-    """Project the latest repository-owner review without changing merge authority."""
+    """Project owner approval, including GitHub's exact-SHA authorization check."""
+    # ``reviewDecision`` only represents GitHub reviews.  The policy gate for
+    # high-risk work is published as a legacy commit StatusContext instead, so
+    # it must take precedence over the optional-review fallback below.
+    checks = pull_request.get("statusCheckRollup")
+    if isinstance(checks, list):
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            name = str(check.get("name") or check.get("context") or "").casefold()
+            if name != "owner authorization":
+                continue
+            state = str(check.get("state") or check.get("status") or "").upper()
+            conclusion = str(check.get("conclusion") or "").upper()
+            if state not in {"SUCCESS", "COMPLETED"} or conclusion not in {"", "SUCCESS", "NEUTRAL", "SKIPPED"}:
+                return "pending"
     reviews = pull_request.get("reviews")
     if not isinstance(reviews, list) or not repository_owner:
         return "pending"
@@ -1079,6 +1304,11 @@ def _owner_approval_status(pull_request: dict[str, object], repository_owner: st
         and str(review["author"].get("login") or "").casefold() == repository_owner.casefold()
     ]
     if not owner_reviews:
+        # GitHub reports ``null`` when its branch policy does not require a
+        # review.  Preserve ``pending`` for an unavailable projection, but do
+        # not turn the absence of an optional owner review into a false wait.
+        if "reviewDecision" in pull_request and str(pull_request.get("reviewDecision") or "").upper() != "REVIEW_REQUIRED":
+            return "not_required"
         return "pending"
     latest = max(owner_reviews, key=lambda review: str(review.get("submittedAt") or ""))
     state = str(latest.get("state") or "").upper()
@@ -1087,6 +1317,82 @@ def _owner_approval_status(pull_request: dict[str, object], repository_owner: st
     if state == "CHANGES_REQUESTED":
         return "changes_requested"
     return "pending"
+
+
+def _owner_authorization_requested(pull_request: dict[str, object]) -> bool:
+    """Whether GitHub has requested exact-SHA HIGH_RISK authorization."""
+    checks = pull_request.get("statusCheckRollup")
+    if not isinstance(checks, list):
+        return False
+    return any(
+        isinstance(check, dict)
+        and str(check.get("name") or check.get("context") or "").casefold() == "owner authorization"
+        and str(check.get("state") or check.get("status") or "").upper() == "FAILURE"
+        for check in checks
+    )
+
+
+class OwnerAuthorizationRequestError(RuntimeError):
+    """The exact-SHA Owner Authorization workflow cannot safely be dispatched."""
+
+
+def _request_owner_authorization(root: Path, pull_request_number: int) -> dict[str, object]:
+    """Dispatch the canonical owner workflow for the current HIGH_RISK PR SHA.
+
+    The browser supplies only a PR number. Repository, target branch and SHA
+    are read afresh from GitHub so this endpoint cannot authorize a stale or
+    caller-selected commit. The workflow remains the sole publisher of the
+    ``Owner Authorization`` status.
+    """
+    if isinstance(pull_request_number, bool) or pull_request_number < 1:
+        raise OwnerAuthorizationRequestError("owner_authorization_invalid_request")
+    try:
+        remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match:
+            raise OwnerAuthorizationRequestError("owner_authorization_unavailable")
+        repository = f"{match.group(1)}/{match.group(2)}"
+        payload = GitHubProvider().github(
+            "pr", "view", str(pull_request_number), "--repo", repository,
+            "--json", "number,state,headRefOid,baseRefName,statusCheckRollup",
+        )
+        pull_request = json.loads(payload)
+    except OwnerAuthorizationRequestError:
+        raise
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        raise OwnerAuthorizationRequestError("owner_authorization_unavailable") from error
+    if not isinstance(pull_request, dict) or pull_request.get("number") != pull_request_number:
+        raise OwnerAuthorizationRequestError("owner_authorization_unavailable")
+    candidate_sha = pull_request.get("headRefOid")
+    target_branch = pull_request.get("baseRefName")
+    if (
+        str(pull_request.get("state") or "").upper() != "OPEN"
+        or not isinstance(candidate_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
+        or not isinstance(target_branch, str)
+        or not target_branch
+        or not _owner_authorization_requested(pull_request)
+    ):
+        raise OwnerAuthorizationRequestError("owner_authorization_not_requested")
+    checks = pull_request.get("statusCheckRollup")
+    trusted_delivery_passed = isinstance(checks, list) and any(
+        isinstance(check, dict)
+        and str(check.get("name") or "") == "Trusted Delivery qualification / Qualify trusted delivery"
+        and str(check.get("status") or "").upper() == "COMPLETED"
+        and str(check.get("conclusion") or "").upper() == "SUCCESS"
+        for check in checks
+    )
+    if not trusted_delivery_passed:
+        raise OwnerAuthorizationRequestError("owner_authorization_qualification_pending")
+    try:
+        GitHubProvider().github(
+            "workflow", "run", "owner-authorization.yml", "--repo", repository,
+            "-f", f"repository={repository}", "-f", f"pr_number={pull_request_number}",
+            "-f", f"candidate_sha={candidate_sha}", "-f", f"branch={target_branch}",
+        )
+    except RuntimeError as error:
+        raise OwnerAuthorizationRequestError("owner_authorization_dispatch_failed") from error
+    return {"queued": True, "pull_request": pull_request_number}
 
 
 def _open_pull_request_status(pull_request: dict[str, object]) -> str:
@@ -1491,6 +1797,7 @@ def _workspace_git_projection(root: Path) -> dict[str, object]:
             "origin_main_commit": unavailable,
             "origin_main_available": False,
             "main_action_available": False,
+            "branch_cleanup_available": False,
         }
     branch_name = branch.stdout.strip() if branch.returncode == 0 and branch.stdout.strip() else unavailable
     revision_lines = revisions.stdout.splitlines() if revisions.returncode == 0 else []
@@ -1503,7 +1810,40 @@ def _workspace_git_projection(root: Path) -> dict[str, object]:
         "origin_main_commit": origin_main_commit,
         "origin_main_available": origin_main_available,
         "main_action_available": origin_main_available and commit != origin_main_commit,
+        "branch_cleanup_available": branch_name == "main",
     }
+
+
+def _workspace_worktrees(root: Path) -> dict[str, object]:
+    """Project local Git worktrees without depending on GitHub or mutations."""
+    try:
+        observed = GitProvider().execute(root, "git", "worktree", "list", "--porcelain")
+    except OSError:
+        return {"available": False, "worktrees": []}
+    if observed.returncode != 0:
+        return {"available": False, "worktrees": []}
+
+    worktrees: list[dict[str, object]] = []
+    record: dict[str, str | bool] = {}
+    for line in [*str(observed.stdout or "").splitlines(), ""]:
+        if line:
+            key, _, value = line.partition(" ")
+            if key in {"worktree", "HEAD", "branch"}:
+                record[key] = value
+            elif key == "detached":
+                record[key] = True
+            continue
+        path = str(record.get("worktree") or "").strip()
+        if path:
+            reference = str(record.get("branch") or "")
+            worktrees.append({
+                "path": path,
+                "branch": reference.removeprefix("refs/heads/") or None,
+                "commit": str(record.get("HEAD") or "")[:12] or None,
+                "detached": bool(record.get("detached")),
+            })
+        record = {}
+    return {"available": True, "worktrees": worktrees}
 
 
 def _engineering_database_details(root: Path) -> dict[str, str]:
@@ -1531,10 +1871,34 @@ def _engineering_database_details(root: Path) -> dict[str, str]:
     return details
 
 
+def _engineering_database_snapshot(root: Path) -> bytes | None:
+    """Create a consistent SQLite backup without modifying the source database."""
+    database = root.resolve() / ".engineering" / "engineering.db"
+    if not database.is_file():
+        return None
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="engineering-backup-", suffix=".db", delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as source:
+            with sqlite3.connect(temporary_path) as backup:
+                source.backup(backup)
+        return temporary_path.read_bytes()
+    except (OSError, sqlite3.DatabaseError):
+        return None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _dashboard_html(
     title: str,
     build_commit: str = "onbekend",
     workspace_id: str = "onbekend",
+    project_name: str = "Project",
     workspace_location: str = ".",
     workspace_free_disk_space: str = "Niet beschikbaar",
     tracked_files: str = "Niet beschikbaar",
@@ -1547,6 +1911,7 @@ def _dashboard_html(
     origin_main_available: bool = False,
     workspace_open_pull_requests: list[dict[str, object]] | None = None,
     workspace_main_action_hidden: bool = True,
+    workspace_branch_cleanup_hidden: bool = True,
     platform_version: str = "2.0.0",
     configuration_inbox: str = "Niet beschikbaar",
 ) -> bytes:
@@ -1567,17 +1932,19 @@ def _dashboard_html(
 
 <link rel="stylesheet" href="/assets/dashboard.css">
 </head>
-<body>
+<body data-project-id="$WORKSPACE_ID" data-project-name="$PROJECT_NAME">
 <a class="skip-link" href="#engineering-dashboard-content" data-i18n="header.skip"></a>
 <div id="dashboardSplash" role="status" aria-live="polite" data-testid="dashboard-splash"><div class="dashboard-splash__content"><img class="dashboard-splash__icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-splash-icon"><h2 class="dashboard-splash__title" id="dashboardSplashTitle" data-i18n="dashboard.title">$TITLE</h2><span class="dashboard-splash__version" id="dashboardSplashVersion" data-platform-version="$PLATFORM_VERSION">Engineering Platform $PLATFORM_VERSION</span><span class="dashboard-splash__spinner" aria-hidden="true"></span><span class="dashboard-splash__loading" id="dashboardSplashLoading" data-i18n="dashboard.loading"></span></div></div>
 <div id="copyToast" role="status" aria-live="polite" aria-atomic="true" popover="manual" hidden data-testid="copy-toast"></div>
 <div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
 <div class="dashboard-scroll-region">
+<div class="dashboard-sticky-header">
 <header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
+</div>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
-<details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="8" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
+<details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><p class="history-scroll-hint" id="promptHistoryScrollHint" data-i18n="history.horizontal_scroll_hint"></p><div class="log-table-wrap" aria-describedby="promptHistoryScrollHint" role="region" tabindex="0"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="run_id" data-run-suffix="true" scope="col" data-i18n="table.run_suffix"></th><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="9" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
 <details class="current-run" id="currentRun" data-i18n-aria-label="detail.execution" hidden><summary class="current-run__title"><span class="label" data-i18n="section.active_prompt"></span></summary><div class="current-run__grid"><div class="field"><span class="label" data-i18n="detail.prompt_title"></span><h2 id="currentPrompt" data-i18n="format.loading"></h2></div><div class="field"><span class="label" data-i18n="ui.filename"></span><pre id="currentFile" data-i18n="format.loading"></pre></div>
 <div class="card" id="executionIdentity"><strong data-i18n="detail.execution"></strong><p class="field"><span class="label" data-i18n="detail.run_id"></span><span id="runId"></span></p><p class="field"><span class="label" data-i18n="ui.prompt_started"></span><span id="promptStarted" data-i18n="format.loading"></span></p></div>
 <div class="card"><div class="status"><span id="indicator" class="indicator" role="status" data-i18n-aria-label="status.unknown"></span><strong data-i18n="detail.prompt_status"></strong></div><p class="field"><span class="label" data-i18n="ui.watcher"></span><span id="watcher" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.phase"></span><span id="phase" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.current_activity"></span><span id="action" data-i18n="format.loading"></span></p></div>
@@ -1592,7 +1959,7 @@ def _dashboard_html(
 <div class="card" id="usage" hidden><strong>Codex CLI</strong><div class="field"><span class="label" data-i18n="ui.reported_usage"></span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="currentDiagnostic" hidden><strong>Codex CLI</strong><pre id="currentLog" data-i18n="format.loading"></pre></div>
 </div></details>
-<details class="card card--resource" id="rateLimits" hidden><summary><strong data-i18n="section.remaining_usage"></strong></summary><div class="field"><span class="label" data-i18n="ui.current_ai_provider"></span><span id="rateLimitProvider" data-i18n="format.loading"></span></div><div class="field"><span class="label" id="rateLimitLabel">Codex CLI</span><pre id="rateLimitDetails"></pre></div><button class="rate-limit-reset" id="rateLimitReset" type="button" hidden data-i18n="ui.reset_ready"></button><p class="rate-limit-reset-status" id="rateLimitResetStatus" role="status" aria-live="polite"></p></details>
+<details class="card card--resource" id="rateLimits" hidden><summary><strong data-i18n="section.remaining_usage"></strong></summary><div class="field"><span class="label" data-i18n="ui.current_ai_provider"></span><span id="rateLimitProvider" data-i18n="format.loading"></span></div><div class="field rate-limit-provider-path"><span class="label" data-i18n="ui.installation_path"></span><code id="rateLimitProviderPath" data-i18n="format.not_available"></code></div><p class="rate-limit-update-status" id="codexCliUpdateStatus" role="status" aria-live="polite"></p><button class="rate-limit-reset" id="codexCliUpdate" type="button" hidden data-i18n="ui.codex_cli_update"></button><div class="field"><span class="label" id="rateLimitLabel">Codex CLI</span><pre id="rateLimitDetails"></pre></div><button class="rate-limit-reset" id="rateLimitReset" type="button" hidden data-i18n="ui.reset_ready"></button><p class="rate-limit-reset-status" id="rateLimitResetStatus" role="status" aria-live="polite"></p></details>
 <details class="platform-health" id="platformHealth" data-testid="platform-health"><summary><strong data-i18n="section.platform_components"></strong></summary><p class="category-description" data-i18n="description.platform_components"></p><div class="platform-health__components" id="platformHealthComponents" aria-live="polite"><p class="platform-health__empty" data-i18n="ui.component_health_loading"></p></div></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--component component-modal" id="componentModal" aria-labelledby="componentModalTitle"><section class="dashboard-modal-shell__panel component-modal__panel"><header class="dashboard-modal-shell__header component-modal__header"><h2 id="componentModalTitle" data-i18n="ui.component_information"></h2><button class="dashboard-modal-shell__close component-modal__close" id="componentModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="componentModalContent"></div><button class="component-modal__restart" id="componentModalRestart" type="button" hidden data-i18n="ui.component_restart"></button><p class="component-modal__status" id="componentModalStatus" aria-live="polite"></p></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence telemetry-detail-modal" id="telemetryDetailModal" aria-labelledby="telemetryDetailTitle"><section class="dashboard-modal-shell__panel telemetry-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="telemetryDetailTitle"></h2><button class="dashboard-modal-shell__close" id="telemetryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="telemetryDetailDescription" class="prompt-detail-modal__description"></p><div id="telemetryDetailContent" class="telemetry-detail-modal__content" aria-live="polite"></div></section></dialog>
@@ -1604,7 +1971,7 @@ def _dashboard_html(
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchCleanupResultModal" aria-labelledby="workspaceBranchCleanupResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchCleanupResultTitle" data-i18n="workspace.branch_cleanup_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchCleanupResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchCleanupResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchCleanupResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal" aria-labelledby="workspaceBranchMainResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchMainResultTitle" data-i18n="workspace.branch_main_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchMainResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchMainResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchMainResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-modal-glyph="report" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadJson" type="button" hidden>{ }</button><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--chat prompt-chat-modal" id="promptHistoryChatModal" aria-labelledby="promptHistoryChatTitle"><section class="dashboard-modal-shell__panel prompt-chat-modal__panel"><header class="dashboard-modal-shell__header prompt-chat-modal__header"><h2 id="promptHistoryChatTitle" data-i18n="section.ai_conversation"></h2><button class="dashboard-modal-shell__close prompt-chat-modal__close" id="promptHistoryChatClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-chat-modal__description" id="promptHistoryChatDescription"></p><section class="codex-chat" id="codexChat"><div class="codex-chat__details"><div class="chat-actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="downloadChat" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy" id="copyChat" type="button" hidden data-i18n-title="chat.copy_title" data-i18n-aria-label="chat.copy_title">⧉</button><button class="dashboard-action dashboard-action--destructive" id="clearChat" type="button" hidden>⌫</button></div><div class="chat-messages" id="chatMessages" aria-live="polite" data-i18n-aria-label="section.ai_conversation"></div><label class="label chat-question-label" for="chatInput" data-i18n="section.new_ai_question"></label><div class="chat-compose"><textarea id="chatInput" class="chat-input" rows="5" maxlength="2000" autocomplete="off" data-sanitize="multiline" data-i18n-placeholder="history.chat_placeholder"></textarea><button class="chat-send" id="chatSend" type="button" data-i18n-aria-label="action.confirm"><span aria-hidden="true">➤</span></button></div><div class="chat-meta"><p class="field"><span class="label" data-i18n="detail.model"></span><span id="chatModel">$CHAT_MODEL</span></p><p class="chat-status" id="chatStatus"></p></div></div></section></section></dialog>
 <button id="loadComponentLogs" type="button" hidden data-i18n="logs.loading"></button>
 <details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="logs.inbox_watcher"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="inbox" data-testid="download-inbox-log" type="button" data-i18n-title="logs.download_inbox" data-i18n-aria-label="logs.download_inbox">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="inbox" data-testid="clear-inbox-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.inbox_watcher"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="inboxComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="inboxLogPagination" data-i18n-aria-label="logs.inbox_watcher"></nav></div><div class="card"><div class="log-card-header"><strong data-i18n="logs.status_dashboard"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="dashboard" data-testid="download-dashboard-log" type="button" data-i18n-title="logs.download_dashboard" data-i18n-aria-label="logs.download_dashboard">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="dashboard" data-testid="clear-dashboard-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.status_dashboard"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="dashboardComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="dashboardLogPagination" data-i18n-aria-label="logs.status_dashboard"></nav></div></div></details>
@@ -1616,9 +1983,9 @@ def _dashboard_html(
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
-<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><section class="configuration-controls" aria-labelledby="configurationControlsTitle"><h2 id="configurationControlsTitle" data-i18n="configuration.safe_settings"></h2><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationAuditLogging"><input id="configurationAuditLogging" type="checkbox" checked disabled><span data-i18n="configuration.audit_logging"></span></label><p id="configurationStatus" role="status" aria-live="polite"></p></section><p class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_scan_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_scan_interval_help" data-i18n-aria-label="configuration.inbox_scan_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.open_pr_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.open_pr_interval_help" data-i18n-aria-label="configuration.open_pr_interval_help">i</span></span><span data-i18n="configuration.seconds_30"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.platform_health_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.platform_health_interval_help" data-i18n-aria-label="configuration.platform_health_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.component_details_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.component_details_interval_help" data-i18n-aria-label="configuration.component_details_interval_help">i</span></span><span data-i18n="configuration.seconds_5"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></details>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></details>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
@@ -1626,12 +1993,27 @@ def _dashboard_html(
 
 </body>
 </html>"""
+    def open_pull_request_item(pull_request: dict[str, object]) -> str:
+        authorization = (
+            f'<button class="open-pr-owner-authorization" '
+            f'data-open-pull-request-owner-authorization="{pull_request["number"]}" '
+            f'type="button" data-i18n="workspace.open_pull_request.authorize_owner"></button>'
+            if pull_request.get("owner_authorization_requested") is True else ""
+        )
+        return (
+            f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" '
+            f'target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a>'
+            f'<span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "waiting_for_checks")), quote=True)}">'
+            f'<span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span>'
+            f'{authorization}<code>{escape(str(pull_request["branch"]))}</code></li>'
+        )
+
     pull_request_items = "".join(
-        f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a><span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "waiting_for_checks")), quote=True)}"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span><code>{escape(str(pull_request["branch"]))}</code></li>'
+        open_pull_request_item(pull_request)
         for pull_request in workspace_open_pull_requests or []
     )
     workspace_open_pull_requests_html = (
-        f'<section id="workspaceOpenPullRequests" class="workspace-open-prs" aria-live="polite"><strong data-i18n="workspace.open_pull_requests"></strong><ul>{pull_request_items}</ul></section>'
+        f'<section id="workspaceOpenPullRequests" class="workspace-open-prs" aria-live="polite"><div class="workspace-open-prs__header"><strong data-i18n="workspace.open_pull_requests"></strong><button class="workspace-open-prs__refresh" id="workspaceOpenPullRequestsRefresh" type="button" data-i18n-title="workspace.open_pull_requests_refresh" data-i18n-aria-label="workspace.open_pull_requests_refresh">↻</button></div><ul>{pull_request_items}</ul></section>'
         if pull_request_items else ""
     )
     return (
@@ -1639,6 +2021,7 @@ def _dashboard_html(
         .replace("$BUILD_COMMIT", escape(build_commit))
         .replace("$CHAT_MODEL", escape(chat_model()))
         .replace("$WORKSPACE_ID", escape(workspace_id))
+        .replace("$PROJECT_NAME", escape(project_name))
         .replace("$WORKSPACE_LOCATION", escape(workspace_location))
         .replace("$WORKSPACE_FREE_DISK_SPACE", escape(workspace_free_disk_space))
         .replace("$TRACKED_FILES", escape(tracked_files))
@@ -1651,6 +2034,7 @@ def _dashboard_html(
         .replace("$ORIGIN_MAIN_HIDDEN", "" if origin_main_available else "hidden")
         .replace("$WORKSPACE_OPEN_PULL_REQUESTS", workspace_open_pull_requests_html)
         .replace("$WORKSPACE_MAIN_ACTION_HIDDEN", "hidden" if workspace_main_action_hidden else "")
+        .replace("$BRANCH_CLEANUP_HIDDEN", "hidden" if workspace_branch_cleanup_hidden else "")
         .replace("$PLATFORM_VERSION", escape(platform_version))
         .replace("$CONFIGURATION_INBOX", escape(configuration_inbox))
         .encode()
@@ -1661,12 +2045,12 @@ def handler(root: Path, logger: logging.Logger | None = None):
     configuration = PlatformConfiguration.load(root)
     title = configuration.workspace.dashboard_title
     workspace_id = configuration.workspace.id
+    project_name = configuration.workspace.name
     workspace_location = str(root)
     tracked_files = _tracked_file_count(root)
     platform_version = EngineeringPlatformManifest.load(
         root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
     ).platform_version
-    configuration_inbox = str(configuration.resolver(root).resolve_runtime_prompt_transport().inbox)
     logger = logger or component_logger(root, "dashboard")
     class DashboardHandler(BaseHTTPRequestHandler):
         def _send(self, content: bytes, content_type: str, status_code: int = 200) -> None:
@@ -1692,6 +2076,54 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 self._send(b'{"error":"Ongeldige herkomst."}', "application/json; charset=utf-8", 403)
                 return
             request_path = urlsplit(self.path).path
+            if request_path == "/api/telemetry/clear":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = clear_telemetry(root)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "telemetry_cleared",
+                        diagnostic=(
+                            f"execution_runs={outcome['execution_runs']}; "
+                            f"daily_statistics={outcome['daily_statistics']}"
+                        ),
+                    )
+                except ValueError:
+                    self._send(b'{"error":"invalid_telemetry_clear_request"}', "application/json; charset=utf-8", 400)
+                    return
+                except OSError as error:
+                    self._send(
+                        json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
+                        "application/json; charset=utf-8",
+                        503,
+                    )
+                    return
+                self._send(json.dumps({"cleared": True, **outcome}).encode(), "application/json; charset=utf-8")
+                return
+            owner_authorization_match = re.fullmatch(r"/api/open-pull-requests/([1-9][0-9]*)/owner-authorization", request_path)
+            if owner_authorization_match:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = _request_owner_authorization(root, int(owner_authorization_match.group(1)))
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "owner_authorization_dispatched",
+                        diagnostic=f"pull_request={outcome['pull_request']}",
+                    )
+                except OwnerAuthorizationRequestError as error:
+                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except ValueError:
+                    self._send(b'{"error":"owner_authorization_invalid_request"}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(outcome).encode(), "application/json; charset=utf-8", 202)
+                return
             if request_path.startswith("/api/components/") and request_path.endswith("/restart"):
                 component = request_path.removeprefix("/api/components/").removesuffix("/restart").rstrip("/")
                 try:
@@ -1763,6 +2195,28 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     "application/json; charset=utf-8",
                     status_code,
                 )
+                return
+            if request_path == "/api/codex-cli-update":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    result = _install_codex_cli_update(root)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "codex_cli_update_completed" if result["updated"] else "codex_cli_update_not_needed",
+                        diagnostic=f"updated={result['updated']}",
+                    )
+                except CodexCliUpdateError as error:
+                    log_event(logger, logging.WARNING, "codex_cli_update_failed", diagnostic=str(error))
+                    status_code = 409 if str(error) == "codex_cli_update_execution_active" else 503
+                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", status_code)
+                    return
+                except ValueError:
+                    self._send(b'{"error":"invalid_request"}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(result).encode(), "application/json; charset=utf-8")
                 return
             if request_path in {"/api/queue-recovery", "/api/predecessor-retry"}:
                 try:
@@ -2042,17 +2496,32 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     if not 0 < length <= 256:
                         raise ValueError
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"key", "value"}:
+                    if not isinstance(payload, dict) or set(payload) != {"key", "value", "previous"}:
                         raise ValueError
-                    event = update_dashboard_configuration(root, payload["key"], payload["value"])
+                    event = update_dashboard_configuration(
+                        root,
+                        payload["key"],
+                        payload["value"],
+                        expected_previous=payload["previous"],
+                    )
                     if event["key"] == "log_retention_days":
                         prune_component_logs(root, int(event["value"]))
+                    if event["key"] == "telemetry_retention_days":
+                        prune_telemetry(root, int(event["value"]))
                     if event["key"] == "log_level":
                         logger.setLevel(str(event["value"]))
                         for log_handler in logger.handlers:
                             log_handler.setLevel(logger.level)
                     log_event(logger, logging.INFO, "dashboard_configuration_changed",
                               diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}")
+                except DashboardConfigurationConflict as error:
+                    current = dashboard_configuration(root).get(payload.get("key"))
+                    self._send(
+                        json.dumps({"error": str(error), "value": current}).encode(),
+                        "application/json; charset=utf-8",
+                        409,
+                    )
+                    return
                 except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     self._send(b'{"error":"Ongeldige dashboardinstelling."}', "application/json; charset=utf-8", 400)
                     return
@@ -2066,10 +2535,17 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(payload, dict) or set(payload) != {"inbox_root"}:
                         raise ValueError
-                    if json.loads(_status(root)).get("current_phase"):
+                    if _execution_active(root):
                         raise RuntimeError("Wijzig de Inbox-locatie pas wanneer geen uitvoering actief is.")
+                    active_inbox = PlatformConfiguration.load(root).resolver(root).resolve_runtime_prompt_transport().inbox
+                    if _inbox_has_items(active_inbox):
+                        self._send(
+                            b'{"error_code":"inbox_not_empty"}',
+                            "application/json; charset=utf-8",
+                            409,
+                        )
+                        return
                     event = update_inbox_root(root, payload["inbox_root"])
-                    _restart_component("inbox")
                     log_event(
                         logger, logging.INFO, "dashboard_configuration_changed",
                         diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}",
@@ -2081,6 +2557,24 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     self._send(b'{"error":"Inbox-locatie kon niet veilig worden gewijzigd."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
+                # The preference is already durable.  Restart after replying so a
+                # launchd failure never makes the browser treat the saved location
+                # as an unsuccessful change.
+                Timer(0.25, _restart_component_after_response, args=("inbox", logger)).start()
+                return
+            if request_path == "/api/configuration/inbox-location/browse":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    location = _choose_local_directory(root)
+                except RuntimeError as error:
+                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except (OSError, ValueError):
+                    self._send(b'{"error":"De lokale mapkiezer kon niet worden geopend."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps({"cancelled": location is None, "value": location or ""}).encode(), "application/json; charset=utf-8")
                 return
             if request_path.startswith("/api/logs/"):
                 component = request_path.rsplit("/", 1)[-1]
@@ -2169,6 +2663,22 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(content, content_type)
             if request.path == "/api/prompt-history":
                 return self._send(_prompt_history(root), "application/json; charset=utf-8")
+            if request.path == "/api/engineering-database/download":
+                snapshot = _engineering_database_snapshot(root)
+                if snapshot is None:
+                    self._send(b'{"error":"Engineering-database is niet beschikbaar."}', "application/json; charset=utf-8", 404)
+                    return
+                if parse_qs(request.query).get("audit") == ["download"]:
+                    log_event(logger, logging.INFO, "engineering_database_downloaded")
+                filename = f"engineering-database-backup-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.sqlite3")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(snapshot)
+                return
             if request.path.startswith("/api/prompt-history/") and request.path.endswith("/details"):
                 run_id = request.path.removeprefix("/api/prompt-history/").removesuffix("/details").strip("/")
                 detail = _prompt_history_detail(root, run_id)
@@ -2219,9 +2729,21 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     json.dumps(_github_rate_limit_status(), separators=(",", ":")).encode(),
                     "application/json; charset=utf-8",
                 )
-            if self.path == "/api/open-pull-requests":
+            if self.path == "/api/codex-cli-update":
                 return self._send(
-                    json.dumps({"pull_requests": _workspace_open_pull_requests(root)}, ensure_ascii=False, separators=(",", ":")).encode(),
+                    json.dumps(_codex_cli_update_status(root), separators=(",", ":")).encode(),
+                    "application/json; charset=utf-8",
+                )
+            if self.path == "/api/open-pull-requests":
+                pull_requests = _workspace_open_pull_requests(root)
+                if pull_requests is None:
+                    return self._send(
+                        b'{"error":"GitHub pull-requeststatus is tijdelijk niet beschikbaar."}',
+                        "application/json; charset=utf-8",
+                        503,
+                    )
+                return self._send(
+                    json.dumps({"pull_requests": pull_requests}, ensure_ascii=False, separators=(",", ":")).encode(),
                     "application/json; charset=utf-8",
                 )
             if request.path.startswith("/api/telemetry/"):
@@ -2323,6 +2845,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         title,
                         _build_commit(root),
                         workspace_id,
+                        project_name,
                         workspace_location,
                         workspace_free_disk_space,
                         tracked_files,
@@ -2335,8 +2858,13 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         bool(workspace_git["origin_main_available"]),
                         workspace_open_pull_requests,
                         not bool(workspace_git["main_action_available"]),
+                        not bool(workspace_git["branch_cleanup_available"]),
                         platform_version,
-                        configuration_inbox,
+                        # The Inbox root is a durable local preference that may be
+                        # changed while this server remains running.  Resolve it for
+                        # each document request instead of retaining the startup
+                        # fallback in the rendered page.
+                        str(configuration.resolver(root).resolve_runtime_prompt_transport().inbox),
                     ),
                     "text/html; charset=utf-8",
                 )
@@ -2415,25 +2943,29 @@ def run(root: Path, port: int = 8765, provider: TailscaleProvider | None = None)
 def launch_agent(repo: Path) -> Path:
     """Render the only owned per-user LaunchAgent; no network policy changes.
 
-    The agent deliberately starts from the neutral filesystem root.  A
-    LaunchAgent may not inherit the interactive shell's protected working
-    directory access, so relying on its current repository directory can
-    leave Python waiting before it has imported the dashboard module.  The
-    explicit ``PYTHONPATH`` keeps the selected repository importable, while
-    Python's safe-path option prevents it from deriving import paths from the
-    LaunchAgent working directory. The ``--repo`` argument remains the sole
-    source of operational paths.
+    The dashboard is a repository module, so the LaunchAgent starts from its
+    selected checkout. Python's safe-path mode deliberately ignores
+    ``PYTHONPATH`` and therefore cannot be combined with module discovery
+    from the neutral filesystem root. The ``--repo`` argument remains the
+    sole source of operational paths.
     """
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    launcher = (sys.executable, "-P", "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
-    command = "cd / && exec " + " ".join(shlex.quote(value) for value in launcher)
+    launcher = (sys.executable, "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
+    command = "cd " + shlex.quote(str(repo)) + " && exec " + " ".join(
+        shlex.quote(value) for value in launcher
+    )
     arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
-    log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
+    try:
+        # The dashboard preference is durable across service regeneration.  An
+        # inherited shell value is only a fallback for an unavailable store.
+        log_level = str(dashboard_configuration(repo)["log_level"]).upper()
+    except (EngineeringStorageError, KeyError, TypeError, ValueError):
+        log_level = os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL).upper()
     if log_level not in VALID_LEVELS:
         log_level = DEFAULT_LOG_LEVEL
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>/</string><key>EnvironmentVariables</key><dict><key>PYTHONPATH</key><string>{escape(str(repo))}</string><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>WorkingDirectory</key><string>{escape(str(repo))}</string><key>EnvironmentVariables</key><dict><key>{LOG_LEVEL_ENVIRONMENT}</key><string>{log_level}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer></dict></plist>',
         encoding="utf-8",
     )
     return destination
