@@ -38,7 +38,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             execution_mode="MANAGED",
             workspace="djconnect",
             repository="pcvantol/djconnect",
-            execution_host_version="1.5.0",
+            execution_host_version="2.0.0",
             prompt_characters=1_000,
             runtime_provider="codex_cli",
             runtime_model="gpt-5.6-terra",

@@ -31,7 +31,7 @@ class PromptHistoryTest(unittest.TestCase):
                     execution_finished_at=finished_at, terminal_state="COMPLETE",
                     execution_seconds=120, input_tokens=None, output_tokens=None, total_tokens=None,
                     execution_mode="GENESIS", workspace="/workspace", repository="djconnect",
-                    execution_host_version="1.5.0",
+                    execution_host_version="2.0.0",
                 ),
             )
             record_prompt_execution(

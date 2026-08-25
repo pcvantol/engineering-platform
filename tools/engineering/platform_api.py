@@ -248,7 +248,7 @@ class PlatformConfiguration:
         ):
             raise PlatformConfigurationError("Engineering Workspace Root is invalid.")
         identity = PlatformIdentity(platform["id"], platform["name"], platform["version"], platform["generation"], platform["documentation_namespace"], platform["capability_registry_version"])
-        if identity.id != "engineering-platform" or identity.version != "1.5.0" or identity.generation != 2:
+        if identity.id != "engineering-platform" or identity.version != "2.0.0" or identity.generation != 2:
             raise PlatformConfigurationError("Engineering Platform identity is incompatible.")
         authorization = _authorization_policy(workspace, provisioning_root)
         return cls(int(raw["schema_version"]), identity, WorkspaceIdentity(workspace["id"], workspace["name"], repository["provider"], repository["owner"], repository["name"], repository["default_branch"], branding["dashboard_title"], provisioning_root), dict(providers), authorization)

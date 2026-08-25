@@ -59,7 +59,7 @@ from .execution_timing import complete_active_phase, complete_phase, record_queu
 from .status_reconciliation import is_stale_rolling_status_block
 
 LABEL = "com.djconnect.engineering-inbox"
-WATCHER_VERSION = "1.2.0"
+WATCHER_VERSION = "2.0.0"
 MAX_BYTES = 256_000
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 OPERATOR_MERGE_WAIT_PHASE = "WAIT_FOR_OPERATOR_MERGE"
@@ -816,7 +816,7 @@ def submit_status_reconciliation(repo: Path, root: Path, run_id: str) -> dict[st
         content = (
             f"{marker}\nStatus-Reconciliation-Request: {request_id}\n\n"
             "# Engineering Platform — Reconcile merged status records\n\n"
-            "Required Engineering Platform: >= 1.5.0\n\n"
+            "Required Engineering Platform: >= 2.0.0\n\n"
             "Execute only the dedicated governance-only Reconciliation for the "
             "verified merged predecessor of the referenced blocked run. Reconcile the four "
             "rolling records required by PROMPT_INITIALIZATION.md with current main. Do not "

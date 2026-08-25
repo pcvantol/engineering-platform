@@ -61,7 +61,7 @@ from . import dashboard_state
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
-DASHBOARD_VERSION = "1.3.0"
+DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
 ASSET_DIRECTORY = Path(__file__).with_name("assets")
@@ -1547,7 +1547,7 @@ def _dashboard_html(
     origin_main_available: bool = False,
     workspace_open_pull_requests: list[dict[str, object]] | None = None,
     workspace_main_action_hidden: bool = True,
-    platform_version: str = "1.5.0",
+    platform_version: str = "2.0.0",
     configuration_inbox: str = "Niet beschikbaar",
 ) -> bytes:
     """Render the private dashboard with a server-pushed status stream."""

@@ -111,7 +111,7 @@ def envelope(repository: str, pull_request: DependabotPullRequest, *, submitted_
     objective = f"""# Dependabot dependency pull-request review — #{pull_request.number}
 
 Execution Mode: Managed
-Execution Host Version: 1.5.0
+Execution Host Version: 2.0.0
 
 ## Source evidence
 

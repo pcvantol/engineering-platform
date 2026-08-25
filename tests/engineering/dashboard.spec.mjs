@@ -3304,7 +3304,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("src", "/assets/operations-console/icon-transparent.png");
     await expect(page.getByTestId("dashboard-splash-icon")).toHaveAttribute("aria-hidden", "true");
-    await expect(page.locator(".dashboard-splash__version")).toContainText("1.5.0");
+    await expect(page.locator(".dashboard-splash__version")).toContainText("2.0.0");
     await expect(page.locator(".dashboard-splash__loading")).toHaveText("Gegevens laden…");
     await expect(page.locator(".dashboard-splash__version")).toHaveCSS("color", "rgb(240, 182, 106)");
     await expect(page.locator(".dashboard-splash__spinner")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
@@ -3349,7 +3349,7 @@ test.describe("Engineering Status browser smoke", () => {
       body: JSON.stringify({
         status: {
           watcher_state: "WATCHER_IDLE",
-          platform_version: "1.5.0",
+          platform_version: "2.0.0",
           queue_depth: 0,
           queue_items: [],
         },
@@ -3364,7 +3364,7 @@ test.describe("Engineering Status browser smoke", () => {
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
-    await expect(page.locator("#platformVersion")).toHaveText("1.5.0");
+    await expect(page.locator("#platformVersion")).toHaveText("2.0.0");
     await expect(page.locator("#queueSummary")).not.toHaveText("Wachtrij laden…");
     await expect(page.locator("#queueSummary")).toHaveText("0 uitvoeringen in de wachtrij.");
     await expect(page.locator("#rateLimits")).toBeVisible();
@@ -3498,7 +3498,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
-      platform_version: "1.5.0",
+      platform_version: "2.0.0",
       current_phase: "CAPABILITY_REVIEW",
       current_action: "Capability review: documentation",
       run_id: "activity-run",
@@ -3508,7 +3508,7 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
 
     await expect(page.locator("#currentRun")).toBeVisible();
-    await expect(page.locator("#platformVersion")).toHaveText("1.5.0");
+    await expect(page.locator("#platformVersion")).toHaveText("2.0.0");
     await expect(page.locator("#phase")).toHaveText("Specialistenreview");
     await expect(page.locator("#action")).toHaveText("Documentatie voert een specialistenreview uit");
     await expect(page.locator("#action")).toHaveCSS("font-style", "italic");

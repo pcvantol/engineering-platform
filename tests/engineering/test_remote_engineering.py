@@ -39,7 +39,7 @@ class RemoteEngineeringTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             exit_code = handoff_main([
-                "--root", str(root), "--run-id", "remote-2", "--platform-version", "1.5.0",
+                "--root", str(root), "--run-id", "remote-2", "--platform-version", "2.0.0",
                 "--implementation-pr", "3", "--finalization-pr", "4",
             ])
             self.assertEqual(exit_code, 0)

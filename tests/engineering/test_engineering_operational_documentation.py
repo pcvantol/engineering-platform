@@ -88,6 +88,8 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         backlog = (ROOT / "PLATFORM_EVOLUTION_BACKLOG.md").read_text(encoding="utf-8")
         self.assertIn("## 1.5 — Platform Productization\n\nCompleted and operational.", roadmap)
         self.assertIn("## 1.6 — Repository Extraction Readiness\n\nPlanned.", roadmap)
+        self.assertIn("## 2.0 — Versioned Platform Boundary\n\nIn review.", roadmap)
         self.assertIn("Engineering Platform 1.5 operational hardening", backlog)
+        self.assertIn("Engineering Platform 2.0 versioned boundary", backlog)
         self.assertIn("Legacy iCloud Engineering archive migration", backlog)
         self.assertIn("sole iCloud engineering folder", backlog)

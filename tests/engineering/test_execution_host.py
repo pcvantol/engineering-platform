@@ -739,7 +739,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
-            '{"platform_version":"1.0.0","runner_version":"1.0.0","bootstrap_contract":"2026.07","checkpoint_format":1,"memory_format":1,"report_format":1,"minimum_codex_cli":"0.146.0","watcher_version":"1.0.0","inbox_protocol":1,"dashboard_version":"1.0.0","handoff_protocol":1,"status_model":1,"storage_schema":1}\n',
+            '{"platform_version":"2.0.0","runner_version":"2.0.0","bootstrap_contract":"2026.12","checkpoint_format":1,"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0","watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0","handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
             encoding="utf-8",
         )
         self.store = StateStore(self.root / ".engineering" / "engineering-runs")
@@ -1790,7 +1790,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_engineering_platform_accepts_newer_compatible_runner(self) -> None:
         manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
-        validate_compatibility(manifest, RunnerCompatibility(runner_version="1.1.0", bootstrap_contract="2026.08", checkpoint_formats=frozenset({1, 2}), memory_formats=frozenset({1}), report_formats=frozenset({1})), "0.146.0")
+        validate_compatibility(manifest, RunnerCompatibility(runner_version="2.1.0"), "0.146.0")
 
     def test_default_runner_compatibility_accepts_the_repository_manifest(self) -> None:
         root = Path(__file__).parents[2]
@@ -1811,12 +1811,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:
         compatibility = RunnerCompatibility(
-            platform_version="1.0.0",
-            runner_version="1.0.0",
-            bootstrap_contract="2026.07",
+            platform_version="2.0.0",
+            runner_version="2.0.0",
+            bootstrap_contract="2026.12",
             checkpoint_formats=frozenset({1}),
-            memory_formats=frozenset({1}),
-            report_formats=frozenset({1}),
+            memory_formats=frozenset({2}),
+            report_formats=frozenset({2}),
             storage_schemas=frozenset({2}),
         )
         runner = EngineeringRunner(
@@ -1844,8 +1844,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
         cases = (
             (RunnerCompatibility(bootstrap_contract="2026.06"), "Bootstrap contract mismatch"),
             (RunnerCompatibility(checkpoint_formats=frozenset({2})), "Checkpoint format mismatch"),
-            (RunnerCompatibility(memory_formats=frozenset({2})), "Engineering Memory format mismatch"),
-            (RunnerCompatibility(report_formats=frozenset({2})), "Report format mismatch"),
+            (RunnerCompatibility(memory_formats=frozenset({1})), "Engineering Memory format mismatch"),
+            (RunnerCompatibility(report_formats=frozenset({1})), "Report format mismatch"),
             (RunnerCompatibility(storage_schemas=frozenset({2})), "Engineering storage schema mismatch"),
         )
         for compatibility, diagnostic in cases:
@@ -1872,7 +1872,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             },
         )
         body = report.read_text(encoding="utf-8")
-        self.assertIn("Platform Version: `1.0.0`", body)
+        self.assertIn("Platform Version: `2.0.0`", body)
         self.assertIn("Runtime Provider: `codex_cli`", body)
         self.assertIn("AI Model: `gpt-5.6-terra`", body)
         self.assertIn("Reasoning Profile: `medium`", body)

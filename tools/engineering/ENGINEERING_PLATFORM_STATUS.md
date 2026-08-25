@@ -162,6 +162,6 @@ versioning.
 ## Bootstrap compatibility
 
 The repository bootstrap is the authoritative compatibility contract. Future
-Platform Engineering prompts require Engineering Platform `>= 1.5.0`; older
+Platform Engineering prompts require Engineering Platform `>= 2.0.0`; older
 versions are incompatible and must fail closed with an upgrade-required
 diagnostic. This records a documentation and compatibility requirement only.

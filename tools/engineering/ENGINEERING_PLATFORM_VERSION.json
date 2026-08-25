@@ -1,15 +1,15 @@
 {
   "bootstrap_contract": "2026.12",
   "checkpoint_format": 1,
-  "dashboard_version": "1.3.0",
+  "dashboard_version": "2.0.0",
   "handoff_protocol": 1,
   "memory_format": 2,
   "minimum_codex_cli": "0.146.0",
   "inbox_protocol": 1,
-  "platform_version": "1.5.0",
+  "platform_version": "2.0.0",
   "report_format": 2,
-  "runner_version": "1.5.0",
+  "runner_version": "2.0.0",
   "status_model": 1,
   "storage_schema": 29,
-  "watcher_version": "1.2.0"
+  "watcher_version": "2.0.0"
 }

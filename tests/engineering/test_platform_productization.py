@@ -42,7 +42,7 @@ class PlatformProductizationTest(unittest.TestCase):
     def test_identity_and_configuration_are_canonical(self) -> None:
         configuration = PlatformConfiguration.load(ROOT)
         self.assertEqual(configuration.platform.id, "engineering-platform")
-        self.assertEqual(configuration.platform.version, "1.5.0")
+        self.assertEqual(configuration.platform.version, "2.0.0")
         self.assertEqual(configuration.workspace.id, "djconnect")
         self.assertEqual(configuration.providers["runtime"], "codex_cli")
 

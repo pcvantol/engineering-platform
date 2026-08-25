@@ -24,7 +24,7 @@ class CapabilityPreflightTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_compatible_declaration_is_deterministic(self) -> None:
-        prompt = "Execution Host Version: 1.5.0\nRunner Version: 1.5.0\nEngineering Database Schema: 6\nRequired Capabilities: capability_preflight\n"
+        prompt = "Execution Host Version: 2.0.0\nRunner Version: 2.0.0\nEngineering Database Schema: 6\nRequired Capabilities: capability_preflight\n"
         first = capability_preflight.execute(self.root, prompt, run_id="inbox-one")
         second = capability_preflight.execute(self.root, prompt, run_id="inbox-two")
         self.assertEqual(first.outcome, "PASS")
