@@ -32,6 +32,24 @@ metadata only. Missing metadata remains compatible with existing prompts and
 records `Producer Type: HUMAN` and `Producer ID: legacy`. Producer identity
 never changes admission, scheduling, preflight, lifecycle or execution.
 
+### Forge/Workspace submission API
+
+`tools.engineering.workspace_inbox_api.publish(root, envelope)` is the bounded
+local API for Forge and trusted Workspace callers. It accepts only a complete
+`djconnect.producer_submission` v1 envelope whose Producer Type is `FORGE`;
+plain-text prompts, incomplete envelopes and every other producer type fail
+closed. It first records the immutable producer submission evidence in local
+Engineering storage, then writes the original UTF-8 envelope through a private
+temporary file and atomic rename into the configured physical Inbox.
+
+This API is an alternative *submission transport*, not an alternative runner:
+the normal Inbox watcher remains the sole claimant, executor and lifecycle
+owner. The API does not bypass queue order, preflights, authority gates,
+validation, Finalization, reconciliation or operator merge decisions. It does
+not create a network listener or accept arbitrary browser uploads; a future
+authenticated remote ingress must call this same bounded API after its own
+authentication and request-size validation.
+
 ### Dependabot admission
 
 On each watcher cycle, the Engineering Platform performs a bounded, read-only
