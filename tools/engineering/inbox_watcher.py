@@ -52,8 +52,8 @@ from .dependabot_admission import (
     publish_envelope as publish_dependabot_envelope,
     record_enqueued as record_dependabot_enqueued,
 )
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission
-from .execution_lease import liveness as lease_liveness, reconcile_stale
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission, store_projection
+from .execution_lease import reconcile_stale
 from .dashboard_configuration import get as dashboard_configuration
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
@@ -77,6 +77,26 @@ RETRY_TIMESTAMP_PATTERN = re.compile(r"(?mi)^retry[ _-]timestamp\s*:\s*([^\n]{1,
 LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
+WATCHER_READY_PROJECTION = "inbox_watcher_ready"
+
+
+def publish_ready_record(repo: Path, root: Path) -> None:
+    """Publish the resolved Inbox used by this watcher process at startup."""
+    connection = open_storage(repo)
+    try:
+        store_projection(
+            connection,
+            WATCHER_READY_PROJECTION,
+            {
+                "pid": os.getpid(),
+                "inbox_path": str((root / "Inbox").resolve()),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "watcher_version": WATCHER_VERSION,
+            },
+            classification="OBSERVABILITY",
+        )
+    finally:
+        connection.close()
 
 
 def _configured_scan_interval(repo: Path, fallback: float) -> float:
@@ -493,6 +513,29 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
         existing = load_projection(repo, "watcher_status") or {}
     except EngineeringStorageError:
         existing = {}
+    state = _nonterminal_transaction_state(repo)
+    # A lease is only execution machinery, never lifecycle authority.  If the
+    # prior projection was idle while SQLite still has a non-terminal run,
+    # rebuild an active projection from that durable checkpoint.
+    if state is not None and existing.get("watcher_state") == "WATCHER_IDLE":
+        status(
+            repo,
+            "ENGINEERING_RUN_ACTIVE",
+            job_id=existing.get("job_id") if isinstance(existing.get("job_id"), str) else None,
+            run_id=state.run_id,
+            queued_jobs=len(candidates),
+            queue_items=_queue_items(candidates),
+            runner_phase=state.phase,
+            current_action=state.next_action,
+            implementation_pr=state.implementation_pull_request,
+            finalization_pr=state.finalization_pull_request,
+            submitted_filename=(
+                existing.get("submitted_filename")
+                if isinstance(existing.get("submitted_filename"), str) else None
+            ),
+            prompt_title=existing.get("prompt_title") if isinstance(existing.get("prompt_title"), str) else None,
+        )
+        return
     manifest = EngineeringPlatformManifest.load(
         Path(__file__).with_name("ENGINEERING_PLATFORM_VERSION.json")
     )
@@ -505,6 +548,24 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
         },
     )
     publish(repo / ".engineering" / "status", payload)
+
+
+def _nonterminal_transaction_state(repo: Path) -> TransactionState | None:
+    """Return the latest durable non-terminal transaction, if it is readable."""
+    placeholders = ",".join("?" for _ in TERMINAL_PHASES)
+    try:
+        connection = open_storage(repo)
+        try:
+            row = connection.execute(
+                f"SELECT payload FROM engineering_transactions WHERE phase NOT IN ({placeholders}) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                tuple(TERMINAL_PHASES),
+            ).fetchone()
+        finally:
+            connection.close()
+        return TransactionState.from_dict(json.loads(row[0])) if row else None
+    except (EngineeringStorageError, TypeError, json.JSONDecodeError, ValueError):
+        return None
 
 
 def _job_id(source: Path, content: str) -> tuple[str, str, str]:
@@ -869,7 +930,7 @@ def _move(source: Path, destination: Path) -> None:
 
 
 def _active_transaction(repo: Path) -> bool:
-    """Return whether an admitted runner is still demonstrably alive.
+    """Return whether a non-terminal transaction still owns the queue.
 
     A detached child may be terminated between its admission projection and its
     first checkpoint.  That must not leave the watcher in ``RUNNER_STARTING``
@@ -892,12 +953,10 @@ def _active_transaction(repo: Path) -> bool:
         # merge is observed or an operator explicitly aborts it.
         if checkpoint_phase == OPERATOR_MERGE_WAIT_PHASE:
             return True
-        # A transaction lifecycle checkpoint is not liveness evidence. Once
-        # the Execution Host has persisted the transaction, only its canonical
-        # lease may keep later Inbox work gated. This prevents a crashed host
-        # with an old ACTIVE checkpoint from blocking the queue indefinitely.
+        # SQLite is the lifecycle authority. A missing lease means recovery is
+        # required, not that an admitted non-terminal transaction vanished.
         if checkpoint_phase is not None:
-            return lease_liveness(repo, run_id).get("state") == "LIVE"
+            return True
         # The runner can stop after publishing its terminal watcher result but
         # before replacing current.json. The watcher result is authoritative
         # for that same Run ID, so it must not hold later Inbox work hostage.
@@ -1039,6 +1098,9 @@ def _operator_merge_wait(repo: Path) -> TransactionState | None:
 
 def _operator_merge_poll_due(repo: Path, run_id: str) -> bool:
     """Rate-limit GitHub reconciliation without tying it to a browser session."""
+    waiting = _operator_merge_wait(repo)
+    if waiting is not None and waiting.run_id == run_id and waiting.next_action == "resume_verified_merge":
+        return True
     try:
         watcher = load_projection(repo, "watcher_status") or {}
         observed = watcher.get("last_update") if watcher.get("run_id") == run_id else None
@@ -1223,11 +1285,13 @@ def check_operator_merge_status(repo: Path, run_id: str) -> dict[str, object]:
         if not merged_to_main:
             return {"verified": False, "reason": "merge_not_in_origin_main", "pull_request": pull_request,
                     "last_successful_github_check_at": check.get("last_successful_github_check_at")}
-        # The browser returns immediately. The regular runner still owns all
-        # state transitions, finalization and reconciliation.
-        from threading import Timer
-        Timer(0.25, _execute_runner_command, args=(repo, Path(state.prompt_path), run_id)).start()
-        return {"verified": True, "continuation": "scheduled", "pull_request": pull_request,
+        # Persist the continuation request before returning to the browser.
+        # The watcher owns the actual resume; no in-memory timer may become a
+        # second authority or disappear during a handover.
+        StateStore(repo / ".engineering" / "engineering-runs").save(
+            replace(state, next_action="resume_verified_merge")
+        )
+        return {"verified": True, "continuation": "queued", "pull_request": pull_request,
                 "last_successful_github_check_at": check.get("last_successful_github_check_at")}
 
 
@@ -2124,6 +2188,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with single_instance(repo, "inbox-watcher"):
                 with shutdown_signal_logging(logger, lifecycle_context):
+                    publish_ready_record(repo, root)
                     log_event(logger, logging.INFO, "watcher_started", context=lifecycle_context)
                     try:
                         while True:

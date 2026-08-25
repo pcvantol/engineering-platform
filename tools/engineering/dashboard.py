@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
+from datetime import datetime, timezone
 from html import escape
 import json
 import logging
@@ -27,7 +28,7 @@ from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .inbox_watcher import LABEL as WATCHER_LABEL
-from .inbox_watcher import WATCHER_VERSION
+from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
@@ -51,6 +52,7 @@ from .recommendation_handoff import handoff_from_report
 from .storage import (
     EngineeringStorageError,
     ai_capacity_history,
+    load_projection,
     open_storage,
     record_ai_capacity_bi_hourly,
 )
@@ -61,6 +63,8 @@ from .platform_version import EngineeringPlatformManifest
 from .dashboard_configuration import (
     DashboardConfigurationConflict,
     get as dashboard_configuration,
+    inbox_root,
+    restore_inbox_root,
     update as update_dashboard_configuration,
     update_inbox_root,
 )
@@ -1009,6 +1013,56 @@ def _restart_component_after_response(component: str, logger: logging.Logger) ->
         _restart_component(component)
     except OSError as error:
         log_event(logger, logging.ERROR, "component_restart_failed", diagnostic=str(error))
+
+
+class InboxLocationChangeError(RuntimeError):
+    """Raised when a new Inbox route cannot be confirmed by a fresh watcher."""
+
+
+def _restart_and_verify_inbox_watcher(
+    root: Path, expected_inbox: Path, *, timeout_seconds: float = 8.0,
+) -> None:
+    """Restart the watcher and require a fresh ready record for ``expected_inbox``."""
+    requested_at = datetime.now(timezone.utc)
+    _restart_component("inbox_watcher")
+    deadline = time.monotonic() + timeout_seconds
+    expected = str(expected_inbox.resolve())
+    while time.monotonic() < deadline:
+        try:
+            ready = load_projection(root, WATCHER_READY_PROJECTION) or {}
+            started_at, pid = ready.get("started_at"), ready.get("pid")
+            started = (
+                datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                if isinstance(started_at, str) else None
+            )
+            if (
+                ready.get("inbox_path") == expected
+                and isinstance(pid, int)
+                and started is not None
+                and started >= requested_at
+            ):
+                os.kill(pid, 0)
+                return
+        except (EngineeringStorageError, OSError, ValueError):
+            pass
+        time.sleep(0.1)
+    raise OSError("Inbox watcher restart did not confirm the configured Inbox route.")
+
+
+def _change_inbox_location(root: Path, value: object, active_inbox: Path) -> dict[str, object]:
+    """Commit an Inbox route only after its replacement watcher confirms it."""
+    previous = inbox_root(root)
+    event = update_inbox_root(root, value)
+    try:
+        _restart_and_verify_inbox_watcher(root, Path(str(event["value"])) / "Inbox")
+    except OSError as error:
+        try:
+            restore_inbox_root(root, previous)
+            _restart_and_verify_inbox_watcher(root, active_inbox)
+        except OSError as rollback_error:
+            raise InboxLocationChangeError("watcher_restart_and_rollback_failed") from rollback_error
+        raise InboxLocationChangeError("watcher_restart_failed_rolled_back") from error
+    return {**event, "watcher_verified": True}
 
 
 def _restore_managed_main_branch(root: Path) -> dict[str, str]:
@@ -2545,11 +2599,18 @@ def handler(root: Path, logger: logging.Logger | None = None):
                             409,
                         )
                         return
-                    event = update_inbox_root(root, payload["inbox_root"])
+                    event = _change_inbox_location(root, payload["inbox_root"], active_inbox)
                     log_event(
                         logger, logging.INFO, "dashboard_configuration_changed",
                         diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}",
                     )
+                except InboxLocationChangeError as error:
+                    log_event(logger, logging.ERROR, "inbox_location_change_rolled_back", diagnostic=str(error))
+                    self._send(
+                        json.dumps({"error_code": "inbox_watcher_restart_failed"}).encode(),
+                        "application/json; charset=utf-8", 503,
+                    )
+                    return
                 except RuntimeError as error:
                     self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
                     return
@@ -2557,10 +2618,6 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     self._send(b'{"error":"Inbox-locatie kon niet veilig worden gewijzigd."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
-                # The preference is already durable.  Restart after replying so a
-                # launchd failure never makes the browser treat the saved location
-                # as an unsuccessful change.
-                Timer(0.25, _restart_component_after_response, args=("inbox", logger)).start()
                 return
             if request_path == "/api/configuration/inbox-location/browse":
                 try:

@@ -143,3 +143,19 @@ def update_inbox_root(root: Path, value: object) -> dict[str, object]:
         "value": str(candidate),
         "changed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def restore_inbox_root(root: Path, previous: Path | None) -> None:
+    """Restore the Inbox-root preference after an unconfirmed route change."""
+    connection = open_storage(root)
+    try:
+        if previous is None:
+            connection.execute("DELETE FROM engineering_metadata WHERE key=?", (INBOX_ROOT_KEY,))
+        else:
+            connection.execute(
+                "INSERT INTO engineering_metadata(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (INBOX_ROOT_KEY, json.dumps(str(previous))),
+            )
+    finally:
+        connection.close()

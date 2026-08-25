@@ -103,9 +103,11 @@ class FakeRepository:
 
 
 class FakeGitHub:
-    def __init__(self, responses: list[PullRequestEvidence | RunnerError]) -> None:
+    def __init__(self, responses: list[PullRequestEvidence | RunnerError], *, branch_response: PullRequestEvidence | None = None) -> None:
         self.responses = responses
+        self.branch_response = branch_response
         self.calls = 0
+        self.branch_calls: list[str] = []
         self.ready_calls: list[int] = []
         self.merge_calls: list[int] = []
 
@@ -115,6 +117,10 @@ class FakeGitHub:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None:
+        self.branch_calls.append(branch)
+        return self.branch_response
 
     def ready(self, number: int) -> None:
         self.ready_calls.append(number)
@@ -1708,6 +1714,46 @@ class LocalAgentRunnerTest(unittest.TestCase):
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([PullRequestEvidence(23, "OPEN", False, False)]), FakeAgent(AgentResult("WAITING")), lambda _: None)
         result = runner._start_finalization(state, 21)
         self.assertEqual(result.pull_request, 23)
+        self.assertEqual(runner.agent.prompts, [])
+
+    def test_finalization_recovery_persists_existing_pr_without_invoking_agent(self) -> None:
+        state = TransactionState(
+            "recover-finalization", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT",
+            owner_authorized=True, transaction_kind="FINALIZATION",
+            implementation_pull_request=21, implementation_merge_commit="b" * 40,
+            finalization_branch="codex/finalize-recover-finalization",
+        )
+        candidate = PullRequestEvidence(
+            22, "OPEN", True, True, None, False, (),
+            "codex/finalize-recover-finalization", "main",
+        )
+        github = FakeGitHub([candidate], branch_response=candidate)
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+
+        recovered = runner._recover_finalization_pull_request(state, FakeRepository().inspect(self.root))
+
+        self.assertEqual(recovered.finalization_pull_request, 22)
+        self.assertEqual(recovered.phase, "WAIT_FOR_OPERATOR_MERGE")
+        self.assertEqual(github.branch_calls, ["codex/finalize-recover-finalization"])
+        self.assertEqual(runner.agent.prompts, [])
+
+    def test_finalization_recovery_fails_closed_when_existing_pr_does_not_match_branch(self) -> None:
+        state = TransactionState(
+            "reject-finalization", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT",
+            owner_authorized=True, transaction_kind="FINALIZATION",
+            implementation_pull_request=21, implementation_merge_commit="b" * 40,
+            finalization_branch="codex/finalize-reject-finalization",
+        )
+        candidate = PullRequestEvidence(22, "OPEN", True, True, None, False, (), "codex/other", "main")
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([], branch_response=candidate),
+            FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+
+        blocked = runner._recover_finalization_pull_request(state, FakeRepository().inspect(self.root))
+
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "finalization_recovery_evidence_invalid")
         self.assertEqual(runner.agent.prompts, [])
 
     def test_repair_records_iterations_and_failed_check_name(self) -> None:

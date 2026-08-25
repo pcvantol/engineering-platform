@@ -1124,6 +1124,8 @@ Mandatory autonomous refactor and quality-control stage:
                 last_verified_sha=evidence.head_sha,
                 next_action="poll_required_checks",
             )
+        if state.transaction_kind == "FINALIZATION" and state.phase == "FINALIZE_AGENT":
+            return self._recover_finalization_pull_request(state, evidence)
         if (
             state.transaction_kind == "FINALIZATION"
             and state.implementation_pull_request is None
@@ -1159,6 +1161,63 @@ Mandatory autonomous refactor and quality-control stage:
             last_verified_sha=evidence.head_sha,
             next_action="invoke_agent",
         )
+
+    def _recover_finalization_pull_request(
+        self, state: TransactionState, evidence: RepositoryEvidence,
+    ) -> TransactionState:
+        """Persist an existing Finalization PR only after current proof.
+
+        The checkpointed branch is the recovery identity. A missing or
+        ambiguous match is terminally blocked rather than retried, so recovery
+        never invokes an agent or creates a replacement Finalization PR.
+        """
+        if state.finalization_pull_request:
+            return replace(
+                state, pull_request=state.finalization_pull_request,
+                branch=state.finalization_branch, phase="WAIT_FOR_TERMINAL_EVIDENCE",
+                next_action="poll_required_checks",
+            )
+        if (
+            not state.finalization_branch
+            or not state.implementation_merge_commit
+            or evidence.branch != "main"
+            or not evidence.clean
+            or not evidence.main_contains_head
+            or not self.repository.main_contains(self.root, state.implementation_merge_commit)
+        ):
+            return self._save_terminal(
+                state, "BLOCKED", "finalization_recovery_evidence_required",
+                "Finalization recovery requires a clean current main checkout and a verified implementation merge.",
+            )
+        candidate = self.github.pull_request_for_head_branch(state.finalization_branch)
+        if candidate is None:
+            return self._save_terminal(
+                state, "BLOCKED", "finalization_recovery_evidence_required",
+                "No Finalization pull request matches the checkpointed branch; no replacement was created.",
+            )
+        if (
+            candidate.head_branch != state.finalization_branch
+            or candidate.base_branch != "main"
+            or candidate.state not in {"OPEN", "MERGED"}
+        ):
+            return self._save_terminal(
+                state, "BLOCKED", "finalization_recovery_evidence_invalid",
+                "Finalization pull request evidence does not match the checkpointed branch and main base.",
+            )
+        recovered = replace(
+            state,
+            branch=state.finalization_branch,
+            pull_request=candidate.number,
+            finalization_pull_request=candidate.number,
+            phase="WAIT_FOR_TERMINAL_EVIDENCE",
+            next_action="poll_required_checks",
+            last_verified_sha=evidence.head_sha,
+            latest_repository_evidence=_repository_summary(evidence),
+            latest_github_evidence=_pull_request_summary(candidate),
+        )
+        self.store.save(recovered)
+        write_live_status(self.root, recovered, recovered.next_action)
+        return self._poll(recovered)
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
         if result and result.terminal_state in {"BLOCKED", "FAILED"}:
@@ -1363,12 +1422,14 @@ Mandatory autonomous refactor and quality-control stage:
                 state,
                 "Finalization is waiting for a clean, synchronized main checkout.",
             )
+        expected_branch = state.finalization_branch or f"codex/finalize-{state.run_id}"
         finalization = replace(
             state,
             phase="FINALIZE_AGENT",
             transaction_kind="FINALIZATION",
             pull_request=None,
-            branch=None,
+            branch=expected_branch,
+            finalization_branch=expected_branch,
             next_action="create_finalization",
             implementation_pull_request=implementation_pr or state.implementation_pull_request,
             latest_repository_evidence=_repository_summary(evidence),
@@ -1381,7 +1442,7 @@ Mandatory autonomous refactor and quality-control stage:
         instruction = (
             f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory "
             "governance-only Finalization: reconcile the four rolling records and immutable Prompt "
-            "History, then create a draft Finalization PR. After GitHub assigns its number, run "
+            f"History, then create a draft Finalization PR on exactly `{expected_branch}`. After GitHub assigns its number, run "
             f"`python3 -m tools.engineering.repository_handoff --run-id {finalization.run_id} "
             f"--platform-version {self.platform_manifest.platform_version if self.platform_manifest else 'unknown'} "
             f"--implementation-pr {implementation_pr} --finalization-pr <PR_NUMBER>`, commit the "

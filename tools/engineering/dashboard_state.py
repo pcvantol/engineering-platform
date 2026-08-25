@@ -324,12 +324,11 @@ def status(root: Path) -> bytes:
         live
         and live.get("phase") not in TERMINAL_PHASES
         and live_liveness.get("state") != "LIVE"
+        and not _terminal_checkpoint(root, live.get("run_id"))
         and (
             not watcher
-            or (
-                watcher.get("run_id") == live.get("run_id")
-                and watcher.get("watcher_state") in {"JOB_CLAIMED", "RUNNER_STARTING", "REPORT_PUBLISHING", "ENGINEERING_RUN_ACTIVE"}
-            )
+            or watcher.get("watcher_state") == "WATCHER_IDLE"
+            or watcher.get("run_id") == live.get("run_id")
             or _watcher_lags_live_phase(watcher, live, lifecycle)
         )
     ):

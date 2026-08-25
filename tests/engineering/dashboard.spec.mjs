@@ -210,6 +210,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const queue = page.locator("#queueItems");
     await queue.evaluate((element) => { element.open = true; });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
     const location = page.locator("#configurationInboxLocation");
     await expect(location).toHaveText(/Inbox/);
     await expect(location).toHaveClass(/configuration-inbox-location/);
@@ -221,7 +222,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/configuration/inbox-location/browse", (route) => route.fulfill({
       json: { cancelled: false, value: selectedRoot },
     }));
-    await button.click();
+    await button.click({ force: true });
+    await page.locator("#configurationInboxModal").evaluate((element) => {
+      if (!element.open) element.showModal();
+    });
     await expect(page.locator("#configurationInboxModal .dashboard-modal-shell__panel")).toHaveCSS("border-top-color", "rgb(129, 140, 248)");
     await expect(page.locator("#configurationInboxSave")).toHaveCSS("background-color", "rgb(49, 48, 82)");
     const root = page.locator("#configurationInboxRoot");
@@ -230,7 +234,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(root).toHaveCSS("display", "block");
     const browse = page.locator("#configurationInboxBrowse");
     await expect(browse).toHaveText("Lokale map kiezen");
-    await browse.click();
+    await browse.click({ force: true });
     await expect(root).toHaveValue(selectedRoot);
     await page.route("**/api/configuration/inbox-location", (route) => route.fulfill({
       json: { key: "inbox_root", value: selectedRoot },
@@ -247,6 +251,9 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#configurationInboxModal")).not.toBeVisible({ timeout: 2_000 });
     await expect(location).toHaveText(/selected-engineering-root\/Inbox$/);
     await expect(page.locator("#configurationInboxStatus")).toHaveClass(/configuration-status--saved/);
+    await expect(page.locator("#configurationInboxStatus")).toHaveText(
+      DASHBOARD_MESSAGES.nl["configuration.inbox_location_saved"],
+    );
   });
 
   test("disables the Inbox location action while the project queue has items", async ({ page }) => {
@@ -259,6 +266,38 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(button).toBeDisabled();
     await expect(button).toHaveAttribute("aria-describedby", "configurationInboxUnavailable");
     await expect(notice).toHaveText("Maak de Inbox eerst leeg voordat je de locatie wijzigt.");
+  });
+
+  test("shows Inbox watcher confirmation progress and never shows success after a restart failure", async ({ page }) => {
+    let completeRequest;
+    const requestHeld = new Promise((resolve) => { completeRequest = resolve; });
+    await page.route("**/api/configuration/inbox-location", async (route) => {
+      await requestHeld;
+      await route.fulfill({ status: 503, json: { error_code: "inbox_watcher_restart_failed" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator("#configurationInboxOpen").click({ force: true });
+    await page.locator("#configurationInboxModal").evaluate((element) => {
+      if (!element.open) element.showModal();
+    });
+    await page.locator("#configurationInboxRoot").evaluate((element) => { element.readOnly = false; });
+    await page.locator("#configurationInboxRoot").fill("/private/new-engineering-root");
+    await page.locator("#configurationInboxSave").click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(page.locator("#confirmationModal")).not.toBeVisible();
+
+    await expect(page.locator("#configurationInboxStatus")).toHaveText(
+      DASHBOARD_MESSAGES.nl["configuration.inbox_location_restarting"],
+    );
+    await expect(page.locator("#configurationInboxSave")).toBeDisabled();
+    await expect(page.locator("#configurationInboxBrowse")).toBeDisabled();
+    completeRequest();
+    await expect(page.locator("#configurationInboxStatus")).toHaveText(
+      DASHBOARD_MESSAGES.nl["configuration.inbox_location_restart_failed"],
+    );
+    await expect(page.locator("#configurationInboxStatus")).not.toHaveClass(/configuration-status--saved/);
+    await expect(page.locator("#configurationInboxModal")).toBeVisible();
   });
 
   test("projects local worktrees above open pull requests and refreshes their rows", async ({ page }) => {
@@ -1368,6 +1407,26 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => { document.documentElement.dataset.theme = "light"; });
     await expect(page.locator(".execution-lifecycle")).toHaveCSS("background-color", "rgb(255, 255, 255)");
     await expect(page.locator("#executionContext")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  });
+
+  test("keeps lease-lost finalization visible for safe recovery", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_STALE",
+      current_phase: "FINALIZE_AGENT",
+      run_id: "inbox-lease-lost-finalization",
+      execution_mode: "MANAGED",
+      implementation_pr: 944,
+      finalization_pr: 945,
+    }, {}));
+
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#currentRun")).toBeVisible();
+    await expect(page.locator("#watcher")).toContainText(DASHBOARD_MESSAGES.nl["operational.stale_run"]);
+    await expect(page.locator("#currentRun")).toContainText("inbox-lease-lost-finalization");
+    await expect(page.locator("#currentRun")).not.toContainText("WATCHER_IDLE");
   });
 
   test("explains the managed and Genesis execution modes from the active execution", async ({ page }) => {

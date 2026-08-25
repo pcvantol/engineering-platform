@@ -91,6 +91,15 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn("--transaction-kind", arguments)
         self.assertEqual(arguments[arguments.index("--transaction-kind") + 1], "RECONCILIATION")
 
+    def test_watcher_ready_record_identifies_the_resolved_inbox_route(self) -> None:
+        inbox_watcher.publish_ready_record(self.repo, self.root)
+
+        ready = inbox_watcher.load_projection(self.repo, inbox_watcher.WATCHER_READY_PROJECTION)
+
+        self.assertEqual(ready["inbox_path"], str((self.root / "Inbox").resolve()))
+        self.assertEqual(ready["pid"], os.getpid())
+        self.assertIsInstance(ready["started_at"], str)
+
     def test_preflight_failure_keeps_the_specific_bounded_runner_reason(self) -> None:
         completed = subprocess.CompletedProcess(("engineering-execution-host",), 2, "BLOCKED: working tree is not clean\n", "")
 
@@ -481,6 +490,24 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue((inbox_watcher.local_folders(self.repo)["Failed"] / "merge-wait__prompt.md").exists())
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
+    def test_lease_lost_finalization_replaces_idle_projection_with_durable_active_state(self) -> None:
+        run_id = "inbox-lease-lost-finalization"
+        state = TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "FINALIZE_AGENT",
+            transaction_kind="FINALIZATION", implementation_pull_request=944,
+            finalization_pull_request=945, next_action="recover_finalization_evidence",
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        inbox_watcher.status(self.repo, "WATCHER_IDLE", queued_jobs=0, queue_items=[])
+
+        inbox_watcher._publish_active_queue(self.repo, [])
+
+        snapshot = inbox_watcher.load_projection(self.repo, "watcher_status")
+        self.assertEqual(snapshot["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(snapshot["run_id"], run_id)
+        self.assertEqual(snapshot["current_phase"], "FINALIZE_AGENT")
+        self.assertEqual(snapshot["finalization_pr"], 945)
+
     def test_operator_merge_wait_is_rate_limited_and_projects_prior_job_context(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState
 
@@ -551,17 +578,18 @@ class InboxWatcherTest(unittest.TestCase):
         with (
             patch("tools.engineering.inbox_watcher.GhCliClient") as github,
             patch("tools.engineering.inbox_watcher.SubprocessRepositoryClient") as repository,
-            patch("threading.Timer") as timer,
         ):
             github.return_value.pull_request.return_value = merged_pr
             repository.return_value.remote_main_contains.return_value = True
             outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
 
         self.assertTrue(outcome["verified"])
-        self.assertEqual(outcome["continuation"], "scheduled")
+        self.assertEqual(outcome["continuation"], "queued")
         self.assertEqual(outcome["pull_request"], 832)
         repository.return_value.refresh_main_reference.assert_called_once_with(self.repo)
-        timer.return_value.start.assert_called_once_with()
+        resumed = StateStore(self.repo / ".engineering" / "engineering-runs").load(run_id)
+        self.assertEqual(resumed.next_action, "resume_verified_merge")
+        self.assertTrue(inbox_watcher._operator_merge_poll_due(self.repo, run_id))
 
     def test_direct_operator_merge_status_check_fails_closed_when_evidence_is_incomplete(self) -> None:
         run_id = "inbox-merge-evidence"
@@ -875,7 +903,7 @@ class InboxWatcherTest(unittest.TestCase):
             self.assertFalse(inbox_watcher._detached_runner_is_alive({"runner_pid": 12345}))
         kill.assert_not_called()
 
-    def test_stale_canonical_transaction_does_not_hold_the_inbox(self) -> None:
+    def test_nonterminal_finalization_without_lease_keeps_the_inbox_owned(self) -> None:
         run_id = "inbox-stale-lease"
         inbox_watcher.status(self.repo, "ENGINEERING_RUN_ACTIVE", run_id=run_id)
         connection = open_storage(self.repo)
@@ -883,11 +911,14 @@ class InboxWatcherTest(unittest.TestCase):
             store_projection(connection, "live_status", {"run_id": run_id, "phase": "EXECUTE_AGENT"})
             connection.execute(
                 "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
-                (run_id, "{}", "EXECUTE_AGENT", "2026-01-01T00:00:00+00:00"),
+                (run_id, json.dumps(TransactionState(
+                    run_id, "pcvantol/djconnect", "prompt.md", "FINALIZE_AGENT",
+                    transaction_kind="FINALIZATION",
+                ).to_dict()), "FINALIZE_AGENT", "2026-01-01T00:00:00+00:00"),
             )
         finally:
             connection.close()
-        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+        self.assertTrue(inbox_watcher._active_transaction(self.repo))
 
     def test_expired_legacy_runner_start_does_not_hold_the_inbox(self) -> None:
         self.assertFalse(

@@ -306,8 +306,7 @@ function isActiveRun(x = {}) {
 }
 function hasVisibleStaleLifecycle(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
-    x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED" &&
-    x.lifecycle?.available === true;
+    x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED";
 }
 function checkBuild(build) {
   if (build === DASHBOARD_BUILD) {
@@ -5191,6 +5190,12 @@ $("configurationInboxSave")?.addEventListener("click", async (event) => {
   );
   if (!confirmed) return;
   button.disabled = true;
+  const browse = $("configurationInboxBrowse"), close = $("configurationInboxModalCloseAction");
+  browse.disabled = true;
+  close.disabled = true;
+  $("configurationInboxRoot").readOnly = true;
+  $("configurationInboxStatus").classList.remove("configuration-status--saved");
+  $("configurationInboxStatus").textContent = t("configuration.inbox_location_restarting");
   try {
     const response = await fetch("/api/configuration/inbox-location", {
       method: "POST",
@@ -5201,6 +5206,8 @@ $("configurationInboxSave")?.addEventListener("click", async (event) => {
     if (!response.ok) throw Error(
       payload.error_code === "inbox_not_empty"
         ? t("configuration.inbox_location_queue_not_empty")
+        : payload.error_code === "inbox_watcher_restart_failed"
+          ? t("configuration.inbox_location_restart_failed")
         : payload.error || t("configuration.inbox_location_failed"),
     );
     $("configurationInbox").textContent = `${payload.value}/Inbox`;
@@ -5213,6 +5220,9 @@ $("configurationInboxSave")?.addEventListener("click", async (event) => {
     $("configurationInboxStatus").classList.remove("configuration-status--saved");
   } finally {
     button.disabled = false;
+    browse.disabled = false;
+    close.disabled = false;
+    $("configurationInboxRoot").readOnly = false;
   }
 });
 enhanceDashboardSelectPickers();

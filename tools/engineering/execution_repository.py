@@ -30,6 +30,7 @@ class RepositoryClient(Protocol):
 
 class GitHubClient(Protocol):
     def pull_request(self, number: int) -> PullRequestEvidence: ...
+    def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None: ...
     def ready(self, number: int) -> None: ...
     def merge(self, number: int) -> None: ...
 
@@ -126,6 +127,21 @@ class GhCliClient:
             raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"], failed,
             raw.get("headRefName"), raw.get("baseRefName"),
         )
+
+    def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None:
+        """Return exactly one current PR for an already-checkpointed branch."""
+        try:
+            raw = json.loads(self.provider.github(
+                "pr", "list", "--head", branch, "--state", "all", "--json", "number"
+            ))
+        except RuntimeError as error:
+            raise RunnerError(str(error)) from error
+        numbers = [item.get("number") for item in raw if isinstance(item, dict) and isinstance(item.get("number"), int)]
+        if not numbers:
+            return None
+        if len(numbers) != 1:
+            raise RunnerError("Finalization recovery found more than one pull request for its checkpointed branch.")
+        return self.pull_request(numbers[0])
     def ready(self, number: int) -> None:
         try: self.provider.github("pr", "ready", str(number))
         except RuntimeError as error:

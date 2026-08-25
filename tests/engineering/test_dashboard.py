@@ -19,6 +19,7 @@ from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
+from tools.engineering.dashboard_configuration import inbox_root, update_inbox_root
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire
 
@@ -2345,12 +2346,10 @@ class DashboardStatusTest(unittest.TestCase):
         ), patch(
             "tools.engineering.dashboard._inbox_has_items", return_value=False
         ), patch(
-            "tools.engineering.dashboard.update_inbox_root", return_value={
-                "key": "inbox_root", "previous": "/old", "value": "/new"
+            "tools.engineering.dashboard._change_inbox_location", return_value={
+                "key": "inbox_root", "previous": "/old", "value": "/new", "watcher_verified": True,
             }
-        ), patch(
-            "tools.engineering.dashboard.Timer"
-        ) as timer, patch(
+        ) as change_inbox, patch(
             "tools.engineering.dashboard._choose_local_directory", return_value="/private/chosen"
         ):
             connection.request(
@@ -2386,7 +2385,7 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(json.loads(response.read())["value"], "/new")
-            timer.return_value.start.assert_called_once()
+            change_inbox.assert_called_once_with(root, "/private/new", Path("/private/inbox"))
 
             connection.request(
                 "POST", "/api/configuration/inbox-location/browse", body=b"{}",
@@ -2403,6 +2402,82 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             self.assertEqual(json.loads(response.read()), {"error": "Ongeldige dashboardinstelling."})
+
+    def test_inbox_location_change_requires_restart_and_route_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, new = root / "old", root / "new"
+            (old / "Inbox").mkdir(parents=True)
+            (new / "Inbox").mkdir(parents=True)
+            update_inbox_root(root, str(old))
+
+            with patch("tools.engineering.dashboard._restart_and_verify_inbox_watcher") as restart:
+                event = dashboard._change_inbox_location(root, str(new), old / "Inbox")
+
+            self.assertTrue(event["watcher_verified"])
+            self.assertEqual(inbox_root(root), new.resolve())
+            restart.assert_called_once_with(root, (new / "Inbox").resolve())
+
+    def test_inbox_location_restart_or_route_verification_failure_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, new = root / "old", root / "new"
+            (old / "Inbox").mkdir(parents=True)
+            (new / "Inbox").mkdir(parents=True)
+            update_inbox_root(root, str(old))
+
+            with patch(
+                "tools.engineering.dashboard._restart_and_verify_inbox_watcher",
+                side_effect=(OSError("restart failed"), None),
+            ) as restart:
+                with self.assertRaises(dashboard.InboxLocationChangeError):
+                    dashboard._change_inbox_location(root, str(new), old / "Inbox")
+
+            self.assertEqual(inbox_root(root), old.resolve())
+            self.assertEqual(
+                restart.call_args_list,
+                [call(root, (new / "Inbox").resolve()), call(root, old / "Inbox")],
+            )
+
+    def test_inbox_location_route_verification_failure_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, new = root / "old", root / "new"
+            (old / "Inbox").mkdir(parents=True)
+            (new / "Inbox").mkdir(parents=True)
+            update_inbox_root(root, str(old))
+
+            with patch(
+                "tools.engineering.dashboard._restart_and_verify_inbox_watcher",
+                side_effect=(OSError("new watcher reported a different route"), None),
+            ):
+                with self.assertRaises(dashboard.InboxLocationChangeError):
+                    dashboard._change_inbox_location(root, str(new), old / "Inbox")
+
+            self.assertEqual(inbox_root(root), old.resolve())
+
+    def test_inbox_location_http_never_acknowledges_unconfirmed_watcher(self) -> None:
+        runtime = MagicMock()
+        runtime.resolve_runtime_prompt_transport.return_value.inbox = Path("/private/old/Inbox")
+        configuration = MagicMock()
+        configuration.resolver.return_value = runtime
+        with self._dashboard_http_connection() as (_, connection), patch(
+            "tools.engineering.dashboard._execution_active", return_value=False
+        ), patch(
+            "tools.engineering.dashboard.PlatformConfiguration.load", return_value=configuration
+        ), patch(
+            "tools.engineering.dashboard._inbox_has_items", return_value=False
+        ), patch(
+            "tools.engineering.dashboard._change_inbox_location",
+            side_effect=dashboard.InboxLocationChangeError("watcher_restart_failed_rolled_back"),
+        ):
+            connection.request(
+                "POST", "/api/configuration/inbox-location", body=json.dumps({"inbox_root": "/private/new"}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 503)
+            self.assertEqual(json.loads(response.read()), {"error_code": "inbox_watcher_restart_failed"})
 
     def test_http_configuration_refuses_inbox_changes_while_work_is_active_or_queued(self) -> None:
         payload = json.dumps({"inbox_root": "/private/new"})
@@ -2749,30 +2824,26 @@ class DashboardStatusTest(unittest.TestCase):
                 ),
                 patch("tools.engineering.dashboard._inbox_has_items", return_value=False),
                 patch(
-                    "tools.engineering.dashboard.update_inbox_root",
+                    "tools.engineering.dashboard._change_inbox_location",
                     return_value={
                         "key": "inbox_root",
                         "previous": None,
                         "value": str(transport.resolve()),
                         "changed_at": "2026-08-25T00:00:00+00:00",
                     },
-                ) as update_inbox_root,
-                patch("tools.engineering.dashboard.Timer") as restart_timer,
+                ) as change_inbox_location,
             ):
                 connection.request("POST", "/api/configuration/inbox-location", body=json.dumps({"inbox_root": str(transport)}), headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read())["value"], str(transport.resolve()))
-                update_inbox_root.assert_called_with(root, str(transport))
-                restart_timer.assert_called_once_with(0.25, dashboard._restart_component_after_response, args=("inbox", ANY))
-                restart_timer.return_value.start.assert_called_once_with()
-                restart_timer.reset_mock()
+                change_inbox_location.assert_called_with(root, str(transport), ANY)
+                change_inbox_location.reset_mock()
                 connection.request("POST", "/api/configuration/inbox-location", body=json.dumps({"inbox_root": str(transport / "Inbox")}), headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read())["value"], str(transport.resolve()))
-                update_inbox_root.assert_called_with(root, str(transport / "Inbox"))
-                restart_timer.assert_called_once_with(0.25, dashboard._restart_component_after_response, args=("inbox", ANY))
+                change_inbox_location.assert_called_with(root, str(transport / "Inbox"), ANY)
             with patch("tools.engineering.dashboard._inbox_has_items", return_value=True):
                 connection.request("POST", "/api/configuration/inbox-location", body=json.dumps({"inbox_root": str(root / "another-transport")}), headers={"Content-Type": "application/json"})
                 response = connection.getresponse()

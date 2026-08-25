@@ -324,6 +324,26 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["current_phase"], "WAIT_FOR_OPERATOR_MERGE")
         self.assertEqual(payload["pull_request"], 840)
 
+    def test_status_keeps_lease_lost_finalization_visible_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(
+                json.dumps({"watcher_state": "WATCHER_IDLE", "run_id": None}), encoding="utf-8"
+            )
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-finalize", "phase": "FINALIZE_AGENT"}), encoding="utf-8"
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("inbox-finalize", "pcvantol/djconnect", "prompt.md", "FINALIZE_AGENT")
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_STALE")
+        self.assertEqual(payload["current_phase"], "FINALIZE_AGENT")
+
     def test_status_recovers_bounded_prompt_context_for_a_restarted_merge_wait(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

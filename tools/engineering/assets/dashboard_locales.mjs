@@ -3110,6 +3110,12 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "merge_wait.reason.github_evidence_unavailable",
 ]);
 
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.inbox_location_restarting":"Restarting and verifying the Inbox watcher…","configuration.inbox_location_restart_failed":"The Inbox watcher could not confirm the new location. The previous location was restored."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.inbox_location_restarting":"Inbox-watcher wordt herstart en geverifieerd…","configuration.inbox_location_restart_failed":"De Inbox-watcher kon de nieuwe locatie niet bevestigen. De vorige locatie is hersteld."});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.inbox_location_restarting":"Inbox-Watcher wird neu gestartet und überprüft…","configuration.inbox_location_restart_failed":"Der Inbox-Watcher konnte den neuen Speicherort nicht bestätigen. Der vorherige Speicherort wurde wiederhergestellt."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.inbox_location_restarting":"Redémarrage et vérification du surveillant de boîte de réception…","configuration.inbox_location_restart_failed":"Le surveillant de boîte de réception n’a pas pu confirmer le nouvel emplacement. L’emplacement précédent a été restauré."});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.inbox_location_restarting":"Reiniciando y verificando el monitor de bandeja de entrada…","configuration.inbox_location_restart_failed":"El monitor de bandeja de entrada no pudo confirmar la nueva ubicación. Se restauró la ubicación anterior."});
+
 export function normalizeLocale(value) {
   const candidate = String(value || "").toLowerCase().split("-")[0];
   return SUPPORTED_LOCALES.includes(candidate) ? candidate : "en";
