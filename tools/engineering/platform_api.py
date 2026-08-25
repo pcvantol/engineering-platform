@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 from .providers import registry
+from .dashboard_configuration import inbox_root as configured_inbox_root
 
 
 class PlatformConfigurationError(ValueError):
@@ -154,7 +155,12 @@ class ExecutionHostConfigurationResolver:
         if provider != "icloud_inbox":
             raise PlatformConfigurationError("Configured Runtime Prompt transport is unsupported.")
         override = os.environ.get("DJCONNECT_ENGINEERING_INBOX")
-        inbox_root = Path(override).expanduser() if override else Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/DJConnect Engineering"
+        inbox_root = (
+            Path(override).expanduser()
+            if override
+            else configured_inbox_root(self._root)
+            or Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/DJConnect Engineering"
+        )
         return RuntimePromptTransport(provider, inbox_root / "Inbox")
 
     def resolve_workspace_store(self) -> Path:

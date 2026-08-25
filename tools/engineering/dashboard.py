@@ -38,6 +38,7 @@ from .component_logging import (
     component_lifecycle_context,
     component_logger,
     log_event,
+    prune_component_logs,
     shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
@@ -51,6 +52,11 @@ from .provider_usage import provider_usage_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
+from .dashboard_configuration import (
+    get as dashboard_configuration,
+    update as update_dashboard_configuration,
+    update_inbox_root,
+)
 from . import dashboard_state
 
 LABEL = "com.djconnect.engineering-dashboard"
@@ -1542,6 +1548,7 @@ def _dashboard_html(
     workspace_open_pull_requests: list[dict[str, object]] | None = None,
     workspace_main_action_hidden: bool = True,
     platform_version: str = "1.5.0",
+    configuration_inbox: str = "Niet beschikbaar",
 ) -> bytes:
     """Render the private dashboard with a server-pushed status stream."""
     page = r"""<!doctype html>
@@ -1610,6 +1617,8 @@ def _dashboard_html(
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
 <details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field"><span class="label" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field"><span class="label" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field"><span class="label" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field"><span class="label" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><section class="configuration-controls" aria-labelledby="configurationControlsTitle"><h2 id="configurationControlsTitle" data-i18n="configuration.safe_settings"></h2><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationAuditLogging"><input id="configurationAuditLogging" type="checkbox" checked disabled><span data-i18n="configuration.audit_logging"></span></label><p id="configurationStatus" role="status" aria-live="polite"></p></section><p class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_scan_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_scan_interval_help" data-i18n-aria-label="configuration.inbox_scan_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.open_pr_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.open_pr_interval_help" data-i18n-aria-label="configuration.open_pr_interval_help">i</span></span><span data-i18n="configuration.seconds_30"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.platform_health_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.platform_health_interval_help" data-i18n-aria-label="configuration.platform_health_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.component_details_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.component_details_interval_help" data-i18n-aria-label="configuration.component_details_interval_help">i</span></span><span data-i18n="configuration.seconds_5"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></details>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
@@ -1643,6 +1652,7 @@ def _dashboard_html(
         .replace("$WORKSPACE_OPEN_PULL_REQUESTS", workspace_open_pull_requests_html)
         .replace("$WORKSPACE_MAIN_ACTION_HIDDEN", "hidden" if workspace_main_action_hidden else "")
         .replace("$PLATFORM_VERSION", escape(platform_version))
+        .replace("$CONFIGURATION_INBOX", escape(configuration_inbox))
         .encode()
     )
 
@@ -1656,6 +1666,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
     platform_version = EngineeringPlatformManifest.load(
         root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
     ).platform_version
+    configuration_inbox = str(configuration.resolver(root).resolve_runtime_prompt_transport().inbox)
     logger = logger or component_logger(root, "dashboard")
     class DashboardHandler(BaseHTTPRequestHandler):
         def _send(self, content: bytes, content_type: str, status_code: int = 200) -> None:
@@ -2025,6 +2036,52 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 self._send(b'{"logged":true}', "application/json; charset=utf-8")
                 return
+            if request_path == "/api/configuration":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 256:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"key", "value"}:
+                        raise ValueError
+                    event = update_dashboard_configuration(root, payload["key"], payload["value"])
+                    if event["key"] == "log_retention_days":
+                        prune_component_logs(root, int(event["value"]))
+                    if event["key"] == "log_level":
+                        logger.setLevel(str(event["value"]))
+                        for log_handler in logger.handlers:
+                            log_handler.setLevel(logger.level)
+                    log_event(logger, logging.INFO, "dashboard_configuration_changed",
+                              diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}")
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"Ongeldige dashboardinstelling."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
+                return
+            if request_path == "/api/configuration/inbox-location":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 4_096:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"inbox_root"}:
+                        raise ValueError
+                    if json.loads(_status(root)).get("current_phase"):
+                        raise RuntimeError("Wijzig de Inbox-locatie pas wanneer geen uitvoering actief is.")
+                    event = update_inbox_root(root, payload["inbox_root"])
+                    _restart_component("inbox")
+                    log_event(
+                        logger, logging.INFO, "dashboard_configuration_changed",
+                        diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}",
+                    )
+                except RuntimeError as error:
+                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"Inbox-locatie kon niet veilig worden gewijzigd."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
+                return
             if request_path.startswith("/api/logs/"):
                 component = request_path.rsplit("/", 1)[-1]
                 try:
@@ -2247,6 +2304,11 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(_current_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/api/usage":
                 return self._send(_codex_usage(root), "application/json; charset=utf-8")
+            if request.path == "/api/configuration":
+                return self._send(
+                    json.dumps(dashboard_configuration(root)).encode(),
+                    "application/json; charset=utf-8",
+                )
             if self.path == "/api/commits":
                 return self._send(_completion_commits(root), "application/json; charset=utf-8")
             if self.path == "/api/prompt-started":
@@ -2274,6 +2336,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         workspace_open_pull_requests,
                         not bool(workspace_git["main_action_available"]),
                         platform_version,
+                        configuration_inbox,
                     ),
                     "text/html; charset=utf-8",
                 )

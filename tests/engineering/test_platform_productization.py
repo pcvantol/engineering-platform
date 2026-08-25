@@ -15,6 +15,7 @@ from tools.engineering.platform_api import (
     capabilities,
     provider_registry,
 )
+from tools.engineering.dashboard_configuration import update_inbox_root
 from unittest.mock import patch
 from tools.engineering.platform_bootstrap import (
     _discard_inactive_component_locks,
@@ -72,6 +73,23 @@ class PlatformProductizationTest(unittest.TestCase):
             self.assertEqual(resolver.resolve_runtime(), Path("/usr/local/bin/codex"))
             identity = resolver.resolve_execution_host_identity()
             self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
+
+    def test_execution_host_uses_validated_local_inbox_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "tools" / "engineering"
+            target.mkdir(parents=True)
+            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            transport = root / "transport"
+            (transport / "Inbox").mkdir(parents=True)
+            update_inbox_root(root, str(transport))
+            self.assertEqual(
+                execution_host_configuration(root).resolve_runtime_prompt_transport().inbox,
+                (transport / "Inbox").resolve(),
+            )
 
     def test_runtime_environment_pins_the_resolved_launcher_for_child_processes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

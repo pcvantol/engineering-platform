@@ -43,6 +43,42 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("12.3 GB", page)
         self.assertIn("Engineering Platform 1.5.0", page)
 
+    def test_configuration_section_is_the_final_dashboard_block(self) -> None:
+        page = _dashboard_html(
+            "Engineering Status",
+            configuration_inbox="/private/engineering/inbox",
+        ).decode("utf-8")
+
+        self.assertIn('id="configuration"', page)
+        self.assertIn('data-i18n="section.configuration"', page)
+        self.assertIn("/private/engineering/inbox", page)
+        self.assertIn('id="configurationInboxModal"', page)
+        self.assertIn('id="configurationLogRetention"', page)
+        self.assertIn('id="configurationLogLevel"', page)
+        self.assertEqual(page.count('class="configuration-info"'), 11)
+        self.assertEqual(page.count("data-i18n-title=\"configuration."), 11)
+        for key, value in (
+            ("configuration.inbox_scan_interval", "configuration.seconds_15"),
+            ("configuration.operator_merge_interval", "configuration.seconds_60"),
+            ("configuration.required_checks_interval", "configuration.seconds_15"),
+            ("configuration.open_pr_interval", "configuration.seconds_30"),
+            ("configuration.dashboard_stream_interval", "configuration.second_1"),
+            ("configuration.platform_health_interval", "configuration.seconds_15"),
+            ("configuration.component_details_interval", "configuration.seconds_5"),
+            ("configuration.lease_heartbeat_interval", "configuration.seconds_15"),
+            ("configuration.lease_timeout", "configuration.seconds_90"),
+            ("configuration.github_retry_backoff", "configuration.github_retry_backoff_value"),
+        ):
+            self.assertIn(f'data-i18n="{key}"', page)
+            self.assertIn(f'data-i18n="{value}"', page)
+        self.assertNotIn('id="dashboardLocale"', page[page.index('id="configuration"'):])
+        self.assertNotIn('id="autoRefresh"', page[page.index('id="configuration"'):])
+        self.assertLess(
+            page.index('id="workspaceCard"'),
+            page.index('id="configuration"'),
+        )
+        self.assertLess(page.index('id="configuration"'), page.index("</main>"))
+
     @patch("tools.engineering.dashboard.GitProvider")
     def test_workspace_git_projection_is_safe_and_sse_ready(self, git_provider: object) -> None:
         completed = __import__("subprocess").CompletedProcess
@@ -110,6 +146,28 @@ class DashboardStatusTest(unittest.TestCase):
             "detail.decision_evidence", "detail.projection_incomplete", "technical.git_lock",
             "technical.git_lock_recovery_action", "detail.execution_diagnostic",
             "lifecycle.detail_quality_evidence", "lifecycle.quality_evidence.test_coverage",
+            "section.configuration", "description.configuration", "configuration.inbox_location",
+            "configuration.inbox_scan_interval", "configuration.open_pr_interval",
+            "configuration.dashboard_stream_interval", "configuration.seconds_15",
+            "configuration.seconds_30", "configuration.second_1",
+            "configuration.inbox_location_help", "configuration.inbox_scan_interval_help",
+            "configuration.operator_merge_interval", "configuration.operator_merge_interval_help",
+            "configuration.required_checks_interval", "configuration.required_checks_interval_help",
+            "configuration.open_pr_interval_help", "configuration.dashboard_stream_interval_help",
+            "configuration.platform_health_interval", "configuration.platform_health_interval_help",
+            "configuration.component_details_interval", "configuration.component_details_interval_help",
+            "configuration.lease_heartbeat_interval", "configuration.lease_heartbeat_interval_help",
+            "configuration.lease_timeout", "configuration.lease_timeout_help",
+            "configuration.github_retry_backoff", "configuration.github_retry_backoff_help",
+            "configuration.seconds_5", "configuration.seconds_60", "configuration.seconds_90",
+            "configuration.github_retry_backoff_value",
+            "configuration.inbox_location_open", "configuration.inbox_location_modal_description",
+            "configuration.inbox_location_input", "configuration.inbox_location_requirement",
+            "configuration.inbox_location_save", "configuration.inbox_location_confirm",
+            "configuration.inbox_location_saved", "configuration.inbox_location_failed",
+            "configuration.safe_settings", "configuration.log_retention", "configuration.log_level", "configuration.retention_confirm",
+            "configuration.days",
+            "configuration.saved", "configuration.save_failed", "configuration.load_failed",
         ):
             self.assertEqual(catalog.count(f'"{key}"'), 5)
         self.assertNotIn("Retry Execution", (root / "tools/engineering/assets/dashboard.js").read_text(encoding="utf-8"))
@@ -117,6 +175,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("createLocaleService", dashboard_script)
         self.assertNotIn('"nl-NL"', dashboard_script)
         self.assertNotIn("localeCompare(", dashboard_script)
+        self.assertIn("initializeDashboardConfiguration", dashboard_script)
 
     def test_dashboard_run_logs_startup_and_graceful_shutdown_identity(self) -> None:
         class InterruptingServer:
@@ -1945,6 +2004,25 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read()), {"logged": True})
                 audit_log_event.assert_any_call(ANY, logging.INFO, "chat_downloaded")
+            connection.request("POST", "/api/configuration", body='{"key":"log_level","value":"DEBUG"}', headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["value"], "DEBUG")
+            connection.request("POST", "/api/configuration", body='{"key":"unknown","value":1}', headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            transport = root / "configured-transport"
+            (transport / "Inbox").mkdir(parents=True, exist_ok=True)
+            with (
+                patch("tools.engineering.dashboard._status", return_value=b"{}"),
+                patch("tools.engineering.dashboard._restart_component") as restart,
+            ):
+                connection.request("POST", "/api/configuration/inbox-location", body=json.dumps({"inbox_root": str(transport)}), headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read())["value"], str(transport.resolve()))
+                restart.assert_called_once_with("inbox")
             retry_outcome = {"blocking_run_id": "inbox-blocked", "retry_filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),

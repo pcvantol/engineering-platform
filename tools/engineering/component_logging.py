@@ -14,6 +14,7 @@ import sqlite3
 from collections.abc import Iterator, Mapping
 
 from .agent_state import redact_diagnostic
+from .dashboard_configuration import get as dashboard_configuration
 from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
 
@@ -121,7 +122,13 @@ class SQLiteLogHandler(logging.Handler):
 def component_logger(root: Path, component: str, *, level: str | None = None) -> logging.Logger:
     """Return the single private SQLite logger for one EP component."""
     logger = logging.getLogger(f"djconnect.engineering.{component}")
-    logger.setLevel(configured_level(level))
+    configured = level
+    if configured is None:
+        try:
+            configured = str(dashboard_configuration(root)["log_level"])
+        except (EngineeringStorageError, KeyError, TypeError, ValueError):
+            configured = None
+    logger.setLevel(configured_level(configured))
     logger.propagate = False
     for handler in tuple(logger.handlers):
         if isinstance(handler, SQLiteLogHandler) and handler.root == root.resolve():
@@ -195,6 +202,21 @@ def clear_component_log(root: Path, component: str) -> None:
             path.write_text("", encoding="utf-8")
         except OSError as error:
             raise OSError("Applicatielog kon niet worden gewist.") from error
+
+
+def prune_component_logs(root: Path, retention_days: int) -> None:
+    """Remove only expired, local component-log rows for an approved retention period."""
+    if retention_days not in {30, 60, 90, 120, 180, 360}:
+        raise ValueError("Ongeldige logbewaartermijn.")
+    cutoff = datetime.now(timezone.utc).timestamp() - retention_days * 86_400
+    cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "DELETE FROM engineering_component_logs WHERE created_at < ?", (cutoff_iso,)
+        )
+    finally:
+        connection.close()
 
 
 def _fallback_component_log(root: Path, component: str, *, limit: int) -> bytes:
