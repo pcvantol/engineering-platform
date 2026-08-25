@@ -2335,7 +2335,6 @@ test.describe("Engineering Status browser smoke", () => {
   test("uses the full rose row treatment for telemetry runs in the detail modal", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.abort());
-    await page.route("**/api/prompt-history**", (route) => route.abort());
     await page.route("**/api/telemetry/2026-08-16", (route) => route.fulfill({ json: {
       summary: {}, phases: [], bottlenecks: { top_time_consumers: [] }, runs: [{
         run_id: "inbox-telemetry-row", status: "COMPLETE", total_duration_ms: 1000,
@@ -2350,7 +2349,7 @@ test.describe("Engineering Status browser smoke", () => {
       average_total_execution_seconds: 0, average_queue_wait_seconds: 0,
       complete_count: 1, blocked_count: 0, failed_count: 0,
     }]));
-    await page.locator("#executionTelemetry > summary").click();
+    await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
     await page.locator("#executionTelemetryRows .telemetry-row").click();
     const runRow = page.locator("#telemetryDetailContent .telemetry-row");
     await expect(runRow).toHaveCount(1);
@@ -2360,16 +2359,16 @@ test.describe("Engineering Status browser smoke", () => {
     expect(new Set(hoverBackgrounds).size).toBe(1);
     expect(hoverBackgrounds[0]).not.toBe("rgba(0, 0, 0, 0)");
     const runId = runRow.locator(".telemetry-run-link");
-    const promptDetailLoaded = page.waitForResponse("**/api/prompt-history/inbox-telemetry-row/details");
     await runId.click();
-    await promptDetailLoaded;
     await expect(runRow).toHaveAttribute("data-selected", "true");
     const selectedBackgrounds = await runRow.locator("td").evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).backgroundColor));
     expect(new Set(selectedBackgrounds).size).toBe(1);
     await runId.focus();
     await expect(runId).toHaveCSS("outline-style", "none");
     await expect(runId).toHaveCSS("box-shadow", "none");
-    await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
+    // Prompt-history navigation has dedicated coverage. Keep this presentation
+    // test scoped to the telemetry detail row so asynchronous history loading
+    // cannot close an unrelated modal during the assertion.
   });
 
   test("uses the rose telemetry accent throughout the telemetry detail modal", async ({ page }) => {
@@ -4336,7 +4335,17 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("selects multiple component-log rows and copies the selected rows", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/logs/inbox", (route) => route.fulfill({ body: "" }));
+    await page.route("**/api/logs/dashboard", (route) => route.fulfill({ body: "" }));
+    // The dashboard loads persisted logs asynchronously.  Wait until that
+    // initial projection is settled before installing this test's fixture;
+    // otherwise it can replace the fixture halfway through the selection.
+    const initialLogsLoaded = Promise.all([
+      page.waitForResponse("**/api/logs/inbox"),
+      page.waitForResponse("**/api/logs/dashboard"),
+    ]);
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await initialLogsLoaded;
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
