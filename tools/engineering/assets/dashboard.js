@@ -138,6 +138,8 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   invoke_agent: "operational.activity_invoke_agent",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
   FINALIZATION_REPAIR_AGENT: "lifecycle.step.repair_agent",
+  poll_required_checks: "operational.poll_required_checks",
+  reconcile_rolling_records_on_main: "operational.reconcile_rolling_records_on_main",
   WAIT_FOR_OPERATOR_MERGE: "lifecycle.step.wait_for_operator_merge",
   WAIT_FOR_FINALIZATION_MERGE: "lifecycle.step.wait_for_finalization_merge",
   WAIT_FOR_RECONCILIATION_MERGE: "lifecycle.step.wait_for_reconciliation_merge",

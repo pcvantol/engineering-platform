@@ -784,6 +784,35 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("translates reviewer and operational machine codes in every supported locale", async ({ page }) => {
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await selectDashboardLocale(page, language);
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "localized-operational-codes",
+        current_action: "poll_required_checks",
+        reviewer_agents: [{
+          reviewer: "HOME_ASSISTANT_INTEGRATION", capability: "ENGINEERING", status: "running",
+        }],
+      }, {}));
+      await expect(page.locator("#action")).toHaveText(
+        DASHBOARD_MESSAGES[language]["operational.poll_required_checks"],
+      );
+      await expect(page.locator(".reviewer-agent__name")).toHaveText(
+        DASHBOARD_MESSAGES[language]["reviewer.home_assistant_integration"],
+      );
+      await page.evaluate(() => r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE",
+        run_id: "localized-operational-codes",
+        current_action: "reconcile_rolling_records_on_main",
+      }, {}));
+      await expect(page.locator("#action")).toHaveText(
+        DASHBOARD_MESSAGES[language]["operational.reconcile_rolling_records_on_main"],
+      );
+    }
+  });
+
   test("translates the owner-authorization control in every supported locale", () => {
     const keys = [
       "workspace.open_pull_request.authorize_owner",
