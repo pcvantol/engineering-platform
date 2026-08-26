@@ -1822,6 +1822,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(repaired.repair_audit[0]["outcome"], "agent_failed")
         self.assertEqual(repaired.repair_audit[0]["agent_summary"], "External review required.")
 
+    def test_finalization_pr_behind_main_enters_same_bounded_repair_loop(self) -> None:
+        state = TransactionState(
+            "behind-finalization", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE",
+            branch="codex/finalize-behind-finalization", pull_request=949,
+            finalization_branch="codex/finalize-behind-finalization", finalization_pull_request=949,
+            transaction_kind="FINALIZATION", owner_authorized=True,
+        )
+        behind = PullRequestEvidence(949, "OPEN", True, True, head_branch=state.branch, base_branch="main", merge_state_status="BEHIND")
+        agent = SequencedFakeAgent([AgentResult("BLOCKED", state.branch, 949, diagnostic="Repair needs owner input.")])
+        recovered = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([behind]), agent, lambda _: None)._poll(state)
+        self.assertEqual(recovered.repair_iterations, 1)
+        self.assertIn("behind or cannot merge cleanly", agent.prompts[0])
+        self.assertEqual(recovered.repair_audit[0]["failed_checks"], "pull request is behind or cannot merge cleanly with main")
+
     def test_finalization_handoff_timeout_recovers_existing_pr_without_another_agent(self) -> None:
         branch = "codex/finalize-timeout-recovery"
         state = TransactionState(

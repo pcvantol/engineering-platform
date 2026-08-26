@@ -1297,9 +1297,14 @@ Mandatory autonomous refactor and quality-control stage:
                 self.sleep(15)
                 complete_phase(self.root, wait)
                 continue
-            if not pr.checks_passed:
+            repairable_mergeability = pr.state == "OPEN" and pr.merge_state_status in {"BEHIND", "DIRTY", "UNSTABLE"}
+            if not pr.checks_passed or repairable_mergeability:
                 if state.owner_authorized:
-                    failed = ", ".join(pr.failed_checks) or "required CI check"
+                    failed = (
+                        ", ".join(pr.failed_checks) or "required CI check"
+                        if not pr.checks_passed
+                        else "pull request is behind or cannot merge cleanly with main"
+                    )
                     if state.repair_iterations >= MAX_PR_CHECK_REPAIR_ATTEMPTS:
                         return self._save_terminal(
                             state,

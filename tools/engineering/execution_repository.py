@@ -109,7 +109,7 @@ class SubprocessRepositoryClient:
 class GhCliClient:
     def __init__(self, provider: GitHubProvider | None = None) -> None: self.provider = provider or GitHubProvider()
     def pull_request(self, number: int) -> PullRequestEvidence:
-        try: raw = json.loads(self.provider.github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup,headRefName,baseRefName"))
+        try: raw = json.loads(self.provider.github("pr", "view", str(number), "--json", "number,state,isDraft,mergeCommit,statusCheckRollup,headRefName,baseRefName,mergeStateStatus"))
         except RuntimeError as error: raise RunnerError(str(error)) from error
         # GitHub can append an empty rollup entry to an otherwise completed
         # merged PR. It is not a check and must not keep terminal evidence in
@@ -125,7 +125,7 @@ class GhCliClient:
         merge = raw.get("mergeCommit") or {}
         return PullRequestEvidence(
             raw["number"], raw["state"], terminal, passed, merge.get("oid"), raw["isDraft"], failed,
-            raw.get("headRefName"), raw.get("baseRefName"),
+            raw.get("headRefName"), raw.get("baseRefName"), raw.get("mergeStateStatus"),
         )
 
     def pull_request_for_head_branch(self, branch: str) -> PullRequestEvidence | None:
