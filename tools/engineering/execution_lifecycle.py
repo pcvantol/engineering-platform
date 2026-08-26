@@ -15,7 +15,7 @@ from .status_reconciliation import is_stale_rolling_status_block
 
 TERMINAL = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 _MANAGED_PATH = (
-    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT",
+    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT",
     "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
     "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
@@ -33,7 +33,7 @@ _GENESIS_PATH = (
 # A reconciliation-only run remains part of the full delivery narrative.  Its
 # earlier delivery phases are explicitly skipped rather than silently omitted,
 # so the dashboard never renders a misleading half-workflow.
-_STATUS_RECONCILIATION_PATH = _MANAGED_PATH
+_STATUS_RECONCILIATION_PATH = tuple(step for step in _MANAGED_PATH if step != "LOCAL_REPOSITORY_VALIDATION")
 
 # This is a presentation-only association. The Execution Host stays the
 # authority for phase timing; this projection only groups persisted evidence
@@ -43,6 +43,7 @@ _STEP_PHASES = {
     "INITIALIZE": frozenset({"INITIALIZATION", "HOST_PREFLIGHT", "WORKSPACE_PREFLIGHT", "CAPABILITY_PREFLIGHT"}),
     "CAPABILITY_REVIEW": frozenset({"CAPABILITY_REVIEW"}),
     "EXECUTE_AGENT": frozenset({"EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION"}),
+    "LOCAL_REPOSITORY_VALIDATION": frozenset({"VALIDATION", "PROVIDER_EXECUTION"}),
     "QUALITY_CONTROL_AGENT": frozenset({"QUALITY_CONTROL", "PROVIDER_EXECUTION", "VALIDATION"}),
     "REPAIR_AGENT": frozenset({"REPAIR", "PROVIDER_EXECUTION", "VALIDATION"}),
     "FINALIZATION_REPAIR_AGENT": frozenset({"REPAIR", "PROVIDER_EXECUTION", "VALIDATION"}),
@@ -274,6 +275,9 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             "id": step_id,
             "order": order,
             "presentation_key": (
+                "lifecycle.step.autonomous_quality_repair"
+                if mode == "GENESIS" and step_id == "REPAIR_AGENT"
+                else
                 "lifecycle.step.repair_agent"
                 if step_id == "FINALIZATION_REPAIR_AGENT"
                 else f"lifecycle.step.{step_id.lower()}"
@@ -318,7 +322,7 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             step["action_key"] = "state.repair_bounded_validation_failure"
         if (
             transaction_kind == "RECONCILIATION"
-            and step_id in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE"}
+            and step_id in {"EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE"}
             and step_id not in observed
         ):
             step["state"] = "SKIPPED"
@@ -326,6 +330,11 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"} and repair_iterations:
             step["iteration_count"] = repair_iterations
         if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"} and step["state"] not in {"PENDING", "SKIPPED"}:
+            step["repair_evidence_key"] = (
+                "lifecycle.detail_autonomous_quality_repair_evidence"
+                if mode == "GENESIS" and step_id == "REPAIR_AGENT"
+                else "lifecycle.detail_repair_evidence"
+            )
             audit = checkpoint.get("repair_audit")
             if isinstance(audit, (list, tuple)) and audit:
                 step["repair_audit"] = list(audit)
@@ -333,6 +342,11 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             evidence = checkpoint.get("quality_evidence")
             if isinstance(evidence, (list, tuple)) and evidence:
                 step["quality_evidence"] = list(evidence)
+        if step_id == "LOCAL_REPOSITORY_VALIDATION" and step["state"] not in {"PENDING", "SKIPPED"}:
+            audit = checkpoint.get("local_validation_audit")
+            if isinstance(audit, (list, tuple)) and audit:
+                step["repair_audit"] = list(audit)
+                step["iteration_count"] = checkpoint.get("local_validation_iterations", 0)
         spans = [
             {
                 "phase": phase_name,

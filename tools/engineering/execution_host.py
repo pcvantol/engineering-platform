@@ -18,7 +18,7 @@ import uuid
 import re
 import sqlite3
 
-from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
+from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
     ReviewerResult,
     ReviewerSelection,
@@ -72,9 +72,12 @@ from .execution_context import (
     target_repository_authorization as context_target_repository_authorization,
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
+from .validation_profile import ValidationProfile, changed_paths, classify
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
+from .execution_errors import ProviderReadinessBlocked
+from .provider_readiness import failures as provider_readiness_failures
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
 from .execution_executor import format_cli_failure as executor_format_cli_failure
@@ -111,6 +114,7 @@ REPAIR_AGENT_MAX_SECONDS = 15 * 60
 # attempt budget. This prevents a persistently failing required check from
 # repeatedly invoking the provider without an operator decision.
 MAX_PR_CHECK_REPAIR_ATTEMPTS = 3
+MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS = 3
 
 
 def _timing_unavailable(error: EngineeringStorageError) -> None:
@@ -337,10 +341,19 @@ PR hand-off boundary (host-owned and non-negotiable):
   poll or wait for GitHub checks, review, merge, Finalization, reconciliation,
   or any other external terminal evidence. The Execution Host alone records
   the pull request, polls checks, and schedules at most three bounded repairs.
+- Write pull-request Markdown with real line breaks. Never serialize a line
+  break as the literal characters `\\n`.
+"""
+    local_gate = "" if not state or not (
+        state.execution_mode == "MANAGED" and state.transaction_kind == "IMPLEMENTATION" and state.phase == "EXECUTE_AGENT"
+    ) else """
+Local validation hand-off boundary:
+- Create, commit and push the bounded implementation branch, but do not create a pull request yet.
+- Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
 """
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{pr_handoff}
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
 Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence and quality_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -385,6 +398,54 @@ class EngineeringRunner:
             self.active_lease = heartbeat_lease(self.root, self.active_lease)
             if self.lease_heartbeat is not None:
                 self.lease_heartbeat.lease = self.active_lease
+
+    def _provider_readiness_gate(
+        self, state: TransactionState, *, require_codex: bool, require_github: bool
+    ) -> TransactionState:
+        """Persist a fail-closed provider block without losing the original phase.
+
+        A waiting pull request is passive GitHub observation, whereas every
+        agent action requires Codex too.  The saved original action lets a
+        verified resume continue exactly where it stopped.
+        """
+        missing = provider_readiness_failures(self.root, require_github=require_github)
+        if not require_codex:
+            missing = tuple(provider for provider in missing if provider != "CODEX")
+        if missing:
+            blocked = replace(
+                state,
+                next_action="provider_auth_repair_required",
+                diagnostic=redact_diagnostic(
+                    "Provider readiness required before "
+                    f"{state.auth_recovery_phase or state.phase}: {', '.join(missing)}."
+                ),
+                auth_recovery_phase=state.auth_recovery_phase or state.phase,
+                auth_recovery_next_action=state.auth_recovery_next_action or state.next_action,
+                auth_recovery_providers=tuple(missing),
+            )
+            self.store.save(blocked)
+            write_live_status(self.root, blocked, blocked.next_action)
+            return blocked
+        if state.auth_recovery_phase is not None:
+            restored = replace(
+                state,
+                next_action=state.auth_recovery_next_action or state.next_action,
+                diagnostic=None,
+                auth_recovery_phase=None,
+                auth_recovery_next_action=None,
+                auth_recovery_providers=(),
+            )
+            self.store.save(restored)
+            write_live_status(self.root, restored, restored.next_action)
+            return restored
+        return state
+
+    def _require_agent_readiness(self, state: TransactionState) -> None:
+        checked = self._provider_readiness_gate(
+            state, require_codex=True, require_github=state.execution_mode == "MANAGED"
+        )
+        if checked.next_action == "provider_auth_repair_required":
+            raise ProviderReadinessBlocked(checked)
 
     def _publish_reviewer_progress(
         self,
@@ -520,15 +581,95 @@ class EngineeringRunner:
         except EngineeringStorageError:
             LOGGER.warning("Managed PR check evidence is unavailable for run %s", state.run_id)
 
+    @staticmethod
+    def _audit_record(
+        *, iteration: int, failed_checks: str, proposed_action: str,
+        result: AgentResult | None, outcome: str, empty_summary: str,
+    ) -> dict[str, str]:
+        """Build one safe, schema-compatible bounded-attempt record."""
+        summary = (result.diagnostic if result else None) or empty_summary
+        return {
+            "iteration": str(iteration),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "failed_checks": redact_diagnostic(failed_checks),
+            "proposed_action": redact_diagnostic(proposed_action),
+            "agent_summary": redact_diagnostic(summary),
+            "commit_sha": result.commit_sha if result and result.commit_sha else "not_recorded",
+            "outcome": outcome,
+        }
+
     def _record_repair_audit(self, state: TransactionState, *, failed_checks: str, objective: str, result: AgentResult | None, outcome: str) -> TransactionState:
         """Append bounded per-repair evidence; never overwrite prior attempts."""
-        record = {
-            "iteration": str(state.repair_iterations), "observed_at": datetime.now(timezone.utc).isoformat(),
-            "failed_checks": redact_diagnostic(failed_checks), "proposed_action": redact_diagnostic(objective),
-            "agent_summary": redact_diagnostic((result.diagnostic if result else None) or "Agent invocation did not return a repair summary."),
-            "commit_sha": result.commit_sha if result and result.commit_sha else "not_recorded", "outcome": outcome,
-        }
-        return replace(state, repair_audit=state.repair_audit + (record,))
+        return replace(state, repair_audit=state.repair_audit + (self._audit_record(
+            iteration=state.repair_iterations,
+            failed_checks=failed_checks,
+            proposed_action=objective,
+            result=result,
+            outcome=outcome,
+            empty_summary="Agent invocation did not return a repair summary.",
+        ),))
+
+    def _record_local_validation_audit(self, state: TransactionState, *, result: AgentResult | None, outcome: str, profile: ValidationProfile) -> TransactionState:
+        """Append one bounded local-validation iteration without sharing PR repair budget."""
+        return replace(state, local_validation_audit=state.local_validation_audit + (self._audit_record(
+            iteration=state.local_validation_iterations,
+            failed_checks=(result.diagnostic if result else None) or "Local repository validation did not return a passing result.",
+            proposed_action=f"{profile.tier}: {'; '.join(profile.commands)}",
+            result=result,
+            outcome=outcome,
+            empty_summary="Agent invocation did not return a validation summary.",
+        ),))
+
+    @staticmethod
+    def _append_verified_commit_evidence(
+        state: TransactionState, *, phase: str, commit_sha: str, description: str
+    ) -> TransactionState:
+        """Append immutable, compact commit evidence after its caller verified it.
+
+        The checkpoint save is the transaction boundary.  Deduplication by
+        phase and SHA makes retries idempotent without rewriting earlier
+        operational evidence.
+        """
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            return state
+        if len(state.commit_evidence) >= MAX_COMMIT_EVIDENCE_RECORDS:
+            return state
+        if any(item["phase"] == phase and item["commit_sha"] == commit_sha for item in state.commit_evidence):
+            return state
+        try:
+            record = verified_commit_evidence_record(
+                phase=phase,
+                observed_at=datetime.now(timezone.utc).isoformat(),
+                commit_sha=commit_sha,
+                description=redact_diagnostic(description),
+            )
+        except StateError:
+            return state
+        return replace(state, commit_evidence=state.commit_evidence + (record,))
+
+    def _record_verified_result_commit(
+        self, state: TransactionState, result: AgentResult, *, phase: str, description: str
+    ) -> TransactionState:
+        """Record an agent commit only when the checked-out repository proves it.
+
+        A reported SHA is intentionally insufficient: the live repository must
+        be clean, on the reported transaction branch, and at that exact SHA.
+        Any unavailable or mismatched evidence is simply not recorded.
+        """
+        if not result.commit_sha or not re.fullmatch(r"[0-9a-f]{40}", result.commit_sha):
+            return state
+        expected_branch = result.branch or state.branch
+        if not expected_branch or expected_branch == "main":
+            return state
+        try:
+            evidence = self.repository.inspect(self.root)
+        except RunnerError:
+            return state
+        if not (evidence.clean and evidence.branch == expected_branch and evidence.head_sha == result.commit_sha):
+            return state
+        return self._append_verified_commit_evidence(
+            state, phase=phase, commit_sha=result.commit_sha, description=description,
+        )
 
     @staticmethod
     def _validation_kind(command: str) -> str | None:
@@ -550,15 +691,17 @@ class EngineeringRunner:
             return "tests"
         return None
 
-    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False) -> AgentResult:
+    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, attempt: int | None = None) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
+        self._require_agent_readiness(state)
         parent = (
             start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
             if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
         )
+        provider_attempt = attempt if attempt is not None else max(1, state.repair_iterations + 1)
         provider = start_phase(
             self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
-            attempt=max(1, state.repair_iterations + 1), metadata={"provider": "codex_cli"},
+            attempt=provider_attempt, metadata={"provider": "codex_cli"},
         )
         validation_spans: dict[str, ActivePhase | None] = {}
 
@@ -571,7 +714,7 @@ class EngineeringRunner:
                         state.run_id,
                         "VALIDATION",
                         parent_phase_id=provider.phase_id if provider else None,
-                        attempt=max(1, state.repair_iterations + 1),
+                        attempt=provider_attempt,
                         metadata={"validation_kind": kind},
                     )
             elif event == "completed":
@@ -611,6 +754,77 @@ class EngineeringRunner:
         if parent:
             complete_phase(self.root, parent)
         return result
+
+    def _run_local_repository_validation(
+        self, state: TransactionState, implementation: AgentResult
+    ) -> tuple[TransactionState, AgentResult]:
+        """Run the bounded, mutable local gate before an implementation PR exists."""
+        branch = implementation.branch or state.branch
+        # Legacy/resumed checkpoints can already carry their implementation PR.
+        # Never rewrite that evidence; new managed prompts are instructed to
+        # stop before PR creation and therefore enter this gate normally.
+        if implementation.pull_request:
+            return state, implementation
+        if not branch:
+            return self._save_terminal(
+                state, "BLOCKED", "local_validation_scope", "Implementation must return one branch and no pull request before local validation."
+            ), implementation
+        validation = replace(
+            state, phase="LOCAL_REPOSITORY_VALIDATION", branch=branch, pull_request=None,
+            next_action="run_local_repository_validation", local_validation_iterations=0,
+            local_validation_audit=(),
+        )
+        for iteration in range(1, MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS + 1):
+            try:
+                profile = classify(changed_paths(self.root, "main"))
+            except OSError:
+                profile = classify(())
+            validation = replace(validation, local_validation_iterations=iteration)
+            self.store.save(validation)
+            write_live_status(self.root, validation, validation.next_action)
+            instruction = f"""
+
+Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSITORY_VALIDATION_ATTEMPTS}:
+- Stay on exactly `{branch}`. Do not merge or change scope.
+- Diff-derived validation profile: `{profile.tier}`. Required evidence: {"; ".join(profile.commands)}. If the diff is unavailable or scope becomes mixed, use the full required suite.
+- You may correct only the bounded production code and its tests, commit and push those corrections, then rerun the required validation.
+- If validation still fails, return `WAITING` with a concise safe diagnostic; the host may allow the next bounded iteration.
+- Create one draft implementation pull request only after the required local validation passes. Return that same branch and PR number. Never poll remote checks.
+"""
+            try:
+                result = self._invoke_agent_with_timing(
+                    validation,
+                    assemble_prompt(Path(validation.prompt_path), validation, managed_target=self.root) + instruction,
+                    attempt=iteration,
+                )
+                validation = self._record_agent_execution_time(validation)
+                validation = self._record_validation_evidence(validation, result)
+                validation = self._record_verified_result_commit(
+                    validation,
+                    result,
+                    phase="LOCAL_REPOSITORY_VALIDATION",
+                    description="local_repository_validation_commit_verified",
+                )
+                self._persist_agent_usage(validation.run_id)
+            except ProviderReadinessBlocked as blocked:
+                return blocked.state, implementation
+            except CodexInvocationError as error:
+                validation = self._record_agent_execution_time(validation)
+                self.console_detail = error.console_detail
+                validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
+                return self._save_terminal(validation, "BLOCKED", error.next_action, str(error)), implementation
+            if result.terminal_state in {"BLOCKED", "FAILED"}:
+                validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
+                return self._save_terminal(validation, result.terminal_state, "local_repository_validation_failed", result.diagnostic or "Local repository validation failed."), implementation
+            if result.branch and result.branch != branch:
+                validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
+                return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
+            if result.pull_request:
+                validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
+                return validation, replace(implementation, branch=branch, pull_request=result.pull_request,
+                                           validation_evidence=implementation.validation_evidence + result.validation_evidence)
+            validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
+        return self._save_terminal(validation, "BLOCKED", "local_validation_attempt_limit_reached", "Required local repository validation did not pass after 3 bounded iterations."), implementation
 
     def _run_autonomous_quality_control(
         self, state: TransactionState, implementation: AgentResult
@@ -659,7 +873,15 @@ Mandatory autonomous refactor and quality-control stage:
             quality = self._record_agent_execution_time(quality)
             quality = self._record_validation_evidence(quality, result)
             quality = replace(quality, quality_evidence=result.quality_evidence)
+            quality = self._record_verified_result_commit(
+                quality,
+                result,
+                phase="QUALITY_CONTROL_AGENT",
+                description="quality_control_commit_verified",
+            )
             self._persist_agent_usage(quality.run_id)
+        except ProviderReadinessBlocked as blocked:
+            return blocked.state, implementation
         except CodexInvocationError as error:
             quality = self._record_agent_execution_time(quality)
             self.console_detail = error.console_detail
@@ -735,20 +957,22 @@ Mandatory autonomous refactor and quality-control stage:
             raise RunnerError("This execution has already been dismissed and cannot be resumed.")
         if (
             state is not None
-            and state.phase == "WAIT_FOR_OPERATOR_MERGE"
+            and state.phase in {"WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"}
             and state.pull_request is not None
         ):
-            # A green pull request is deliberately operator-owned.  Resuming
-            # that wait must therefore only re-read the remote pull-request
-            # state.  Re-running workspace admission, repository
+            # A pull-request wait is deliberately passive. Resuming it must
+            # therefore only re-read the remote pull-request state. Re-running workspace admission, repository
             # synchronization, reviewer selection and memory retrieval here
             # creates expensive local churn while there is no new work to do.
             # Once a merge is observed, _poll performs the required
             # repository reconciliation before cleanup or Finalization.
             if Path(state.prompt_path) != prompt_path:
                 raise RunnerError("checkpoint conflicts with current prompt")
-            if not self.agent.available():
-                raise RunnerError("Codex CLI is not installed or invokable")
+            state = self._provider_readiness_gate(
+                state, require_codex=False, require_github=True
+            )
+            if state.next_action == "provider_auth_repair_required":
+                return state
             self._verify_engineering_platform()
             # Fresh PR evidence can transition this wait into a bounded
             # same-PR repair.  Reacquire the lease before polling, so that a
@@ -817,6 +1041,16 @@ Mandatory autonomous refactor and quality-control stage:
                 execution_mode=context.execution_mode,
             )
         context = replace(context, run_id=state.run_id)
+        passive_pr_wait = state.pull_request is not None and state.phase in {
+            "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE"
+        }
+        state = self._provider_readiness_gate(
+            state,
+            require_codex=not passive_pr_wait,
+            require_github=context.execution_mode == "MANAGED",
+        )
+        if state.next_action == "provider_auth_repair_required":
+            return state
         self.transaction = ExecutionTransaction(
             state=state,
             target_repository=context.target_repository or self.root,
@@ -826,7 +1060,7 @@ Mandatory autonomous refactor and quality-control stage:
         # observe a newer manifest and migrate the database while the watcher
         # still runs the older code.  Verify that compatibility boundary before
         # StateStore.save() opens (and could migrate) the datastore.
-        if not self.agent.available():
+        if not passive_pr_wait and not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
         # Establish canonical transaction identity before persisting readiness evidence.
@@ -1058,7 +1292,15 @@ Mandatory autonomous refactor and quality-control stage:
             )
             state = self._record_agent_execution_time(state)
             state = self._record_validation_evidence(state, result)
+            state = self._record_verified_result_commit(
+                state,
+                result,
+                phase="EXECUTE_AGENT",
+                description="implementation_agent_commit_verified",
+            )
             self._persist_agent_usage(state.run_id)
+        except ProviderReadinessBlocked as blocked:
+            return blocked.state
         except CodexInvocationError as error:
             state = self._record_agent_execution_time(state)
             self.console_detail = error.console_detail
@@ -1072,6 +1314,10 @@ Mandatory autonomous refactor and quality-control stage:
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
         if state.transaction_kind == "IMPLEMENTATION" and result.terminal_state not in {"BLOCKED", "FAILED"}:
+            if state.owner_authorized:
+                state, result = self._run_local_repository_validation(state, result)
+                if state.terminal:
+                    return state
             state, result = self._run_autonomous_quality_control(state, result)
             if state.terminal:
                 return state
@@ -1095,6 +1341,7 @@ Mandatory autonomous refactor and quality-control stage:
             historical = self._reject_historical_agent_pull_request(state)
             if historical is not None:
                 return historical
+            self.github.normalize_markdown_body(state.pull_request)
             self.github.ready(state.pull_request)
         return self._poll(state, result)
 
@@ -1142,6 +1389,12 @@ Mandatory autonomous refactor and quality-control stage:
             )
             return self._save_terminal(state, "BLOCKED", "genesis_reconciliation_required", diagnostic)
         reconciled = replace(state, genesis_repository_path=str(target), genesis_commit_sha=result.commit_sha, latest_repository_evidence=f"local genesis commit {result.commit_sha}")
+        reconciled = self._append_verified_commit_evidence(
+            reconciled,
+            phase="EXECUTE_AGENT",
+            commit_sha=result.commit_sha,
+            description="genesis_implementation_commit_verified",
+        )
         return self._save_terminal(reconciled, "COMPLETE", "genesis_local_commit_reconciled")
 
     def _verify_engineering_platform(self) -> None:
@@ -1270,6 +1523,12 @@ Mandatory autonomous refactor and quality-control stage:
         return self._poll(recovered)
 
     def _poll(self, state: TransactionState, result: AgentResult | None = None) -> TransactionState:
+        if state.pull_request:
+            state = self._provider_readiness_gate(
+                state, require_codex=False, require_github=True
+            )
+            if state.next_action == "provider_auth_repair_required":
+                return state
         if result and result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(
                 state, result.terminal_state, "external_action_required", result.diagnostic
@@ -1297,7 +1556,14 @@ Mandatory autonomous refactor and quality-control stage:
                     and evidence.head_sha == result.commit_sha
                     and evidence.main_contains_head
                 ):
-                    return self._cleanup(replace(state, last_verified_sha=result.commit_sha))
+                    reconciled = replace(state, last_verified_sha=result.commit_sha)
+                    reconciled = self._append_verified_commit_evidence(
+                        reconciled,
+                        phase="RECONCILE_AGENT",
+                        commit_sha=result.commit_sha,
+                        description="end_reconciliation_commit_verified",
+                    )
+                    return self._cleanup(reconciled)
                 return self._save_terminal(
                     state, "BLOCKED", "automatic_reconciliation_evidence_required",
                     "Automatic reconciliation requires a clean main checkout containing its reported commit.",
@@ -1420,6 +1686,12 @@ Mandatory autonomous refactor and quality-control stage:
             )
             repair = self._record_agent_execution_time(repair)
             repair = self._record_validation_evidence(repair, result)
+            repair = self._record_verified_result_commit(
+                repair,
+                result,
+                phase="REPAIR_AGENT",
+                description="pull_request_repair_commit_verified",
+            )
             repair = self._record_repair_audit(
                 repair, failed_checks=failed_checks, objective=objective, result=result,
                 outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
@@ -1439,6 +1711,8 @@ Mandatory autonomous refactor and quality-control stage:
                 "Repair agent exceeded the host-owned deadline; no further repair was started.",
                 terminal_condition="repair_agent_timeout",
             )
+        except ProviderReadinessBlocked as blocked:
+            return blocked.state
         except CodexInvocationError as error:
             repair = self._record_agent_execution_time(repair)
             self.console_detail = error.console_detail
@@ -1534,6 +1808,12 @@ Mandatory autonomous refactor and quality-control stage:
             )
             finalization = self._record_agent_execution_time(finalization)
             finalization = self._record_validation_evidence(finalization, result)
+            finalization = self._record_verified_result_commit(
+                finalization,
+                result,
+                phase="FINALIZE_AGENT",
+                description="finalization_commit_verified",
+            )
             self._persist_agent_usage(finalization.run_id)
         except CodexHandoffTimeout:
             complete_phase(self.root, finalization_span, outcome="FAILED")
@@ -1542,6 +1822,9 @@ Mandatory autonomous refactor and quality-control stage:
             # PR that current evidence proves already exists; otherwise the
             # recovery helper blocks fail-closed without another invocation.
             return self._recover_finalization_pull_request(finalization, self.repository.inspect(self.root))
+        except ProviderReadinessBlocked as blocked:
+            complete_phase(self.root, finalization_span, outcome="BLOCKED")
+            return blocked.state
         except CodexInvocationError as error:
             complete_phase(self.root, finalization_span, outcome="FAILED")
             finalization = self._record_agent_execution_time(finalization)
@@ -1586,6 +1869,7 @@ Mandatory autonomous refactor and quality-control stage:
         finalization_evidence = self.github.pull_request(result.pull_request)
         if finalization_evidence.state == "MERGED":
             return self._poll(finalization, result)
+        self.github.normalize_markdown_body(result.pull_request)
         self.github.ready(result.pull_request)
         return self._poll(finalization, result)
 
@@ -1624,7 +1908,15 @@ Mandatory autonomous refactor and quality-control stage:
             )
             reconciliation = self._record_agent_execution_time(reconciliation)
             reconciliation = self._record_validation_evidence(reconciliation, result)
+            reconciliation = self._record_verified_result_commit(
+                reconciliation,
+                result,
+                phase="RECONCILE_AGENT",
+                description="end_reconciliation_commit_verified",
+            )
             self._persist_agent_usage(reconciliation.run_id)
+        except ProviderReadinessBlocked as blocked:
+            return blocked.state
         except CodexInvocationError as error:
             reconciliation = self._record_agent_execution_time(reconciliation)
             self.console_detail = error.console_detail
@@ -1726,7 +2018,7 @@ Mandatory autonomous refactor and quality-control stage:
             "latest_github_evidence": _pull_request_summary(pr),
         }
         if state.transaction_kind == "IMPLEMENTATION":
-            return replace(
+            recorded = replace(
                 state,
                 implementation_branch=state.branch,
                 implementation_pull_request=pr.number,
@@ -1734,15 +2026,25 @@ Mandatory autonomous refactor and quality-control stage:
                 implementation_merge_commit=pr.merge_commit,
                 **common,
             )
-        if state.transaction_kind == "RECONCILIATION":
-            return replace(state, reconciliation_pull_request=pr.number, **common)
-        return replace(
-            state,
-            finalization_branch=state.branch or state.finalization_branch,
-            finalization_pull_request=pr.number,
-            finalization_head_sha=state.last_verified_sha,
-            finalization_merge_commit=pr.merge_commit,
-            **common,
+            description = "implementation_merge_verified"
+        elif state.transaction_kind == "RECONCILIATION":
+            recorded = replace(state, reconciliation_pull_request=pr.number, **common)
+            description = "reconciliation_merge_verified"
+        else:
+            recorded = replace(
+                state,
+                finalization_branch=state.branch or state.finalization_branch,
+                finalization_pull_request=pr.number,
+                finalization_head_sha=state.last_verified_sha,
+                finalization_merge_commit=pr.merge_commit,
+                **common,
+            )
+            description = "finalization_merge_verified"
+        return self._append_verified_commit_evidence(
+            recorded,
+            phase="WAIT_FOR_OPERATOR_MERGE",
+            commit_sha=pr.merge_commit or "",
+            description=description,
         )
 
 

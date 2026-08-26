@@ -17,7 +17,7 @@ import shlex
 import shutil
 import sqlite3
 import socket
-import subprocess  # Compatibility mock target; process execution is provider-owned.
+import subprocess  # noqa: F401 - Compatibility mock target; process execution is provider-owned.
 import sys
 import tempfile
 from threading import Lock, Timer
@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
+from .provider_readiness import status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
@@ -44,8 +45,9 @@ from .component_logging import (
     shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
-from .agent_state import redact_diagnostic
+from .agent_state import is_valid_commit_evidence_record, redact_diagnostic
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
+from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
 from .prompt_history import prompt_history, report_for_prompt_history
 from .recommendation_handoff import handoff_from_report
@@ -82,6 +84,31 @@ WEB_MANIFEST = "operations-console/manifest.webmanifest"
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
 RATE_LIMIT_CACHE_SECONDS = 60
+
+
+class CodexCapacityReserveConflict(ValueError):
+    """A new reserve exceeds fresh capacity or cannot be safely verified."""
+
+    def __init__(self, code: str, *, remaining_percent: float | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.remaining_percent = remaining_percent
+
+
+def _validate_codex_capacity_reserve_update(root: Path, key: object, value: object) -> None:
+    """Fail closed before a reserve increase can make future admission impossible."""
+    if key != "codex_capacity_reserve_percent" or not isinstance(value, int) or isinstance(value, bool):
+        return
+    previous = int(dashboard_configuration(root)["codex_capacity_reserve_percent"])
+    if value <= previous:
+        return
+    remaining = read_remaining_percent()
+    if remaining is None:
+        raise CodexCapacityReserveConflict("codex_capacity_reserve_unavailable")
+    if value > remaining:
+        raise CodexCapacityReserveConflict(
+            "codex_capacity_reserve_exceeds_remaining", remaining_percent=remaining,
+        )
 _rate_limit_cache_lock = Lock()
 _rate_limit_cache: tuple[float, bytes] | None = None
 CODEX_IDENTITY_CACHE_SECONDS = 300
@@ -93,6 +120,11 @@ _codex_identity_cache: tuple[float, dict[str, str]] | None = None
 _codex_update_cache_lock = Lock()
 _codex_update_cache: tuple[float, dict[str, object]] | None = None
 _codex_update_install_lock = Lock()
+_provider_install_lock = Lock()
+_provider_login_lock = Lock()
+_provider_login_active: str | None = None
+_provider_login_started_at = 0.0
+_PROVIDER_LOGIN_TIMEOUT_SECONDS = 300.0
 _snapshot_revision_lock = Lock()
 _snapshot_fingerprint: bytes | None = None
 _snapshot_revision = 0
@@ -302,6 +334,8 @@ def _project_prompt_history_detail(
     usage: dict[str, object],
     report: str | None,
     lifecycle: dict[str, object] | None = None,
+    pull_requests: object = (),
+    commit_timeline: object = (),
 ) -> bytes:
     """Project one immutable history row into dashboard detail JSON.
 
@@ -318,6 +352,8 @@ def _project_prompt_history_detail(
             "runtime": runtime,
             "reviewers": reviewers,
             "commits": commits,
+            "commit_timeline": commit_timeline,
+            "pull_requests": pull_requests,
             "usage": usage,
             "evidence": evidence,
             "recommendation_handoff": handoff,
@@ -326,6 +362,76 @@ def _project_prompt_history_detail(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
+
+
+def _pull_requests_for_run(root: Path, run_id: str | None) -> list[dict[str, object]]:
+    """Project only checkpoint-owned Managed pull-request evidence as links."""
+    checkpoint = _canonical_checkpoint(root, run_id)
+    repository = checkpoint.get("repository")
+    if (
+        checkpoint.get("execution_mode") != "MANAGED"
+        or not isinstance(repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+    ):
+        return []
+    links: list[dict[str, object]] = []
+    for role, field in (
+        ("implementation", "implementation_pull_request"),
+        ("finalization", "finalization_pull_request"),
+    ):
+        number = checkpoint.get(field)
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            link: dict[str, object] = {
+                "role": role,
+                "number": number,
+                "url": f"https://github.com/{repository}/pull/{number}",
+            }
+            link.update(_pull_request_github_metrics(root, repository, number))
+            links.append(link)
+    return links
+
+
+def _pull_request_github_metrics(root: Path, repository: str, number: int) -> dict[str, int]:
+    """Read bounded, display-only GitHub counts for already-linked PR evidence.
+
+    The checkpoint remains the authority for the PR link. These metrics enrich
+    its detail view only when the local checkout still proves that it belongs
+    to the same GitHub repository; unavailable evidence is omitted rather than
+    represented as a misleading zero.
+    """
+    try:
+        remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match or f"{match.group(1)}/{match.group(2)}" != repository:
+            return {}
+        payload = GitHubProvider().github(
+            "pr", "view", str(number), "--repo", repository,
+            "--json", "number,commits,changedFiles,statusCheckRollup",
+        )
+        pull_request = json.loads(payload)
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(pull_request, dict) or pull_request.get("number") != number:
+        return {}
+    metrics: dict[str, int] = {}
+    commits = pull_request.get("commits")
+    if isinstance(commits, list):
+        metrics["commit_count"] = len(commits)
+    changed_files = pull_request.get("changedFiles")
+    if isinstance(changed_files, int) and not isinstance(changed_files, bool) and changed_files >= 0:
+        metrics["changed_file_count"] = changed_files
+    checks = pull_request.get("statusCheckRollup")
+    if isinstance(checks, list):
+        # GitHub's Checks tab counts check runs.  `statusCheckRollup` also
+        # contains legacy status contexts such as Owner Authorization; those
+        # belong to commit status, not the visible Checks count.
+        metrics["check_count"] = sum(
+            1 for check in checks
+            if isinstance(check, dict)
+            and check.get("__typename") == "CheckRun"
+            and str(check.get("name") or "").strip()
+        )
+    return metrics
 
 
 def _terminal_run_diagnostic(root: Path, run_id: str | None) -> str | None:
@@ -367,6 +473,8 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
     runtime = json.loads(_last_executed_runtime_metadata(root, run_id))
     reviewers = json.loads(_reviewer_agents_for_run(root, run_id))
     commits = _commits_for_run(root, run_id)
+    pull_requests = _pull_requests_for_run(root, run_id)
+    commit_timeline = _commit_timeline_for_run(root, run_id)
     usage: dict[str, object] = {}
     try:
         provider_summary = provider_usage_summary(root, run_id)
@@ -404,6 +512,8 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         runtime=runtime,
         reviewers=reviewers,
         commits=commits,
+        pull_requests=pull_requests,
+        commit_timeline=commit_timeline,
         usage=usage,
         report=report,
         lifecycle=lifecycle_projection(root, run_id),
@@ -1349,6 +1459,13 @@ def _owner_approval_status(pull_request: dict[str, object], repository_owner: st
             conclusion = str(check.get("conclusion") or "").upper()
             if state not in {"SUCCESS", "COMPLETED"} or conclusion not in {"", "SUCCESS", "NEUTRAL", "SKIPPED"}:
                 return "pending"
+            # This check exists only when the HIGH_RISK owner-authorization
+            # gate applied to this exact commit.  A successful result is an
+            # affirmative owner decision, not the absence of a requirement.
+            # Do not fall through to GitHub's optional-review fallback: the
+            # owner may have authorized with the dashboard control rather
+            # than submitted a conventional PR review.
+            return "approved"
     reviews = pull_request.get("reviews")
     if not isinstance(reviews, list) or not repository_owner:
         return "pending"
@@ -1731,6 +1848,36 @@ def _commits_for_run(root: Path, run_id: str | None) -> dict[str, str]:
     return {labels[key]: checkpoint[key] for key in labels if isinstance(checkpoint.get(key), str)}
 
 
+def _commit_timeline_for_run(root: Path, run_id: str | None) -> list[dict[str, str]]:
+    """Project only strict, checkpoint-owned verified commit events.
+
+    This is intentionally a read-only projection: old or malformed
+    checkpoint values never become dashboard evidence.
+    """
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return []
+    checkpoint = _canonical_checkpoint(root, run_id)
+    raw = checkpoint.get("commit_evidence")
+    if not isinstance(raw, list):
+        return []
+    events: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        phase, observed_at, commit_sha, description = (
+            item.get("phase"), item.get("observed_at"), item.get("commit_sha"), item.get("description"),
+        )
+        if not is_valid_commit_evidence_record(item):
+            continue
+        events.append({
+            "phase": phase,
+            "observed_at": observed_at,
+            "commit_sha": commit_sha,
+            "description": description,
+        })
+    return sorted(events, key=lambda item: item["observed_at"])
+
+
 def _last_executed_commits(root: Path) -> bytes:
     """Return commit evidence bound to the most recent completed run only."""
     try:
@@ -1837,6 +1984,98 @@ def _workspace_free_disk_space(root: Path) -> str:
     return f"{free_gigabytes:.1f} GB"
 
 
+def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
+    """Dashboard projection of the shared token-free provider readiness check."""
+    global _provider_login_active, _provider_login_started_at
+    statuses = provider_readiness_status(root)
+    with _provider_login_lock:
+        active = _provider_login_active
+        expired = time.monotonic() - _provider_login_started_at >= _PROVIDER_LOGIN_TIMEOUT_SECONDS
+        if active and (expired or statuses.get(active.lower(), {}).get("state") == "READY"):
+            _provider_login_active = None
+            _provider_login_started_at = 0.0
+    return statuses
+
+
+def _start_provider_login(root: Path, provider: str) -> None:
+    """Open one explicit interactive login in Terminal; no credential crosses EP."""
+    commands = {
+        "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
+        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+    }
+    global _provider_login_active, _provider_login_started_at
+    command = commands.get(provider)
+    if command is None:
+        raise ValueError("Unsupported provider login request.")
+    if provider == "CODEX" and not CodexCliProvider().status().qualified:
+        raise ValueError("Codex CLI is not installed.")
+    if provider == "GITHUB" and shutil.which("gh") is None:
+        raise ValueError("GitHub CLI is not installed.")
+    if sys.platform != "darwin":
+        raise ValueError("Interactive provider login is supported from the local macOS dashboard only.")
+    with _provider_login_lock:
+        if _provider_login_active and time.monotonic() - _provider_login_started_at < _PROVIDER_LOGIN_TIMEOUT_SECONDS:
+            raise ValueError("Another provider sign-in is already in progress.")
+    shell_command = "exec " + " ".join(shlex.quote(part) for part in command)
+    apple_script = f'tell application "Terminal" to do script {json.dumps(shell_command)}'
+    completed = LocalProcessProvider().execute(root, ("/usr/bin/osascript", "-e", apple_script))
+    if completed.returncode:
+        raise ValueError("Provider login window could not be opened.")
+    with _provider_login_lock:
+        _provider_login_active = provider
+        _provider_login_started_at = time.monotonic()
+
+
+def _install_provider(root: Path, provider: str) -> None:
+    """Install a missing CLI only after an explicit dashboard request."""
+    if not _provider_install_lock.acquire(blocking=False):
+        raise ValueError("Another provider installation is already in progress.")
+    try:
+        if _execution_active(root):
+            raise ValueError("Provider installation is unavailable while an execution is active.")
+        if provider == "CODEX":
+            npm = _npm_executable()
+            if npm is None:
+                raise ValueError("npm is required to install Codex CLI.")
+            latest = LocalProcessProvider().execute(root, (npm, "view", CODEX_CLI_PACKAGE, "version", "--json"))
+            version = _codex_cli_version(json.loads(latest.stdout)) if latest.returncode == 0 else None
+            if version is None:
+                raise ValueError("Codex CLI version could not be verified.")
+            completed = LocalProcessProvider().execute(root, (npm, "install", "--global", "--prefix", str(engineering_platform_codex_cli_prefix()), f"{CODEX_CLI_PACKAGE}@{version}"))
+            verification = CodexCliProvider().command("--version")
+            key = "codex"
+        elif provider == "GITHUB":
+            brew = shutil.which("brew")
+            if brew is None:
+                raise ValueError("GitHub CLI installation requires Homebrew on this host.")
+            completed = LocalProcessProvider().execute(root, (brew, "install", "gh"))
+            verification = LocalProcessProvider().execute(root, ("gh", "--version"))
+            key = "github"
+        else:
+            raise ValueError("Unsupported provider installation request.")
+        if completed.returncode or verification.returncode or _provider_login_status(root).get(key, {}).get("state") == "UNAVAILABLE":
+            raise ValueError("Provider installation could not be verified.")
+    finally:
+        _provider_install_lock.release()
+
+
+def _logout_provider(root: Path, provider: str) -> None:
+    """Remove one locally stored provider session; never expose credentials."""
+    if provider == "CODEX":
+        completed = CodexCliProvider().command("logout")
+    elif provider == "GITHUB":
+        process = LocalProcessProvider()
+        account = process.execute(root, ("gh", "api", "user", "--jq", ".login"))
+        username = account.stdout.strip()
+        if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
+            raise ValueError("GitHub session cannot be safely identified for logout.")
+        completed = process.execute(root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+    else:
+        raise ValueError("Unsupported provider logout request.")
+    if completed.returncode:
+        raise ValueError("Provider logout did not complete.")
+
+
 def _workspace_git_projection(root: Path) -> dict[str, object]:
     """Return the small, read-only Git projection shown in Workspace."""
     unavailable = "Niet beschikbaar"
@@ -1869,9 +2108,10 @@ def _workspace_git_projection(root: Path) -> dict[str, object]:
 
 
 def _workspace_worktrees(root: Path) -> dict[str, object]:
-    """Project local Git worktrees without depending on GitHub or mutations."""
+    """Project local worktrees plus the protected main branch, read-only."""
     try:
-        observed = GitProvider().execute(root, "git", "worktree", "list", "--porcelain")
+        provider = GitProvider()
+        observed = provider.execute(root, "git", "worktree", "list", "--porcelain")
     except OSError:
         return {"available": False, "worktrees": []}
     if observed.returncode != 0:
@@ -1897,6 +2137,25 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
                 "detached": bool(record.get("detached")),
             })
         record = {}
+    # `main` is the repository's stable baseline even when it is not currently
+    # checked out in a worktree.  The Workspace heading promises branches as
+    # well as worktrees, so project it explicitly instead of hiding it.
+    if not any(item.get("branch") == "main" for item in worktrees):
+        try:
+            main = provider.execute(root, "git", "rev-parse", "--verify", "refs/heads/main")
+        except OSError:
+            main = None
+        if main is not None and main.returncode == 0 and main.stdout.strip():
+            worktrees.append({
+                "path": None,
+                "branch": "main",
+                "commit": main.stdout.strip()[:12],
+                "detached": False,
+                "checked_out": False,
+            })
+    # Stable sorting keeps Git's worktree order intact while pinning main as
+    # the first, recognisable baseline entry.
+    worktrees.sort(key=lambda item: item.get("branch") != "main")
     return {"available": True, "worktrees": worktrees}
 
 
@@ -1994,7 +2253,10 @@ def _dashboard_html(
 <div class="dashboard-scroll-region">
 <div class="dashboard-sticky-header">
 <header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--capacity-reserve" id="codexCapacityReserveBanner" role="alert" aria-live="assertive" hidden data-testid="codex-capacity-reserve-banner"><strong data-i18n="notification.codex_capacity_reserve.title"></strong><span id="codexCapacityReserveMessage"></span><a class="codex-capacity-reserve-banner__action" id="codexCapacityReserveAction" href="#rateLimits" data-i18n="notification.codex_capacity_reserve.action"></a></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="githubProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="github-provider-readiness-banner"><strong id="githubProviderReadinessTitle"></strong><span id="githubProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="githubProviderReadinessAction" type="button" hidden></button></aside>
 </div>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
@@ -2013,7 +2275,7 @@ def _dashboard_html(
 <div class="card" id="usage" hidden><strong>Codex CLI</strong><div class="field"><span class="label" data-i18n="ui.reported_usage"></span><pre id="usageDetails"></pre></div></div>
 <div class="card" id="currentDiagnostic" hidden><strong>Codex CLI</strong><pre id="currentLog" data-i18n="format.loading"></pre></div>
 </div></details>
-<details class="card card--resource" id="rateLimits" hidden><summary><strong data-i18n="section.remaining_usage"></strong></summary><div class="field"><span class="label" data-i18n="ui.current_ai_provider"></span><span id="rateLimitProvider" data-i18n="format.loading"></span></div><div class="field rate-limit-provider-path"><span class="label" data-i18n="ui.installation_path"></span><code id="rateLimitProviderPath" data-i18n="format.not_available"></code></div><p class="rate-limit-update-status" id="codexCliUpdateStatus" role="status" aria-live="polite"></p><button class="rate-limit-reset" id="codexCliUpdate" type="button" hidden data-i18n="ui.codex_cli_update"></button><div class="field"><span class="label" id="rateLimitLabel">Codex CLI</span><pre id="rateLimitDetails"></pre></div><button class="rate-limit-reset" id="rateLimitReset" type="button" hidden data-i18n="ui.reset_ready"></button><p class="rate-limit-reset-status" id="rateLimitResetStatus" role="status" aria-live="polite"></p></details>
+<details class="card card--resource" id="rateLimits" hidden><summary><strong data-i18n="section.remaining_usage"></strong></summary><div class="field"><span class="label" data-i18n="ui.current_ai_provider"></span><span id="rateLimitProvider" data-i18n="format.loading"></span></div><p class="rate-limit-update-status" id="codexCliUpdateStatus" role="status" aria-live="polite"></p><button class="rate-limit-reset" id="codexCliUpdate" type="button" hidden data-i18n="ui.codex_cli_update"></button><div class="field rate-limit-provider-path"><span class="label" data-i18n="ui.installation_path"></span><code id="rateLimitProviderPath" data-i18n="format.not_available"></code></div><div class="field"><span class="label" id="rateLimitLabel">Codex CLI</span><pre id="rateLimitDetails"></pre></div><button class="rate-limit-reset" id="rateLimitReset" type="button" hidden data-i18n="ui.reset_ready"></button><p class="rate-limit-reset-status" id="rateLimitResetStatus" role="status" aria-live="polite"></p></details>
 <details class="platform-health" id="platformHealth" data-testid="platform-health"><summary><strong data-i18n="section.platform_components"></strong></summary><p class="category-description" data-i18n="description.platform_components"></p><div class="platform-health__components" id="platformHealthComponents" aria-live="polite"><p class="platform-health__empty" data-i18n="ui.component_health_loading"></p></div></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--component component-modal" id="componentModal" aria-labelledby="componentModalTitle"><section class="dashboard-modal-shell__panel component-modal__panel"><header class="dashboard-modal-shell__header component-modal__header"><h2 id="componentModalTitle" data-i18n="ui.component_information"></h2><button class="dashboard-modal-shell__close component-modal__close" id="componentModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="componentModalContent"></div><button class="component-modal__restart" id="componentModalRestart" type="button" hidden data-i18n="ui.component_restart"></button><p class="component-modal__status" id="componentModalStatus" aria-live="polite"></p></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence telemetry-detail-modal" id="telemetryDetailModal" aria-labelledby="telemetryDetailTitle"><section class="dashboard-modal-shell__panel telemetry-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="telemetryDetailTitle"></h2><button class="dashboard-modal-shell__close" id="telemetryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="telemetryDetailDescription" class="prompt-detail-modal__description"></p><div id="telemetryDetailContent" class="telemetry-detail-modal__content" aria-live="polite"></div></section></dialog>
@@ -2025,20 +2287,18 @@ def _dashboard_html(
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchCleanupResultModal" aria-labelledby="workspaceBranchCleanupResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchCleanupResultTitle" data-i18n="workspace.branch_cleanup_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchCleanupResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchCleanupResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchCleanupResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal" aria-labelledby="workspaceBranchMainResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchMainResultTitle" data-i18n="workspace.branch_main_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchMainResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchMainResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchMainResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-modal-glyph="report" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadJson" type="button" hidden>{ }</button><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadJson" type="button" hidden>{}</button><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--chat prompt-chat-modal" id="promptHistoryChatModal" aria-labelledby="promptHistoryChatTitle"><section class="dashboard-modal-shell__panel prompt-chat-modal__panel"><header class="dashboard-modal-shell__header prompt-chat-modal__header"><h2 id="promptHistoryChatTitle" data-i18n="section.ai_conversation"></h2><button class="dashboard-modal-shell__close prompt-chat-modal__close" id="promptHistoryChatClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-chat-modal__description" id="promptHistoryChatDescription"></p><section class="codex-chat" id="codexChat"><div class="codex-chat__details"><div class="chat-actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="downloadChat" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy" id="copyChat" type="button" hidden data-i18n-title="chat.copy_title" data-i18n-aria-label="chat.copy_title">⧉</button><button class="dashboard-action dashboard-action--destructive" id="clearChat" type="button" hidden>⌫</button></div><div class="chat-messages" id="chatMessages" aria-live="polite" data-i18n-aria-label="section.ai_conversation"></div><label class="label chat-question-label" for="chatInput" data-i18n="section.new_ai_question"></label><div class="chat-compose"><textarea id="chatInput" class="chat-input" rows="5" maxlength="2000" autocomplete="off" data-sanitize="multiline" data-i18n-placeholder="history.chat_placeholder"></textarea><button class="chat-send" id="chatSend" type="button" data-i18n-aria-label="action.confirm"><span aria-hidden="true">➤</span></button></div><div class="chat-meta"><p class="field"><span class="label" data-i18n="detail.model"></span><span id="chatModel">$CHAT_MODEL</span></p><p class="chat-status" id="chatStatus"></p></div></div></section></section></dialog>
 <button id="loadComponentLogs" type="button" hidden data-i18n="logs.loading"></button>
 <details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="logs.inbox_watcher"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="inbox" data-testid="download-inbox-log" type="button" data-i18n-title="logs.download_inbox" data-i18n-aria-label="logs.download_inbox">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="inbox" data-testid="clear-inbox-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.inbox_watcher"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="inboxComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="inboxLogPagination" data-i18n-aria-label="logs.inbox_watcher"></nav></div><div class="card"><div class="log-card-header"><strong data-i18n="logs.status_dashboard"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="dashboard" data-testid="download-dashboard-log" type="button" data-i18n-title="logs.download_dashboard" data-i18n-aria-label="logs.download_dashboard">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="dashboard" data-testid="clear-dashboard-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.status_dashboard"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="dashboardComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="dashboardLogPagination" data-i18n-aria-label="logs.status_dashboard"></nav></div></div></details>
-<details class="technical-details" id="technicalDetails"><summary><strong data-i18n="section.technical_details"></strong></summary><p class="category-description" data-i18n="description.technical_details"></p><div class="technical-grid">
-<div class="card"><strong id="technicalPullRequestsTitle" data-i18n="technical.pull_requests"></strong><p class="field"><span class="label" id="technicalImplementationLabel" data-i18n="technical.implementation"></span><span id="implementation"></span></p><p class="field"><span class="label" id="technicalFinalizationLabel" data-i18n="technical.finalization"></span><span id="finalization"></span></p></div>
-<div class="card"><strong id="technicalRepositoryTitle" data-i18n="technical.repository"></strong><p class="field"><span class="label" id="technicalRepositoryStateLabel" data-i18n="technical.repository_status"></span><span id="repositoryState"></span></p><p class="field"><span class="label" id="technicalWorkspaceStateLabel" data-i18n="technical.workspace_status"></span><span id="workspaceState"></span></p></div>
-<div class="card technical-git-lock" id="technicalGitLock"><strong data-i18n="technical.git_lock"></strong><p class="field"><span class="label" data-i18n="technical.git_lock_state"></span><span id="technicalGitLockState" data-i18n="format.loading"></span></p><p class="technical-git-lock__detail" id="technicalGitLockDetail" hidden></p><button class="queue-blocker__repair" id="technicalGitLockRecover" type="button" hidden data-i18n="technical.git_lock_recovery_action"></button><p class="technical-git-lock__status" id="technicalGitLockRecoveryStatus" role="status" aria-live="polite"></p></div>
+<details class="technical-details" id="technicalDetails" hidden><summary><strong data-i18n="section.technical_details"></strong></summary><p class="category-description" id="technicalDetailsDescription" data-i18n="description.technical_details"></p><p class="technical-diagnosis-summary" id="technicalHealthySummary" hidden></p><div class="technical-grid" id="technicalDiagnosisDetails">
+<div class="card"><strong id="technicalRepositoryTitle" data-i18n="technical.repository"></strong><p class="field"><span class="label" id="technicalRepositoryStateLabel" data-i18n="technical.repository_status"></span><span id="repositoryState"></span></p><p class="field"><span class="label technical-repository-label" id="technicalWorkspaceStateLabel"><span data-i18n="technical.workspace_status"></span><span class="technical-info" id="technicalWorkspaceStateInfo" role="img" tabindex="0" data-i18n-title="technical.workspace_status_help" data-i18n-aria-label="technical.workspace_status_help">i</span></span><span id="workspaceState"></span></p><div class="technical-git-lock" id="technicalGitLock"><p class="field"><span class="label technical-repository-label" id="technicalGitLockLabel"><span data-i18n="technical.git_lock"></span><span class="technical-info" id="technicalGitLockInfo" role="img" tabindex="0" data-i18n-title="technical.git_lock_help" data-i18n-aria-label="technical.git_lock_help">i</span></span><span id="technicalGitLockState" data-i18n="format.loading"></span></p><p class="technical-git-lock__detail" id="technicalGitLockDetail" hidden></p><button class="queue-blocker__repair" id="technicalGitLockRecover" type="button" hidden data-i18n="technical.git_lock_recovery_action"></button><p class="technical-git-lock__status" id="technicalGitLockRecoveryStatus" role="status" aria-live="polite"></p></div></div>
 <div class="card"><strong id="technicalHostPreflightTitle" data-i18n="technical.host_preflight"></strong><p class="field"><span class="label" id="technicalExecutionHostLabel" data-i18n="technical.execution_host"></span><span id="executionHostName" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalExecutionHostVersionLabel" data-i18n="technical.execution_host_version"></span><span id="executionHostVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeLabel" data-i18n="technical.runtime"></span><span id="executionHostRuntime" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimePromptTransportLabel" data-i18n="technical.runtime_prompt_transport"></span><span id="executionHostTransport" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalHostStatusLabel" data-i18n="technical.host_status"></span><span id="hostPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastCheckLabel" data-i18n="technical.last_check"></span><span id="hostPreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalWorkspacePreflightStatusLabel" data-i18n="technical.workspace_status"></span><span id="workspacePreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastWorkspaceCheckLabel" data-i18n="technical.last_workspace_check"></span><span id="workspacePreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalCapabilityStatusLabel" data-i18n="technical.capability_status"></span><span id="capabilityPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecoverabilityLabel" data-i18n="technical.recoverability"></span><span id="capabilityRecoverability" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalFailureOriginLabel" data-i18n="technical.failure_origin"></span><span id="capabilityFailureOrigin" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecommendationLabel" data-i18n="technical.recommended_action"></span><span id="capabilityRecommendation" data-i18n="format.unavailable"></span></p></div>
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database" data-i18n="workspace.database"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
-<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><section class="workspace-database-section" aria-labelledby="workspaceDatabaseHeading"><h2 id="workspaceDatabaseHeading" data-i18n="workspace.database"></h2><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database_location" data-i18n="workspace.database_location"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p></section><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
@@ -2130,6 +2390,35 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 self._send(b'{"error":"Ongeldige herkomst."}', "application/json; charset=utf-8", 403)
                 return
             request_path = urlsplit(self.path).path
+            if request_path == "/api/provider-login/logout":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length))
+                    _logout_provider(root, str(payload.get("provider", "")))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    self._send(b'{"error":"Provider logout did not complete."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(b'{"logged_out":true}', "application/json; charset=utf-8")
+                return
+            if request_path == "/api/provider-login/repair":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict) or set(payload) != {"provider", "action"}:
+                        raise ValueError
+                    provider, action = str(payload["provider"]), str(payload["action"])
+                    if action == "login":
+                        _start_provider_login(root, provider)
+                    elif action == "install":
+                        _install_provider(root, provider)
+                    else:
+                        raise ValueError
+                    log_event(logger, logging.INFO, "provider_repair_requested", diagnostic=f"provider={provider}; action={action}")
+                except (OSError, ValueError, json.JSONDecodeError):
+                    self._send(b'{"error":"Provider repair did not start safely."}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(b'{"started":true}', "application/json; charset=utf-8", 202)
+                return
             if request_path == "/api/telemetry/clear":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -2552,6 +2841,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(payload, dict) or set(payload) != {"key", "value", "previous"}:
                         raise ValueError
+                    _validate_codex_capacity_reserve_update(root, payload["key"], payload["value"])
                     event = update_dashboard_configuration(
                         root,
                         payload["key"],
@@ -2568,6 +2858,18 @@ def handler(root: Path, logger: logging.Logger | None = None):
                             log_handler.setLevel(logger.level)
                     log_event(logger, logging.INFO, "dashboard_configuration_changed",
                               diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}")
+                except CodexCapacityReserveConflict as error:
+                    current = dashboard_configuration(root).get(payload.get("key"))
+                    self._send(
+                        json.dumps({
+                            "error_code": error.code,
+                            "value": current,
+                            "remaining_percent": error.remaining_percent,
+                        }).encode(),
+                        "application/json; charset=utf-8",
+                        409,
+                    )
+                    return
                 except DashboardConfigurationConflict as error:
                     current = dashboard_configuration(root).get(payload.get("key"))
                     self._send(
@@ -2883,6 +3185,11 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(_current_codex_log(root), "text/plain; charset=utf-8")
             if self.path == "/api/usage":
                 return self._send(_codex_usage(root), "application/json; charset=utf-8")
+            if self.path == "/api/provider-login-status":
+                return self._send(
+                    json.dumps({"providers": _provider_login_status(root)}, separators=(",", ":")).encode(),
+                    "application/json; charset=utf-8",
+                )
             if request.path == "/api/configuration":
                 return self._send(
                     json.dumps(dashboard_configuration(root)).encode(),

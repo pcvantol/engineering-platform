@@ -25,11 +25,12 @@ from tools.engineering.execution_lease import acquire
 
 
 class DashboardStatusTest(unittest.TestCase):
-    def test_browser_dashboard_validation_uses_ten_parallel_ci_workers(self) -> None:
+    def test_browser_dashboard_validation_uses_bounded_ci_workers(self) -> None:
         config = (Path(__file__).parents[2] / "playwright.config.mjs").read_text(encoding="utf-8")
 
         self.assertIn("fullyParallel: true", config)
-        self.assertIn("workers: process.env.CI ? 10 : undefined", config)
+        self.assertIn("workers: process.env.CI ? 1 : undefined", config)
+        self.assertIn("maxFailures: process.env.CI ? 3 : undefined", config)
 
     def test_workspace_card_shows_free_space_on_its_volume(self) -> None:
         with patch(
@@ -88,6 +89,60 @@ class DashboardStatusTest(unittest.TestCase):
             page.index('id="configuration"'),
         )
         self.assertLess(page.index('id="configuration"'), page.index("</main>"))
+
+    @patch("tools.engineering.dashboard.provider_readiness_status")
+    def test_provider_login_status_is_token_free_and_classifies_auth(
+        self, readiness: MagicMock,
+    ) -> None:
+        readiness.return_value = {
+            "codex": {"provider": "CODEX", "state": "READY"},
+            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
+        }
+
+        status = dashboard._provider_login_status(Path("/workspace"))
+
+        self.assertEqual(status, {
+            "codex": {"provider": "CODEX", "state": "READY"},
+            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
+        })
+        readiness.assert_called_once_with(Path("/workspace"))
+
+    @patch("tools.engineering.dashboard._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
+    @patch("tools.engineering.dashboard.CodexCliProvider")
+    @patch("tools.engineering.dashboard.LocalProcessProvider")
+    @patch("tools.engineering.dashboard._npm_executable", return_value="/usr/local/bin/npm")
+    @patch("tools.engineering.dashboard._execution_active", return_value=False)
+    def test_codex_install_is_serialized_and_verifies_the_cli_before_login(
+        self, _active: MagicMock, _npm: MagicMock, process: MagicMock, codex: MagicMock, _status: MagicMock,
+    ) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        process.return_value.execute.side_effect = [
+            completed(("npm", "view"), 0, '"0.150.0"', ""),
+            completed(("npm", "install"), 0, "", ""),
+        ]
+        codex.return_value.command.return_value = completed(("codex", "--version"), 0, "0.150.0", "")
+        dashboard._install_provider(Path("/workspace"), "CODEX")
+        self.assertEqual(codex.return_value.command.call_args.args, ("--version",))
+        self.assertEqual(process.return_value.execute.call_count, 2)
+
+    @patch("tools.engineering.dashboard.LocalProcessProvider")
+    @patch("tools.engineering.dashboard.CodexCliProvider")
+    @patch("tools.engineering.dashboard.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("tools.engineering.dashboard.sys.platform", "darwin")
+    def test_provider_login_allows_only_one_interactive_repair(
+        self, _which: MagicMock, codex: MagicMock, process: MagicMock,
+    ) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        codex.return_value.status.return_value.qualified = True
+        codex.return_value._executable = "/usr/local/bin/codex"
+        process.return_value.execute.return_value = completed(("osascript",), 0, "", "")
+        with patch.object(dashboard, "_provider_login_active", None), patch.object(
+            dashboard, "_provider_login_started_at", 0.0
+        ):
+            dashboard._start_provider_login(Path("/workspace"), "CODEX")
+            with self.assertRaisesRegex(ValueError, "already in progress"):
+                dashboard._start_provider_login(Path("/workspace"), "GITHUB")
+        self.assertEqual(process.return_value.execute.call_count, 1)
 
     @patch("tools.engineering.dashboard.LocalProcessProvider")
     @patch("tools.engineering.dashboard.sys.platform", "darwin")
@@ -172,6 +227,21 @@ class DashboardStatusTest(unittest.TestCase):
             {"path": "/tmp/detached", "branch": None, "commit": "ffffff123456", "detached": True},
         ]})
 
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_workspace_worktrees_projection_includes_unchecked_out_main(self, git_provider: object) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "worktree /workspace\nHEAD 123456789abcde\nbranch refs/heads/codex/feature\n", ""),
+            completed(("git",), 0, "abcdef1234567890\n", ""),
+        ]
+
+        projection = _workspace_worktrees(Path("/workspace"))
+
+        self.assertEqual(projection, {"available": True, "worktrees": [
+            {"path": None, "branch": "main", "commit": "abcdef123456", "detached": False, "checked_out": False},
+            {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False},
+        ]})
+
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]
         catalog = (root / "tools/engineering/assets/dashboard_locales.mjs").read_text(encoding="utf-8")
@@ -202,10 +272,12 @@ class DashboardStatusTest(unittest.TestCase):
             "configuration.open_pr_interval_help", "configuration.dashboard_stream_interval_help",
             "configuration.platform_health_interval", "configuration.platform_health_interval_help",
             "configuration.component_details_interval", "configuration.component_details_interval_help",
+            "configuration.provider_readiness_interval", "configuration.provider_readiness_interval_help",
             "configuration.lease_heartbeat_interval", "configuration.lease_heartbeat_interval_help",
             "configuration.lease_timeout", "configuration.lease_timeout_help",
             "configuration.github_retry_backoff", "configuration.github_retry_backoff_help",
             "configuration.seconds_5", "configuration.seconds_60", "configuration.seconds_90",
+            "configuration.minute_1", "configuration.minutes_5", "configuration.minutes_10",
             "configuration.github_retry_backoff_value",
             "configuration.inbox_location_open", "configuration.inbox_location_modal_description",
             "configuration.inbox_location_queue_not_empty",
@@ -224,6 +296,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn('"nl-NL"', dashboard_script)
         self.assertNotIn("localeCompare(", dashboard_script)
         self.assertIn("initializeDashboardConfiguration", dashboard_script)
+        self.assertIn("scheduleProviderReadinessRefresh", dashboard_script)
 
     def test_dashboard_run_logs_startup_and_graceful_shutdown_identity(self) -> None:
         class InterruptingServer:
@@ -642,6 +715,12 @@ class DashboardStatusTest(unittest.TestCase):
                 "__typename": "StatusContext", "context": "Owner Authorization", "state": "FAILURE",
             }],
         }, "pcvantol"), "pending")
+        self.assertEqual(dashboard._owner_approval_status({
+            "reviews": [], "reviewDecision": None,
+            "statusCheckRollup": [{
+                "__typename": "StatusContext", "context": "Owner Authorization", "state": "SUCCESS",
+            }],
+        }, "pcvantol"), "approved")
         self.assertEqual(dashboard._owner_approval_status({"reviews": [], "reviewDecision": "REVIEW_REQUIRED"}, "pcvantol"), "pending")
         self.assertEqual(dashboard._owner_approval_status({"reviews": [
             {"author": {"login": "pcvantol"}, "state": "APPROVED", "submittedAt": "2026-08-24T12:00:00Z"},
@@ -1825,11 +1904,77 @@ class DashboardStatusTest(unittest.TestCase):
                 prompt_title="Detail prompt",
                 executed_at="2026-08-03T12:00:00Z",
             )
+            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
+                "inbox-detail", "pcvantol/djconnect", "prompt.md", "COMPLETE", terminal=True,
+                implementation_pull_request=948, finalization_pull_request=949,
+            ))
             payload = json.loads(_prompt_history_detail(root, "inbox-detail"))
             self.assertEqual(payload["history"]["run_id"], "inbox-detail")
             self.assertEqual(payload["history"]["title"], "Detail prompt")
             self.assertEqual(payload["usage"], {"invocation_detail": "UNAVAILABLE"})
+            self.assertEqual(payload["pull_requests"], [
+                {"role": "implementation", "number": 948, "url": "https://github.com/pcvantol/djconnect/pull/948"},
+                {"role": "finalization", "number": 949, "url": "https://github.com/pcvantol/djconnect/pull/949"},
+            ])
             self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_managed_pull_request_evidence_includes_verified_github_counts(
+        self, git_provider: MagicMock, github_provider: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
+                "inbox-pr-counts", "pcvantol/djconnect", "prompt.md", "COMPLETE", terminal=True,
+                implementation_pull_request=948, finalization_pull_request=949,
+            ))
+            git_provider.return_value.execute.return_value = __import__("subprocess").CompletedProcess(
+                ("git",), 0, "git@github.com:pcvantol/djconnect.git\n", "",
+            )
+
+            def github(*args: str) -> str:
+                number = int(args[2])
+                return json.dumps({
+                    "number": number,
+                    "commits": [{"oid": "a"}, {"oid": "b"}],
+                    "changedFiles": 5,
+                    "statusCheckRollup": [
+                        {"__typename": "CheckRun", "name": "validate"},
+                        {"__typename": "StatusContext", "context": "Owner Authorization"},
+                        {},
+                    ],
+                })
+
+            github_provider.return_value.github.side_effect = github
+            self.assertEqual(dashboard._pull_requests_for_run(root, "inbox-pr-counts"), [
+                {
+                    "role": "implementation", "number": 948,
+                    "url": "https://github.com/pcvantol/djconnect/pull/948",
+                    "commit_count": 2, "check_count": 1, "changed_file_count": 5,
+                },
+                {
+                    "role": "finalization", "number": 949,
+                    "url": "https://github.com/pcvantol/djconnect/pull/949",
+                    "commit_count": 2, "check_count": 1, "changed_file_count": 5,
+                },
+            ])
+
+    def test_prompt_history_detail_omits_pr_links_without_managed_checkpoint_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root, run_id="inbox-genesis-detail", terminal_state="COMPLETE",
+                prompt_title="Genesis detail", executed_at="2026-08-03T12:00:00Z",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
+                "inbox-genesis-detail", "pcvantol/djconnect", "prompt.md", "COMPLETE",
+                execution_mode="GENESIS", implementation_pull_request=948,
+                finalization_pull_request=949, terminal=True,
+            ))
+            self.assertEqual(
+                json.loads(_prompt_history_detail(root, "inbox-genesis-detail"))["pull_requests"], []
+            )
 
     def test_prompt_history_detail_projects_run_scoped_provider_usage_without_fabricating_legacy_detail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2017,6 +2162,30 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertEqual(without_report["history"], entry)
         self.assertEqual(without_report["evidence"], [])
+
+    def test_prompt_history_detail_projects_only_verified_phase_commit_timeline(self) -> None:
+        checkpoint = {
+            "commit_evidence": [
+                {
+                    "phase": "REPAIR_AGENT",
+                    "observed_at": "2026-08-26T12:02:00+00:00",
+                    "commit_sha": "b" * 40,
+                    "description": "pull_request_repair_commit_verified",
+                },
+                {
+                    "phase": "EXECUTE_AGENT",
+                    "observed_at": "2026-08-26T12:01:00+00:00",
+                    "commit_sha": "a" * 40,
+                    "description": "implementation_agent_commit_verified",
+                },
+                {"phase": "REPAIR_AGENT", "observed_at": "not-a-date", "commit_sha": "not-a-sha", "description": "Unsafe"},
+            ]
+        }
+        with patch("tools.engineering.dashboard._canonical_checkpoint", return_value=checkpoint):
+            timeline = dashboard._commit_timeline_for_run(Path("/workspace"), "inbox-commit-evidence")
+
+        self.assertEqual([event["commit_sha"] for event in timeline], ["a" * 40, "b" * 40])
+        self.assertEqual(timeline[0]["phase"], "EXECUTE_AGENT")
 
     def test_dashboard_projects_producer_metadata_from_the_exact_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2402,6 +2571,65 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             self.assertEqual(json.loads(response.read()), {"error": "Ongeldige dashboardinstelling."})
+
+    def test_http_configuration_refuses_unsafe_codex_capacity_reserve_increases(self) -> None:
+        settings = {"codex_capacity_reserve_percent": 0}
+
+        def update_reserve(_root: Path, key: str, value: int, *, expected_previous: int) -> dict[str, object]:
+            self.assertEqual(key, "codex_capacity_reserve_percent")
+            self.assertEqual(expected_previous, settings[key])
+            previous = settings[key]
+            settings[key] = value
+            return {"key": key, "previous": previous, "value": value}
+
+        with self._dashboard_http_connection() as (_, connection), patch(
+            "tools.engineering.dashboard.dashboard_configuration", return_value=settings,
+        ), patch("tools.engineering.dashboard.update_dashboard_configuration", side_effect=update_reserve):
+            with patch("tools.engineering.dashboard.read_remaining_percent", return_value=47):
+                connection.request(
+                    "POST", "/api/configuration",
+                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 50, "previous": 0}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {
+                    "error_code": "codex_capacity_reserve_exceeds_remaining",
+                    "value": 0,
+                    "remaining_percent": 47,
+                })
+
+                connection.request(
+                    "POST", "/api/configuration",
+                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 25, "previous": 0}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read())["value"], 25)
+
+            with patch("tools.engineering.dashboard.read_remaining_percent", return_value=None):
+                connection.request(
+                    "POST", "/api/configuration",
+                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 75, "previous": 25}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()), {
+                    "error_code": "codex_capacity_reserve_unavailable",
+                    "value": 25,
+                    "remaining_percent": None,
+                })
+
+                connection.request(
+                    "POST", "/api/configuration",
+                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 20, "previous": 25}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read())["value"], 20)
 
     def test_inbox_location_change_requires_restart_and_route_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -13,9 +13,35 @@ from .storage import EngineeringStorageError, open_storage
 
 
 SCHEMA_VERSION = 1
-PHASES = frozenset({"INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
+PHASES = frozenset({"INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "LOCAL_REPOSITORY_VALIDATION", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP", "COMPLETE", "BLOCKED", "FAILED"})
 RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_DIAGNOSTIC_LENGTH = 500
+MAX_COMMIT_EVIDENCE_RECORDS = 48
+COMMIT_EVIDENCE_FIELDS = frozenset({"phase", "observed_at", "commit_sha", "description"})
+COMMIT_EVIDENCE_TIMESTAMP_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00"
+)
+MUTATING_COMMIT_PHASES = frozenset({
+    "EXECUTE_AGENT",
+    "LOCAL_REPOSITORY_VALIDATION",
+    "QUALITY_CONTROL_AGENT",
+    "REPAIR_AGENT",
+    "FINALIZE_AGENT",
+    "RECONCILE_AGENT",
+    "WAIT_FOR_OPERATOR_MERGE",
+})
+COMMIT_EVIDENCE_DESCRIPTIONS = frozenset({
+    "implementation_agent_commit_verified",
+    "genesis_implementation_commit_verified",
+    "local_repository_validation_commit_verified",
+    "quality_control_commit_verified",
+    "pull_request_repair_commit_verified",
+    "finalization_commit_verified",
+    "end_reconciliation_commit_verified",
+    "implementation_merge_verified",
+    "finalization_merge_verified",
+    "reconciliation_merge_verified",
+})
 SENSITIVE_DIAGNOSTIC_PATTERN = re.compile(
     r"(?i)\b(api[_ -]?key|oauth|access[_ -]?token|refresh[_ -]?token|secret|cookie|authorization|password)\b\s*[:=]\s*\S+|\bbearer\s+\S+|\b[A-Z][A-Z0-9_]{2,}\s*=\s*\S+"
 )
@@ -32,6 +58,44 @@ def redact_diagnostic(value: str, *, limit: int = MAX_DIAGNOSTIC_LENGTH) -> str:
     compact = " ".join(value.replace("\x00", " ").split())
     compact = SENSITIVE_DIAGNOSTIC_PATTERN.sub("[REDACTED]", compact)
     return compact[:limit]
+
+
+def is_valid_commit_evidence_record(value: object) -> bool:
+    """Return whether one persisted commit-timeline record is strict and safe.
+
+    This is deliberately the sole schema predicate for the append-only commit
+    timeline. Runtime writers and read-only dashboard projections share it, so
+    merge, repair and other mutating phases cannot drift into incompatible
+    evidence shapes.
+    """
+    return (
+        isinstance(value, dict)
+        and set(value) == COMMIT_EVIDENCE_FIELDS
+        and value.get("phase") in MUTATING_COMMIT_PHASES
+        and isinstance(value.get("observed_at"), str)
+        and bool(COMMIT_EVIDENCE_TIMESTAMP_PATTERN.fullmatch(value["observed_at"]))
+        and isinstance(value.get("commit_sha"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{40}", value["commit_sha"]))
+        and isinstance(value.get("description"), str)
+        and value["description"] in COMMIT_EVIDENCE_DESCRIPTIONS
+        and len(value["description"]) <= MAX_DIAGNOSTIC_LENGTH
+        and value["description"] == redact_diagnostic(value["description"])
+    )
+
+
+def verified_commit_evidence_record(
+    *, phase: str, observed_at: str, commit_sha: str, description: str
+) -> dict[str, str]:
+    """Build one canonical verified-commit record or reject unsafe evidence."""
+    record = {
+        "phase": phase,
+        "observed_at": observed_at,
+        "commit_sha": commit_sha,
+        "description": description,
+    }
+    if not is_valid_commit_evidence_record(record):
+        raise StateError("commit evidence record is invalid or unsafe")
+    return record
 
 
 @dataclass(frozen=True)
@@ -67,7 +131,13 @@ class TransactionState:
     quality_evidence: tuple[dict[str, str], ...] = ()
     repair_iterations: int = 0
     repair_audit: tuple[dict[str, str], ...] = ()
+    local_validation_iterations: int = 0
+    local_validation_audit: tuple[dict[str, str], ...] = ()
+    commit_evidence: tuple[dict[str, str], ...] = ()
     waiting_for_merge_since: str | None = None
+    auth_recovery_phase: str | None = None
+    auth_recovery_next_action: str | None = None
+    auth_recovery_providers: tuple[str, ...] = ()
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -90,7 +160,13 @@ class TransactionState:
             "quality_evidence": (),
             "repair_iterations": 0,
             "repair_audit": (),
+            "local_validation_iterations": 0,
+            "local_validation_audit": (),
+            "commit_evidence": (),
             "waiting_for_merge_since": None,
+            "auth_recovery_phase": None,
+            "auth_recovery_next_action": None,
+            "auth_recovery_providers": (),
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
@@ -102,6 +178,12 @@ class TransactionState:
             raw = {**raw, "quality_evidence": tuple(raw["quality_evidence"])}
         if isinstance(raw.get("repair_audit"), list):
             raw = {**raw, "repair_audit": tuple(raw["repair_audit"])}
+        if isinstance(raw.get("local_validation_audit"), list):
+            raw = {**raw, "local_validation_audit": tuple(raw["local_validation_audit"])}
+        if isinstance(raw.get("commit_evidence"), list):
+            raw = {**raw, "commit_evidence": tuple(raw["commit_evidence"])}
+        if isinstance(raw.get("auth_recovery_providers"), list):
+            raw = {**raw, "auth_recovery_providers": tuple(raw["auth_recovery_providers"])}
         try:
             state = cls(**raw)
         except TypeError as error:
@@ -135,6 +217,21 @@ class TransactionState:
         if not isinstance(state.repair_iterations, int) or state.repair_iterations < 0:
             raise StateError("checkpoint repair iteration count is invalid")
         audit_fields = {"iteration", "observed_at", "failed_checks", "proposed_action", "agent_summary", "commit_sha", "outcome"}
+        if not isinstance(state.local_validation_iterations, int) or not 0 <= state.local_validation_iterations <= 3:
+            raise StateError("checkpoint local validation iteration count is invalid")
+        if (
+            not isinstance(state.local_validation_audit, tuple)
+            or len(state.local_validation_audit) > 3
+            or any(
+                not isinstance(item, dict) or set(item) != audit_fields
+                or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
+                or not item["iteration"].isdigit() or int(item["iteration"]) < 1
+                or item["outcome"] not in {"validated", "validation_failed", "agent_failed"}
+                or (item["commit_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["commit_sha"]))
+                for item in state.local_validation_audit
+            )
+        ):
+            raise StateError("checkpoint local validation audit is invalid or unsafe")
         if (
             not isinstance(state.repair_audit, tuple)
             or len(state.repair_audit) > 3
@@ -142,17 +239,40 @@ class TransactionState:
                 not isinstance(item, dict) or set(item) != audit_fields
                 or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
                 or not item["iteration"].isdigit() or int(item["iteration"]) < 1
-                or item["outcome"] not in {"submitted_for_recheck", "agent_failed"}
+                or item["outcome"] not in {"submitted_for_recheck", "agent_failed", "agent_timed_out"}
                 or (item["commit_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["commit_sha"]))
                 for item in state.repair_audit
             )
         ):
             raise StateError("checkpoint repair audit is invalid or unsafe")
+        if (
+            not isinstance(state.commit_evidence, tuple)
+            or len(state.commit_evidence) > MAX_COMMIT_EVIDENCE_RECORDS
+            or any(
+                not is_valid_commit_evidence_record(item)
+                for item in state.commit_evidence
+            )
+            or len({(item["phase"], item["commit_sha"]) for item in state.commit_evidence}) != len(state.commit_evidence)
+        ):
+            raise StateError("checkpoint commit evidence is invalid or unsafe")
         if state.waiting_for_merge_since is not None and (
             not isinstance(state.waiting_for_merge_since, str)
             or len(state.waiting_for_merge_since) > 80
         ):
             raise StateError("checkpoint merge wait timestamp is invalid")
+        if state.auth_recovery_phase is not None and state.auth_recovery_phase not in PHASES:
+            raise StateError("checkpoint auth recovery phase is invalid")
+        if state.auth_recovery_next_action is not None and (
+            not isinstance(state.auth_recovery_next_action, str) or not state.auth_recovery_next_action
+        ):
+            raise StateError("checkpoint auth recovery action is invalid")
+        if (
+            not isinstance(state.auth_recovery_providers, tuple)
+            or any(provider not in {"CODEX", "GITHUB"} for provider in state.auth_recovery_providers)
+            or len(set(state.auth_recovery_providers)) != len(state.auth_recovery_providers)
+            or (state.auth_recovery_phase is None) != (not state.auth_recovery_providers)
+        ):
+            raise StateError("checkpoint auth recovery providers are invalid")
         for value in (state.latest_repository_evidence, state.latest_github_evidence):
             if value is not None and (not isinstance(value, str) or len(value) > MAX_DIAGNOSTIC_LENGTH or value != redact_diagnostic(value)):
                 raise StateError("checkpoint evidence is invalid or unsafe")

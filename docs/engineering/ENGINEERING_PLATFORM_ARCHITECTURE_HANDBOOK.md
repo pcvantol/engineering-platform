@@ -117,12 +117,42 @@ Forge / Human Architect / future Producer
   SHA-specific admission/merge gate where policy requires it; it is neither a
   formal review nor a merge.
 - **SQLite and the persisted checkpoint** are operational truth. Status files,
-  dashboard cards, telemetry, reviewer projections and AI analysis are
-  read-only projections. Repository and GitHub evidence outrank every
-  projection.
+  dashboard cards, watcher activity, telemetry, reviewer projections and AI
+  analysis are read-only projections. Repository and GitHub evidence outrank
+  every projection.
 
 The dashboard can explain state and expose expressly allowed operator actions,
 but it never becomes a second lifecycle, planning or repository authority.
+
+### Standalone installation boundary
+
+The extracted EP product provides a signed native macOS installer for its
+own host runtime. The app is a user-facing wrapper around the one idempotent
+`engineering-platform-host --install` engine; it does not duplicate host
+mutation logic. That engine installs the pinned EP package and supported
+provider CLIs, creates an empty installation-owned data root/database,
+configures dashboard and watcher services, verifies one-writer health and then
+opens the loopback Console for explicit first-run provider login. This is
+distinct from DJConnect developer-machine bootstrap: EP does not inherit Apple
+signing, Home Assistant lab or product-specific runner requirements.
+
+One macOS user has one EP installation. The engine acquires an
+installation-wide lock and detects any existing installation marker, writer and
+database before changing host state. It requires an explicit non-destructive
+choice to reuse existing data, replace it only after a verified backup, or
+remove the exact EP data root and start clean after a second confirmation.
+`engineering-platform-host --verify` is read-only and returns token-free,
+structured diagnostics for the native installer: it either offers a confirmed
+EP-managed repair or an official external help link for matters EP cannot fix.
+It never treats missing provider login as a successful installation or admits
+work while that condition remains unresolved.
+
+The installer creates no project by inference. A Workspace consumer connects a
+new or existing Git checkout only by supplying canonical project identity; EP
+then validates the selected checkout and project Inbox route. Consumers pin the
+wheel and use the Local Consumer API, while their CI exercises that adapter
+against an ephemeral EP store. They never install a user host, manipulate EP
+SQLite, start LaunchAgents or authenticate Codex/GitHub in CI.
 
 ### Common lifecycle invariants
 
@@ -133,6 +163,22 @@ state. A restart or recovery never blindly continues from an old checkpoint:
 it revalidates the checkpoint together with current repository and, where
 applicable, GitHub evidence.
 
+Provider readiness is phase-aware and token-free. A new Managed admission
+requires Codex and GitHub readiness; a resumed execution uses the same durable
+gate. Passive PR observation requires GitHub alone, while agent work requires
+Codex too. Failed readiness is persisted as a non-terminal recovery block with
+the original phase/action, rather than a retry loop or terminal failure. The
+dashboard may offer one explicit local provider repair at a time, but cannot
+start a repair agent or consume credits until fresh readiness evidence passes.
+
+Codex capacity can additionally have an operator-selected admission reserve.
+The reserve is local host configuration, is bounded to supported percentage
+choices, and is checked only before a new Inbox claim using fresh read-only
+quota evidence. Below the reserve (or when that evidence cannot be verified),
+EP retains the queue item unclaimed. A claimed run is not interrupted by this
+protection, which prevents a capacity guard from corrupting in-flight durable
+state while reserving capacity for the operator.
+
 Reviewer selection is policy-driven and may select zero reviewers. When it
 does select reviewers, they receive bounded, fresh, read-only repository facts
 and produce advisory observations only. The primary runner retains lifecycle
@@ -141,8 +187,9 @@ its recommendation into final evidence.
 
 ```text
 admission → preflight → initialize → reviewer selection / review where selected
-          → implementation → autonomous quality control
-          → evidence and delivery → finalization → reconciliation → terminal report
+          → implementation → local repository validation (Managed)
+          → autonomous quality control → evidence and delivery
+          → finalization → reconciliation → terminal report
 ```
 
 The exact delivery branch differs by execution mode; evidence, bounded scope,
@@ -158,13 +205,19 @@ remote, upstream, branch and pull-request rules.
 2. It validates the Managed repository profile, synchronizes the authorized
    baseline and captures fresh repository evidence.
 3. It initializes the transaction, optionally conducts policy-selected
-   specialist review, and performs the bounded implementation.
-4. It runs autonomous quality control and applicable validation. Bounded
-   repair may address failing required checks within the original objective;
-   it cannot expand authority or create an unrelated branch or PR.
-5. EP creates or updates the implementation pull request and observes its
-   checks. A green PR moves to `WAIT_FOR_OPERATOR_MERGE`; it remains an active
-   persisted hand-off, not a completed merge.
+   specialist review, and performs the bounded implementation on its managed
+   branch.
+4. Before an implementation PR exists, EP runs the target repository's
+   canonical required local validation and the relevant regression suite. This
+   is a visible, bounded local-validation gate: the agent may make narrowly
+   scoped production-code or test changes on the same branch to make the gate
+   green, records the problem and action for each attempt, and stops fail-closed
+   after at most three iterations. It must not create the implementation PR
+   until that gate succeeds.
+5. It runs autonomous quality control, then creates or updates the
+   implementation pull request and observes its checks. A green PR moves to
+   `WAIT_FOR_OPERATOR_MERGE`; it remains an active persisted hand-off, not a
+   completed merge.
 6. The operator grants any required owner authorization and merges in GitHub.
    EP observes the merge and proves the resulting commit is reachable from
    `origin/main`; it never merges on the operator's behalf.
@@ -178,13 +231,68 @@ remote, upstream, branch and pull-request rules.
 ```text
 Managed repository
   → synchronize / preflight
-  → implement / validate / PR checks
+  → implement → local repository validation (up to three iterations)
+  → autonomous quality control → implementation PR / PR checks
   → WAIT_FOR_OPERATOR_MERGE
   → operator merge proven on main
   → finalization (optional finalization PR + separate hand-off)
   → end reconciliation
   → COMPLETE / BLOCKED / FAILED
 ```
+
+### Managed PR, finalization and recovery hardening
+
+The implementation and finalization PR paths use the same delivery safety
+model. A remote PR is not a substitute for the persisted transaction: its
+number, head branch, observed checks, merge evidence and repair audit are
+durably associated with the corresponding transaction before the lifecycle can
+advance. A finalization PR therefore remains distinct from the implementation
+PR, including when an interrupted process is recovered.
+
+For every mutating lifecycle phase, EP also maintains an append-only commit
+timeline in the transaction checkpoint. An event contains the UTC observation
+time, lifecycle phase, full commit SHA and a bounded safe description. It is
+written in the same SQLite checkpoint transaction only after the active
+repository proves a clean transaction branch at the exact reported SHA, or,
+for an operator merge, after GitHub merge evidence and `origin/main` ancestry
+are proven. A missing, dirty or mismatched repository never produces timeline
+evidence. The execution-detail view projects this history beside provider
+usage in a scrollable card, so audit volume cannot expand the lifecycle view.
+
+For either PR, EP can enter bounded PR-control repair when current GitHub
+evidence shows failed required checks or a repairable merge condition such as
+an out-of-date (`BEHIND`), dirty or unstable branch. Repair stays on the
+existing transaction branch and PR; it may update the branch and make only
+objective-scoped changes. Each observed problem, proposed repair and result is
+recorded, and no more than three repair attempts are permitted. Exhaustion,
+ambiguous evidence or a changed branch/PR fails closed and requires an explicit
+new decision rather than consuming provider time indefinitely.
+
+Recovery always begins by re-verifying the persisted checkpoint against the
+current repository and GitHub. In particular, it first looks for and proves an
+already-created finalization PR before any action that could create one. A
+recovery may attach verified existing evidence to the original finalization
+transaction, but must never create a duplicate PR from stale state. The
+operator remains the only merge authority for both hand-offs.
+
+A missing or expired runner lease does not turn a persistent non-terminal
+transaction into an idle or invisible run. The watcher and dashboard project
+the durable phase as active/recoverable until terminal evidence is recorded;
+they never invent a second lifecycle. This applies to finalization, PR
+recovery and reconciliation phases as well as implementation work.
+
+Terminal execution telemetry follows the same authority boundary, but is a
+separate, derived operational projection. EP first queues immutable terminal
+telemetry intent in SQLite and materializes the execution record, receipt and
+daily aggregate idempotently. If projection fails, bounded recovery can rebuild
+only from admissible transaction, prompt-history and timing evidence, with
+provenance recorded as live, recovery or backfill. It cannot infer lifecycle
+facts from report prose or alter a terminal outcome; uncertainty remains
+visible and retryable instead of being silently counted or discarded.
+
+The Operations Console exposes the local-validation and PR-repair attempts as
+evidence, not as independent controls. Any new user-facing status or recovery
+message follows the platform's five-language localization contract.
 
 ### Genesis execution flow
 
@@ -248,3 +356,14 @@ and interaction consumer, and only repository/GitHub evidence proves delivery.
 - [Platform 1.x Completion Report](ENGINEERING_PLATFORM_1_X_COMPLETION_REPORT.md)
 - [Platform Governance](../../PLATFORM_GOVERNANCE.md)
 - [Platform Evolution Backlog](../../PLATFORM_EVOLUTION_BACKLOG.md)
+
+## Diff-derived validation profiles
+
+The Execution Host owns one conservative validation-profile classifier for both
+local validation and CI. It derives scope from the bounded branch diff:
+documentation/run evidence, dashboard, runtime, or full. Unknown and mixed
+changes always select the full suite. The local validation audit records the
+chosen tier and required command categories, while the separate bounded
+validation evidence records the executed command summaries. CI retains its
+required check and skips only the expensive browser execution for an
+unambiguous documentation profile.

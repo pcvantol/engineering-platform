@@ -25,3 +25,11 @@ class CodexInvocationError(RunnerError):
 
 class CodexHandoffTimeout(RunnerError):
     """A bounded agent hand-off exceeded its host-owned deadline."""
+
+
+class ProviderReadinessBlocked(RunnerError):
+    """A durable checkpoint is waiting for explicit local provider recovery."""
+
+    def __init__(self, state: object) -> None:
+        super().__init__("Provider readiness must be repaired before this action can continue.")
+        self.state = state

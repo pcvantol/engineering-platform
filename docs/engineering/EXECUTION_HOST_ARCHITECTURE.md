@@ -20,11 +20,18 @@ evidence. It does not own platform process execution or dashboard projection.
 - `providers.py` is the process/platform boundary. Codex, local Git, launchd,
   iCloud transport and Tailscale interactions are implemented there; lifecycle
   code consumes provider methods.
+- `provider_readiness.py` is the shared token-free admission and dashboard
+  projection boundary for Codex and GitHub availability/session readiness.
 
 Readiness has three explicit profiles: platform host, Managed repository and
 Genesis target. A Genesis run only evaluates its target profile; a Managed run
 only evaluates its repository profile. JSON status files are projections, not
 an ownership or lifecycle authority.
+
+Lifecycle phase identifiers are compatibility contracts. Their presentation is
+mode-aware: the shared `REPAIR_AGENT` phase is projected as pull-request check
+repair for Managed work and autonomous quality repair for Genesis. This is a
+display-only distinction; no checkpoint or transaction state is translated.
 
 The immutable profile lists repository, remote, upstream, clean-worktree,
 branch, workspace authorization, host and capability qualification, providers,

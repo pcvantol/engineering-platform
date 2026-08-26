@@ -77,3 +77,25 @@ The local upgrade runs before the installed EP process becomes the writer:
 
 The consumer pins the immutable EP 2.x wheel version. It must fail closed when
 the requested contract version or canonical Workspace `project_id` is absent.
+
+## Installation and consumer onboarding
+
+The native macOS Engineering Platform installer owns installation, CLI
+dependency setup, installation data-root creation, empty SQLite creation,
+LaunchAgent activation and first-run Operations Console opening. A consumer
+does not bootstrap these components itself and must never add the installation
+database, credentials, LaunchAgent plists or EP source tree to its repository.
+
+After the operator completes explicit provider login in the Operations Console,
+the consumer registers a project through the Local Consumer API. Registration
+requires the canonical `project_id`, current `project_name`, allowed local Git
+checkout and an EP-owned project Inbox route. For Managed execution, EP itself
+also verifies the repository remote/upstream, worktree safety and GitHub access
+before it can admit work.
+
+For CI, every consumer pins the EP wheel and Consumer Contract version and
+tests its adapter against an isolated ephemeral EP store. CI must not invoke
+the native installer, start an EP LaunchAgent, access a real user installation,
+authenticate a provider or submit work. It validates compatibility and the
+consumer boundary; an installed EP host remains responsible for provider
+readiness, admission and execution.

@@ -188,6 +188,7 @@ function tone(x) {
     [
       "INITIALIZE",
       "EXECUTE_AGENT",
+      "LOCAL_REPOSITORY_VALIDATION",
       "REPAIR_AGENT",
       "FINALIZATION_REPAIR_AGENT",
       "FINALIZE_AGENT",
@@ -432,18 +433,17 @@ function renderCapacityTrend(history) {
     x: padding.left + Math.max(0, Math.min(1, (point.at - start) / (now - start))) * innerWidth,
     y: padding.top + (1 - point.remaining / 100) * innerHeight,
   }));
-  let pathData = "", previous;
+  let pathData = "";
   for (const point of coordinates) {
-    pathData += !previous || point.at - previous.at > 90 * 60 * 1000
+    pathData += !pathData
       ? `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
       : ` L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-    previous = point;
   }
   const path = document.createElementNS(namespace, "path");
   path.setAttribute("class", "rate-limit-trend__line"); path.setAttribute("d", pathData); svg.append(path);
   for (const point of coordinates) {
     const marker = document.createElementNS(namespace, "circle");
-    marker.setAttribute("class", "rate-limit-trend__point"); marker.setAttribute("cx", point.x.toFixed(2)); marker.setAttribute("cy", point.y.toFixed(2)); marker.setAttribute("r", "2.4"); svg.append(marker);
+    marker.setAttribute("class", "rate-limit-trend__point"); marker.setAttribute("cx", point.x.toFixed(2)); marker.setAttribute("cy", point.y.toFixed(2)); marker.setAttribute("r", "1.6"); svg.append(marker);
   }
   const dayFormatter = new Intl.DateTimeFormat(dashboardLocale, { weekday: "short" });
   // Label every day boundary: the rolling window runs from seven days ago through now.
@@ -1151,6 +1151,30 @@ function renderPreflightPresentation(snapshot = {}) {
     for (const [id, value] of values) if ($(id)) $(id).textContent = value || t("format.not_available");
   }
 }
+function preflightNeedsAttention(preflight) {
+  const outcome = String(preflight?.outcome || "").toUpperCase();
+  return ["FAILED", "BLOCKED", "UNAVAILABLE"].includes(outcome);
+}
+function renderTechnicalDiagnosis(status = {}, snapshot = {}) {
+  const section = $("technicalDetails"), summary = $("technicalHealthySummary"), grid = $("technicalDiagnosisDetails"), description = $("technicalDetailsDescription");
+  if (!section || !summary || !grid || !description) return;
+  const phase = String(status?.current_phase || "").toUpperCase();
+  const watcher = String(status?.watcher_state || "").toUpperCase();
+  const needsAttention = ["BLOCKED", "FAILED", "PAUSED"].includes(phase) ||
+    ["JOB_BLOCKED", "JOB_FAILED", "HOST_PREFLIGHT_FAILED", "PAUSED"].includes(watcher) ||
+    hasVisibleStaleLifecycle(status) ||
+    Boolean(snapshot?.current_drift?.drift_id) ||
+    snapshot?.workspace_git_lock?.stale === true ||
+    [snapshot.host_preflight, snapshot.workspace_preflight, snapshot.capability_preflight].some(preflightNeedsAttention) ||
+    Boolean(String(status?.diagnostic || "").trim());
+  const active = isActiveRun(status);
+  section.hidden = !active && !needsAttention;
+  grid.hidden = !needsAttention;
+  summary.hidden = !(active && !needsAttention);
+  summary.textContent = active && !needsAttention ? t("technical.host_check_passed") : "";
+  description.textContent = t(needsAttention ? "description.technical_details_attention" : "description.technical_details");
+  section.open = !section.hidden;
+}
 function executionContextValue(value) {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
@@ -1334,6 +1358,36 @@ function renderCodexUsageLimitBanner(x, rateLimits) {
   title.textContent = t("notification.codex_usage_" + state + ".title");
   body.textContent = t("notification.codex_usage_" + state + ".body", { percent });
 }
+function renderCodexCapacityReserveBanner(rateLimits) {
+  const banner = $("codexCapacityReserveBanner"), message = $("codexCapacityReserveMessage");
+  if (!banner || !message) return;
+  const reserve = Number(dashboardConfiguration.codex_capacity_reserve_percent || 0);
+  const remaining = codexLimitRemainingPercent(rateLimits);
+  const reached = reserve > 0 && remaining !== null && remaining < reserve;
+  banner.hidden = !reached;
+  if (!reached) return;
+  message.textContent = t("notification.codex_capacity_reserve.body", {
+    remaining: locale.number(remaining, { maximumFractionDigits: 0 }),
+    reserve: locale.number(reserve, { maximumFractionDigits: 0 }),
+  });
+}
+const CODEX_CAPACITY_RESERVE_OPTIONS = Object.freeze([0, 5, 10, 15, 20, 25, 50, 75]);
+function syncCodexCapacityReserveOptions(rateLimits = latestDashboardSnapshot?.rate_limits) {
+  const select = $("configurationCodexCapacityReserve");
+  if (!select) return;
+  const remaining = codexLimitRemainingPercent(rateLimits);
+  const selected = String(dashboardConfiguration.codex_capacity_reserve_percent ?? select.dataset.savedValue ?? 0);
+  const allowed = CODEX_CAPACITY_RESERVE_OPTIONS.filter((value) => value === 0 || (remaining !== null && value <= remaining));
+  select.replaceChildren(...allowed.map((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.dataset.capacityReserveTemplate = value ? "configuration.capacity_reserve_percent" : "configuration.capacity_reserve_none";
+    option.textContent = value ? t(option.dataset.capacityReserveTemplate, { percent: value }) : t(option.dataset.capacityReserveTemplate);
+    return option;
+  }));
+  if (allowed.includes(Number(selected))) select.value = selected;
+  syncDashboardSelectPicker(select);
+}
 let githubRateLimitRefreshInFlight = false;
 async function refreshGithubRateLimit() {
   const banner = $("githubRateLimitBanner"), message = $("githubRateLimitMessage"), button = $("githubRateLimitRefresh");
@@ -1485,7 +1539,7 @@ function lifecycleRepairEvidence(step) {
   const section = document.createElement("section");
   section.className = "lifecycle-detail-modal__repair-evidence";
   section.append(Object.assign(document.createElement("h3"), {
-    textContent: t("lifecycle.detail_repair_evidence"),
+    textContent: t(step?.id === "LOCAL_REPOSITORY_VALIDATION" ? "lifecycle.detail_local_validation_evidence" : step?.repair_evidence_key || "lifecycle.detail_repair_evidence"),
   }));
   for (const item of audit) {
     if (!item || typeof item !== "object") continue;
@@ -1791,6 +1845,8 @@ function renderHealthStatus(x, snapshot = {}) {
   renderOperatorMergeWait(x);
   renderEmergencyRecovery(snapshot.emergency_recovery, x);
   renderCodexUsageLimitBanner(x, snapshot.rate_limits);
+  renderCodexCapacityReserveBanner(snapshot.rate_limits);
+  syncCodexCapacityReserveOptions(snapshot.rate_limits);
   indicator.className =
     "indicator indicator--" +
     statusTone +
@@ -1827,6 +1883,7 @@ function renderHealthStatus(x, snapshot = {}) {
   // Older dashboard fixtures and cached shells do not have Level 3 fields.
   // Keep the canonical status renderer backward compatible while they refresh.
   renderPreflightPresentation(snapshot);
+  renderTechnicalDiagnosis(x, snapshot);
   promptStarted(snapshot.prompt_started);
   renderEstimate(x, latestDurationEstimate);
   processMetrics(active, snapshot.process_metrics);
@@ -1845,8 +1902,6 @@ function renderHealthStatus(x, snapshot = {}) {
   $("runId").textContent = x.run_id || t("value.none");
   renderInboxBlocker(x);
   queueItems(x.queue_items, x.queue_depth);
-  $("implementation").textContent = x.implementation_pr || t("value.none");
-  $("finalization").textContent = x.finalization_pr || t("value.none");
   $("repositoryState").textContent = translate(x.repository_state || "UNKNOWN");
   $("workspaceState").textContent = translate(x.workspace_state || "UNKNOWN");
   $("diag").textContent = formatDiagnostic(x.diagnostic);
@@ -1913,6 +1968,10 @@ function renderWorkspaceGit(workspaceGit) {
 function renderWorkspaceWorktrees(projection) {
   const workspace = $("workspaceCard");
   if (!workspace) return;
+  // Branch actions operate on the same local Git topology as this projection.
+  // Keep them with that evidence instead of visually separating them below
+  // open pull requests.
+  const branchActions = workspace.querySelector(".workspace-branch-actions");
   let section = $("workspaceWorktrees");
   if (!section) {
     section = document.createElement("section");
@@ -1934,6 +1993,7 @@ function renderWorkspaceWorktrees(projection) {
       ? t("workspace.no_local_worktrees")
       : t("workspace.worktrees_unavailable");
     section.append(empty);
+    if (branchActions) section.append(branchActions);
     return;
   }
   const list = document.createElement("ul");
@@ -1946,12 +2006,15 @@ function renderWorkspaceWorktrees(projection) {
     path.className = "workspace-worktrees__path";
     commit.className = "workspace-worktrees__commit";
     branch.textContent = worktree?.branch || t("workspace.detached_head");
-    path.textContent = String(worktree?.path || t("format.not_available"));
+    path.textContent = worktree?.checked_out === false
+      ? t("workspace.not_checked_out")
+      : String(worktree?.path || t("format.not_available"));
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
     list.append(item);
   });
   section.append(list);
+  if (branchActions) section.append(branchActions);
 }
 let openPullRequestMonitorIntervalMs = 30_000;
 let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;
@@ -2016,7 +2079,7 @@ function renderOpenPullRequests(pullRequests) {
     link.href = String(pullRequest.url || "");
     link.target = "_blank";
     link.rel = "noreferrer";
-    link.textContent = `PR #${pullRequest.number} — ${pullRequest.title || ""}`;
+    link.textContent = `PR #${pullRequest.number} — ${pullRequest.title || ""} ↗`;
     status.className = `open-pr-status open-pr-status--${state}`;
     dot.className = "open-pr-status__dot";
     dot.setAttribute("aria-hidden", "true");
@@ -2025,7 +2088,7 @@ function renderOpenPullRequests(pullRequests) {
     approval.className = "open-pr-approval";
     setOpenPullRequestOwnerApproval(approval, pullRequest.owner_approval);
     branch.textContent = String(pullRequest.branch || "");
-    item.append(link, status, approval);
+    item.append(link, branch, status, approval);
     if (pullRequest.owner_authorization_requested === true) {
       const authorize = document.createElement("button");
       authorize.className = "open-pr-owner-authorization";
@@ -2035,7 +2098,6 @@ function renderOpenPullRequests(pullRequests) {
       authorize.title = t("workspace.open_pull_request.authorize_owner");
       item.append(authorize);
     }
-    item.append(branch);
     return item;
   }));
   localizeOpenPullRequestStatuses();
@@ -2231,26 +2293,22 @@ function providerNeutralLabels() {
 }
 function localizeTechnicalDetails() {
   const labels = [
-    [["#technicalPullRequestsTitle", "#technicalDetails .technical-grid > .card:nth-child(1) > strong"], "technical.pull_requests"],
-    [["#technicalImplementationLabel", "#technicalDetails .technical-grid > .card:nth-child(1) .field:nth-of-type(1) .label"], "technical.implementation"],
-    [["#technicalFinalizationLabel", "#technicalDetails .technical-grid > .card:nth-child(1) .field:nth-of-type(2) .label"], "technical.finalization"],
-    [["#technicalRepositoryTitle", "#technicalDetails .technical-grid > .card:nth-child(2) > strong"], "technical.repository"],
-    [["#technicalRepositoryStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(1) .label"], "technical.repository_status"],
-    [["#technicalWorkspaceStateLabel", "#technicalDetails .technical-grid > .card:nth-child(2) .field:nth-of-type(2) .label"], "technical.workspace_status"],
-    [["#technicalHostPreflightTitle", "#technicalDetails .technical-grid > .card:nth-child(4) > strong"], "technical.host_preflight"],
-    [["#technicalExecutionHostLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(1) .label"], "technical.execution_host"],
-    [["#technicalExecutionHostVersionLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(2) .label"], "technical.execution_host_version"],
-    [["#technicalRuntimeLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(3) .label"], "technical.runtime"],
-    [["#technicalRuntimePromptTransportLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(4) .label"], "technical.runtime_prompt_transport"],
-    [["#technicalHostStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(5) .label"], "technical.host_status"],
-    [["#technicalLastCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(6) .label"], "technical.last_check"],
-    [["#technicalWorkspacePreflightStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(7) .label"], "technical.workspace_status"],
-    [["#technicalLastWorkspaceCheckLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(8) .label"], "technical.last_workspace_check"],
-    [["#technicalCapabilityStatusLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(9) .label"], "technical.capability_status"],
-    [["#technicalRecoverabilityLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(10) .label"], "technical.recoverability"],
-    [["#technicalFailureOriginLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(11) .label"], "technical.failure_origin"],
-    [["#technicalRecommendationLabel", "#technicalDetails .technical-grid > .card:nth-child(4) .field:nth-of-type(12) .label"], "technical.recommended_action"],
-    [["#technicalDiagnosticsTitle", "#technicalDetails .technical-grid > .card:nth-child(5) > strong"], "technical.diagnostics"],
+    [["#technicalRepositoryTitle"], "technical.repository"],
+    [["#technicalRepositoryStateLabel"], "technical.repository_status"],
+    [["#technicalHostPreflightTitle"], "technical.host_preflight"],
+    [["#technicalExecutionHostLabel"], "technical.execution_host"],
+    [["#technicalExecutionHostVersionLabel"], "technical.execution_host_version"],
+    [["#technicalRuntimeLabel"], "technical.runtime"],
+    [["#technicalRuntimePromptTransportLabel"], "technical.runtime_prompt_transport"],
+    [["#technicalHostStatusLabel"], "technical.host_status"],
+    [["#technicalLastCheckLabel"], "technical.last_check"],
+    [["#technicalWorkspacePreflightStatusLabel"], "technical.workspace_status"],
+    [["#technicalLastWorkspaceCheckLabel"], "technical.last_workspace_check"],
+    [["#technicalCapabilityStatusLabel"], "technical.capability_status"],
+    [["#technicalRecoverabilityLabel"], "technical.recoverability"],
+    [["#technicalFailureOriginLabel"], "technical.failure_origin"],
+    [["#technicalRecommendationLabel"], "technical.recommended_action"],
+    [["#technicalDiagnosticsTitle"], "technical.diagnostics"],
   ];
   labels.forEach(([selectors, key]) => {
     const element = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
@@ -2429,6 +2487,14 @@ $("rateLimitReset").addEventListener("click", consumeRateLimitReset);
 $("codexCliUpdate")?.addEventListener("click", installCodexCliUpdate);
 $("rateLimits")?.addEventListener("toggle", () => {
   if ($("rateLimits").open) void checkCodexCliUpdate();
+});
+$("codexCapacityReserveAction")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  const section = $("rateLimits"), control = $("configurationCodexCapacityReserve");
+  if (!section) return;
+  section.open = true;
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  control?.focus({ preventScroll: true });
 });
 function addTestIds() {
   const toTestId = (value) =>
@@ -3278,7 +3344,9 @@ function executionTelemetry(rows) {
       actions.append(button);
     }
     summary.append(title, description);
-    panel.append(summary, retention, actions, scroll, navigation);
+    // Retention governs the historical data shown in the table, so keep it
+    // directly below that table instead of separating it from its effect.
+    panel.append(summary, actions, scroll, navigation, retention);
     const rate = $("rateLimits");
     rate?.insertAdjacentElement("afterend", panel);
     body = tableBody;
@@ -3430,6 +3498,14 @@ function telemetryDetailSortableTable(columns, rows, initialSort, appendRow) {
   return table;
 }
 function closeTelemetryDetail() { const modal = $("telemetryDetailModal"); if (modal.open) modal.close(); }
+function telemetryDetailTableScroll(table, label) {
+  const scroll = document.createElement("div");
+  scroll.className = "telemetry-detail-table-scroll";
+  scroll.setAttribute("role", "region");
+  scroll.setAttribute("aria-label", label);
+  scroll.append(table);
+  return scroll;
+}
 function openTelemetryDetail(date, trigger) {
   if (!date) return;
   telemetryDetailTrigger = trigger || document.activeElement;
@@ -3466,7 +3542,7 @@ function renderTelemetryDetail(detail, content) {
       body.append(row);
     });
     phaseTable.classList.add("telemetry-phase-table");
-    phaseSection.append(phaseTable);
+    phaseSection.append(telemetryDetailTableScroll(phaseTable, t("telemetry.phase_timing")));
   }
   content.append(phaseSection);
   const bottlenecks = document.createElement("section"), top = detail?.bottlenecks?.top_time_consumers || [];
@@ -3513,12 +3589,7 @@ function renderTelemetryDetail(detail, content) {
     });
     runBody.append(row);
   });
-  const runScroll = document.createElement("div");
-  runScroll.className = "telemetry-detail-table-scroll";
-  runScroll.setAttribute("role", "region");
-  runScroll.setAttribute("aria-label", t("telemetry.runs"));
-  runScroll.append(runTable);
-  runSection.append(runScroll); content.append(runSection);
+  runSection.append(telemetryDetailTableScroll(runTable, t("telemetry.runs"))); content.append(runSection);
 }
 $("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
 $("telemetryDetailModal").addEventListener("close", () => { telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; });
@@ -4123,6 +4194,30 @@ function promptHistoryMarkdownList(title, values) {
     ? `## ${promptHistoryMarkdownText(title)}\n\n${items.map((value) => `- ${promptHistoryMarkdownText(value)}`).join("\n")}\n`
     : "";
 }
+function promptHistoryMarkdownPullRequests(pullRequests) {
+  const labels = {
+    implementation: t("detail.implementation_pull_request"),
+    finalization: t("detail.finalization_pull_request"),
+  };
+  const items = promptDetailPullRequestEntries(pullRequests).map((item) => {
+    const metrics = promptDetailPullRequestMetrics(item)
+      .map(([label, value]) => `${promptHistoryMarkdownText(label)}: ${promptHistoryMarkdownText(value)}`)
+      .join("; ");
+    return `- ${promptHistoryMarkdownText(labels[item.role])}: [#${item.number}](${item.url})${metrics ? ` — ${metrics}` : ""}`;
+  });
+  return items.length ? `## ${promptHistoryMarkdownText(t("detail.pull_requests"))}\n\n${items.join("\n")}\n` : "";
+}
+function promptHistoryMarkdownCommitTimeline(entries) {
+  const items = promptDetailCommitTimelineEntries(entries).map((item) => {
+    const timestamp = Date.parse(item.observed_at);
+    const observedAt = Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : item.observed_at;
+    const phase = t("state." + item.phase, {}, item.phase);
+    const kind = t("detail.commit_type." + commitTimelineKind(item), {}, commitTimelineKind(item));
+    const description = t("detail.commit_description." + item.description, {}, item.description);
+    return `- ${promptHistoryMarkdownText(observedAt)} — ${promptHistoryMarkdownText(phase)} (${promptHistoryMarkdownText(kind)}) — \`${item.commit_sha}\` — ${promptHistoryMarkdownText(description)}`;
+  });
+  return items.length ? `## ${promptHistoryMarkdownText(t("detail.commit_timeline"))}\n\n${items.join("\n")}\n` : "";
+}
 function promptHistoryDetailMarkdown(payload, title) {
   const history = payload?.history && typeof payload.history === "object" ? payload.history : {};
   const execution = payload?.execution && typeof payload.execution === "object" ? payload.execution : {};
@@ -4170,6 +4265,8 @@ function promptHistoryDetailMarkdown(payload, title) {
       .filter(([, value]) => value !== null && typeof value !== "object")
       .map(([key, value]) => [promptHistoryMarkdownLabel(key), value])),
     promptHistoryMarkdownSection(t("detail.git_commit"), Object.entries(payload?.commits || {})),
+    promptHistoryMarkdownPullRequests(payload?.pull_requests),
+    promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
     promptHistoryMarkdownList(t("detail.execution_evidence"), payload?.evidence),
   ].filter(Boolean);
   return [`# ${promptHistoryMarkdownText(history.title || title || promptHistoryDetailRunId)}`, "", t("history.details_description"), "", ...sections].join("\n").trimEnd() + "\n";
@@ -4713,12 +4810,8 @@ function applyDashboardLocale() {
     ["#platformHealth > summary > strong", "section.platform_components"],
     ["#componentLogs > summary > strong", "section.logs"],
     ["#technicalDetails > summary > strong", "section.technical_details"],
-    ["#technicalPullRequestsTitle", "technical.pull_requests"],
-    ["#technicalImplementationLabel", "technical.implementation"],
-    ["#technicalFinalizationLabel", "technical.finalization"],
     ["#technicalRepositoryTitle", "technical.repository"],
     ["#technicalRepositoryStateLabel", "technical.repository_status"],
-    ["#technicalWorkspaceStateLabel", "technical.workspace_status"],
     ["#technicalHostPreflightTitle", "technical.host_preflight"],
     ["#technicalExecutionHostLabel", "technical.execution_host"],
     ["#technicalExecutionHostVersionLabel", "technical.execution_host_version"],
@@ -4813,6 +4906,8 @@ const configurationFields = Object.freeze({
   configurationLogLevel: ["log_level", String],
   configurationInboxScanInterval: ["inbox_scan_interval_seconds", Number],
   configurationOpenPrInterval: ["open_pr_check_interval_seconds", Number],
+  configurationProviderReadinessInterval: ["provider_readiness_refresh_seconds", Number],
+  configurationCodexCapacityReserve: ["codex_capacity_reserve_percent", Number],
   configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
   configurationComponentDetailsInterval: ["component_details_refresh_seconds", Number],
 });
@@ -4820,11 +4915,22 @@ const dashboardSelectPickers = new Map();
 function syncDashboardSelectPicker(select) {
   const picker = dashboardSelectPickers.get(select);
   if (!picker) return;
+  const nativeOptions = [...select.options];
+  const menuOptions = [...picker.menu.querySelectorAll("[data-dashboard-select-value]")];
+  if (menuOptions.length !== nativeOptions.length || menuOptions.some((option, index) => option.dataset.dashboardSelectValue !== nativeOptions[index]?.value)) {
+    picker.menu.replaceChildren(...nativeOptions.map((nativeOption) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.setAttribute("role", "option");
+      option.dataset.dashboardSelectValue = nativeOption.value;
+      return option;
+    }));
+  }
   const selected = select.selectedOptions[0];
   picker.value.textContent = selected?.textContent || "";
   picker.button.disabled = select.disabled;
   picker.menu.querySelectorAll("[data-dashboard-select-value]").forEach((option, index) => {
-    const nativeOption = select.options[index];
+    const nativeOption = nativeOptions[index];
     option.textContent = nativeOption?.textContent || "";
     option.disabled = select.disabled || nativeOption?.disabled === true;
     option.setAttribute("aria-selected", String(option.dataset.dashboardSelectValue === select.value));
@@ -4929,6 +5035,8 @@ function addConfigurationControlInfo() {
     ["configurationLogLevel", "configuration.log_level_help"],
     ["configurationInboxScanInterval", "configuration.inbox_scan_interval_help"],
     ["configurationOpenPrInterval", "configuration.open_pr_interval_help"],
+    ["configurationProviderReadinessInterval", "configuration.provider_readiness_interval_help"],
+    ["configurationCodexCapacityReserve", "configuration.codex_capacity_reserve_help"],
     ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
     ["configurationComponentDetailsInterval", "configuration.component_details_interval_help"],
   ]) {
@@ -4963,11 +5071,180 @@ function renderConfigurationInboxLocation() {
   }
   value.textContent = location || "—";
 }
+function providerLoginStatusBlock() {
+  const configuration = $("configuration");
+  if (!configuration) return null;
+  let block = $("configurationProviderLoginStatus");
+  if (!block) {
+    block = document.createElement("section");
+    block.id = "configurationProviderLoginStatus";
+    block.className = "configuration-provider-status";
+    block.setAttribute("aria-live", "polite");
+    const title = document.createElement("h2");
+    title.textContent = t("configuration.provider_login_status");
+    block.append(title);
+    for (const provider of ["CODEX", "GITHUB"]) {
+      const row = document.createElement("div");
+      row.className = "configuration-provider-status__row";
+      row.dataset.provider = provider;
+      const repair = Object.assign(document.createElement("button"), { className: "configuration-provider-status__repair", type: "button", hidden: true });
+      repair.dataset.providerRepair = provider;
+      const logout = Object.assign(document.createElement("button"), { className: "configuration-provider-status__logout", type: "button", textContent: t("configuration.provider_logout") });
+      logout.dataset.providerLogout = provider;
+      row.append(
+        Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
+        Object.assign(document.createElement("strong"), { textContent: provider === "CODEX" ? "Codex" : "GitHub" }),
+        Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
+        repair,
+        logout,
+      );
+      block.append(row);
+    }
+    configuration.querySelector("summary")?.after(block);
+  }
+  return block;
+}
+const PROVIDER_READINESS_KEYS = Object.freeze(["codex", "github"]);
+const CHECK_FAILED_PROVIDERS = Object.freeze({
+  codex: { state: "CHECK_FAILED" },
+  github: { state: "CHECK_FAILED" },
+});
+function syncStickyHeaderOffset() {
+  const header = document.querySelector(".dashboard-sticky-header");
+  if (!header) return;
+  document.documentElement.style.setProperty(
+    "--dashboard-sticky-header-height",
+    `${Math.ceil(header.getBoundingClientRect().height)}px`,
+  );
+}
+function syncFooterOffset() {
+  const footer = document.querySelector(".footer");
+  if (!footer) return;
+  document.documentElement.style.setProperty(
+    "--dashboard-footer-height",
+    `${Math.ceil(footer.getBoundingClientRect().height)}px`,
+  );
+}
+const stickyHeader = document.querySelector(".dashboard-sticky-header");
+if (stickyHeader && typeof ResizeObserver === "function") {
+  new ResizeObserver(syncStickyHeaderOffset).observe(stickyHeader);
+}
+const dashboardFooter = document.querySelector(".footer");
+if (dashboardFooter && typeof ResizeObserver === "function") {
+  new ResizeObserver(syncFooterOffset).observe(dashboardFooter);
+}
+syncStickyHeaderOffset();
+syncFooterOffset();
+const providerReadinessActions = new Map();
+let providerInteractiveRepairInProgress = false;
+function providerDisplayName(provider) {
+  return provider === "CODEX" || provider === "codex" ? "Codex" : "GitHub";
+}
+function providerReadinessState(providers, provider) {
+  return String(providers?.[provider]?.state || "CHECK_FAILED");
+}
+function renderProviderLoginStatus(block, providers) {
+  renderProviderReadinessBanner(providers);
+  block.querySelectorAll("[data-provider]").forEach((row) => {
+    const provider = String(row.dataset.provider || "").toLowerCase();
+    const state = providerReadinessState(providers, provider);
+    const logout = row.querySelector("[data-provider-logout]"), repair = row.querySelector("[data-provider-repair]");
+    row.dataset.providerState = state;
+    row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
+    logout.hidden = state !== "READY";
+    logout.disabled = state !== "READY";
+    const action = state === "UNAVAILABLE" ? "install" : state === "AUTH_REQUIRED" ? "login" : null;
+    repair.hidden = !action;
+    repair.disabled = providerInteractiveRepairInProgress;
+    repair.textContent = action ? t(`notification.provider_readiness.${action}`, { provider: providerDisplayName(provider) }) : "";
+  });
+}
+async function refreshProviderLoginStatus() {
+  const block = providerLoginStatusBlock();
+  if (!block) return;
+  try {
+    const response = await fetch("/api/provider-login-status", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
+    renderProviderLoginStatus(block, payload.providers);
+  } catch {
+    renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+  }
+}
+let providerReadinessRefreshIntervalMs = 300_000, providerReadinessRefreshTimer = null;
+function scheduleProviderReadinessRefresh() {
+  if (providerReadinessRefreshTimer !== null) window.clearTimeout(providerReadinessRefreshTimer);
+  providerReadinessRefreshTimer = window.setTimeout(async () => {
+    if (document.visibilityState === "visible") await refreshProviderLoginStatus();
+    scheduleProviderReadinessRefresh();
+  }, providerReadinessRefreshIntervalMs);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  void refreshProviderLoginStatus();
+  scheduleProviderReadinessRefresh();
+});
+function renderProviderReadinessBanner(providers) {
+  PROVIDER_READINESS_KEYS.forEach((key) => {
+    const prefix = key === "codex" ? "codex" : "github";
+    const banner = $(`${prefix}ProviderReadinessBanner`), title = $(`${prefix}ProviderReadinessTitle`), message = $(`${prefix}ProviderReadinessMessage`), button = $(`${prefix}ProviderReadinessAction`);
+    if (!banner || !title || !message || !button) return;
+    const state = String(providers?.[key]?.state || "CHECK_FAILED");
+    const provider = providerDisplayName(key);
+    const action = state === "UNAVAILABLE" ? "install" : state === "AUTH_REQUIRED" ? "login" : null;
+    banner.hidden = state === "READY";
+    providerReadinessActions.set(key, action ? { provider: key.toUpperCase(), action } : null);
+    if (banner.hidden) return;
+    banner.className = `dashboard-status-banner dashboard-status-banner--provider-readiness dashboard-status-banner--provider-${state.toLowerCase()}`;
+    title.textContent = t("notification.provider_readiness.title", { provider });
+    message.textContent = t(`notification.provider_readiness.${state.toLowerCase()}`, { provider });
+    button.hidden = !action;
+    button.disabled = providerInteractiveRepairInProgress;
+    button.textContent = action ? t(`notification.provider_readiness.${action}`, { provider }) : "";
+  });
+  syncStickyHeaderOffset();
+}
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[id$='ProviderReadinessAction'], [data-provider-repair]");
+  if (!button || providerInteractiveRepairInProgress) return;
+  const key = button.dataset.providerRepair?.toLowerCase() || (button.id.startsWith("codex") ? "codex" : "github");
+  const pending = providerReadinessActions.get(key);
+  if (!pending) return;
+  const { provider, action } = pending;
+  const providerName = provider === "CODEX" ? "Codex" : "GitHub";
+  const confirmed = await confirmDashboardAction(t("notification.provider_readiness.title", { provider: providerName }), t(`notification.provider_readiness.${action}_confirm`, { provider: providerName }), t(`notification.provider_readiness.${action}`, { provider: providerName }));
+  if (!confirmed) return;
+  providerInteractiveRepairInProgress = true;
+  document.querySelectorAll("[id$='ProviderReadinessAction'], [data-provider-repair]").forEach((candidate) => { candidate.disabled = true; });
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/provider-login/repair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider, action }) });
+    if (!response.ok) throw Error();
+  } catch {
+    $(`${key}ProviderReadinessMessage`).textContent = t("notification.provider_readiness.repair_failed", { provider: providerName });
+  } finally {
+    window.setTimeout(async () => {
+      providerInteractiveRepairInProgress = false;
+      await refreshProviderLoginStatus();
+    }, 1200);
+  }
+});
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-provider-logout]");
+  if (!button || button.disabled) return;
+  const provider = String(button.dataset.providerLogout || "");
+  const confirmed = await confirmDashboardAction(t("configuration.provider_logout"), t("configuration.provider_logout_confirm", { provider: provider === "CODEX" ? "Codex" : "GitHub" }), t("configuration.provider_logout"), { destructive: true });
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/provider-login/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider }) });
+    if (!response.ok) throw Error();
+  } finally {
+    await refreshProviderLoginStatus();
+  }
+});
 const MACHINE_SCOPED_WORKSPACE_FIELD_IDS = Object.freeze([
   "workspaceFreeDiskSpace",
-  "workspaceDatabaseField",
-  "workspaceDatabaseSize",
-  "workspaceSchemaVersion",
 ]);
 const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
   {
@@ -4977,14 +5254,12 @@ const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
     statusId: "queueProjectSettingsStatus",
   },
   {
-    beforeId: "componentLogControls",
     containerClass: "log-settings",
     fieldIds: ["configurationLogRetention", "configurationLogLevel"],
     parentId: "componentLogs",
     statusId: "logSettingsStatus",
   },
   {
-    beforeId: "platformHealthComponents",
     containerClass: "platform-settings",
     fieldIds: ["configurationPlatformHealthInterval"],
     parentId: "platformHealth",
@@ -5019,22 +5294,101 @@ function moveProjectScopedConfiguration() {
   moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
 }
 function moveMachineScopedWorkspaceDetails() {
-  const configuration = $("configuration"), controls = configuration?.querySelector(".configuration-controls");
+  // Only a direct child is a valid insertion anchor for the machine-scoped
+  // fields. Provider readiness owns a nested configuration group of its own.
+  const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
   if (!configuration || !controls) return;
   MACHINE_SCOPED_WORKSPACE_FIELD_IDS.forEach((id) => {
     const field = $(id);
     if (field) configuration.insertBefore(field, controls);
   });
+  const databaseSection = configuration.querySelector(".workspace-database-section") || $("workspaceDatabaseField")?.closest(".workspace-database-section");
+  if (databaseSection) configuration.insertBefore(databaseSection, controls);
+}
+function groupHostComponentConfiguration() {
+  const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
+  const diskSpace = $("workspaceFreeDiskSpace"), componentDetails = $("configurationComponentDetailsInterval")?.closest("label");
+  if (!configuration || !controls || !diskSpace || !componentDetails) return;
+  let section = $("configurationHostComponents");
+  if (!section) {
+    section = document.createElement("section");
+    section.id = "configurationHostComponents";
+    section.className = "configuration-host-components";
+    const title = document.createElement("h2");
+    title.dataset.i18n = "section.platform_components";
+    section.append(title);
+    configuration.insertBefore(section, controls);
+  }
+  section.querySelector("h2").textContent = t("section.platform_components");
+  let hostControls = section.querySelector(":scope > .configuration-controls");
+  if (!hostControls) {
+    hostControls = document.createElement("div");
+    hostControls.className = "configuration-controls";
+    section.append(hostControls);
+  }
+  // Keep the disk reading directly above the host-detail picker on every
+  // refresh. `append()` would move it below an existing control group on the
+  // second dashboard projection.
+  section.insertBefore(diskSpace, hostControls);
+  hostControls.append(componentDetails);
+}
+function ensureProviderReadinessConfigurationControl() {
+  if ($("configurationProviderReadinessInterval")) return;
+  const block = providerLoginStatusBlock();
+  if (!block) return;
+  const controls = document.createElement("div"), label = document.createElement("label"), text = document.createElement("span"), select = document.createElement("select");
+  controls.className = "configuration-controls configuration-provider-readiness-settings";
+  text.className = "label";
+  text.textContent = t("configuration.provider_readiness_interval");
+  select.id = "configurationProviderReadinessInterval";
+  [["60", "configuration.minute_1"], ["300", "configuration.minutes_5"], ["600", "configuration.minutes_10"]].forEach(([value, key]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.dataset.i18n = key;
+    option.textContent = t(key);
+    select.append(option);
+  });
+  label.htmlFor = select.id;
+  label.append(text, select);
+  controls.append(label);
+  block.append(controls);
+  enhanceDashboardSelectPicker(select);
+}
+function ensureCodexCapacityReserveConfigurationControl() {
+  if ($("configurationCodexCapacityReserve")) return;
+  const rateLimits = $("rateLimits"), status = $("rateLimitResetStatus");
+  if (!rateLimits || !status) return;
+  const controls = document.createElement("div"), label = document.createElement("label"), text = document.createElement("span"), select = document.createElement("select");
+  controls.className = "configuration-controls capacity-reserve-configuration";
+  text.className = "label";
+  text.textContent = t("configuration.codex_capacity_reserve");
+  select.id = "configurationCodexCapacityReserve";
+  label.htmlFor = select.id;
+  label.append(text, select);
+  controls.append(label);
+  status.after(controls);
+  enhanceDashboardSelectPicker(select);
+  syncCodexCapacityReserveOptions();
 }
 function localizeConfigurationOptions() {
+  ensureProviderReadinessConfigurationControl();
+  ensureCodexCapacityReserveConfigurationControl();
+  const providerReadinessLabel = $("configurationProviderReadinessInterval")?.closest("label")?.querySelector(":scope > span");
+  if (providerReadinessLabel) providerReadinessLabel.textContent = t("configuration.provider_readiness_interval");
   moveMachineScopedWorkspaceDetails();
+  groupHostComponentConfiguration();
   moveProjectScopedConfiguration();
   CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
   addConfigurationControlInfo();
   renderConfigurationInboxLocation();
+  providerLoginStatusBlock();
   document.querySelectorAll("#configurationLogRetention option, #configurationTelemetryRetention option").forEach((option) => {
     option.textContent = t("configuration.days", { days: option.value });
   });
+  document.querySelectorAll("#configurationProviderReadinessInterval option").forEach((option) => {
+    option.textContent = t(option.dataset.i18n);
+  });
+  syncCodexCapacityReserveOptions();
   dashboardSelectPickers.forEach((_, select) => syncDashboardSelectPicker(select));
 }
 function setDashboardConfigurationControlsDisabled(disabled) {
@@ -5068,6 +5422,19 @@ configurationInfoTooltips.forEach((info) => {
 window.addEventListener("resize", () => {
   configurationInfoTooltips.forEach((info) => positionConfigurationTooltip(info));
 });
+function configurationFieldStatus(control) {
+  const field = control.closest("label");
+  if (!field) return null;
+  let status = field.querySelector(".configuration-field-status");
+  if (!status) {
+    status = document.createElement("span");
+    status.className = "configuration-field-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    field.append(status);
+  }
+  return status;
+}
 async function saveDashboardConfiguration(control) {
   const [key, normalizer] = configurationFields[control.id] || [];
   if (!key) return;
@@ -5098,18 +5465,34 @@ async function saveDashboardConfiguration(control) {
     const payload = await response.json();
     if (!response.ok) {
       if (response.status === 409 && payload.value !== undefined) {
-        control.value = String(payload.value);
-        control.dataset.savedValue = control.value;
-        syncDashboardSelectPicker(control);
+        const savedValue = String(payload.value);
+        control.value = savedValue;
+        control.dataset.savedValue = savedValue;
+        dashboardConfiguration = { ...dashboardConfiguration, [key]: payload.value };
+        if (key === "codex_capacity_reserve_percent" && Number.isFinite(Number(payload.remaining_percent))) {
+          syncCodexCapacityReserveOptions({ windows: [{ used_percent: 100 - Number(payload.remaining_percent) }] });
+        } else {
+          syncDashboardSelectPicker(control);
+        }
       }
-      throw Error(payload.error || "");
+      const error = Error(payload.error_code || payload.error || "");
+      error.remainingPercent = Number(payload.remaining_percent);
+      throw error;
     }
     control.value = String(payload.value);
     control.dataset.savedValue = control.value;
     dashboardConfiguration = { ...dashboardConfiguration, [key]: payload.value };
+    if (key === "codex_capacity_reserve_percent") {
+      renderCodexCapacityReserveBanner(latestDashboardSnapshot?.rate_limits);
+      syncCodexCapacityReserveOptions();
+    }
     if (key === "open_pr_check_interval_seconds") {
       openPullRequestMonitorIntervalMs = Number(value) * 1e3;
       scheduleOpenPullRequestMonitor([...openPullRequestStatusByNumber.values()].map((status) => ({ status })));
+    }
+    if (key === "provider_readiness_refresh_seconds") {
+      providerReadinessRefreshIntervalMs = Math.max(60_000, Number(value) * 1e3 || 300_000);
+      scheduleProviderReadinessRefresh();
     }
     if (key === "platform_health_refresh_seconds") {
       platformHealthRefreshIntervalMs = Number(value) * 1e3;
@@ -5119,16 +5502,25 @@ async function saveDashboardConfiguration(control) {
       componentDetailsRefreshIntervalMs = Number(value) * 1e3;
       if (activeComponentDetails) startComponentDetailsRefresh(activeComponentDetails);
     }
-    const status = control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus");
+    const status = configurationFieldStatus(control) || (control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus"));
     if (status) {
       status.textContent = t("configuration.saved");
       status.classList.add("configuration-status--saved");
     }
     if (key === "telemetry_retention_days") refreshDashboard();
-  } catch {
-    const status = control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus");
+  } catch (error) {
+    const status = configurationFieldStatus(control) || (control.closest(".queue-project-settings") ? $("queueProjectSettingsStatus") : control.closest(".log-settings") ? $("logSettingsStatus") : control.closest(".platform-settings") ? $("platformSettingsStatus") : $("telemetryRetentionStatus") || $("configurationStatus"));
     if (status) {
-      status.textContent = t("configuration.save_failed");
+      const code = String(error?.message || "");
+      if (code === "codex_capacity_reserve_exceeds_remaining") {
+        status.textContent = t("configuration.codex_capacity_reserve_exceeds_remaining", {
+          remaining: locale.number(error.remainingPercent, { maximumFractionDigits: 0 }),
+        });
+      } else if (code === "codex_capacity_reserve_unavailable") {
+        status.textContent = t("configuration.codex_capacity_reserve_unavailable");
+      } else {
+        status.textContent = t("configuration.save_failed");
+      }
       status.classList.remove("configuration-status--saved");
     }
   } finally {
@@ -5138,26 +5530,33 @@ async function saveDashboardConfiguration(control) {
 }
 async function initializeDashboardConfiguration() {
   localizeConfigurationOptions();
+  void refreshProviderLoginStatus();
   setDashboardConfigurationControlsDisabled(true);
   try {
     const response = await fetch("/api/configuration", { cache: "no-store" });
     if (!response.ok) throw Error();
     const configuration = await response.json();
     dashboardConfiguration = configuration;
+    renderCodexCapacityReserveBanner(latestDashboardSnapshot?.rate_limits);
+    syncCodexCapacityReserveOptions();
     Object.entries(configurationFields).forEach(([id, [key]]) => {
       const control = $(id);
       if (!control || configuration[key] === undefined) return;
       if (control.type === "checkbox") control.checked = configuration[key] === true;
       else {
-        control.value = String(configuration[key]);
-        control.dataset.savedValue = control.value;
+        const savedValue = String(configuration[key]);
+        control.value = savedValue;
+        control.dataset.savedValue = savedValue;
       }
       syncDashboardSelectPicker(control);
     });
+    syncCodexCapacityReserveOptions();
     openPullRequestMonitorIntervalMs = Number(configuration.open_pr_check_interval_seconds) * 1e3;
+    providerReadinessRefreshIntervalMs = Math.max(60_000, Number(configuration.provider_readiness_refresh_seconds) * 1e3 || 300_000);
     platformHealthRefreshIntervalMs = Number(configuration.platform_health_refresh_seconds) * 1e3;
     componentDetailsRefreshIntervalMs = Number(configuration.component_details_refresh_seconds) * 1e3;
     schedulePlatformHealthRefresh();
+    scheduleProviderReadinessRefresh();
   } catch {
     $("configurationStatus").textContent = t("configuration.load_failed");
     $("configurationStatus").classList.remove("configuration-status--saved");
@@ -5166,6 +5565,8 @@ async function initializeDashboardConfiguration() {
     setDashboardConfigurationControlsDisabled(false);
   }
 }
+ensureProviderReadinessConfigurationControl();
+ensureCodexCapacityReserveConfigurationControl();
 Object.keys(configurationFields).forEach((id) => {
   $(id)?.addEventListener("change", (event) => void saveDashboardConfiguration(event.currentTarget));
 });
@@ -5736,6 +6137,18 @@ function promptDetailSidebar(cards) {
   sidebar.append(...cards.filter(Boolean));
   return sidebar;
 }
+function promptDetailLeftbar(cards) {
+  const sidebar = document.createElement("div");
+  sidebar.className = "prompt-detail-leftbar";
+  sidebar.append(...cards.filter(Boolean));
+  return sidebar;
+}
+function promptDetailRightbar(cards) {
+  const sidebar = document.createElement("div");
+  sidebar.className = "prompt-detail-rightbar";
+  sidebar.append(...cards.filter(Boolean));
+  return sidebar;
+}
 function promptDetailDuration(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds >= 0 ? durationText(seconds) : "—";
@@ -5857,6 +6270,82 @@ function promptDetailUsageSection(usage) {
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
 }
+function commitTimelineKind(item) {
+  const mergeKinds = {
+    implementation_merge_verified: "implementation_merge",
+    finalization_merge_verified: "finalization_merge",
+    reconciliation_merge_verified: "reconciliation_merge",
+  };
+  if (mergeKinds[item.description]) return mergeKinds[item.description];
+  return {
+    EXECUTE_AGENT: "implementation",
+    LOCAL_REPOSITORY_VALIDATION: "validation",
+    QUALITY_CONTROL_AGENT: "quality",
+    REPAIR_AGENT: "repair",
+    FINALIZE_AGENT: "finalization",
+    RECONCILE_AGENT: "reconciliation",
+  }[item.phase] || "other";
+}
+function promptDetailCommitTimelineEntries(entries) {
+  return Array.isArray(entries) ? entries.filter((item) =>
+    item && typeof item === "object" &&
+    typeof item.phase === "string" &&
+    typeof item.observed_at === "string" &&
+    typeof item.commit_sha === "string" && /^[0-9a-f]{40}$/.test(item.commit_sha) &&
+    typeof item.description === "string",
+  ) : [];
+}
+function promptDetailCommitTimelineSection(entries) {
+  const timeline = promptDetailCommitTimelineEntries(entries);
+  const card = promptDetailCard(t("detail.commit_timeline"), [], false, "prompt-detail-card--commit-timeline");
+  if (!timeline.length) {
+    card.append(detailField(t("detail.recorded_evidence"), t("detail.commit_timeline_empty")));
+    return card;
+  }
+  const list = document.createElement("ol");
+  list.className = "prompt-detail-commit-timeline__list";
+  const groups = timeline.reduce((current, item) => {
+    const previous = current.at(-1);
+    const kind = commitTimelineKind(item);
+    if (!previous || previous.phase !== item.phase || previous.kind !== kind)
+      current.push({ phase: item.phase, kind, entries: [] });
+    current.at(-1).entries.push(item);
+    return current;
+  }, []);
+  for (const group of groups) {
+    const section = document.createElement("li");
+    section.className = "prompt-detail-commit-timeline__phase prompt-detail-commit-timeline__phase--" + group.kind;
+    section.dataset.commitKind = group.kind;
+    const caption = document.createElement("h4");
+    const kindBadge = document.createElement("span");
+    kindBadge.className = "prompt-detail-commit-timeline__kind";
+    kindBadge.textContent = t("detail.commit_type." + group.kind, {}, group.kind);
+    const phaseName = document.createElement("span");
+    phaseName.className = "prompt-detail-commit-timeline__phase-name";
+    phaseName.textContent = t("state." + group.phase, {}, group.phase);
+    caption.append(kindBadge, phaseName);
+    const entries = document.createElement("ol");
+    entries.className = "prompt-detail-commit-timeline__phase-entries";
+    for (const item of group.entries) {
+      const row = document.createElement("li");
+      row.className = "prompt-detail-commit-timeline__item";
+      const timestamp = Date.parse(item.observed_at);
+      const meta = document.createElement("div");
+      meta.className = "prompt-detail-commit-timeline__meta";
+      meta.textContent = Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : item.observed_at;
+      const commit = document.createElement("code");
+      commit.textContent = item.commit_sha;
+      const description = document.createElement("span");
+      description.textContent = t("detail.commit_description." + item.description, {}, item.description);
+      row.append(meta, commit, description);
+      entries.append(row);
+    }
+    section.append(caption, entries);
+    list.append(section);
+  }
+  card.append(list);
+  return card;
+}
 function promptDetailCommitsSection(commits) {
   if (!Object.keys(commits).length) return null;
   const evidence = Object.entries(commits)
@@ -5865,6 +6354,57 @@ function promptDetailCommitsSection(commits) {
   return promptDetailCard(t("detail.git_commit"), [
     detailField(t("detail.recorded_evidence"), evidence, true),
   ]);
+}
+function promptDetailPullRequestEntries(pullRequests) {
+  return Array.isArray(pullRequests) ? pullRequests.filter((item) =>
+    item && ["implementation", "finalization"].includes(item.role) &&
+    Number.isInteger(item.number) && item.number > 0 &&
+    typeof item.url === "string" &&
+    /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(item.url),
+  ) : [];
+}
+function promptDetailPullRequestMetrics(pullRequest) {
+  const counts = [
+    ["commit_count", "detail.pull_request_commits"],
+    ["check_count", "detail.pull_request_checks"],
+    ["changed_file_count", "detail.pull_request_changed_files"],
+  ];
+  return counts
+    .filter(([key]) => Number.isInteger(pullRequest?.[key]) && pullRequest[key] >= 0)
+    .map(([key, label]) => [t(label), locale.number(pullRequest[key])]);
+}
+function promptDetailPullRequestsSection(pullRequests) {
+  const links = promptDetailPullRequestEntries(pullRequests);
+  if (!links.length) return null;
+  const labels = {
+    implementation: t("detail.implementation_pull_request"),
+    finalization: t("detail.finalization_pull_request"),
+  };
+  const fields = links.map((item) => {
+    const label = labels[item.role], field = detailField(label, "");
+    const link = document.createElement("a");
+    link.className = "prompt-detail-pr-link";
+    link.href = item.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `#${item.number} ↗`;
+    link.setAttribute("aria-label", `${label} #${item.number}`);
+    field.lastElementChild.replaceChildren(link);
+    const metrics = promptDetailPullRequestMetrics(item);
+    if (metrics.length) {
+      const summary = document.createElement("span");
+      summary.className = "prompt-detail-pr-metrics";
+      metrics.forEach(([metricLabel, value]) => {
+        const metric = document.createElement("span");
+        metric.className = "prompt-detail-pr-metric";
+        metric.textContent = `${metricLabel}: ${value}`;
+        summary.append(metric);
+      });
+      field.append(summary);
+    }
+    return field;
+  });
+  return promptDetailCard(t("detail.pull_requests"), fields, false, "prompt-detail-card--pull-requests");
 }
 function promptDetailEvidenceSection(evidence) {
   if (!evidence.length) return null;
@@ -5924,9 +6464,21 @@ function promptDetailReviewersSection(reviewers, { wide = true } = {}) {
   );
   return promptDetailCard(t("detail.specialist_reviews"), fields, wide, "prompt-detail-card--reviewers");
 }
-function promptDetailProviderReviewSections(usage, reviewers) {
+function promptDetailProviderReviewSections(usage, reviewers, commitTimeline) {
   const usageCard = promptDetailUsageSection(usage);
   const reviewerCard = promptDetailReviewersSection(reviewers, { wide: false });
+  const timelineCard = promptDetailCommitTimelineSection(commitTimeline);
+  if (timelineCard && usageCard) {
+    const pair = document.createElement("section");
+    pair.className = "prompt-detail-provider-review";
+    pair.append(usageCard, timelineCard);
+    if (!reviewerCard) return pair;
+    const stack = document.createElement("section");
+    stack.className = "prompt-detail-provider-review-stack";
+    stack.append(pair, reviewerCard);
+    return stack;
+  }
+  if (timelineCard) return timelineCard;
   if (!usageCard) return reviewerCard;
   if (!reviewerCard) return usageCard;
   const pair = document.createElement("section");
@@ -5941,25 +6493,31 @@ function renderPromptHistoryDetail(payload) {
     runtime = payload?.runtime || {},
     usage = payload?.usage || {},
     commits = payload?.commits || {},
+    pullRequests = payload?.pull_requests || [],
+    commitTimeline = payload?.commit_timeline || [],
     evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
     reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [],
     recommendationHandoff = payload?.recommendation_handoff;
+  const [executionSummary, executionContext] = promptDetailExecutionSections(history);
   if (typeof history.title === "string" && history.title.trim())
     $("promptHistoryDetailTitle").textContent = history.title.trim();
   setPromptHistoryDetailDownloads(payload);
   content.replaceChildren();
   content.append(
     ...[
-      ...promptDetailExecutionSections(history),
-      promptDetailSidebar([
-        promptDetailDurationSection(execution),
-        promptDetailRuntimeSection(runtime),
-        promptDetailCommitsSection(commits),
-      promptDetailEvidenceSection(evidence),
+      promptDetailLeftbar([
+        executionSummary,
+        promptDetailSidebar([
+          promptDetailDurationSection(execution),
+          promptDetailRuntimeSection(runtime),
+          promptDetailCommitsSection(commits),
+          promptDetailEvidenceSection(evidence),
+        ]),
       ]),
+      promptDetailRightbar([executionContext, promptDetailPullRequestsSection(pullRequests)]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
-      promptDetailProviderReviewSections(usage, reviewers),
+      promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailRecommendationHandoff(recommendationHandoff),
     ].filter(Boolean),
   );

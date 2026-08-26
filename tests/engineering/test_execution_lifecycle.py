@@ -46,9 +46,42 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["WAIT_FOR_OPERATOR_MERGE"]["state"], "PENDING")
         self.assertEqual(by_id["TERMINAL"]["state"], "BLOCKED")
 
+    def test_local_validation_is_a_managed_step_with_its_own_iteration_evidence(self) -> None:
+        audit = ({
+            "iteration": "2", "observed_at": "2026-08-26T08:10:00+00:00",
+            "failed_checks": "Canonical test suite", "proposed_action": "Fix the bounded test.",
+            "agent_summary": "Validation now passes.", "commit_sha": "b" * 40,
+            "outcome": "validated",
+        },)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(
+                root, "LOCAL_REPOSITORY_VALIDATION", branch="codex/local-validation",
+                local_validation_iterations=2, local_validation_audit=audit,
+            )
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        path = intended_path("MANAGED")
+        self.assertLess(path.index("EXECUTE_AGENT"), path.index("LOCAL_REPOSITORY_VALIDATION"))
+        self.assertLess(path.index("LOCAL_REPOSITORY_VALIDATION"), path.index("QUALITY_CONTROL_AGENT"))
+        self.assertEqual(value["current_step"], "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["iteration_count"], 2)
+        self.assertEqual(by_id["LOCAL_REPOSITORY_VALIDATION"]["repair_audit"], list(audit))
+
     def test_genesis_has_its_own_canonical_path(self) -> None:
         self.assertNotIn("WAIT_FOR_OPERATOR_MERGE", intended_path("GENESIS"))
         self.assertIn("WAIT_FOR_OPERATOR_MERGE", intended_path("MANAGED"))
+
+    def test_genesis_repair_uses_a_quality_presentation_without_changing_its_phase(self) -> None:
+        audit = ({"iteration": "1", "failed_checks": "lint", "outcome": "submitted_for_recheck"},)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "REPAIR_AGENT", execution_mode="GENESIS", repair_iterations=1, repair_audit=audit)
+            value = projection(root, "inbox-flow")
+        repair = next(step for step in value["steps"] if step["id"] == "REPAIR_AGENT")
+        self.assertEqual(value["current_step"], "REPAIR_AGENT")
+        self.assertEqual(repair["presentation_key"], "lifecycle.step.autonomous_quality_repair")
+        self.assertEqual(repair["repair_evidence_key"], "lifecycle.detail_autonomous_quality_repair_evidence")
 
     def test_managed_path_always_shows_automatic_reconciliation_before_cleanup(self) -> None:
         path = intended_path("MANAGED")

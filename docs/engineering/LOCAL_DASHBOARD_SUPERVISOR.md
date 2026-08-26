@@ -266,6 +266,21 @@ checks the persisted client state and verifies the same state after reload.
 This guards against a visual pressed state that does not actually change the
 Operations Console preference.
 
+## Configuration projection
+
+Configuration is grouped by the operational component that owns the setting,
+rather than by its storage key. Provider readiness is shown in the same
+yellow-outlined subcontainer style as the database, fixed platform settings
+and local host components. The latter keeps the read-only free disk-space
+signal directly above the writable refresh interval for an opened component
+detail, so the related host context is read together.
+
+The Codex capacity trend is an accessible seven-day SVG projection of the
+stored measurements. It connects consecutive samples with one continuous
+green line and renders each sample as a compact filled green point. A missing
+chart means there is no trustworthy measurement yet; it is not shown as a
+synthetic zero-capacity value.
+
 ## Git workspace lock status
 
 **Operationeel overzicht** exposes the Git index-lock state as a compact,
@@ -431,6 +446,37 @@ npm run test:engineering-dashboard
 npm run test:engineering-dashboard-logic
 ```
 
+For Engineering Platform pull requests, GitHub executes the full browser suite
+as four deterministic Playwright shards in parallel. This preserves the complete
+suite while making each shard's result and failure diagnostics independently
+visible.
+
+### CI-pariteit en reproduceerbare browserfouten
+
+Een lokaal geslaagde browserrun is geen vervanging voor de vereiste GitHub
+controle. GitHub draait schone dependencies en Linux Chromium; lokaal kan de
+browser, het besturingssysteem, de timing en het scrollgedrag verschillen.
+Reproduceer daarom een dashboardwijziging vóór push ten minste met dezelfde
+CI-modus en alle vier de shards:
+
+```sh
+npm ci
+npx playwright install chromium
+for shard in 1/4 2/4 3/4 4/4; do
+  CI=1 npm run test:engineering-dashboard -- --reporter=dot --shard="$shard"
+done
+```
+
+Elke shard start één geïsoleerde browserworker met een eigen tijdelijke
+dashboard-root. Een testfixture die een snapshot, SSE-stream of
+capaciteitsstatus vervangt, moet die fixture gedurende de test autoritatief
+houden; live events mogen de verwachte toestand niet tussentijds overschrijven.
+Mobiele lay-out- en directe-touchtests blijven op de smalle viewport. Tests
+voor desktop-hover, modifier-selectie of een logische data-actie gebruiken
+daarentegen een passende desktopviewport of de gecontroleerde testpointeractie;
+zij mogen niet alleen toevallig slagen doordat een open mobiele titelbalk net
+wel of niet ruimte inneemt.
+
 Dynamic operational labels are part of that same five-language contract. Every
 phase rendered from execution timing or lifecycle state, watcher status and
 Execution Host activity must resolve through a catalog key; raw identifiers and
@@ -475,10 +521,14 @@ The same placement rule applies to PR-check repair: its recorded repair audit
 is shown only in the reached **PR check repair** lifecycle popup, rather than
 as a duplicate card in prompt details.
 
-CI runs the browser suite with four isolated workers. Each worker starts its
+Each of the four CI shards runs with one isolated worker. A worker starts its
 own temporary dashboard root and local server, so status fixtures, browser
 preferences and retry projections never leak between tests. Local runs retain
-Playwright's default worker count for straightforward debugging.
+Playwright's default worker count for straightforward debugging; use `CI=1`
+and the four-shard loop above when diagnosing GitHub-specific behaviour.
+CI keeps one clean retry per browser interaction, but stops after three final
+test failures. This fail-closed limit preserves actionable diagnostics without
+letting one shared layout regression consume the full job timeout.
 
 The same workflow also runs the Engineering Python suite under branch coverage.
 The required core files are `dashboard.py`, `platform_bootstrap.py`,
@@ -499,6 +549,15 @@ orange for diagnosis and application logs, and purple variants for execution
 context, technical details and the advisory conversation. A colour never
 changes lifecycle meaning; the prompt status indicator remains the authoritative
 visual outcome.
+
+The **Diagnostics** section is contextual rather than permanent dashboard
+chrome. It expands with repository, host, workspace and recovery evidence when
+an execution is blocked, failed, paused, recoverable, or prevented by
+preflight. A healthy active execution shows only the compact `Host check
+passed` confirmation. A normally completed historical execution keeps the
+same evidence in its detail view and exports, but does not show a diagnostics
+section in the main dashboard. Pull-request evidence is likewise shown with
+the associated active or historical execution, not duplicated in Diagnostics.
 
 The **Logs** section automatically keeps the redacted JSON records current
 through server-push revisions and parses them locally into selectable, copyable

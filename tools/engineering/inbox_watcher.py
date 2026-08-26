@@ -36,7 +36,12 @@ from .component_logging import (
     shutdown_signal_logging,
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
-from .telemetry import ExecutionTelemetry, persist_execution_async
+from .telemetry import (
+    ExecutionTelemetry,
+    materialize_pending_terminal_telemetry,
+    queue_terminal_telemetry,
+    recover_missing_terminal_telemetry,
+)
 from .prompt_history import backfill_prompt_history, execution_metadata_from_terminal_report, record_prompt_execution, submission_prompt_title
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
@@ -1647,6 +1652,18 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     areas = local_folders(repo)
     with _lock(repo):
         _admit_dependabot_pull_requests(repo, root, logger)
+        # Terminal telemetry is a rebuildable projection.  Drain durable
+        # intents before any new work so a vanished daemon/lease cannot make a
+        # completed run disappear from the dashboard or daily trend.
+        try:
+            recovered = materialize_pending_terminal_telemetry(repo)
+            reconstructed = recover_missing_terminal_telemetry(repo)
+            if recovered["processed"] or recovered["failed"]:
+                log_event(logger, logging.INFO, "terminal_telemetry_reconciled", diagnostic=json.dumps(recovered, sort_keys=True))
+            if reconstructed["recovered"] or reconstructed["failed"]:
+                log_event(logger, logging.INFO, "terminal_telemetry_reconstructed", diagnostic=json.dumps(reconstructed, sort_keys=True))
+        except Exception as error:
+            log_event(logger, logging.WARNING, "terminal_telemetry_reconciliation_failed", diagnostic=str(error))
         # A terminal report can be written by a runner that lost storage access
         # before it could publish its history projection.  Reconcile those
         # immutable reports before presenting or admitting the next job.  The
@@ -2017,9 +2034,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             lineage = retry_metadata(content)
             runtime_metadata = _report_runtime_metadata(delivered)
             producer = parse_producer_metadata(content)
-            persist_execution_async(
-                repo,
-                ExecutionTelemetry(
+            telemetry = ExecutionTelemetry(
                     run_id=run_id,
                     arrived_at=eligible_at,
                     execution_started_at=execution_started_at,
@@ -2043,15 +2058,11 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                     execution_metadata=execution_metadata_from_terminal_report(delivered),
                     producer=producer,
                     **runtime_metadata,
-                ),
-                on_error=lambda error: log_event(
-                    logger,
-                    logging.WARNING,
-                    "telemetry_persist_failed",
-                    run_id=run_id,
-                    diagnostic=str(error),
-                ),
             )
+            queue_terminal_telemetry(repo, telemetry)
+            recovered = materialize_pending_terminal_telemetry(repo, run_id=run_id, limit=1)
+            if recovered["failed"]:
+                raise EngineeringStorageError("Terminal telemetry is queued for retry.")
         except Exception as error:
             log_event(
                 logger,

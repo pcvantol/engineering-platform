@@ -26,6 +26,60 @@ requirements. Workspace authorization is trusted host configuration: roots,
 scopes and repository allow/deny lists are evaluated fail-closed. Managed
 execution remains subject to its branch, remote and upstream requirements.
 
+## Provider readiness and explicit repair
+
+Before an Inbox item is claimed, capability preflight verifies the local Codex
+session for every execution and the GitHub CLI session for Managed execution.
+Genesis does not require GitHub until a future transaction explicitly declares
+that dependency. A missing CLI, expired login or indeterminate provider check
+fails closed before an agent starts, so it cannot consume credits in an
+authentication retry loop.
+
+The dashboard projects the same token-free evidence in Configuration and in
+separate sticky notifications for Codex and GitHub. An operator can explicitly
+install a missing CLI or open its browser-backed terminal login. At most one
+interactive provider repair may be active at once. A repair never runs from an
+execution, never exposes credentials, and does not resolve its banner until a
+new check confirms readiness. The same installation action is available beside
+the affected provider in Configuration; per-provider sign-out remains available
+there to test a fresh session deliberately.
+
+The dashboard checks both providers immediately when it opens, then rechecks
+while its tab is visible at a configurable **1, 5 or 10 minute** interval
+(five minutes by default). These are read-only local readiness checks: they
+never reveal credentials, claim queue work, start an execution or consume
+Codex credits. If an initial check fails because the dashboard or its local
+connection was restarting, the next return to the visible tab immediately
+rechecks both providers instead of retaining a stale warning until the next
+polling interval.
+
+## Codex capacity reserve for new work
+
+The local **Available AI capacity** panel has a bounded optional reserve of
+`0`, `5`, `10`, `15`, `20`, `25`, `50` or `75` percent (default `0`). Its
+pulldown only offers values that are at or below the currently observed
+remaining capacity. The dashboard also obtains fresh, read-only Codex quota
+evidence before it persists an increased reserve: a direct API request above
+the fresh value is rejected, and an unavailable reading never permits an
+increase. Lowering an existing reserve remains possible when the reading is
+temporarily unavailable.
+
+When a reserve is configured, Capability Preflight obtains fresh, read-only
+Codex quota evidence before an Inbox claim. If the lowest remaining quota
+window is below the reserve—or cannot safely be read—the item remains
+unclaimed in Inbox and the admission record reports the capacity-reserve
+failure. No agent is started and no Codex credit is consumed by a retry loop.
+This is an admission-only guard: an execution that was already claimed remains
+eligible to finish.
+
+The same gate applies when an existing execution resumes. A failed check is a
+non-terminal, durable `provider_auth_repair_required` checkpoint: it preserves
+the original phase and next action, and records only the affected provider
+names. A green verification restores that action. Passive Managed PR waiting
+requires GitHub only; Codex is required immediately before an agent repair,
+finalization, reconciliation, or other agent action can start. This prevents
+both accidental credit use and needless blocking of passive merge observation.
+
 ## Configuration and transport
 
 The Execution Host Configuration Resolver is the only host-specific location
@@ -48,12 +102,69 @@ Execution Receipts, Engineering Reports, Prompt History, retry lineage or
 repository evidence. Operators can export telemetry and download a consistent
 database snapshot for offline backup before changing retention.
 
+Execution-detail downloads are projections of the same durable run evidence as
+the dashboard: both Markdown and JSON include linked implementation/finalization
+pull requests when present, plus the verified phase-commit timeline. The JSON
+retains the structured `pull_requests` and `commit_timeline` records; Markdown
+renders their GitHub links and localized phase, commit-type and description
+labels for human review.
+
 The daily telemetry detail keeps wide per-run evidence in its own horizontally
 scrollable table region. This prevents a wide table from making the complete
 detail dialog scroll sideways, while retaining access to every column on narrow
 screens.
 
+Terminal telemetry is durable but non-authoritative. On watcher startup it
+first drains its local telemetry outbox, then performs a bounded, fail-closed
+recovery for a terminal run missing from telemetry. Recovery verifies the
+canonical checkpoint, Prompt History and recorded terminal timing before it
+creates the projection; it never restarts or mutates an execution, rewrites a
+report, or changes repository state. A recovered run keeps its original
+terminal date, and a repeated recovery cannot add a second run or count.
+
 ## Operator actions
+
+## Local repository validation gate
+
+Validation is selected from the actual bounded-branch diff. Documentation and
+run-evidence-only changes use document/link/contract validation; dashboard and
+runtime changes retain their relevant Python and browser coverage; mixed or
+unknown scope always selects the full required suite. The selected tier and
+command categories are iteration evidence; bounded validation evidence
+separately records the executed command summaries. GitHub keeps the required
+validation check; only its costly browser work is skipped for an unambiguous
+documentation tier.
+
+For a Managed implementation, the Execution Host first creates and pushes the
+bounded branch without creating a pull request. The visible **Local repository
+validation** step discovers and runs the target repository's canonical required
+local validation. It may make scoped production-code and test corrections on
+that same branch and retries at most three times. Each attempt records its safe
+problem, corrective action, result and commit evidence. Only a passing attempt
+may create the draft implementation pull request. Remote GitHub check repair
+remains a separate, later bounded gate.
+
+Both bounded gates preserve the same immutable per-attempt shape: iteration,
+observation time, observed problem, proposed action, safe agent summary,
+commit evidence and outcome. Local validation uses `validated`,
+`validation_failed` or `agent_failed`; PR repair uses
+`submitted_for_recheck`, `agent_failed` or `agent_timed_out`. The latter is a
+host-owned deadline outcome, not an invitation to start another repair: the
+run is blocked with its evidence intact and requires a new explicit recovery
+decision. The Console renders these records as iteration evidence and uses
+the same five-language status contract as the rest of the lifecycle.
+
+## Verified phase-commit timeline
+
+Alongside the per-attempt records, each mutating execution phase may append a
+verified commit event: UTC observation time, phase, full SHA and a bounded
+description. The host records it only after a clean local repository proves
+the exact branch/SHA reported by the agent. Operator merge events require the
+separate GitHub merge and `origin/main` ancestry proof. Events are append-only,
+deduplicated by phase and SHA, and saved atomically with the transaction
+checkpoint. The execution-details modal renders them chronologically in a
+bounded, vertically scrollable card beside AI-provider usage; missing evidence
+is shown as missing rather than reconstructed from report text.
 
 - **Pull-request merge hand-off** is shown as a persistent, dashboard-native
   wait state with a direct GitHub link once required checks are green. Closing

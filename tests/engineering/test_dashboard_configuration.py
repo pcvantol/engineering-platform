@@ -26,8 +26,28 @@ class DashboardConfigurationTest(unittest.TestCase):
                 ("open_pr_check_interval_seconds", 60),
                 ("platform_health_refresh_seconds", 60),
                 ("component_details_refresh_seconds", 15),
+                ("provider_readiness_refresh_seconds", 600),
+                ("codex_capacity_reserve_percent", 25),
             ):
                 self.assertEqual(update(root, key, value)["value"], value)
+
+    def test_provider_readiness_refresh_defaults_to_five_minutes_and_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(get(root)["provider_readiness_refresh_seconds"], 300)
+            self.assertEqual(update(root, "provider_readiness_refresh_seconds", 60)["value"], 60)
+            with self.assertRaises(ValueError):
+                update(root, "provider_readiness_refresh_seconds", 15)
+
+    def test_codex_capacity_reserve_is_disabled_by_default_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(get(root)["codex_capacity_reserve_percent"], 0)
+            self.assertEqual(update(root, "codex_capacity_reserve_percent", 75)["value"], 75)
+            with self.assertRaises(ValueError):
+                update(root, "codex_capacity_reserve_percent", 30)
+            with self.assertRaises(ValueError):
+                update(root, "codex_capacity_reserve_percent", 75.0)
 
     def test_rejects_unknown_or_unbounded_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

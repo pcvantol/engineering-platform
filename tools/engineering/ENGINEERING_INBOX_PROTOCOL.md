@@ -142,6 +142,13 @@ Version** and **Runner Version**, configuration/storage schema, checkpoint,
 memory and report format, execution mode, required runtime components, provider
 support and named capabilities. The host contract remains authoritative.
 
+When the local dashboard configures a non-zero Codex capacity reserve,
+Capability Preflight also reads fresh, token-free Codex quota evidence. A
+remaining capacity below the selected reserve, or an unreadable capacity
+response, blocks the **new** Inbox claim fail-closed. It never stops or
+invalidates an execution that has already been claimed; that execution may
+complete without a second capacity admission.
+
 Failure leaves the Inbox item in place: no Run ID is allocated, no target
 repository is changed, no execution telemetry is created and no Engineering
 Report is generated. Instead the host writes bounded capability evidence to
@@ -258,6 +265,18 @@ was merged while it was running.
 
 Any missing or mismatched condition remains a hard block. A retry must never
 adopt an unrelated historical merged pull request as its own evidence.
+
+### Historical PR-evidence backfill
+
+For legacy terminal Managed records with a missing role-specific PR field, the
+operator may use `python -m tools.engineering.pr_evidence_backfill` to inspect
+the exact recovery candidates. It is a dry run unless `--apply` is supplied.
+The recovery requires the checkpointed role branch and merge commit to match a
+single current GitHub PR whose head is that branch, base is `main`, state is
+merged and merge commit is identical. It also verifies that commit against
+refreshed `origin/main` without switching the workspace branch. It records
+each applied or skipped decision immutably; it never creates a substitute PR
+or changes non-terminal execution state.
 
 ## Development Host Drift Diagnostics
 

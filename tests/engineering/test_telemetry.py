@@ -19,6 +19,10 @@ from tools.engineering.telemetry import (
     persist_execution,
     persist_execution_async,
     prune_telemetry,
+    queue_terminal_telemetry,
+    materialize_pending_terminal_telemetry,
+    recover_missing_terminal_telemetry,
+    recover_terminal_telemetry,
     wait_for_pending_telemetry,
 )
 from tools.engineering.producer import ProducerMetadata
@@ -96,6 +100,59 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                     "finished_at": "2026-08-01T10:01:30+00:00",
                 },
             )
+
+    def test_durable_terminal_outbox_is_idempotent_across_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            telemetry = self._record("run-durable", "COMPLETE", datetime(2026, 8, 25, 10, tzinfo=timezone.utc))
+            # Establish storage, then simulate a process loss after the intent
+            # commit and before projection materialization.
+            persist_execution(root, self._record("run-bootstrap", "COMPLETE", datetime(2026, 8, 24, 10, tzinfo=timezone.utc)))
+            self.assertTrue(queue_terminal_telemetry(root, telemetry))
+            self.assertFalse(queue_terminal_telemetry(root, telemetry))
+            self.assertEqual(materialize_pending_terminal_telemetry(root), {"processed": 1, "failed": 0, "pending": 1})
+            self.assertEqual(materialize_pending_terminal_telemetry(root), {"processed": 0, "failed": 0, "pending": 0})
+            with open_storage(root) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_runs WHERE run_id='run-durable'").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT state,source FROM terminal_telemetry_outbox WHERE run_id='run-durable'").fetchone(), ("PROCESSED", "LIVE_TERMINAL"))
+            row = next(item for item in daily_statistics(root) if item["date"] == "2026-08-25")
+            self.assertEqual(row["prompt_count"], 1)
+
+    def test_recovery_uses_structured_terminal_evidence_and_canonical_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_id = "inbox-104eb3087bf34afa914358155fc77073"
+            persist_execution(root, self._record("run-bootstrap", "COMPLETE", datetime(2026, 8, 24, 10, tzinfo=timezone.utc)))
+            with open_storage(root) as connection:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
+                        (run_id, '{"repository":"pcvantol/djconnect","execution_mode":"MANAGED","agent_execution_seconds":1443.574}', "COMPLETE", "2026-08-25T20:04:22Z"),
+                    )
+                    connection.execute(
+                        "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,execution_metadata,updated_at) VALUES(?,?,?,?,?,?)",
+                        (run_id, "COMPLETE", "EP baseline", "2026-08-25T20:04:22Z", '{"codex_commands_executed":16}', "2026-08-25T20:04:22Z"),
+                    )
+            record_phase(root, run_id, "QUEUE_WAIT", started_at=datetime(2026, 8, 25, 19, 31, 17, tzinfo=timezone.utc), completed_at=datetime(2026, 8, 25, 19, 31, 18, tzinfo=timezone.utc))
+            record_phase(root, run_id, "TOTAL_EXECUTION", started_at=datetime(2026, 8, 25, 19, 31, 18, tzinfo=timezone.utc), completed_at=datetime(2026, 8, 25, 20, 2, 44, tzinfo=timezone.utc))
+            self.assertEqual(recover_terminal_telemetry(root, run_id), "recovered")
+            self.assertEqual(recover_terminal_telemetry(root, run_id), "already_materialized")
+            with open_storage(root) as connection:
+                self.assertEqual(connection.execute("SELECT execution_date,terminal_state FROM execution_runs WHERE run_id=?", (run_id,)).fetchone(), ("2026-08-25", "COMPLETE"))
+                self.assertEqual(connection.execute("SELECT source,state FROM terminal_telemetry_outbox WHERE run_id=?", (run_id,)).fetchone(), ("RECOVERY", "PROCESSED"))
+            self.assertEqual(next(item for item in daily_statistics(root) if item["date"] == "2026-08-25")["prompt_count"], 1)
+
+    def test_automatic_recovery_fails_closed_when_terminal_timing_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("run-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
+            with open_storage(root) as connection:
+                with connection:
+                    connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-missing-time", '{"repository":"pcvantol/djconnect","execution_mode":"MANAGED"}', "COMPLETE", "2026-08-25T20:04:22Z"))
+                    connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,execution_metadata,updated_at) VALUES(?,?,?,?,?,?)", ("run-missing-time", "COMPLETE", "Missing", "2026-08-25T20:04:22Z", "{}", "2026-08-25T20:04:22Z"))
+            self.assertEqual(recover_missing_terminal_telemetry(root), {"recovered": 0, "failed": 1, "candidates": 1})
+            with open_storage(root) as connection:
+                self.assertIsNone(connection.execute("SELECT 1 FROM execution_runs WHERE run_id='run-missing-time'").fetchone())
 
     def test_daily_statistics_keeps_phase_detail_on_demand(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

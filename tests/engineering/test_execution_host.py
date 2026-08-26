@@ -10,8 +10,8 @@ import time
 import unittest
 from unittest.mock import call, patch
 
-from tools.engineering.agent_state import StateError, StateStore, TransactionState, redact_diagnostic
-from tools.engineering.storage import load_projection
+from tools.engineering.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic
+from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, load_projection
 from tools.engineering.execution_errors import CodexHandoffTimeout
 from tools.engineering.execution_host import (
     AgentResult,
@@ -114,6 +114,7 @@ class FakeGitHub:
         self.branch_calls: list[str] = []
         self.ready_calls: list[int] = []
         self.merge_calls: list[int] = []
+        self.markdown_normalization_calls: list[int] = []
 
     def pull_request(self, number: int) -> PullRequestEvidence:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -128,6 +129,10 @@ class FakeGitHub:
 
     def ready(self, number: int) -> None:
         self.ready_calls.append(number)
+
+    def normalize_markdown_body(self, number: int) -> bool:
+        self.markdown_normalization_calls.append(number)
+        return False
 
     def merge(self, number: int) -> None:
         self.merge_calls.append(number)
@@ -391,6 +396,23 @@ class ClientContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RunnerError, "service unavailable"):
             GhCliClient(FailingProvider()).merge(42)
+
+    def test_github_client_normalizes_only_a_fully_escaped_markdown_body(self) -> None:
+        class Provider:
+            def __init__(self, body: str) -> None:
+                self.body, self.calls = body, []
+            def github(self, *args: str) -> str:
+                self.calls.append(args)
+                if args[0:2] == ("pr", "view"):
+                    return json.dumps({"body": self.body})
+                return ""
+
+        provider = Provider("## Summary\\n- first\\n- second")
+        self.assertTrue(GhCliClient(provider).normalize_markdown_body(42))
+        self.assertEqual(provider.calls[-1], ("pr", "edit", "42", "--body", "## Summary\n- first\n- second"))
+        real_markdown = Provider("## Summary\n\n- code: `\\n`")
+        self.assertFalse(GhCliClient(real_markdown).normalize_markdown_body(42))
+        self.assertEqual(len(real_markdown.calls), 1)
 
     def test_codex_client_availability_and_version_fail_closed(self) -> None:
         class Provider:
@@ -776,8 +798,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.store = StateStore(self.root / ".engineering" / "engineering-runs")
+        self.provider_readiness = patch(
+            "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+        )
+        self.provider_readiness.start()
 
     def tearDown(self) -> None:
+        self.provider_readiness.stop()
         self.temporary.cleanup()
 
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
@@ -890,6 +917,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(state.phase, "BLOCKED")
         self.assertEqual(state.next_action, "autonomous_quality_control_scope")
+
+    def test_local_repository_validation_iterates_before_creating_the_implementation_pr(self) -> None:
+        agent = SequencedFakeAgent([
+            AgentResult(
+                "WAITING", "codex/implementation", diagnostic="Canonical tests still fail.",
+                validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},),
+            ),
+            AgentResult(
+                "COMPLETE", "codex/implementation", 701, diagnostic="Canonical tests passed.",
+                validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed"},),
+            ),
+        ])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState(
+            "local-validation-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+        )
+        validated, result = runner._run_local_repository_validation(
+            state, AgentResult("COMPLETE", "codex/implementation")
+        )
+        self.assertEqual(validated.phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(validated.local_validation_iterations, 2)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
+        self.assertEqual(validated.local_validation_audit[0]["proposed_action"], "FULL: full required repository suite")
+        self.assertEqual(validated.validation_evidence, ({"command": "python -m unittest tests.engineering", "result": "passed"},))
+        self.assertEqual(result.pull_request, 701)
+        self.assertIn("iteration 1 of 3", agent.prompts[0])
+        self.assertIn("Create one draft implementation pull request only after", agent.prompts[0])
 
     def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
         class UsageLimitedAgent:
@@ -1551,6 +1606,37 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(result.terminal)
         self.assertEqual(self.store.load("pending-run").phase, "WAIT_FOR_OPERATOR_MERGE")
 
+    def test_pr_wait_blocks_durably_on_github_without_requiring_codex(self) -> None:
+        state = TransactionState(
+            "github-auth-wait", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=12,
+        )
+        github = FakeGitHub([PullRequestEvidence(12, "OPEN", True, True)])
+        with patch("tools.engineering.execution_host.provider_readiness_failures", return_value=("GITHUB",)):
+            result = EngineeringRunner(
+                self.root, self.store, FakeRepository(), github,
+                FakeAgent(AgentResult("WAITING")), lambda _: None,
+            )._poll(state)
+        self.assertEqual(result.phase, "WAIT_FOR_TERMINAL_EVIDENCE")
+        self.assertFalse(result.terminal)
+        self.assertEqual(result.next_action, "provider_auth_repair_required")
+        self.assertEqual(result.auth_recovery_phase, "WAIT_FOR_TERMINAL_EVIDENCE")
+        self.assertEqual(result.auth_recovery_providers, ("GITHUB",))
+        self.assertEqual(github.calls, 0)
+
+    def test_agent_readiness_block_preserves_original_phase_without_invocation(self) -> None:
+        state = TransactionState("codex-auth-run", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT")
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        with patch("tools.engineering.execution_host.provider_readiness_failures", return_value=("CODEX", "GITHUB")):
+            with self.assertRaisesRegex(Exception, "Provider readiness"):
+                runner._invoke_agent_with_timing(state, "bounded work")
+        blocked = self.store.load(state.run_id)
+        self.assertEqual(blocked.phase, "FINALIZE_AGENT")
+        self.assertEqual(blocked.next_action, "provider_auth_repair_required")
+        self.assertEqual(blocked.auth_recovery_providers, ("CODEX", "GITHUB"))
+        self.assertEqual(agent.prompts, [])
+
     def test_operator_merge_wait_resume_only_polls_the_pull_request(self) -> None:
         state = TransactionState(
             "lightweight-merge-wait", "pcvantol/djconnect", str(self.prompt),
@@ -1873,6 +1959,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(repaired.repair_audit[0]["outcome"], "agent_failed")
         self.assertEqual(repaired.repair_audit[0]["agent_summary"], "External review required.")
 
+    def test_verified_phase_commit_evidence_requires_exact_clean_branch_and_sha(self) -> None:
+        repository = FakeRepository(branch="codex/verified-commit")
+        repository.evidence = RepositoryEvidence(
+            "pcvantol/djconnect", "codex/verified-commit", "b" * 40, True, False
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None,
+        )
+        state = TransactionState(
+            "commit-evidence", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT", branch="codex/verified-commit"
+        )
+        recorded = runner._record_verified_result_commit(
+            state,
+            AgentResult("WAITING", branch="codex/verified-commit", commit_sha="b" * 40),
+            phase="REPAIR_AGENT",
+            description="pull_request_repair_commit_verified",
+        )
+        self.assertEqual(len(recorded.commit_evidence), 1)
+        self.assertEqual(recorded.commit_evidence[0]["commit_sha"], "b" * 40)
+        self.assertTrue(is_valid_commit_evidence_record(recorded.commit_evidence[0]))
+        self.assertFalse(is_valid_commit_evidence_record({
+            **recorded.commit_evidence[0], "description": "unverified arbitrary text",
+        }))
+        self.store.save(recorded)
+        self.assertEqual(self.store.load("commit-evidence").commit_evidence, recorded.commit_evidence)
+
+        repository.evidence = RepositoryEvidence(
+            "pcvantol/djconnect", "codex/verified-commit", "c" * 40, True, False
+        )
+        rejected = runner._record_verified_result_commit(
+            recorded,
+            AgentResult("WAITING", branch="codex/verified-commit", commit_sha="b" * 40),
+            phase="QUALITY_CONTROL_AGENT",
+            description="quality_control_commit_verified",
+        )
+        self.assertEqual(len(rejected.commit_evidence), 1)
+
+    def test_repair_timeout_is_a_valid_durable_audit_outcome(self) -> None:
+        state = TransactionState(
+            "repair-timeout", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_TERMINAL_EVIDENCE", branch="codex/repair-timeout",
+            pull_request=24, owner_authorized=True,
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), DeadlineFakeAgent(), lambda _: None,
+        )
+
+        blocked = runner._repair(state, "Ruff failed. Repair only the bounded transaction defects.")
+
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "repair_agent_timeout")
+        self.assertEqual(blocked.repair_audit[0]["outcome"], "agent_timed_out")
+        self.assertEqual(self.store.load("repair-timeout").repair_audit[0]["outcome"], "agent_timed_out")
+
     def test_finalization_pr_behind_main_enters_same_bounded_repair_loop(self) -> None:
         state = TransactionState(
             "behind-finalization", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE",
@@ -1989,9 +2129,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
         manifest = EngineeringPlatformManifest.load(
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
-        self.assertEqual(manifest.storage_schema, 29)
+        self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
         validate_compatibility(
-            manifest, RunnerCompatibility(storage_schemas=frozenset({29})), "0.146.0"
+            manifest, RunnerCompatibility(storage_schemas=frozenset({ENGINEERING_STORAGE_SCHEMA_VERSION})), "0.146.0"
         )
 
     def test_incompatible_admitted_storage_schema_is_rejected_before_state_is_saved(self) -> None:

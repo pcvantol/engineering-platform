@@ -167,6 +167,17 @@ reviewer. In the live-execution area, reviewer captions use the same turquoise
 accent family as the parent container; light mode uses its accessible dark
 turquoise ink rather than an unrelated evidence-blue.
 
+Configuration status rows use the same compact-row contract: health glyph,
+provider/name, localized state and any action stay on one desktop row. A
+state-changing action uses the existing semantic compact button treatment;
+browser-default button chrome is prohibited. On phone widths the action may
+move to an explicit second row, never an implicit grid row. Every new
+configuration status/action surface needs a Playwright visual-contract test
+for both its compact desktop geometry and its semantic action treatment.
+Provider installation is a confirmed operational action and uses the compact
+orange treatment; provider sign-out remains the distinct compact rose
+destructive treatment.
+
 Interactive data rows use their parent table's category tint across every
 cell on hover and selection, with only the shared leading selection marker.
 Text actions inside such a row do not add an underline or a separate hover
@@ -501,6 +512,21 @@ checks before review:
 CI=1 npm run test:engineering-dashboard -- --reporter=line
 git diff --check
 ```
+
+On GitHub, the complete dashboard suite runs as four deterministic Playwright
+shards in parallel. All `browser-dashboard` shard checks are required for a
+non-documentation Engineering Platform change; sharding reduces elapsed time
+without reducing coverage.
+
+The suite has an explicit CI-parity contract. GitHub executes clean
+dependencies on Linux Chromium, whereas a local run can use a different
+browser engine build, operating system, timing and nested-scroll behaviour.
+Before review, reproduce a browser change with `CI=1` and every shard, not just
+an unconstrained local full-suite run. Keep responsive touch evidence on the
+narrow viewport; test desktop hover and modifier interactions at a desktop
+viewport. Fixtures that own a snapshot or provider-capacity state must block
+the live SSE replacement for that assertion. This keeps a test focused on its
+operator-visible contract rather than on accidental header/viewport geometry.
 
 The current regression layers are deliberately complementary:
 

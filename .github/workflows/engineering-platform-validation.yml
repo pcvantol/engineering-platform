@@ -25,7 +25,17 @@ on:
       - 'BOOTSTRAP.md'
 
 jobs:
+  validation-profile:
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.profile.outputs.tier }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with: {fetch-depth: 0}
+      - id: profile
+        run: python3 -m tools.engineering.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
   validate:
+    needs: validation-profile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -70,7 +80,25 @@ jobs:
               raise SystemExit("Engineering Platform coverage contract failed:\n" + "\n".join(failures))
           PY
   browser-dashboard:
+    needs: validation-profile
+    if: needs.validation-profile.outputs.tier != 'DOCUMENTATION'
     runs-on: ubuntu-latest
+    strategy:
+      # The dashboard regression is intentionally complete, but split into
+      # deterministic Playwright shards so both halves can use separate
+      # GitHub runners and report their failures independently.
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - shard: "1/4"
+            artifact_suffix: "1-of-4"
+          - shard: "2/4"
+            artifact_suffix: "2-of-4"
+          - shard: "3/4"
+            artifact_suffix: "3-of-4"
+          - shard: "4/4"
+            artifact_suffix: "4-of-4"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -81,15 +109,15 @@ jobs:
         run: npm ci
       - name: Install Chromium for browser validation
         run: npx playwright install --with-deps chromium
-      - name: Browser smoke test for Engineering Status
+      - name: Browser smoke test for Engineering Status (shard ${{ matrix.shard }})
         # Keep successful runs compact; Playwright's dot reporter still emits
         # the full failure diagnostics, traces and artifact references.
-        run: npm run test:engineering-dashboard -- --reporter=dot
+        run: npm run test:engineering-dashboard -- --reporter=dot --shard=${{ matrix.shard }}
       - name: Upload Engineering Status browser screenshots
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: engineering-status-browser-screenshots
+          name: engineering-status-browser-screenshots-${{ matrix.artifact_suffix }}
           path: |
             test-results/**
             tests/engineering/dashboard.spec.mjs-snapshots/**

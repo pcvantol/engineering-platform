@@ -59,6 +59,12 @@ persisted bounded repair audit: failed checks, the proposed repair, its safe
 summary, commit reference and outcome. Prompt-detail views do not duplicate
 this lifecycle evidence.
 
+The execution-details view additionally projects the complete verified
+phase-commit timeline for mutating phases. Each row is timestamped and names
+the phase, verified SHA and short safe description. The timeline is evidence
+only: it is appended after exact repository verification and scrolls within
+its own card rather than extending the lifecycle flow.
+
 Each lifecycle detail view repeats the node status with the same colored
 indicator: green for completed, cyan for active, grey for pending or skipped,
 and orange for blocked. This is a display aid only; the persisted lifecycle

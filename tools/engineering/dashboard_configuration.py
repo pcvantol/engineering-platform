@@ -18,6 +18,8 @@ DEFAULTS = {
     "open_pr_check_interval_seconds": 30,
     "platform_health_refresh_seconds": 15,
     "component_details_refresh_seconds": 5,
+    "provider_readiness_refresh_seconds": 300,
+    "codex_capacity_reserve_percent": 0,
 }
 OPTIONS = {
     "log_retention_days": frozenset({30, 60, 90, 120, 180, 360}),
@@ -27,6 +29,8 @@ OPTIONS = {
     "open_pr_check_interval_seconds": frozenset({30, 60}),
     "platform_health_refresh_seconds": frozenset({5, 15, 30, 60}),
     "component_details_refresh_seconds": frozenset({5, 15, 30, 60}),
+    "provider_readiness_refresh_seconds": frozenset({60, 300, 600}),
+    "codex_capacity_reserve_percent": frozenset({0, 5, 10, 15, 20, 25, 50, 75}),
 }
 PREFIX = "dashboard_configuration."
 INBOX_ROOT_KEY = PREFIX + "inbox_root"
@@ -63,6 +67,10 @@ def update(
     *,
     expected_previous: object = _UNSET,
 ) -> dict[str, object]:
+    if key == "codex_capacity_reserve_percent" and (
+        not isinstance(value, int) or isinstance(value, bool)
+    ):
+        raise ValueError("Ongeldige dashboardinstelling.")
     if key not in OPTIONS or value not in OPTIONS[key]:
         raise ValueError("Ongeldige dashboardinstelling.")
     connection = open_storage(root)

@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `29`**. The required version is declared as `storage_schema` in
+schema `31`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -84,10 +84,52 @@ first upgrade:
   average Codex CLI, total elapsed and queue waiting times, explicitly reported token totals,
   and COMPLETE/BLOCKED/FAILED distribution.
 
-Telemetry is best-effort and is scheduled only after terminal report delivery.
+Telemetry is a rebuildable operational projection and is never lifecycle
+authority. Schema `30` writes one immutable, run-keyed terminal telemetry
+intent to `terminal_telemetry_outbox` before materializing `execution_runs`.
+The watcher drains pending intents at startup and before new Inbox work. A
+process loss can therefore delay telemetry but cannot silently lose a terminal
+run or double-count a daily aggregate: materialization is idempotent by Run ID
+and each aggregate is recomputed from unique execution rows. Failures remain
+`FAILED_RETRYABLE`; no terminal checkpoint, report, Prompt History entry or
+repository evidence is modified by telemetry recovery.
+
+When older terminal evidence has no telemetry intent, the bounded recovery
+path accepts only matching structured checkpoint, Prompt History and terminal
+timing evidence. It uses the recorded terminal timestamp for the historical
+day, leaves unavailable optional fields unknown, and fails closed rather than
+parsing report prose or inventing duration/token data. Outbox provenance is
+`LIVE_TERMINAL`, `RECOVERY` or `BACKFILL`.
 An unavailable database is logged by the watcher but never changes the
 authoritative engineering checkpoint or its outcome. Token values remain null
 when the provider did not report them; the platform never estimates them.
+
+## Historical pull-request evidence recovery
+
+Schema `31` adds an append-only audit for operator-invoked recovery of a
+missing Managed implementation or Finalization pull request. The recovery is
+dry-run by default:
+
+```bash
+python -m tools.engineering.pr_evidence_backfill --run-id <run-id>
+```
+
+`--apply` is required to write anything. For each missing role, the tool reads
+the canonical SQLite checkpoint and current GitHub data again. It links a pull
+request only when all of these facts match exactly: the run is terminal and
+Managed, the checkpoint has the role's branch and merge commit, GitHub reports
+one PR for that branch, that PR targets `main`, is merged, and has precisely
+that merge commit. It also refreshes `origin/main` without changing the local
+checkout and proves that same merge commit is an ancestor. The checkpoint
+update, lifecycle event and `APPLIED` audit entry commit in one SQLite
+transaction; the JSON checkpoint remains a post-commit compatibility
+projection.
+
+Every non-match—including unavailable GitHub evidence, incomplete legacy
+checkpoint data, an already recorded PR, a non-terminal run, or a changed
+checkpoint—is skipped. In apply mode it receives an immutable `SKIPPED` audit
+record with a bounded reason. The tool never creates, edits, merges or closes
+a PR, and cannot infer evidence from PR titles, timestamps or numbers alone.
 
 Schema `9` records producer-neutral provenance alongside each run and creates
 an immutable `execution_receipts` record. A receipt contains Producer ID,

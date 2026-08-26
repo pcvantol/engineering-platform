@@ -13,7 +13,7 @@ from math import sqrt
 from pathlib import Path
 from threading import Lock, Thread, current_thread
 from time import monotonic
-from typing import Callable
+from typing import Callable, Literal
 from statistics import mean, median
 
 from .storage import open_storage
@@ -22,6 +22,7 @@ from .execution_timing import timing_summary
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+TELEMETRY_OUTBOX_SOURCES = frozenset({"LIVE_TERMINAL", "RECOVERY", "BACKFILL"})
 _PENDING_WORKERS: set[Thread] = set()
 _PENDING_WORKERS_LOCK = Lock()
 
@@ -88,6 +89,266 @@ def _execution_metadata(value: object) -> str:
     return json.dumps(safe, separators=(",", ":"), sort_keys=True)
 
 
+def _payload(telemetry: ExecutionTelemetry) -> str:
+    """Serialize only bounded terminal projection data for durable replay."""
+    return json.dumps({
+        "run_id": telemetry.run_id,
+        "arrived_at": _timestamp(telemetry.arrived_at),
+        "execution_started_at": _timestamp(telemetry.execution_started_at),
+        "execution_finished_at": _timestamp(telemetry.execution_finished_at),
+        "terminal_state": telemetry.terminal_state,
+        "execution_seconds": telemetry.execution_seconds,
+        "input_tokens": _integer(telemetry.input_tokens),
+        "output_tokens": _integer(telemetry.output_tokens),
+        "total_tokens": _integer(telemetry.total_tokens),
+        "execution_mode": telemetry.execution_mode,
+        "workspace": telemetry.workspace,
+        "repository": telemetry.repository,
+        "execution_host_version": telemetry.execution_host_version,
+        "retry_of": telemetry.retry_of,
+        "original_run_id": telemetry.original_run_id,
+        "retry_generation": telemetry.retry_generation,
+        "retry_timestamp": telemetry.retry_timestamp,
+        "prompt_characters": _integer(telemetry.prompt_characters),
+        "runtime_provider": _runtime_value(telemetry.runtime_provider),
+        "runtime_model": _runtime_value(telemetry.runtime_model),
+        "reasoning_profile": _runtime_value(telemetry.reasoning_profile),
+        "configuration_profile": _runtime_value(telemetry.configuration_profile),
+        "execution_metadata": json.loads(_execution_metadata(telemetry.execution_metadata)),
+        "producer": {
+            "producer_id": telemetry.producer.producer_id,
+            "producer_type": telemetry.producer.producer_type,
+            "producer_version": telemetry.producer.producer_version,
+            "correlation_id": telemetry.producer.correlation_id,
+            "mission_id": telemetry.producer.mission_id,
+            "engineering_action_id": telemetry.producer.engineering_action_id,
+            "execution_constraint_version": telemetry.producer.execution_constraint_version,
+        },
+    }, separators=(",", ":"), sort_keys=True)
+
+
+def _datetime(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("terminal telemetry timestamp is invalid")
+    try:
+        return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError as error:
+        raise ValueError("terminal telemetry timestamp is invalid") from error
+
+
+def _from_payload(raw: object) -> ExecutionTelemetry:
+    if not isinstance(raw, dict):
+        raise ValueError("terminal telemetry payload is invalid")
+    producer = raw.get("producer")
+    if not isinstance(producer, dict):
+        raise ValueError("terminal telemetry producer is invalid")
+    required = ("run_id", "terminal_state", "execution_mode", "workspace", "repository", "execution_host_version")
+    if any(not isinstance(raw.get(key), str) or not raw[key] for key in required):
+        raise ValueError("terminal telemetry identity is invalid")
+    if raw["terminal_state"] not in TERMINAL_STATES or raw["execution_mode"] not in {"MANAGED", "GENESIS"}:
+        raise ValueError("terminal telemetry lifecycle is invalid")
+    return ExecutionTelemetry(
+        run_id=raw["run_id"], arrived_at=_datetime(raw.get("arrived_at")),
+        execution_started_at=_datetime(raw.get("execution_started_at")),
+        execution_finished_at=_datetime(raw.get("execution_finished_at")),
+        terminal_state=raw["terminal_state"], execution_seconds=raw.get("execution_seconds"),
+        input_tokens=_integer(raw.get("input_tokens")), output_tokens=_integer(raw.get("output_tokens")),
+        total_tokens=_integer(raw.get("total_tokens")), execution_mode=raw["execution_mode"],
+        workspace=raw["workspace"], repository=raw["repository"],
+        execution_host_version=raw["execution_host_version"], retry_of=raw.get("retry_of"),
+        original_run_id=raw.get("original_run_id"), retry_generation=raw.get("retry_generation"),
+        retry_timestamp=raw.get("retry_timestamp"), prompt_characters=_integer(raw.get("prompt_characters")),
+        runtime_provider=_runtime_value(raw.get("runtime_provider")), runtime_model=_runtime_value(raw.get("runtime_model")),
+        reasoning_profile=_runtime_value(raw.get("reasoning_profile")), configuration_profile=_runtime_value(raw.get("configuration_profile")),
+        execution_metadata=raw.get("execution_metadata") if isinstance(raw.get("execution_metadata"), dict) else None,
+        producer=ProducerMetadata(**{key: producer.get(key) for key in ProducerMetadata.__dataclass_fields__}),
+    )
+
+
+def queue_terminal_telemetry(
+    root: Path, telemetry: ExecutionTelemetry, *, source: Literal["LIVE_TERMINAL", "RECOVERY", "BACKFILL"] = "LIVE_TERMINAL"
+) -> bool:
+    """Synchronously record a terminal telemetry intent before projection work.
+
+    Repeating the exact request is safe.  A contradictory payload for the same
+    run is rejected rather than silently replacing terminal evidence.
+    """
+    if telemetry.terminal_state not in TERMINAL_STATES or source not in TELEMETRY_OUTBOX_SOURCES:
+        raise ValueError("terminal telemetry outbox input is invalid")
+    payload = _payload(telemetry)
+    # Reject malformed live telemetry before it can become a retry loop.
+    _from_payload(json.loads(payload))
+    connection = open_storage(root, create=False)
+    try:
+        with connection:
+            existing = connection.execute(
+                "SELECT payload FROM terminal_telemetry_outbox WHERE run_id=?", (telemetry.run_id,)
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != payload:
+                    raise ValueError("terminal telemetry outbox conflicts with existing run evidence")
+                return False
+            connection.execute(
+                "INSERT INTO terminal_telemetry_outbox(run_id,payload,source,state,created_at) VALUES(?,?,?,'PENDING',?)",
+                (telemetry.run_id, payload, source, datetime.now(timezone.utc).isoformat()),
+            )
+    finally:
+        connection.close()
+    return True
+
+
+def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = None, limit: int = 25) -> dict[str, int]:
+    """Idempotently materialize durable intents; failures remain retryable."""
+    if limit < 1 or limit > 250:
+        raise ValueError("terminal telemetry recovery limit is invalid")
+    connection = open_storage(root, create=False)
+    try:
+        query = "SELECT run_id,payload FROM terminal_telemetry_outbox WHERE state IN ('PENDING','FAILED_RETRYABLE')"
+        parameters: tuple[object, ...] = ()
+        if run_id is not None:
+            query += " AND run_id=?"
+            parameters = (run_id,)
+        rows = connection.execute(query + " ORDER BY created_at,run_id LIMIT ?", parameters + (limit,)).fetchall()
+    finally:
+        connection.close()
+    result = {"processed": 0, "failed": 0, "pending": len(rows)}
+    for queued_run_id, payload in rows:
+        try:
+            telemetry = _from_payload(json.loads(payload))
+            if telemetry.run_id != queued_run_id:
+                raise ValueError("terminal telemetry outbox run identity is invalid")
+            persist_execution(root, telemetry, create=False)
+            connection = open_storage(root, create=False)
+            try:
+                with connection:
+                    connection.execute(
+                        "UPDATE terminal_telemetry_outbox SET state='PROCESSED',attempt_count=attempt_count+1,"
+                        "last_error=NULL,processed_at=? WHERE run_id=?",
+                        (datetime.now(timezone.utc).isoformat(), queued_run_id),
+                    )
+            finally:
+                connection.close()
+            result["processed"] += 1
+        except Exception as error:
+            connection = open_storage(root, create=False)
+            try:
+                with connection:
+                    connection.execute(
+                        "UPDATE terminal_telemetry_outbox SET state='FAILED_RETRYABLE',attempt_count=attempt_count+1,last_error=? WHERE run_id=?",
+                        (str(error)[:500], queued_run_id),
+                    )
+            finally:
+                connection.close()
+            result["failed"] += 1
+    return result
+
+
+def _recovery_telemetry(root: Path, run_id: str) -> ExecutionTelemetry:
+    """Reconstruct a projection only from structured terminal evidence.
+
+    This intentionally does not read report prose, infer tokens, or fabricate
+    duration values.  Missing optional evidence remains unknown.
+    """
+    connection = open_storage(root, create=False)
+    try:
+        transaction = connection.execute(
+            "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
+        ).fetchone()
+        history = connection.execute(
+            "SELECT terminal_state,executed_at,execution_metadata FROM prompt_execution_history WHERE run_id=?", (run_id,)
+        ).fetchone()
+        spans = connection.execute(
+            "SELECT phase_name,started_at,completed_at FROM execution_phase_spans "
+            "WHERE run_id=? AND phase_name IN ('QUEUE_WAIT','TOTAL_EXECUTION') AND outcome='COMPLETE' ORDER BY ordinal",
+            (run_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    if transaction is None or history is None:
+        raise ValueError("canonical terminal evidence is incomplete")
+    payload_text, phase = transaction
+    terminal_state, executed_at, metadata_text = history
+    if phase not in TERMINAL_STATES or terminal_state != phase:
+        raise ValueError("canonical terminal evidence is contradictory")
+    try:
+        checkpoint = json.loads(payload_text)
+        metadata = json.loads(metadata_text) if isinstance(metadata_text, str) else {}
+    except json.JSONDecodeError as error:
+        raise ValueError("canonical terminal evidence is invalid") from error
+    if not isinstance(checkpoint, dict) or not isinstance(metadata, dict):
+        raise ValueError("canonical terminal evidence is invalid")
+    total = next((row for row in spans if row[0] == "TOTAL_EXECUTION" and row[1] and row[2]), None)
+    if total is None:
+        raise ValueError("canonical terminal timing evidence is unavailable")
+    queue = next((row for row in spans if row[0] == "QUEUE_WAIT" and row[1]), None)
+    execution_started_at = _datetime(total[1])
+    arrived_at = _datetime(queue[1]) if queue is not None else execution_started_at
+    finished_at = _datetime(executed_at)
+    if finished_at < execution_started_at:
+        raise ValueError("canonical terminal timestamps are contradictory")
+    repository = checkpoint.get("repository")
+    mode = checkpoint.get("execution_mode")
+    if not isinstance(repository, str) or not repository or mode not in {"MANAGED", "GENESIS"}:
+        raise ValueError("canonical terminal identity is unavailable")
+    seconds = checkpoint.get("agent_execution_seconds")
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+        seconds = None
+    return ExecutionTelemetry(
+        run_id=run_id, arrived_at=arrived_at, execution_started_at=execution_started_at,
+        execution_finished_at=finished_at, terminal_state=terminal_state,
+        execution_seconds=float(seconds) if seconds is not None else None,
+        input_tokens=None, output_tokens=None, total_tokens=None, execution_mode=mode,
+        workspace=root.resolve().name, repository=repository, execution_host_version="unknown",
+        execution_metadata=metadata,
+    )
+
+
+def recover_terminal_telemetry(root: Path, run_id: str, *, source: Literal["RECOVERY", "BACKFILL"] = "RECOVERY") -> str:
+    """Perform one governed recovery from canonical terminal evidence.
+
+    Existing telemetry is left untouched.  The result records the operational
+    path so callers can audit whether a run was live, recovered, or backfilled.
+    """
+    connection = open_storage(root, create=False)
+    try:
+        if connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone() is not None:
+            return "already_materialized"
+    finally:
+        connection.close()
+    telemetry = _recovery_telemetry(root, run_id)
+    queue_terminal_telemetry(root, telemetry, source=source)
+    result = materialize_pending_terminal_telemetry(root, run_id=run_id, limit=1)
+    if result["failed"]:
+        raise ValueError("terminal telemetry recovery remains retryable")
+    return "recovered" if result["processed"] else "already_queued"
+
+
+def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25) -> dict[str, int]:
+    """Boundedly repair missing projections from canonical terminal records."""
+    if limit < 1 or limit > 250:
+        raise ValueError("terminal telemetry recovery limit is invalid")
+    connection = open_storage(root, create=False)
+    try:
+        rows = connection.execute(
+            "SELECT history.run_id FROM prompt_execution_history AS history "
+            "LEFT JOIN execution_runs AS runs ON runs.run_id=history.run_id "
+            "WHERE history.terminal_state IN ('COMPLETE','BLOCKED','FAILED') AND runs.run_id IS NULL "
+            "ORDER BY history.executed_at,history.run_id LIMIT ?", (limit,)
+        ).fetchall()
+    finally:
+        connection.close()
+    result = {"recovered": 0, "failed": 0, "candidates": len(rows)}
+    for (run_id,) in rows:
+        try:
+            if recover_terminal_telemetry(root, run_id) == "recovered":
+                result["recovered"] += 1
+        except Exception:
+            # The detailed, redacted failure remains in the outbox when it was
+            # queueable; no incomplete source is ever converted to telemetry.
+            result["failed"] += 1
+    return result
+
+
 def persist_execution(
     root: Path,
     telemetry: ExecutionTelemetry,
@@ -107,7 +368,10 @@ def persist_execution(
     execution_date = finished.date().isoformat()
     connection = open_storage(root, create=create, journal_mode="MEMORY" if background else "DELETE")
     try:
-        connection.execute(
+        # One projection transaction: a crash can leave the durable outbox
+        # pending, but never a half-refreshed run/daily aggregate pair.
+        with connection:
+            connection.execute(
             """
             INSERT OR IGNORE INTO execution_runs(
                 run_id, execution_date, arrived_at, execution_started_at, execution_finished_at,
@@ -154,8 +418,8 @@ def persist_execution(
                 telemetry.producer.execution_constraint_version,
                 _execution_metadata(telemetry.execution_metadata),
             ),
-        )
-        connection.execute(
+            )
+            connection.execute(
             """INSERT OR IGNORE INTO execution_receipts(
                 run_id, producer_id, producer_type, producer_version, mission_id,
                 engineering_action_id, correlation_id, execution_constraint_version,
@@ -168,8 +432,8 @@ def persist_execution(
                 telemetry.producer.execution_constraint_version, "Engineering Platform",
                 telemetry.execution_host_version, _timestamp(finished), telemetry.terminal_state,
             ),
-        )
-        connection.execute(
+            )
+            connection.execute(
             """
             INSERT OR REPLACE INTO daily_execution_statistics(
                 execution_date, workspace, repository, execution_mode, prompt_count,
@@ -186,7 +450,7 @@ def persist_execution(
             GROUP BY execution_date, workspace, repository, execution_mode
             """,
             (execution_date, telemetry.workspace, telemetry.repository, telemetry.execution_mode),
-        )
+            )
     finally:
         connection.close()
 
