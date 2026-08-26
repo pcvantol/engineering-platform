@@ -288,7 +288,13 @@ def status(root: Path) -> bytes:
                 "target_repository": live.get("target_repository"),
                 "checkout_path": live.get("checkout_path"),
                 "active_branch": live.get("active_branch"),
-                "reviewer_agents": live.get("reviewer_agents", []),
+                # A persisted live projection from an older runner can still
+                # contain reviewers after the review phase. Never let that
+                # stale advisory data escape the read-only dashboard boundary.
+                "reviewer_agents": (
+                    live.get("reviewer_agents", [])
+                    if live.get("phase") == "CAPABILITY_REVIEW" else []
+                ),
                 "runtime_metadata": live.get("runtime_metadata", {}),
                 "workspace_progress": live.get("workspace_progress"),
                 "execution_liveness": live_liveness,

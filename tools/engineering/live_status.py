@@ -13,6 +13,8 @@ from .agent_state import TransactionState, redact_diagnostic
 from .storage import EngineeringStorageError, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, open_storage, store_projection
 from .providers import GitProvider
 
+_REVIEWER_PROJECTION_PHASE = "CAPABILITY_REVIEW"
+
 
 def write_live_status(
     root: Path,
@@ -56,8 +58,13 @@ def write_live_status(
         # A live operation must not publish a filesystem-only state if the
         # canonical store is unavailable.
         raise
+    reviewer_projection_active = state.phase == _REVIEWER_PROJECTION_PHASE
     if previous.get("run_id") == state.run_id:
-        if reviewer_agents is None and isinstance(previous.get("reviewer_agents"), list):
+        if (
+            reviewer_projection_active
+            and reviewer_agents is None
+            and isinstance(previous.get("reviewer_agents"), list)
+        ):
             previous_reviewers = [item for item in previous["reviewer_agents"] if isinstance(item, dict)]
         if runtime_metadata is None and isinstance(previous.get("runtime_metadata"), dict):
             previous_runtime = {
@@ -124,7 +131,15 @@ def write_live_status(
         "target_repository": checkout.name if state.execution_mode == "GENESIS" else state.repository,
         "checkout_path": str(checkout),
         "active_branch": observed_branch or state.branch or "unavailable",
-        "reviewer_agents": reviewer_agents if reviewer_agents is not None else previous_reviewers,
+        # Specialist reviewers are live, phase-scoped progress only. They are
+        # immutable report evidence after the review, not active-run state;
+        # retaining this list into finalization or reconciliation falsely
+        # projects completed reviewers as still running.
+        "reviewer_agents": (
+            reviewer_agents if reviewer_projection_active and reviewer_agents is not None
+            else previous_reviewers if reviewer_projection_active
+            else []
+        ),
         "runtime_metadata": safe_runtime,
         "workspace_progress": safe_progress,
         # A recovery baseline is captured once, after admission has proven the

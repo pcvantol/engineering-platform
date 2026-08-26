@@ -3096,6 +3096,8 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "lifecycle.step.wait_for_operator_merge",
   "lifecycle.step.wait_for_finalization_merge",
   "lifecycle.step.wait_for_reconciliation_merge",
+  "lifecycle.state.stale",
+  "lifecycle.detail_terminal_timing_stale",
   "operational.stale_run",
   "operational.waiting_for_operator_merge",
   "operational.stale_host_ownership",
@@ -3137,6 +3139,27 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "reviewer.home_assistant_integration": "Integración de Home Assistant",
   "operational.poll_required_checks": "Comprobando las verificaciones obligatorias de la solicitud de extracción",
   "operational.reconcile_rolling_records_on_main": "Conciliando los registros continuos en main",
+});
+
+Object.assign(DASHBOARD_MESSAGES.en, {
+  "lifecycle.state.stale": "stale",
+  "lifecycle.detail_terminal_timing_stale": "A recorded timing segment became stale after an interruption. It does not change the execution result.",
+});
+Object.assign(DASHBOARD_MESSAGES.nl, {
+  "lifecycle.state.stale": "verouderd",
+  "lifecycle.detail_terminal_timing_stale": "Een geregistreerd timingsegment is na een onderbreking verouderd geraakt. Dit wijzigt het uitvoeringsresultaat niet.",
+});
+Object.assign(DASHBOARD_MESSAGES.de, {
+  "lifecycle.state.stale": "veraltet",
+  "lifecycle.detail_terminal_timing_stale": "Ein erfasstes Zeitsegment ist nach einer Unterbrechung veraltet. Das Ausführungsergebnis ändert sich dadurch nicht.",
+});
+Object.assign(DASHBOARD_MESSAGES.fr, {
+  "lifecycle.state.stale": "obsolète",
+  "lifecycle.detail_terminal_timing_stale": "Un segment temporel enregistré est devenu obsolète après une interruption. Cela ne modifie pas le résultat de l’exécution.",
+});
+Object.assign(DASHBOARD_MESSAGES.es, {
+  "lifecycle.state.stale": "obsoleto",
+  "lifecycle.detail_terminal_timing_stale": "Un segmento de tiempo registrado quedó obsoleto tras una interrupción. Esto no cambia el resultado de la ejecución.",
 });
 
 Object.assign(DASHBOARD_MESSAGES.en, {"configuration.inbox_location_restarting":"Restarting and verifying the Inbox watcher…","configuration.inbox_location_restart_failed":"The Inbox watcher could not confirm the new location. The previous location was restored."});

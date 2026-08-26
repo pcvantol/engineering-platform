@@ -617,7 +617,13 @@ function reviewerPresentationState(status = {}) {
   return "active";
 }
 function activeReviewerAgents(items, executionStatus = {}) {
-  const agents = Array.isArray(items) ? items : [];
+  // Reviewer progress has meaning only while the specialist review itself is
+  // active.  Treat a stale projection from a previous phase as unavailable,
+  // rather than presenting historical reviewers as live work.
+  const agents = (
+    String(executionStatus?.current_phase || "").toUpperCase() === "CAPABILITY_REVIEW"
+    && Array.isArray(items)
+  ) ? items : [];
   let card = $("activeReviewerAgents");
   if (!card) {
     card = document.createElement("section");
@@ -627,7 +633,11 @@ function activeReviewerAgents(items, executionStatus = {}) {
     $("currentRun")?.querySelector(".current-run__grid")?.append(card);
   }
   card.hidden = !agents.length;
-  if (!agents.length) return;
+  if (!agents.length) {
+    $("activeReviewerSummary").textContent = "";
+    $("activeReviewerList").replaceChildren();
+    return;
+  }
   const presentation = reviewerPresentationState(executionStatus),
     running = agents.filter((agent) => agent?.status === "running").length,
     completed = agents.filter((agent) => ["completed", "failed"].includes(agent?.status)).length,
@@ -1545,6 +1555,15 @@ function openLifecycleDetail(step, trigger) {
       item.append(heading, meta); list.append(item);
     }
     phaseTiming.append(list);
+  }
+  if (
+    String(step?.id || "").toUpperCase() === "TERMINAL"
+    && spans.some((span) => String(span.outcome || "").toUpperCase() === "STALE")
+  ) {
+    phaseTiming.append(Object.assign(document.createElement("p"), {
+      className: "estimate-meta",
+      textContent: t("lifecycle.detail_terminal_timing_stale"),
+    }));
   }
   content.append(phaseTiming);
   const qualityEvidence = lifecycleQualityEvidence(step);

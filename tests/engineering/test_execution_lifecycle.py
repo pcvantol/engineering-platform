@@ -298,6 +298,23 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(terminal["finished_at"], "2026-08-16T14:00:30+00:00")
         self.assertEqual(terminal["spans"][0]["phase"], "TOTAL_EXECUTION")
 
+    def test_stale_terminal_timing_does_not_downgrade_completed_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc)
+            total = start_phase(
+                root, "inbox-flow", "TOTAL_EXECUTION", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(
+                root, total, outcome="STALE", completed_at=started + timedelta(seconds=30), monotonic_clock=40.0,
+            )
+            self._state(root, "COMPLETE")
+            value = projection(root, "inbox-flow")
+
+        terminal = next(step for step in value["steps"] if step["id"] == "TERMINAL")
+        self.assertEqual(terminal["state"], "COMPLETE")
+        self.assertEqual(terminal["timing"]["spans"][0]["outcome"], "STALE")
+
     def test_capability_review_has_its_own_persisted_timing_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
