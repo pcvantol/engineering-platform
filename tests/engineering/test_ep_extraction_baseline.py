@@ -59,7 +59,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0)
         self.assertEqual(first.stdout, second.stdout)
         projection = json.loads(first.stdout)
-        self.assertEqual(projection["candidate_universe_count"], 263)
+        self.assertEqual(projection["candidate_universe_count"], 245)
         self.assertEqual(projection["manifest_semantic_digest"], self.manifest["manifest_semantic_digest"])
         self.assertEqual(projection["classified_exactly_once"], projection["candidate_universe_count"])
         self.assertEqual(projection["unclassified"], 0)
@@ -115,6 +115,15 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             new_file.write_text("fixture", encoding="utf-8")
             errors = AUDIT_MODULE.validate(manifest, root)
             self.assertTrue(any("candidate universe drift" in error for error in errors))
+
+    def test_generated_run_evidence_does_not_change_ep_candidate_universe(self) -> None:
+        temporary, root, _ = self._fixture_root()
+        with temporary:
+            before = AUDIT_MODULE.candidate_universe(root)
+            generated = root / "docs/engineering/runs/2026/finalization.md"
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("generated evidence", encoding="utf-8")
+            self.assertEqual(AUDIT_MODULE.candidate_universe(root), before)
 
 
 if __name__ == "__main__":

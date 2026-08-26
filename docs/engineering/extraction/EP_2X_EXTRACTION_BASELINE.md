@@ -41,11 +41,11 @@ governance exception; neither was supplied here.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 263 candidate files from EP runtime,
+The audit independently discovers 245 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`10daaf423079298b088bdd122a258ae6a5e01a352dbd7f766b3bf4b724aa7be1` and
+`a3bf0e8c7a6e7fd8c2993446e1d9e9143133b80743275f88041de53da94b3a18` and
 semantic-manifest digest
 `4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee`.
 
@@ -55,7 +55,7 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `263 / 263` |
+| Candidate universe / exactly once | `245 / 245` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
 | EP product source / Python inspected | `76 / 58` |

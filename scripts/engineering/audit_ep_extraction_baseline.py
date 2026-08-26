@@ -40,6 +40,7 @@ CANDIDATE_FILES = (
     "docs/adr/0019-engineering-platform-central-installation-store.md",
 )
 IGNORED_NAMES = {".DS_Store", "__pycache__"}
+GENERATED_EVIDENCE_PREFIXES = ("docs/engineering/runs/",)
 
 
 def is_safe_relative_path(value: object) -> bool:
@@ -66,7 +67,9 @@ def candidate_universe(root: Path) -> list[str]:
         if base.exists():
             for item in base.rglob("*"):
                 if item.is_file() and not any(part in IGNORED_NAMES for part in item.parts):
-                    candidates.add(item.relative_to(root).as_posix())
+                    relative = item.relative_to(root).as_posix()
+                    if not relative.startswith(GENERATED_EVIDENCE_PREFIXES):
+                        candidates.add(relative)
     for relative_file in CANDIDATE_FILES:
         if (root / relative_file).is_file():
             candidates.add(relative_file)

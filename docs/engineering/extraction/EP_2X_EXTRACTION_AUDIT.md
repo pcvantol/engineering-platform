@@ -13,7 +13,7 @@ one equally-specific winning rule fails. Rules also fail for duplicate paths,
 unsafe paths, missing required paths, invalid classifications, malformed
 ownership/reason fields and invalid extraction targets.
 
-Current result: 263 candidates, 263 classified exactly once, 0 unclassified,
+Current result: 245 candidates, 245 classified exactly once, 0 unclassified,
 0 ambiguous. Operations Console source/assets/tests account for 17 candidates,
 all classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
@@ -40,7 +40,8 @@ effective classification; unclassified entry points: 0.
 Ownership coverage is whole-set rather than sample-based: 43 EP test candidates
 (including browser/contract/migration/consumer-integration tests), 24 workflow
 candidates (5 EP workflow, 19 DJConnect retained), 32 EP documentation
-candidates, 18 historical/generated-evidence exclusions and 66 consumer
+candidates, 0 historical/generated-evidence candidates (immutable generated
+run evidence is deliberately excluded from the candidate universe) and 66 consumer
 adapter files. Qualification registry/assets are classified as EP release
 assets. Unknown ownership: 0.
 
