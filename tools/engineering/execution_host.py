@@ -105,6 +105,7 @@ from .managed_autonomy import (
 
 LOGGER = logging.getLogger(__name__)
 FINALIZATION_PR_HANDOFF_MAX_SECONDS = 15 * 60
+REPAIR_AGENT_MAX_SECONDS = 15 * 60
 
 # A repair remains scoped to its original PR, but it must also have a finite
 # attempt budget. This prevents a persistently failing required check from
@@ -581,6 +582,15 @@ class EngineeringRunner:
         if callable(command_callback):
             command_callback(command_boundary)
         invocation_started = datetime.now(timezone.utc).isoformat()
+        set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
+        deadline_started = time.monotonic()
+        if repair and callable(set_handoff_deadline):
+            # A same-PR repair has bounded autonomous authority too.  A
+            # provider that leaves its output pipe open must never keep the
+            # runner (or its credits) alive indefinitely.
+            set_handoff_deadline(
+                lambda: time.monotonic() - deadline_started >= REPAIR_AGENT_MAX_SECONDS
+            )
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
@@ -594,6 +604,8 @@ class EngineeringRunner:
         finally:
             if callable(command_callback):
                 command_callback(None)
+            if repair and callable(set_handoff_deadline):
+                set_handoff_deadline(None)
         self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", started_at=invocation_started)
         complete_phase(self.root, provider)
         if parent:
@@ -738,7 +750,33 @@ Mandatory autonomous refactor and quality-control stage:
             if not self.agent.available():
                 raise RunnerError("Codex CLI is not installed or invokable")
             self._verify_engineering_platform()
-            return self._poll(state)
+            # Fresh PR evidence can transition this wait into a bounded
+            # same-PR repair.  Reacquire the lease before polling, so that a
+            # running repair has one durable owner and the dashboard reflects
+            # it instead of projecting a false idle state.
+            self.transaction = ExecutionTransaction(state=state, target_repository=self.root)
+            try:
+                self.active_lease = acquire_lease(
+                    self.root, state.run_id, identity=self.host_identity,
+                    instance_id=self.host_instance_id, process_id=os.getpid(),
+                )
+            except LeaseConflictError as error:
+                raise RunnerError("active-run ownership conflict; execution is refused") from error
+            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+            self.transaction = self.transaction.with_lease(self.active_lease)
+            self.lease_heartbeat.start()
+            write_live_status(self.root, state, state.next_action)
+            try:
+                return self._poll(state)
+            finally:
+                # Terminal and operator-wait saves release their own lease.
+                # A direct passive return must also leave no synthetic owner.
+                if self.active_lease is not None and self.active_lease.run_id == state.run_id:
+                    if self.lease_heartbeat is not None:
+                        self.active_lease = self.lease_heartbeat.stop()
+                        self.lease_heartbeat = None
+                    release_lease(self.root, self.active_lease)
+                    self.active_lease = None
         try:
             context = resolve_execution_context(objective, self.root)
         except RunnerError as error:
@@ -1388,6 +1426,19 @@ Mandatory autonomous refactor and quality-control stage:
             )
             self.store.save(repair)
             self._persist_agent_usage(repair.run_id)
+        except CodexHandoffTimeout:
+            repair = self._record_agent_execution_time(repair)
+            repair = self._record_repair_audit(
+                repair, failed_checks=failed_checks, objective=objective, result=None,
+                outcome="agent_timed_out",
+            )
+            return self._save_terminal(
+                repair,
+                "BLOCKED",
+                "repair_agent_timeout",
+                "Repair agent exceeded the host-owned deadline; no further repair was started.",
+                terminal_condition="repair_agent_timeout",
+            )
         except CodexInvocationError as error:
             repair = self._record_agent_execution_time(repair)
             self.console_detail = error.console_detail

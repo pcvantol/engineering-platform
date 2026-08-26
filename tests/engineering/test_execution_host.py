@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -62,6 +63,7 @@ from tools.engineering.investigation_ledger import InvocationInvestigationLedger
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
 from tools.engineering.providers import CodexCliProvider
 from tools.engineering.execution_executor import workspace_change_summary
+from tools.engineering.execution_lease import history as lease_history, liveness as lease_liveness
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 
@@ -221,6 +223,17 @@ class DeadlineFakeAgent(FakeAgent):
 
     def invoke(self, root: Path, prompt: str) -> AgentResult:
         raise CodexHandoffTimeout("test finalization hand-off timeout")
+
+
+class LeaseAwareDeadlineAgent(DeadlineFakeAgent):
+    def __init__(self, run_id: str) -> None:
+        super().__init__()
+        self.run_id = run_id
+        self.observed_lease: dict[str, object] | None = None
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        self.observed_lease = lease_liveness(root, self.run_id)
+        return super().invoke(root, prompt)
 
 
 class FakeReviewer:
@@ -1029,10 +1042,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         client.set_activity_callback(lambda _: None)
         client.set_handoff_deadline_callback(lambda: True)
 
-        with self.assertRaises(CodexHandoffTimeout):
-            client._run_invocation(("codex", "exec", "--json"), self.root)
+        with patch("tools.engineering.execution_executor.os.killpg") as killpg:
+            with self.assertRaises(CodexHandoffTimeout):
+                client._run_invocation(("codex", "exec", "--json"), self.root)
 
-        self.assertTrue(process.terminated)
+        self.assertEqual(killpg.call_args.args, (4321, signal.SIGTERM))
+        self.assertFalse(process.terminated)
 
     def test_live_status_records_execution_context(self) -> None:
         state = TransactionState(
@@ -1548,6 +1563,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
             span["phase_name"] == "EXECUTION_PREPARATION"
             for span in phase_spans(self.root, state.run_id)
         ))
+
+    def test_resume_reacquires_lease_before_bounded_repair_and_timeout_blocks(self) -> None:
+        state = TransactionState(
+            "resume-repair-lease", "pcvantol/djconnect", str(self.prompt),
+            "WAIT_FOR_OPERATOR_MERGE", branch="codex/resume-repair", pull_request=12,
+            owner_authorized=True, transaction_kind="FINALIZATION",
+        )
+        self.store.save(state)
+        agent = LeaseAwareDeadlineAgent(state.run_id)
+        result = EngineeringRunner(
+            self.root,
+            self.store,
+            FakeRepository(),
+            FakeGitHub([PullRequestEvidence(12, "OPEN", True, False, failed_checks=("browser-dashboard",))]),
+            agent,
+            lambda _: None,
+        ).run(self.prompt, run_id=state.run_id, resume=True)
+
+        self.assertEqual(agent.observed_lease and agent.observed_lease.get("state"), "LIVE")
+        self.assertIsNone(agent.deadline_callback)
+        self.assertTrue(result.terminal)
+        self.assertEqual(result.phase, "BLOCKED")
+        self.assertEqual(result.next_action, "repair_agent_timeout")
+        self.assertEqual(result.terminal_condition, "repair_agent_timeout")
+        self.assertEqual(lease_history(self.root, state.run_id).get("lease_state"), "RELEASED")
 
     def test_merged_pull_request_refreshes_main_reference_before_containment_check(self) -> None:
         state = TransactionState(

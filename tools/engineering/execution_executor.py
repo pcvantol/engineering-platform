@@ -130,6 +130,7 @@ def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
 
 # Provider-backed engineering executor.
 import json
+import signal
 import subprocess
 import time
 from dataclasses import replace
@@ -478,7 +479,13 @@ class CodexCliClient:
                 if self._handoff_deadline_callback is None or not self._handoff_deadline_callback():
                     continue
                 handoff_timed_out.set()
-                process.terminate()
+                # Invocation processes start their own session. Stopping only
+                # the CLI parent can leave stdout open in a child and strand
+                # the runner in its read loop after the deadline.
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    process.terminate()
                 return
 
         watchdog_thread = (
