@@ -74,7 +74,7 @@ from .execution_context import (
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
-from .execution_errors import CodexInvocationError, RunnerError
+from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
 from .execution_executor import format_cli_failure as executor_format_cli_failure
@@ -104,6 +104,7 @@ from .managed_autonomy import (
 
 
 LOGGER = logging.getLogger(__name__)
+FINALIZATION_PR_HANDOFF_MAX_SECONDS = 15 * 60
 
 # A repair remains scoped to its original PR, but it must also have a finite
 # attempt budget. This prevents a persistently failing required check from
@@ -325,9 +326,20 @@ facts and must never cross the primary/reviewer boundary.
 
 Ledger bootstrap:
 """ + json.dumps(investigation_ledger.to_prompt_dict(), sort_keys=True) + "\n"
+    pr_handoff = "" if not state or state.execution_mode == "GENESIS" else """
+PR hand-off boundary (host-owned and non-negotiable):
+- Your work ends when the bounded branch and its pull request have been
+  created or repaired, pushed, and locally validated.
+- If this is a repair, preserve the exact checkpointed pull-request number
+  and branch. Never create a replacement pull request.
+- Return the required JSON object immediately after that hand-off. Do not
+  poll or wait for GitHub checks, review, merge, Finalization, reconciliation,
+  or any other external terminal evidence. The Execution Host alone records
+  the pull request, polls checks, and schedules at most three bounded repairs.
+"""
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
-{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}Continue waiting for objective terminal repository evidence; pending CI and temporary failures are not completion.
+{authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{pr_handoff}
 Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence and quality_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
@@ -1450,6 +1462,10 @@ Mandatory autonomous refactor and quality-control stage:
             "push it, and only then return that PR number."
         )
         finalization_span = start_phase(self.root, state.run_id, "FINALIZATION")
+        handoff_started = time.monotonic()
+        set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
+        if callable(set_handoff_deadline):
+            set_handoff_deadline(lambda: time.monotonic() - handoff_started >= FINALIZATION_PR_HANDOFF_MAX_SECONDS)
         try:
             result = self._invoke_agent_with_timing(
                 finalization,
@@ -1463,6 +1479,13 @@ Mandatory autonomous refactor and quality-control stage:
             finalization = self._record_agent_execution_time(finalization)
             finalization = self._record_validation_evidence(finalization, result)
             self._persist_agent_usage(finalization.run_id)
+        except CodexHandoffTimeout:
+            complete_phase(self.root, finalization_span, outcome="FAILED")
+            finalization = self._record_agent_execution_time(finalization)
+            # The timeout is not a terminal agent result.  Reconcile only a
+            # PR that current evidence proves already exists; otherwise the
+            # recovery helper blocks fail-closed without another invocation.
+            return self._recover_finalization_pull_request(finalization, self.repository.inspect(self.root))
         except CodexInvocationError as error:
             complete_phase(self.root, finalization_span, outcome="FAILED")
             finalization = self._record_agent_execution_time(finalization)
@@ -1474,6 +1497,9 @@ Mandatory autonomous refactor and quality-control stage:
                 str(error),
                 terminal_condition=error.terminal_condition,
             )
+        finally:
+            if callable(set_handoff_deadline):
+                set_handoff_deadline(None)
         complete_phase(self.root, finalization_span)
         if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
             return self._save_terminal(

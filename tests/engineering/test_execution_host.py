@@ -5,11 +5,13 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import call, patch
 
 from tools.engineering.agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from tools.engineering.storage import load_projection
+from tools.engineering.execution_errors import CodexHandoffTimeout
 from tools.engineering.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -207,6 +209,18 @@ class CommandTimingFakeAgent(FakeAgent):
             self.command_callback("started", "command-1", "python -m pytest tests/engineering")
             self.command_callback("completed", "command-1", "python -m pytest tests/engineering")
         return super().invoke(root, prompt)
+
+
+class DeadlineFakeAgent(FakeAgent):
+    def __init__(self) -> None:
+        super().__init__(AgentResult("WAITING"))
+        self.deadline_callback: object | None = None
+
+    def set_handoff_deadline_callback(self, callback: object) -> None:
+        self.deadline_callback = callback
+
+    def invoke(self, root: Path, prompt: str) -> AgentResult:
+        raise CodexHandoffTimeout("test finalization hand-off timeout")
 
 
 class FakeReviewer:
@@ -980,6 +994,45 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(activity, ["Codex plant de volgende stap", "Codex voert een opdracht uit"])
         self.assertEqual(transient, ["Integrating runtime resolution"])
+
+    @patch("tools.engineering.execution_host.os.getpgid", return_value=4321)
+    @patch("tools.engineering.execution_host.subprocess.Popen")
+    def test_codex_client_stops_at_a_host_owned_handoff_deadline(self, popen: object, _: object) -> None:
+        class Process:
+            pid = 1234
+            terminated = False
+
+            class SlowOutput:
+                emitted = False
+
+                def __iter__(self) -> "Process.SlowOutput":
+                    return self
+
+                def __next__(self) -> str:
+                    if self.emitted:
+                        raise StopIteration
+                    time.sleep(1.1)
+                    self.emitted = True
+                    return '{"type":"item.started","item":{"type":"reasoning"}}\n'
+
+            stdout = SlowOutput()
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        process = Process()
+        popen.return_value = process
+        client = CodexCliClient()
+        client.set_activity_callback(lambda _: None)
+        client.set_handoff_deadline_callback(lambda: True)
+
+        with self.assertRaises(CodexHandoffTimeout):
+            client._run_invocation(("codex", "exec", "--json"), self.root)
+
+        self.assertTrue(process.terminated)
 
     def test_live_status_records_execution_context(self) -> None:
         state = TransactionState(
@@ -1769,6 +1822,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(repaired.repair_audit[0]["outcome"], "agent_failed")
         self.assertEqual(repaired.repair_audit[0]["agent_summary"], "External review required.")
 
+    def test_finalization_handoff_timeout_recovers_existing_pr_without_another_agent(self) -> None:
+        branch = "codex/finalize-timeout-recovery"
+        state = TransactionState(
+            "timeout-recovery", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            implementation_pull_request=44, implementation_merge_commit="b" * 40,
+            owner_authorized=True,
+        )
+        candidate = PullRequestEvidence(
+            45, "OPEN", True, True, head_branch=branch, base_branch="main",
+        )
+        github = FakeGitHub([candidate], branch_response=candidate)
+        agent = DeadlineFakeAgent()
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, agent, lambda _: None)
+
+        recovered = runner._start_finalization(state, 44)
+
+        self.assertEqual(recovered.finalization_pull_request, 45)
+        self.assertEqual(recovered.pull_request, 45)
+        self.assertEqual(github.branch_calls, [branch])
+        self.assertIsNone(agent.deadline_callback)
+
     def test_repair_stops_after_three_failed_required_check_repairs(self) -> None:
         state = TransactionState(
             "repair-limit-run",
@@ -2415,6 +2489,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn('"persistence": "none"', prompt)
         self.assertIn("Prefer exact branch/HEAD/status", prompt)
         self.assertIn("Reviewer advice and primary conclusions are never ledger", prompt)
+
+    def test_managed_finalization_prompt_returns_after_pr_handoff_without_polling(self) -> None:
+        state = TransactionState(
+            "finalization-handoff", "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT",
+            branch="codex/finalize-finalization-handoff", finalization_branch="codex/finalize-finalization-handoff",
+            transaction_kind="FINALIZATION", owner_authorized=True,
+        )
+        prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
+        self.assertIn("PR hand-off boundary", prompt)
+        self.assertIn("Return the required JSON object immediately", prompt)
+        self.assertIn("Do not\n  poll or wait for GitHub checks", prompt)
+        self.assertIn("Never create a replacement pull request", prompt)
+        self.assertNotIn("Continue waiting for objective terminal repository evidence", prompt)
+        self.assertEqual(prompt.count("Supplied bounded objective follows:"), 1)
+
+    def test_managed_repair_prompt_returns_same_pr_to_host(self) -> None:
+        state = TransactionState(
+            "finalization-repair-handoff", "pcvantol/djconnect", str(self.prompt), "REPAIR_AGENT",
+            branch="codex/finalize-finalization-repair-handoff", pull_request=949,
+            finalization_branch="codex/finalize-finalization-repair-handoff", finalization_pull_request=949,
+            transaction_kind="FINALIZATION", owner_authorized=True, repair_iterations=1,
+        )
+        prompt = assemble_prompt(self.prompt, state, managed_target=self.root)
+        self.assertIn("preserve the exact checkpointed pull-request number", prompt)
+        self.assertIn("at most three bounded repairs", prompt)
 
     def test_primary_investigation_ledger_reuses_only_current_facts(self) -> None:
         ledger = InvocationInvestigationLedger().record(

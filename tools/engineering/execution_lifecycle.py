@@ -19,6 +19,11 @@ _MANAGED_PATH = (
     "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
     "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
 )
+_FINALIZATION_REPAIR_PATH = (
+    "START", "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT",
+    "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "FINALIZATION_REPAIR_AGENT", "WAIT_FOR_FINALIZATION_MERGE",
+    "RECONCILE_AGENT", "REPOSITORY_CLEANUP", "TERMINAL",
+)
 # Genesis has no pull-request merge boundary.  This is presentation of the
 # existing mode contract, not a new execution sequence.
 _GENESIS_PATH = (
@@ -40,6 +45,7 @@ _STEP_PHASES = {
     "EXECUTE_AGENT": frozenset({"EXECUTION_PREPARATION", "PROVIDER_EXECUTION", "VALIDATION"}),
     "QUALITY_CONTROL_AGENT": frozenset({"QUALITY_CONTROL", "PROVIDER_EXECUTION", "VALIDATION"}),
     "REPAIR_AGENT": frozenset({"REPAIR", "PROVIDER_EXECUTION", "VALIDATION"}),
+    "FINALIZATION_REPAIR_AGENT": frozenset({"REPAIR", "PROVIDER_EXECUTION", "VALIDATION"}),
     "WAIT_FOR_OPERATOR_MERGE": frozenset({"PR_OR_MERGE", "EXTERNAL_CI_WAIT"}),
     "FINALIZE_AGENT": frozenset({"REPOSITORY_FINALIZATION", "FINALIZATION"}),
     "RECONCILE_AGENT": frozenset({"RECONCILIATION", "REPORT_GENERATION", "EVIDENCE_PERSISTENCE"}),
@@ -58,6 +64,8 @@ def intended_path(
         transaction_kind == "FINALIZATION" and implementation_pull_request is None
     ):
         return _STATUS_RECONCILIATION_PATH
+    if transaction_kind == "FINALIZATION":
+        return _FINALIZATION_REPAIR_PATH
     return _GENESIS_PATH if execution_mode == "GENESIS" else _MANAGED_PATH
 
 
@@ -91,6 +99,8 @@ def _display_phase(phase: str, checkpoint: dict[str, object]) -> str:
         )
     if phase == "WAIT_FOR_OPERATOR_MERGE" and checkpoint.get("transaction_kind") == "RECONCILIATION":
         return "WAIT_FOR_RECONCILIATION_MERGE"
+    if phase == "REPAIR_AGENT" and checkpoint.get("transaction_kind") == "FINALIZATION":
+        return "FINALIZATION_REPAIR_AGENT"
     if phase != "WAIT_FOR_TERMINAL_EVIDENCE":
         return phase
     # Required-check polling happens before the operator merge hand-off.  It
@@ -253,7 +263,7 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             return name in _STEP_PHASES[step_id] and not nested_in_quality and not nested_in_repair
         if step_id == "QUALITY_CONTROL_AGENT":
             return name == "QUALITY_CONTROL" or nested_in_quality
-        if step_id == "REPAIR_AGENT":
+        if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"}:
             return name == "REPAIR" or nested_in_repair
         return name in _STEP_PHASES.get(step_id, frozenset())
 
@@ -263,7 +273,11 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         step: dict[str, object] = {
             "id": step_id,
             "order": order,
-            "presentation_key": f"lifecycle.step.{step_id.lower()}",
+            "presentation_key": (
+                "lifecycle.step.repair_agent"
+                if step_id == "FINALIZATION_REPAIR_AGENT"
+                else f"lifecycle.step.{step_id.lower()}"
+            ),
             "state": state,
         }
         if step_id == "START":
@@ -296,15 +310,22 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         elif step_id == display_phase and terminal_state is None:
             step["state"] = "ACTIVE"
         if (
+            step_id == "WAIT_FOR_FINALIZATION_MERGE"
+            and display_phase == "FINALIZATION_REPAIR_AGENT"
+            and terminal_state is None
+        ):
+            step["state"] = "BLOCKED"
+            step["action_key"] = "state.repair_bounded_validation_failure"
+        if (
             transaction_kind == "RECONCILIATION"
             and step_id in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "WAIT_FOR_OPERATOR_MERGE", "FINALIZE_AGENT", "WAIT_FOR_FINALIZATION_MERGE"}
             and step_id not in observed
         ):
             step["state"] = "SKIPPED"
             step["presentation_detail_key"] = "lifecycle.detail.not_part_of_reconciliation"
-        if step_id == "REPAIR_AGENT" and repair_iterations:
+        if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"} and repair_iterations:
             step["iteration_count"] = repair_iterations
-        if step_id == "REPAIR_AGENT" and step["state"] not in {"PENDING", "SKIPPED"}:
+        if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"} and step["state"] not in {"PENDING", "SKIPPED"}:
             audit = checkpoint.get("repair_audit")
             if isinstance(audit, (list, tuple)) and audit:
                 step["repair_audit"] = list(audit)

@@ -95,6 +95,21 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(value["current_step"], "FINALIZE_AGENT")
         self.assertEqual(by_id["FINALIZE_AGENT"]["state"], "ACTIVE")
 
+    def test_finalization_check_repair_has_its_own_post_finalization_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION", implementation_pull_request=840)
+            self._state(
+                root, "REPAIR_AGENT", transaction_kind="FINALIZATION", implementation_pull_request=840,
+                pull_request=841, finalization_pull_request=841, repair_iterations=1,
+            )
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(value["current_step"], "FINALIZATION_REPAIR_AGENT")
+        self.assertEqual(by_id["FINALIZE_AGENT"]["state"], "COMPLETED")
+        self.assertEqual(by_id["FINALIZATION_REPAIR_AGENT"]["state"], "ACTIVE")
+        self.assertEqual(by_id["WAIT_FOR_FINALIZATION_MERGE"]["state"], "BLOCKED")
+
     def test_failed_pr_checks_block_merge_and_identify_the_required_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

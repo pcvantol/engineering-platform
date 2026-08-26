@@ -1644,6 +1644,45 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(merge.locator("span").first()).not.toHaveText("✓");
   });
 
+  test("places finalization pull-request repair after Finalization and before its merge", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "lifecycle-finalization-pr-check-repair",
+      current_phase: "FINALIZATION_REPAIR_AGENT",
+      current_action: "repair_bounded_validation_failure",
+      lifecycle: {
+        available: true,
+        run_id: "lifecycle-finalization-pr-check-repair",
+        terminal_state: "ACTIVE",
+        steps: [
+          { id: "finalize", presentation_key: "lifecycle.step.finalize_agent", state: "COMPLETED" },
+          { id: "finalization-repair", presentation_key: "lifecycle.step.repair_agent", state: "ACTIVE", iteration_count: 1 },
+          {
+            id: "finalization-merge", presentation_key: "lifecycle.step.wait_for_finalization_merge", state: "BLOCKED",
+            action_key: "state.repair_bounded_validation_failure",
+          },
+        ],
+      },
+    }, {}));
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+
+    await expect(page.locator("#phase")).toHaveText(
+      DASHBOARD_MESSAGES.nl["lifecycle.step.repair_agent"],
+    );
+    const labels = await page.locator(".execution-lifecycle__node").allTextContents();
+    expect(labels).toEqual([
+      "✓" + DASHBOARD_MESSAGES.nl["lifecycle.step.finalize_agent"],
+      DASHBOARD_MESSAGES.nl["lifecycle.step.repair_agent"],
+      "!" + DASHBOARD_MESSAGES.nl["lifecycle.step.wait_for_finalization_merge"],
+    ]);
+    await expect(page.locator("#action")).toHaveText(
+      DASHBOARD_MESSAGES.nl["state.repair_bounded_validation_failure"],
+    );
+  });
+
   test("places the estimate directly below execution identity and before the lifecycle", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));

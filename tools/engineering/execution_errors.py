@@ -21,3 +21,7 @@ class CodexInvocationError(RunnerError):
         self.console_detail = console_detail
         self.next_action = next_action
         self.terminal_condition = terminal_condition
+
+
+class CodexHandoffTimeout(RunnerError):
+    """A bounded agent hand-off exceeded its host-owned deadline."""

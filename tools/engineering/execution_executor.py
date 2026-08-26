@@ -133,6 +133,7 @@ import json
 import subprocess
 import time
 from dataclasses import replace
+from threading import Event, Thread
 from typing import Callable, Mapping
 
 from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
@@ -143,7 +144,7 @@ from .execution_context import additional_workspace_write_roots
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .providers import CodexCliProvider
-from .execution_errors import CodexInvocationError, RunnerError
+from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .evidence_projection import ToolProxyEnvironment
 
 _format_cli_failure = format_cli_failure
@@ -178,6 +179,7 @@ class CodexCliClient:
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
         self._command_callback: Callable[[str, str, str], None] | None = None
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
+        self._handoff_deadline_callback: Callable[[], bool] | None = None
 
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
@@ -206,6 +208,10 @@ class CodexCliClient:
     ) -> None:
         """Set a bounded, filename-free workspace change counter sink."""
         self._workspace_progress_callback = callback
+
+    def set_handoff_deadline_callback(self, callback: Callable[[], bool] | None) -> None:
+        """Set a host-owned deadline check for an externally observable hand-off."""
+        self._handoff_deadline_callback = callback
 
     def available(self) -> bool:
         return self.provider.command("--version").returncode == 0
@@ -452,6 +458,7 @@ class CodexCliClient:
             and self._command_callback is None
             and self._runtime_metadata_callback is None
             and self._workspace_progress_callback is None
+            and self._handoff_deadline_callback is None
         ):
             return self.provider.invoke(root, command, environment=environment)
         process = self.provider.spawn_invocation(root, command, environment=environment)
@@ -463,9 +470,28 @@ class CodexCliClient:
         lines: list[str] = []
         last_workspace_progress: dict[str, int] | None = None
         observed_command_ids: set[str] = set()
+        watchdog_stop = Event()
+        handoff_timed_out = Event()
+
+        def watchdog() -> None:
+            while not watchdog_stop.wait(1):
+                if self._handoff_deadline_callback is None or not self._handoff_deadline_callback():
+                    continue
+                handoff_timed_out.set()
+                process.terminate()
+                return
+
+        watchdog_thread = (
+            Thread(target=watchdog, name="engineering-pr-handoff-watchdog", daemon=True)
+            if self._handoff_deadline_callback is not None else None
+        )
+        if watchdog_thread is not None:
+            watchdog_thread.start()
         try:
             assert process.stdout is not None
             for line in process.stdout:
+                if handoff_timed_out.is_set():
+                    raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
                 lines.append(line)
                 if self._workspace_progress_callback is not None:
                     progress = workspace_change_summary(root)
@@ -498,8 +524,13 @@ class CodexCliClient:
                             if self._workspace_progress_callback is not None:
                                 self._workspace_progress_callback(dict(self.last_execution_metadata))
                         self._command_callback(*command_event)
+            if handoff_timed_out.is_set():
+                raise CodexHandoffTimeout("Agent did not return after the host-owned PR hand-off deadline.")
             return subprocess.CompletedProcess(command, process.wait(), "".join(lines), "")
         finally:
+            watchdog_stop.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=1)
             if self._process_callback is not None:
                 self._process_callback(None)
 

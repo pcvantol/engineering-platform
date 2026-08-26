@@ -138,7 +138,7 @@ def _watcher_lags_live_phase(
         and watcher.get("current_phase") == "WAIT_FOR_OPERATOR_MERGE"
         and isinstance(lifecycle, dict)
         and lifecycle.get("current_step") in {
-            "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP",
+            "INITIALIZE", "CAPABILITY_REVIEW", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "REPOSITORY_CLEANUP",
         }
     )
 

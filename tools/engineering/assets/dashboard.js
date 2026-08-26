@@ -137,6 +137,7 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
+  FINALIZATION_REPAIR_AGENT: "lifecycle.step.repair_agent",
   WAIT_FOR_OPERATOR_MERGE: "lifecycle.step.wait_for_operator_merge",
   WAIT_FOR_FINALIZATION_MERGE: "lifecycle.step.wait_for_finalization_merge",
   WAIT_FOR_RECONCILIATION_MERGE: "lifecycle.step.wait_for_reconciliation_merge",
@@ -186,6 +187,7 @@ function tone(x) {
       "INITIALIZE",
       "EXECUTE_AGENT",
       "REPAIR_AGENT",
+      "FINALIZATION_REPAIR_AGENT",
       "FINALIZE_AGENT",
       "REPOSITORY_CLEANUP",
     ].includes(phase) ||
@@ -245,7 +247,7 @@ function phaseAwareRange(estimate) {
 function estimate(x, durationEstimate = {}) {
   const phase = x.current_phase || "";
   const phaseRange = phaseAwareRange(durationEstimate);
-  if (["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP"].includes(phase) && phaseRange) {
+  if (["INITIALIZE", "EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT", "FINALIZE_AGENT", "REPOSITORY_CLEANUP"].includes(phase) && phaseRange) {
     const [minimum, maximum] = phaseRange;
     return {
       summary: t("estimate.remaining", { minimum, maximum }),
@@ -254,7 +256,7 @@ function estimate(x, durationEstimate = {}) {
   }
   if (phase === "INITIALIZE")
     return { summary: t("estimate.initializing"), context: "" };
-  if (["EXECUTE_AGENT", "REPAIR_AGENT"].includes(phase)) {
+  if (["EXECUTE_AGENT", "REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"].includes(phase)) {
     const [minimum, maximum] = historicalRange(durationEstimate, executionRange(x));
     if (!promptStartedAt)
       return {

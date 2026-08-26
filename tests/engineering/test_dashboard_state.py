@@ -207,8 +207,8 @@ class DashboardStateTest(unittest.TestCase):
             payload = json.loads(dashboard_state.status(root))
 
         self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_STALE")
-        self.assertEqual(payload["current_phase"], "REPAIR_AGENT")
-        self.assertEqual(payload["lifecycle"]["current_step"], "REPAIR_AGENT")
+        self.assertEqual(payload["current_phase"], "FINALIZATION_REPAIR_AGENT")
+        self.assertEqual(payload["lifecycle"]["current_step"], "FINALIZATION_REPAIR_AGENT")
         self.assertNotIn("merge the pull request", payload["current_action"])
 
     def test_status_ignores_a_stale_nonterminal_live_projection_after_checkpoint(self) -> None:
