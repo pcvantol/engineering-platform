@@ -778,6 +778,49 @@ test.describe("Engineering Status browser smoke", () => {
     expect(bounds.right).toBeLessThanOrEqual(bounds.cardRight);
   });
 
+  test("stacks mobile log filters and reveals only the selected date controls", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    await expect(page.locator("#componentLogControls")).not.toHaveAttribute("hidden", "");
+
+    const layout = await page.evaluate(() => ["logFilter", "logLevelFilter", "logTimePreset"].map((id) => {
+      const input = document.getElementById(id);
+      const field = input.closest("label");
+      const bounds = field.getBoundingClientRect();
+      return { id, top: Math.round(bounds.top), width: Math.round(bounds.width), inputWidth: Math.round(input.getBoundingClientRect().width) };
+    }));
+    expect(layout.map((item) => item.top)).toEqual([...layout.map((item) => item.top)].sort((a, b) => a - b));
+    expect(layout.every((item) => item.inputWidth <= item.width)).toBe(true);
+    await expect(page.locator("#logSpecificDateControl")).toBeHidden();
+    await expect(page.locator("#logDateFromControl")).toBeHidden();
+    await expect(page.locator("#logDateToControl")).toBeHidden();
+
+    await page.locator("#logTimePreset").selectOption("day");
+    await expect(page.locator("#logSpecificDateControl")).toBeVisible();
+    await expect(page.locator("#logDateFromControl")).toBeHidden();
+    await expect(page.locator("#logDateToControl")).toBeHidden();
+
+    await page.locator("#logTimePreset").selectOption("range");
+    await expect(page.locator("#logSpecificDateControl")).toBeHidden();
+    await expect(page.locator("#logDateFromControl")).toBeVisible();
+    await expect(page.locator("#logDateToControl")).toBeVisible();
+    const dateBounds = await page.locator("#logDateFrom, #logDateTo").evaluateAll((controls) => controls.map((input) => {
+      const field = input.closest("label").getBoundingClientRect();
+      const bounds = input.getBoundingClientRect();
+      return { left: Math.round(bounds.left), right: Math.round(bounds.right), fieldLeft: Math.round(field.left), fieldRight: Math.round(field.right) };
+    }));
+    expect(dateBounds.every((item) => item.left >= item.fieldLeft && item.right <= item.fieldRight)).toBe(true);
+
+    for (const preset of ["", "today", "yesterday"]) {
+      await page.locator("#logTimePreset").selectOption(preset);
+      await expect(page.locator("#logSpecificDateControl")).toBeHidden();
+      await expect(page.locator("#logDateFromControl")).toBeHidden();
+      await expect(page.locator("#logDateToControl")).toBeHidden();
+    }
+  });
+
   test("stacks the Inbox location action below its long path on iPhone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const configurationLoaded = page.waitForResponse("**/api/configuration");

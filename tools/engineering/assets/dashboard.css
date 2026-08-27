@@ -726,12 +726,16 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
   /* The native multi-select remains the accessible event filter.  Constrain
      its label and control as one grid item so iOS cannot size it past the
      Logs card when it displays the selected-item summary. */
-  #componentLogControls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
-  #componentLogControls>label{min-width:0}
-  #componentLogControls>label:has(#logEventFilter){grid-column:1 / -1;width:100%}
+  #componentLogControls{display:grid;grid-template-columns:minmax(0,1fr)}
+  #componentLogControls>label{min-width:0;width:100%}
+  #componentLogControls>label[hidden]{display:none}
+  #componentLogControls>label:has(#logEventFilter){grid-column:auto;width:100%}
   #componentLogControls #logEventFilter{box-sizing:border-box;max-width:100%;min-width:0;width:100%}
-  #componentLogControls>label:has(:is(#logSpecificDate,#logDateFrom,#logDateTo)){grid-column:1 / -1}
-  #componentLogControls :is(#logSpecificDate,#logDateFrom,#logDateTo){box-sizing:border-box;min-width:0;width:100%}
+  #componentLogControls>label:has(:is(#logSpecificDate,#logDateFrom,#logDateTo)){grid-column:auto}
+  /* Safari can include native date-picker affordances outside a 100% control.
+     Keep these fields inside their label's content box without making the
+     normal filter controls visually narrower. */
+  #componentLogControls :is(#logSpecificDate,#logDateFrom,#logDateTo){box-sizing:border-box;inline-size:calc(100% - 2px);max-inline-size:calc(100% - 2px);min-inline-size:0;min-width:0}
   #componentLogControls .reset-log-filters{justify-self:start;margin-left:0}
 }
 @media (max-width:900px){
