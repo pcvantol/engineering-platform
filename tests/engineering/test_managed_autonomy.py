@@ -146,6 +146,21 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["managed_autonomy_qualification"], "NOT_QUALIFIED")
         self.assertIn("UNEXPECTED_MANUAL_INTERVENTION", snapshot["qualification_failure_reasons"])
 
+    def test_failed_or_blocked_terminal_execution_can_never_run_qualify(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            for terminal, reason in (("FAILED", "TERMINAL_EXECUTION_FAILED"), ("BLOCKED", "TERMINAL_EXECUTION_BLOCKED")):
+                snapshot = terminal_snapshot(
+                    root, run_id="inbox-managed-proof", execution_outcome=terminal,
+                    implementation_pr=101, finalization_pr=102, repository_state="MERGED_RECONCILED",
+                    workspace_state="WORKSPACE_READY", main_origin_sync="YES", worktree_state="CLEAN",
+                    active_blocker="NONE", recovery_required="NO", lineage_available=True,
+                )
+                self.assertEqual(snapshot["run_qualification"], "NOT_QUALIFIED")
+                self.assertEqual(snapshot["managed_autonomy_qualification"], "NOT_QUALIFIED")
+                self.assertEqual(snapshot["qualification_failure_reasons"], [reason])
+
     def test_unknown_authority_and_legacy_evidence_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

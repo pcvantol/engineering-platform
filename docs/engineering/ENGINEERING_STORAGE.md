@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `31`**. The required version is declared as `storage_schema` in
+schema `32`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -55,7 +55,11 @@ The database records every applied change in
 - a required migration is unavailable or cannot complete safely.
 
 Schema upgrades use a controlled SQLite transaction and rollback-journal mode.
-The latter avoids persistent WAL sidecar files in `.engineering/`.
+The latter avoids persistent WAL sidecar files in `.engineering/`. Opening an
+existing shared store never upgrades it implicitly. A post-merge activation
+must first prove there is no active Execution Host lease and that the Inbox
+watcher and dashboard locks are not held; a new empty private store may be
+initialized normally.
 
 ### Execution admission guard
 
@@ -67,6 +71,24 @@ against temporary workspaces, but they cannot migrate the canonical
 updated Engineering Platform has been merged and its components are restarted.
 This prevents a running prompt from upgrading the live datastore beyond the
 code that is currently publishing dashboard and watcher state.
+
+### Controlled post-merge activation
+
+Storage code delivery and shared-runtime activation are separate operations:
+
+1. a Managed execution may create and test a migration against an isolated
+   database, then delivers it through PR and CI;
+2. after operator merge, verify every persistent component supports the new
+   schema and that `main` is clean and synchronized;
+3. stop the watcher, dashboard relay and dashboard in that order;
+4. invoke `python -m tools.engineering.storage activate --repo <repository>` exactly once;
+5. restart watcher, relay and dashboard on the merged revision, then run host
+   verification.
+
+The activation command refuses active execution leases and held watcher or
+dashboard locks. Normal component startup refuses an existing lower-version
+store rather than migrating it. Thus a managed prompt cannot bypass this
+boundary merely by importing newer source without its admission environment.
 
 ## Execution Host telemetry
 

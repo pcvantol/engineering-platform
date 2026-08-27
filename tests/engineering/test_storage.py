@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import fcntl
 from pathlib import Path
 import os
 import sqlite3
@@ -15,6 +16,7 @@ from tools.engineering.storage import (
     ENGINEERING_STORAGE_SCHEMA_VERSION,
     EngineeringStorageError,
     WORKSPACE_DIRECTORY,
+    activate_storage_schema,
     database_path,
     ai_capacity_history,
     load_projection,
@@ -24,6 +26,8 @@ from tools.engineering.storage import (
     record_ai_capacity_bi_hourly,
     record_artifact,
     record_submission,
+    record_admission_decision,
+    load_admission_decision,
     record_readiness_evaluation,
     load_readiness_evaluation,
     regenerate_status_projections,
@@ -41,6 +45,28 @@ class EngineeringStorageTest(unittest.TestCase):
             root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
+
+    def test_provider_free_admission_decision_is_immutable_and_renderable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record_submission(
+                root, submission_id="submission-admission", producer_id="test", producer_type="HUMAN",
+                prompt_content="bounded", prompt_metadata={}, target_identity={}, original_envelope={},
+                received_at="2026-08-27T00:00:00+00:00", link_run_id="inbox-admission",
+            )
+            record_admission_decision(
+                root, run_id="inbox-admission", submission_id="submission-admission", execution_mode="MANAGED",
+                decision="FAIL", failed_gate_ids=("worktree_untracked",),
+                evidence=({"gate_id": "worktree_untracked", "expected": "PASS", "observed": "FAIL", "verified_at": "2026-08-27T00:00:00+00:00"},),
+                observed_at="2026-08-27T00:00:00+00:00",
+            )
+            decision = load_admission_decision(root, "inbox-admission")
+            self.assertEqual(decision["decision"], "FAIL")
+            self.assertEqual(decision["failed_gate_ids"], ["worktree_untracked"])
+            connection = open_storage(root)
+            with self.assertRaises(sqlite3.DatabaseError):
+                connection.execute("UPDATE execution_admission_decisions SET decision='PASS'")
+            connection.close()
 
     def test_ai_capacity_history_keeps_one_lowest_measurement_per_two_hour_bucket(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -100,7 +126,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 link_run_id="inbox-other", execution_context={"context_version": "2.0"},
             )
             self.assertEqual(load_execution_context_snapshot(root, "inbox-42")["context_version"], "1.0")
-            with open_storage(root) as connection:
+            with activate_storage_schema(root) as connection:
                 self.assertEqual(
                     connection.execute("SELECT original_envelope FROM execution_submissions WHERE submission_id='submission-42'").fetchone()[0],
                     '{"original":"unchanged"}',
@@ -204,7 +230,10 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute(
                     "DELETE FROM engineering_schema_migrations WHERE version=31"
                 )
-            with open_storage(root) as connection:
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version=32"
+                )
+            with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
                     for row in connection.execute("PRAGMA table_info(provider_usage_snapshots)")
@@ -226,7 +255,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 '{"timestamp":"2026-08-02T12:00:00+00:00","event":"watcher_started"}\n',
                 encoding="utf-8",
             )
-            with open_storage(root) as connection:
+            with activate_storage_schema(root) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT payload FROM engineering_component_logs WHERE component='inbox'"
@@ -278,7 +307,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute(
                     "INSERT INTO ep_component_logs VALUES(1,'inbox','{\"event\":\"watcher_started\"}','now')"
                 )
-            with open_storage(root) as connection:
+            with activate_storage_schema(root) as connection:
                 self.assertEqual(
                     connection.execute("SELECT payload FROM engineering_status WHERE name='canonical'").fetchone()[0],
                     '{"watcher_state":"WATCHER_IDLE"}',
@@ -328,6 +357,64 @@ class EngineeringStorageTest(unittest.TestCase):
                     connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
                     ENGINEERING_STORAGE_SCHEMA_VERSION,
                 )
+
+    def test_existing_shared_store_requires_controlled_activation_for_a_new_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root):
+                pass
+            from tools.engineering import storage
+
+            migrations = dict(storage.MIGRATIONS)
+            migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
+            with patch.object(storage, "ENGINEERING_STORAGE_SCHEMA_VERSION", ENGINEERING_STORAGE_SCHEMA_VERSION + 1), patch.object(
+                storage, "MIGRATIONS", migrations
+            ):
+                with self.assertRaisesRegex(EngineeringStorageError, "controlled post-merge activation"):
+                    open_storage(root)
+                with activate_storage_schema(root) as connection:
+                    self.assertEqual(
+                        connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
+                        ENGINEERING_STORAGE_SCHEMA_VERSION + 1,
+                    )
+
+    def test_controlled_activation_refuses_active_execution_or_component(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root):
+                pass
+            from tools.engineering import storage
+            from tools.engineering.execution_lease import acquire
+
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("inbox-schema-activation", "repo", "prompt.md", "INITIALIZE")
+            )
+            acquire(root, "inbox-schema-activation", identity="test", instance_id="test-instance")
+            migrations = dict(storage.MIGRATIONS)
+            migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
+            with patch.object(storage, "ENGINEERING_STORAGE_SCHEMA_VERSION", ENGINEERING_STORAGE_SCHEMA_VERSION + 1), patch.object(
+                storage, "MIGRATIONS", migrations
+            ):
+                with self.assertRaisesRegex(EngineeringStorageError, "no active execution lease"):
+                    activate_storage_schema(root)
+                with sqlite3.connect(database_path(root)) as connection:
+                    connection.execute("UPDATE execution_run_leases SET lease_state='RELEASED'")
+                lock = root / WORKSPACE_DIRECTORY / "locks" / "dashboard.lock"
+                lock.parent.mkdir(parents=True)
+                with lock.open("a+", encoding="utf-8") as handle:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    with self.assertRaisesRegex(EngineeringStorageError, "dashboard to stop first"):
+                        activate_storage_schema(root)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def test_storage_activation_command_reports_the_activated_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root):
+                pass
+            from tools.engineering import storage
+
+            self.assertEqual(storage.main(["activate", "--repo", str(root)]), 0)
 
     def test_canonical_records_survive_projection_loss_and_verify_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

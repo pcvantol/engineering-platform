@@ -943,9 +943,10 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
             f"  - Historical Check Observations: `{item.get('historical_observation_count', 'UNAVAILABLE')}`",
         )
     return (
-        "## Managed Autonomy Qualification",
+        "## Run Qualification",
         f"- Execution: `{snapshot['terminal_execution_state']}`",
-        f"- Managed Autonomy: `{snapshot['managed_autonomy_qualification']}`",
+        f"- Run Qualification: `{snapshot['run_qualification']}`",
+        "- Platform Qualification is reported separately and cannot upgrade this run.",
         f"- Fresh Submission: `{snapshot['fresh_submission']}`",
         f"- Retry Parent: `{snapshot['retry_parent']}`",
         f"- Resume Parent: `{snapshot['resume_parent']}`",

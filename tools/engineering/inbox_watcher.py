@@ -57,7 +57,7 @@ from .dependabot_admission import (
     publish_envelope as publish_dependabot_envelope,
     record_enqueued as record_dependabot_enqueued,
 )
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_artifact, record_execution_dismissal, record_submission, store_projection
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_submission, store_projection
 from .execution_lease import reconcile_stale
 from .dashboard_configuration import get as dashboard_configuration
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
@@ -267,6 +267,35 @@ def _preflight_failure_detail(result: object) -> str:
         failed.append(f"{identifier}: {reason} Required action: {recovery}")
     detail = " | ".join(failed) or "Preflight failed without a specific recorded reason."
     return redact_diagnostic(detail, limit=500)
+
+
+def _record_provider_free_admission(
+    repo: Path,
+    *,
+    run_id: str,
+    submission_id: str,
+    execution_mode: str,
+    results: tuple[object, ...],
+) -> tuple[str, tuple[str, ...]]:
+    """Persist a deterministic decision before any provider-backed work starts."""
+    gates: list[dict[str, object]] = []
+    failures: list[str] = []
+    for result in results:
+        timestamp = getattr(result, "timestamp", "unavailable")
+        stage = type(result).__name__.removesuffix("Result")
+        for check in getattr(result, "checks", ()):
+            identifier = str(getattr(check, "identifier", "unavailable"))
+            observed = str(getattr(check, "outcome", "UNAVAILABLE"))
+            gates.append({"gate_id": identifier, "stage": stage, "expected": "PASS", "observed": observed, "verified_at": timestamp})
+            if observed == "FAIL":
+                failures.append(identifier)
+    decision = "FAIL" if failures else "PASS"
+    record_admission_decision(
+        repo, run_id=run_id, submission_id=submission_id, execution_mode=execution_mode,
+        decision=decision, failed_gate_ids=tuple(failures), evidence=tuple(gates),
+        observed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return decision, tuple(failures)
 
 
 def _telemetry_values(repo: Path, run_id: str) -> tuple[float | None, dict[str, int | None], str]:
@@ -1775,10 +1804,11 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         eligible_at = datetime.now(timezone.utc)
         title = _prompt_title(content, source.name)
         producer = submission.producer
+        submission_id = submission.submission_id or job_id
         try:
             record_submission(
                 repo,
-                submission_id=submission.submission_id or job_id,
+                submission_id=submission_id,
                 producer_id=producer.producer_id,
                 producer_type=producer.producer_type,
                 producer_version=producer.producer_version,
@@ -1810,6 +1840,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             raise
         complete_phase(repo, host_preflight_phase, outcome="COMPLETE" if preflight.outcome != "FAIL" else "FAILED")
         if preflight.outcome == "FAIL":
+            _record_provider_free_admission(
+                repo, run_id=run_id, submission_id=submission_id, execution_mode="MANAGED", results=(preflight,)
+            )
             status(
                 repo,
                 "HOST_PREFLIGHT_FAILED",
@@ -1835,6 +1868,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             raise
         complete_phase(repo, workspace_preflight_phase, outcome="COMPLETE" if workspace_preflight.outcome != "FAIL" else "FAILED")
         if workspace_preflight.outcome == "FAIL":
+            _record_provider_free_admission(
+                repo, run_id=run_id, submission_id=submission_id, execution_mode="MANAGED", results=(preflight, workspace_preflight)
+            )
             status(
                 repo,
                 "WORKSPACE_PREFLIGHT_FAILED",
@@ -1860,6 +1896,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             raise
         complete_phase(repo, capability_preflight_phase, outcome="COMPLETE" if capability_preflight.outcome != "FAIL" else "FAILED")
         if capability_preflight.outcome == "FAIL":
+            _record_provider_free_admission(
+                repo, run_id=run_id, submission_id=submission_id, execution_mode="MANAGED", results=(preflight, workspace_preflight, capability_preflight)
+            )
             status(repo, "CAPABILITY_PREFLIGHT_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), run_id=None,
                    current_action="Capability Preflight blokkeert het claimen van Inbox-werk.",
                    diagnostic=drift_summary(capability_preflight.drift_evidence))
@@ -1871,6 +1910,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 diagnostic=_preflight_failure_detail(capability_preflight),
             )
             return 1
+        _record_provider_free_admission(
+            repo, run_id=run_id, submission_id=submission_id, execution_mode="MANAGED", results=(preflight, workspace_preflight, capability_preflight)
+        )
         if _already_seen(areas, job_id):
             status(
                 repo,

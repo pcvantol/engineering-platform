@@ -299,14 +299,21 @@ def terminal_snapshot(
         ),
         "observed_at": _now(),
     }
-    snapshot["managed_autonomy_qualification"], snapshot["qualification_failure_reasons"] = (
-        evaluate(snapshot)
-    )
+    snapshot["run_qualification"], snapshot["qualification_failure_reasons"] = evaluate(snapshot)
+    # Compatibility projection retained for existing consumers.  It has the
+    # same run-scoped meaning and must never be mistaken for platform-wide
+    # qualification evidence.
+    snapshot["managed_autonomy_qualification"] = snapshot["run_qualification"]
     return snapshot
 
 
 def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
     reasons: list[str] = []
+    terminal = snapshot.get("terminal_execution_state")
+    if terminal == "FAILED":
+        return "NOT_QUALIFIED", ["TERMINAL_EXECUTION_FAILED"]
+    if terminal == "BLOCKED":
+        return "NOT_QUALIFIED", ["TERMINAL_EXECUTION_BLOCKED"]
     if snapshot.get("fresh_submission") != "YES":
         reasons.append("FRESH_SUBMISSION_UNPROVEN")
     if snapshot.get("terminal_execution_state") != "COMPLETE":
