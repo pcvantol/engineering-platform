@@ -7,6 +7,10 @@ class ValidationProfileTests(unittest.TestCase):
         profile = classify(["docs/engineering/EXECUTION_HOST_OPERATIONS.md", "docs/development/PLAN.md"])
         self.assertEqual(profile.tier, "DOCUMENTATION")
 
+    def test_root_engineering_documents_remain_documentation_only(self) -> None:
+        profile = classify(["BOOTSTRAP.md", "ENGINEERING_METHOD.md", "PROMPT_INITIALIZATION.md"])
+        self.assertEqual(profile.tier, "DOCUMENTATION")
+
     def test_dashboard_requires_browser_validation(self) -> None:
         self.assertEqual(classify(["tools/engineering/dashboard.py"]).tier, "DASHBOARD")
 
