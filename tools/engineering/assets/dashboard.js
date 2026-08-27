@@ -103,6 +103,35 @@ function reviewerCapabilityLabel(value, fallback = t("format.not_available")) {
   const raw = String(value || "").trim();
   return raw ? enumLabel(raw.toUpperCase(), raw) : fallback;
 }
+function driftPresentationValue(field, drift = {}) {
+  const value = String(drift?.[field] || "").trim();
+  if (!value) return t("format.not_available");
+  const component = String(drift?.affected_component || "").trim();
+  if (field === "severity" && value === "BLOCKING") return t("technical.drift.severity.blocking");
+  if (component !== "managed_expected_branch") return value;
+  const branch = (
+    /^Managed target is not on the expected branch\s+(.+)\.$/.exec(String(drift.observed_value || ""))?.[1] ||
+    /^Switch the repository to\s+(.+)\s+before submitting work\.$/.exec(String(drift.resolution_recommendation || ""))?.[1] ||
+    "main"
+  );
+  if (field === "affected_component") return t("technical.drift.component.managed_expected_branch");
+  if (field === "expected_value" && /^managed_expected_branch:\s*PASS$/i.test(value)) {
+    return t("technical.drift.expected.managed_expected_branch", { branch });
+  }
+  if (field === "observed_value" && /^Managed target is not on the expected branch\s+.+\.$/.test(value)) {
+    return t("technical.drift.observed.managed_expected_branch", { branch });
+  }
+  if (field === "resolution_recommendation" && /^Switch the repository to\s+.+\s+before submitting work\.$/.test(value)) {
+    return t("technical.drift.resolution.managed_expected_branch", { branch });
+  }
+  return value;
+}
+function technicalMachineLabel(id, value, keyPrefix) {
+  const element = $(id), raw = String(value || "").trim();
+  if (!element) return;
+  element.textContent = raw ? t(`${keyPrefix}.${raw}`, {}, raw) : t("format.not_available");
+  element.title = raw;
+}
 function sanitizeFreeText(value, maximumLength, multiline = false) {
   const normalized = String(value ?? "")
     .normalize("NFC")
@@ -494,21 +523,35 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   button.disabled = false;
 }
 let latestCodexCliUpdateStatus = null;
+function codexCliVersionParts(value) {
+  const match = typeof value === "string" && /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value);
+  return match ? match.slice(1, 4).map(Number) : null;
+}
+function codexCliUpdateIsNewer(current, latest) {
+  const currentParts = codexCliVersionParts(current), latestParts = codexCliVersionParts(latest);
+  if (!currentParts || !latestParts) return false;
+  return latestParts.some((part, index) => part !== currentParts[index]
+    && latestParts.slice(0, index).every((previous, previousIndex) => previous === currentParts[previousIndex])
+    && part > currentParts[index]);
+}
 function renderCodexCliUpdate(status) {
   const button = $("codexCliUpdate"), message = $("codexCliUpdateStatus");
   if (!button || !message) return;
-  latestCodexCliUpdateStatus = status;
   const current = typeof status?.current_version === "string" ? status.current_version : null,
     latest = typeof status?.latest_version === "string" ? status.latest_version : null,
+    updateAvailable = Boolean(status?.update_available && codexCliUpdateIsNewer(current, latest)),
     executionActive = isActiveRun(latestStatus || {});
-  button.hidden = !status?.update_available;
-  button.disabled = Boolean(status?.update_available && executionActive);
+  // A pre-install polling response can arrive after the verified install response.
+  // Never present an update unless its version is strictly newer than the active CLI.
+  latestCodexCliUpdateStatus = { ...status, update_available: updateAvailable };
+  button.hidden = !updateAvailable;
+  button.disabled = Boolean(updateAvailable && executionActive);
   button.title = button.disabled ? t("ui.codex_cli_update_execution_active") : "";
-  if (status?.update_available && executionActive) {
+  if (updateAvailable && executionActive) {
     message.textContent = t("ui.codex_cli_update_execution_active");
-  } else if (status?.update_available && latest) {
+  } else if (updateAvailable && latest) {
     message.textContent = t("ui.codex_cli_update_available", { version: latest });
-  } else if (status?.state === "current" && current) {
+  } else if (current) {
     message.textContent = t("ui.codex_cli_current", { version: current });
   } else {
     message.textContent = t("ui.codex_cli_update_unavailable");
@@ -544,6 +587,9 @@ function installCodexCliUpdate() {
         if (!result.ok) throw Error(result.body?.error || "codex_cli_update_failed");
         const version = typeof result.body?.current_version === "string" ? result.body.current_version : "";
         if (version) $("rateLimitProvider").textContent = t("ui.codex_cli_provider", { version });
+        latestCodexCliUpdateStatus = version
+          ? { state: "current", update_available: false, current_version: version, latest_version: version }
+          : null;
         button.hidden = true;
         message.textContent = result.body?.updated
           ? t("ui.codex_cli_updated", { version })
@@ -904,6 +950,46 @@ function logTimestampText(value) {
   if (!Number.isFinite(parsed)) return value ? String(value) : "—";
   return locale.logDateTime(new Date(parsed));
 }
+function localDayStart(value = new Date()) {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+}
+function selectedLogTimeRange() {
+  const preset = $("logTimePreset")?.value || "";
+  if (preset === "today" || preset === "yesterday") {
+    const now = new Date(), offset = preset === "yesterday" ? -1 : 0,
+      start = localDayStart(new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset));
+    return { start, end: start + 24 * 60 * 60 * 1000 };
+  }
+  if (preset === "day") {
+    const value = $("logSpecificDate")?.value;
+    if (!value) return null;
+    const start = Date.parse(`${value}T00:00`);
+    return Number.isFinite(start) ? { start, end: start + 24 * 60 * 60 * 1000 } : null;
+  }
+  if (preset === "range") {
+    const from = Date.parse($("logDateFrom")?.value || ""), to = Date.parse($("logDateTo")?.value || "");
+    if (!Number.isFinite(from) && !Number.isFinite(to)) return null;
+    return {
+      start: Number.isFinite(from) ? from : Number.NEGATIVE_INFINITY,
+      end: Number.isFinite(to) ? to : Number.POSITIVE_INFINITY,
+      inclusiveEnd: true,
+    };
+  }
+  return null;
+}
+function updateLogTimeFilterControls() {
+  const preset = $("logTimePreset")?.value || "";
+  $("logSpecificDateControl").hidden = preset !== "day";
+  $("logDateFromControl").hidden = preset !== "range";
+  $("logDateToControl").hidden = preset !== "range";
+}
+function entryMatchesLogTimeRange(entry) {
+  const range = selectedLogTimeRange();
+  if (!range) return true;
+  const timestamp = logTimestamp(entry);
+  if (!timestamp) return false;
+  return timestamp >= range.start && (range.inclusiveEnd ? timestamp <= range.end : timestamp < range.end);
+}
 function loadComponentLogs() {
   if (componentLogsLoaded) return;
   $("loadComponentLogs").disabled = true;
@@ -1145,10 +1231,10 @@ function renderPreflightPresentation(snapshot = {}) {
   const drift = snapshot.current_drift || {}, card = $("driftDiagnosticsCard");
   if (card) {
     card.hidden = !drift.drift_id;
-    const values = [["driftSeverity", drift.severity], ["driftComponent", drift.affected_component],
-      ["driftExpected", drift.expected_value], ["driftObserved", drift.observed_value],
-      ["driftResolution", drift.resolution_recommendation]];
-    for (const [id, value] of values) if ($(id)) $(id).textContent = value || t("format.not_available");
+    const values = [["driftSeverity", "severity"], ["driftComponent", "affected_component"],
+      ["driftExpected", "expected_value"], ["driftObserved", "observed_value"],
+      ["driftResolution", "resolution_recommendation"]];
+    for (const [id, field] of values) if ($(id)) $(id).textContent = driftPresentationValue(field, drift);
   }
 }
 function preflightNeedsAttention(preflight) {
@@ -1877,8 +1963,8 @@ function renderHealthStatus(x, snapshot = {}) {
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || t("format.not_available");
   $("executionHostVersion").textContent = executionHost.version || t("format.not_available");
-  $("executionHostRuntime").textContent = executionHost.runtime || t("format.not_available");
-  $("executionHostTransport").textContent = executionHost.runtime_prompt_transport || t("format.not_available");
+  technicalMachineLabel("executionHostRuntime", executionHost.runtime, "technical.runtime_value");
+  technicalMachineLabel("executionHostTransport", executionHost.runtime_prompt_transport, "technical.runtime_transport_value");
   renderWorkspaceGitLock(snapshot.workspace_git_lock);
   // Older dashboard fixtures and cached shells do not have Level 3 fields.
   // Keep the canonical status renderer backward compatible while they refresh.
@@ -3764,6 +3850,7 @@ function filteredComponentLogEntries(component) {
   return componentLogEntries[component]
     .filter((entry) => !level || entry.level === level)
     .filter((entry) => !events.size || events.has(String(entry.event || "")))
+    .filter(entryMatchesLogTimeRange)
     .filter(
       (entry) =>
         !needle ||
@@ -3901,8 +3988,14 @@ resetLogFiltersButton.setAttribute("aria-label", resetLogFiltersLabel);
 resetLogFiltersButton.addEventListener("click", () => {
   $("logFilter").value = "";
   $("logLevelFilter").value = "";
+  $("logTimePreset").value = "";
+  $("logSpecificDate").value = "";
+  $("logDateFrom").value = "";
+  $("logDateTo").value = "";
   syncDashboardSelectPicker($("logLevelFilter"));
+  syncDashboardSelectPicker($("logTimePreset"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
+  updateLogTimeFilterControls();
   independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
   clearAllComponentLogSelections();
   renderComponentLogs();
@@ -3918,6 +4011,15 @@ $("logLevelFilter").addEventListener("change", () => {
   clearAllComponentLogSelections();
   renderComponentLogs();
 });
+for (const id of ["logTimePreset", "logSpecificDate", "logDateFrom", "logDateTo"]) {
+  $(id).addEventListener("change", () => {
+    updateLogTimeFilterControls();
+    independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+    clearAllComponentLogSelections();
+    renderComponentLogs();
+  });
+}
+updateLogTimeFilterControls();
 renderComponentLogs();
 function clearComponentLog(component, button) {
   const name =

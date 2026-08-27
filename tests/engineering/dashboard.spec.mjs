@@ -239,6 +239,16 @@ test.describe("Engineering Status browser smoke", () => {
     })).toBe(true);
   });
 
+  test("does not leave an empty configuration status container between grouped settings", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const configuration = page.locator("#configuration");
+    await configuration.evaluate((element) => { element.open = true; });
+    const statusContainer = configuration.locator(":scope > .configuration-controls");
+    await expect(statusContainer).toBeHidden();
+    await page.locator("#configurationStatus").evaluate((element) => { element.textContent = "Saved locally."; });
+    await expect(statusContainer).toBeVisible();
+  });
+
   test("places writable log settings in Logs and explains them", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const logs = page.locator("#componentLogs");
@@ -3156,6 +3166,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardErrorModalText")).toContainText("gesynchroniseerd met de upstream");
     await expect(page.locator("#dashboardErrorModalRecover")).toBeVisible();
     await expect(page.locator("#dashboardErrorModalRecover")).toHaveText(DASHBOARD_MESSAGES.nl["action.recover"]);
+    await page.locator("#dashboardErrorModalRecover").hover();
+    await expect(page.locator("#dashboardErrorModalRecover")).toHaveCSS("background-color", "rgb(240, 182, 106)");
     await page.locator("#dashboardErrorModalRecover").click();
     await expect.poll(() => recoveryRequested).toBe(true);
     await expect(modal).not.toBeVisible();
@@ -4111,13 +4123,13 @@ test.describe("Engineering Status browser smoke", () => {
     // timeout independent from unrelated worker contention in the full run.
     testInfo.setTimeout(60_000);
     const expectations = [
-      ["en", "Search", "Search all fields", "Level", "All levels"],
-      ["nl", "Zoeken", "Zoek in alle velden", "Niveau", "Alle niveaus"],
-      ["de", "Suchen", "Alle Felder durchsuchen", "Stufe", "Alle Stufen"],
-      ["fr", "Rechercher", "Rechercher dans tous les champs", "Niveau", "Tous les niveaux"],
-      ["es", "Buscar", "Buscar en todos los campos", "Nivel", "Todos los niveles"],
+      ["en", "Search", "Search all fields", "Level", "All levels", "Time period", ["All dates", "Today", "Yesterday", "Specific day", "Custom range"]],
+      ["nl", "Zoeken", "Zoek in alle velden", "Niveau", "Alle niveaus", "Tijdvenster", ["Alle datums", "Vandaag", "Gisteren", "Specifieke dag", "Aangepast bereik"]],
+      ["de", "Suchen", "Alle Felder durchsuchen", "Stufe", "Alle Stufen", "Zeitraum", ["Alle Daten", "Heute", "Gestern", "Bestimmter Tag", "Benutzerdefinierter Zeitraum"]],
+      ["fr", "Rechercher", "Rechercher dans tous les champs", "Niveau", "Tous les niveaux", "Période", ["Toutes les dates", "Aujourd’hui", "Hier", "Jour précis", "Plage personnalisée"]],
+      ["es", "Buscar", "Buscar en todos los campos", "Nivel", "Todos los niveles", "Periodo", ["Todas las fechas", "Hoy", "Ayer", "Día específico", "Intervalo personalizado"]],
     ];
-    for (const [language, search, placeholder, level, allLevels] of expectations) {
+    for (const [language, search, placeholder, level, allLevels, timePeriod, timeOptions] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
@@ -4125,7 +4137,67 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator("#logFilter")).toHaveAttribute("placeholder", placeholder);
       await expect(page.locator("label[for=logLevelFilter]")).toContainText(level);
       await expect(page.locator("#logLevelFilter option[value='']")).toHaveText(allLevels);
+      await expect(page.locator("label[for=logTimePreset]")).toContainText(timePeriod);
+      await expect(page.locator("#logTimePreset option")).toHaveText(timeOptions);
     }
+  });
+
+  test("filters component logs by a specific day and an exact local time range", async ({ page }) => {
+    await page.route("**/api/logs/**", (route) => route.fulfill({ contentType: "application/x-ndjson", body: "" }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    await page.waitForFunction(() => componentLogsLoaded);
+    await page.evaluate(() => {
+      componentLogEntries.inbox = [
+        { line: 1, timestamp: new Date(2026, 7, 16, 9, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "day", details: "early-entry" },
+        { line: 2, timestamp: new Date(2026, 7, 16, 11, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "range", details: "range-entry" },
+        { line: 3, timestamp: new Date(2026, 7, 17, 9, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "other", details: "other day" },
+      ];
+      componentLogEntries.dashboard = [];
+      renderComponentLogs();
+    });
+    await page.locator("#logTimePreset").selectOption("day");
+    await expect(page.locator("#logSpecificDateControl")).toBeVisible();
+    await page.locator("#logSpecificDate").fill("2026-08-16");
+    await expect(page.locator("#inboxComponentLog")).toContainText("early-entry");
+    await expect(page.locator("#inboxComponentLog")).toContainText("range-entry");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("other day");
+
+    await page.locator("#logTimePreset").selectOption("range");
+    await expect(page.locator("#logDateFromControl")).toBeVisible();
+    await page.locator("#logDateFrom").fill("2026-08-16T10:30");
+    await page.locator("#logDateTo").fill("2026-08-16T11:30");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("early-entry");
+    await expect(page.locator("#inboxComponentLog")).toContainText("range-entry");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("other day");
+  });
+
+  test("filters component logs by the local today and yesterday presets", async ({ page }) => {
+    await page.route("**/api/logs/**", (route) => route.fulfill({ contentType: "application/x-ndjson", body: "" }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
+    await page.waitForFunction(() => componentLogsLoaded);
+    await page.evaluate(() => {
+      const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9),
+        yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9),
+        older = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2, 9);
+      componentLogEntries.inbox = [
+        { line: 1, timestamp: today.toISOString(), level: "INFO", event: "watcher_started", runId: "today", details: "today-entry" },
+        { line: 2, timestamp: yesterday.toISOString(), level: "INFO", event: "watcher_started", runId: "yesterday", details: "yesterday-entry" },
+        { line: 3, timestamp: older.toISOString(), level: "INFO", event: "watcher_started", runId: "older", details: "older-entry" },
+      ];
+      componentLogEntries.dashboard = [];
+      renderComponentLogs();
+    });
+    await page.locator("#logTimePreset").selectOption("today");
+    await expect(page.locator("#inboxComponentLog")).toContainText("today-entry");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("yesterday-entry");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("older-entry");
+
+    await page.locator("#logTimePreset").selectOption("yesterday");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("today-entry");
+    await expect(page.locator("#inboxComponentLog")).toContainText("yesterday-entry");
+    await expect(page.locator("#inboxComponentLog")).not.toContainText("older-entry");
   });
 
   test("localizes component log table headings for every supported language", async ({ page }) => {
@@ -5280,6 +5352,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#codexCliUpdateStatus")).toHaveText("De Codex CLI-update is beschikbaar, maar kan pas worden geïnstalleerd wanneer geen uitvoering actief is.");
   });
 
+  test("never renders a stale Codex CLI update response for the installed version", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0, queue_items: [] }, rate_limits: { provider: "Codex CLI", provider_version: "0.150.0", windows: [], reset_credits: 0 } },
+    }));
+    await page.route("**/api/codex-cli-update", (route) => route.fulfill({
+      // This is the old poll response that may arrive just after an install.
+      json: { state: "update_available", update_available: true, current_version: "0.150.0", latest_version: "0.150.0" },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const updateCheck = page.waitForResponse("**/api/codex-cli-update");
+    await page.locator("#rateLimits").evaluate((element) => { element.open = true; });
+    await updateCheck;
+    await expect(page.locator("#codexCliUpdate")).toBeHidden();
+    await expect(page.locator("#codexCliUpdateStatus")).toHaveText("Codex CLI is actueel (0.150.0).");
+  });
+
   test("exposes the structured Engineering Platform health projection", async ({ request }) => {
     const response = await request.get(`${dashboardUrl}/health`);
     expect([200, 503]).toContain(response.status());
@@ -5458,29 +5547,98 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#action")).toHaveText("Codex voert de uitvoering uit");
   });
 
-  test("lays out operational-overview cards in two columns only when its container has room", async ({ page }) => {
+  test("places diagnosis beside the current deviation when its container has room", async ({ page }) => {
     await page.setViewportSize({ width: 920, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
       watcher_state: "HOST_PREFLIGHT_FAILED",
       current_phase: "INITIALIZE",
       diagnostic: "Host preflight failed",
-    }, { host_preflight: { outcome: "FAILED" } }));
+    }, {
+      host_preflight: { outcome: "FAILED" },
+      current_drift: {
+        drift_id: "managed_expected_branch",
+        severity: "BLOCKING",
+        affected_component: "managed_expected_branch",
+        expected_value: "managed_expected_branch: PASS",
+        observed_value: "Managed target is not on the expected branch main.",
+        resolution_recommendation: "Switch the repository to main before submitting work.",
+      },
+    }));
 
     const columns = async () => page.locator("#technicalDetails .technical-grid").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").length,
     );
     await expect.poll(columns).toBe(2);
-    const [gridBounds, diagnosisBounds] = await Promise.all([
-      page.locator("#technicalDetails .technical-grid").boundingBox(),
+    const [driftBounds, diagnosisBounds] = await Promise.all([
+      page.locator("#driftDiagnosticsCard").boundingBox(),
       page.locator("#technicalDiagnosticsCard").boundingBox(),
     ]);
     expect(diagnosisBounds).not.toBeNull();
-    expect(gridBounds).not.toBeNull();
-    expect(Math.abs(diagnosisBounds.width - gridBounds.width)).toBeLessThanOrEqual(1);
+    expect(driftBounds).not.toBeNull();
+    expect(Math.abs(diagnosisBounds.width - driftBounds.width)).toBeLessThanOrEqual(1);
+    expect(diagnosisBounds.x).toBeGreaterThan(driftBounds.x);
+    expect(Math.abs(diagnosisBounds.y - driftBounds.y)).toBeLessThanOrEqual(1);
 
     await page.setViewportSize({ width: 760, height: 844 });
     await expect.poll(columns).toBe(1);
+  });
+
+  test("localizes projected managed-branch drift in every supported locale", async ({ page }) => {
+    const drift = {
+      drift_id: "managed-branch-drift",
+      severity: "BLOCKING",
+      affected_component: "managed_expected_branch",
+      expected_value: "managed_expected_branch: PASS",
+      observed_value: "Managed target is not on the expected branch main.",
+      resolution_recommendation: "Switch the repository to main before submitting work.",
+    };
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await waitForDashboardReady(page);
+      await selectDashboardLocale(page, language);
+      await page.locator("#autoRefresh").uncheck();
+      await page.evaluate((currentDrift) => r({
+        watcher_state: "WORKSPACE_PREFLIGHT_FAILED",
+        current_phase: "INITIALIZE",
+        diagnostic: "Workspace preflight blocked by managed_expected_branch.",
+      }, { current_drift: currentDrift }), drift);
+      await expect(page.locator("#driftSeverity")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.drift.severity.blocking"],
+      );
+      await expect(page.locator("#driftComponent")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.drift.component.managed_expected_branch"],
+      );
+      await expect(page.locator("#driftExpected")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.drift.expected.managed_expected_branch"].replace("{branch}", "main"),
+      );
+      await expect(page.locator("#driftObserved")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.drift.observed.managed_expected_branch"].replace("{branch}", "main"),
+      );
+      await expect(page.locator("#driftResolution")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.drift.resolution.managed_expected_branch"].replace("{branch}", "main"),
+      );
+    }
+  });
+
+  test("localizes runtime and transport machine codes in every supported locale", async ({ page }) => {
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await waitForDashboardReady(page);
+      await selectDashboardLocale(page, language);
+      await page.locator("#autoRefresh").uncheck();
+      await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE" }, {
+        execution_host: { runtime: "codex_cli", runtime_prompt_transport: "icloud_inbox" },
+      }));
+      await expect(page.locator("#executionHostRuntime")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.runtime_value.codex_cli"],
+      );
+      await expect(page.locator("#executionHostTransport")).toHaveText(
+        DASHBOARD_MESSAGES[language]["technical.runtime_transport_value.icloud_inbox"],
+      );
+      await expect(page.locator("#executionHostRuntime")).toHaveAttribute("title", "codex_cli");
+      await expect(page.locator("#executionHostTransport")).toHaveAttribute("title", "icloud_inbox");
+    }
   });
 
   test("shows technical diagnosis only for active or attention-needing executions", async ({ page }) => {
@@ -7960,6 +8118,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(repair).toHaveCSS("background-color", "rgb(59, 40, 27)");
     await expect(repair).toHaveCSS("border-color", "rgb(240, 182, 106)");
     await expect(repair).toHaveCSS("border-radius", "8px");
+    // The sticky readiness banner deliberately sits above page content and
+    // makes native pointer hover non-deterministic in headless Chromium.
+    // Verify the exact design-system rule while retaining the real recovery
+    // interaction below as a separate behavioral assertion.
+    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    expect(stylesheet).toContain(
+      ".queue-blocker__repair:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}",
+    );
     await dispatchDashboardPointerClick(repair);
     await expect(page.locator("#confirmationModal")).toBeVisible();
     await expect(page.locator("#confirmationModalText")).toContainText("herstart de Inbox-watcher");

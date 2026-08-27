@@ -178,6 +178,11 @@ Provider installation is a confirmed operational action and uses the compact
 orange treatment; provider sign-out remains the distinct compact rose
 destructive treatment.
 
+The Codex CLI update action appears only when the observed available semantic
+version is strictly newer than the verified installed version. A delayed
+pre-update poll must never recreate the action after a successful update; the
+current verified version remains the authoritative presentation.
+
 Interactive data rows use their parent table's category tint across every
 cell on hover and selection, with only the shared leading selection marker.
 Text actions inside such a row do not add an underline or a separate hover
@@ -206,6 +211,14 @@ count and never report a live Codex-progress or token signal it does not have.
 
 Log copy means the **currently visible result set**: after filtering, sorting
 and current-page pagination. It includes headers and no hidden rows.
+
+Component-log filtering is read-only and operates on the bounded entries
+already loaded in the browser. In addition to search, level and event, the
+operator can select **Today**, **Yesterday**, one local calendar day, or a
+local from/to datetime range. Today and Yesterday use the browser's local
+calendar boundary; a custom range permits either endpoint and includes its end
+instant. Filtering never changes retained evidence, server-side logs or the
+content of an unfiltered export.
 
 Percentages are locale-formatted with exactly **one fractional digit**. This
 applies to live metrics, limits and telemetry alike, so precision does not
@@ -484,6 +497,11 @@ literal into `dashboard.js`. Keep operation language concrete:
 - Error-dialog title, dismissal and preflight recovery copy are part of the
   same five-language contract. A browser-supplied default label is never an
   acceptable fallback for console feedback.
+- Dynamic preflight/drift evidence remains machine-readable in persistence and
+  exports. The dashboard presents known evidence codes through deterministic
+  catalogue keys and parameters; it must never invoke an AI service to
+  translate an operational diagnosis. Unknown or redacted evidence follows
+  the existing safe generic-diagnostic path.
 
 ## 9. Required design-review checklist
 
