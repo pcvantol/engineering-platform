@@ -569,7 +569,7 @@ test.describe("Engineering Status browser smoke", () => {
       const workspace = document.querySelector("#workspaceCard");
       window.renderWorkspaceWorktrees({ available: true, worktrees: [
         { path: "/workspace", branch: "main", commit: "123456789abc" },
-        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456", removable: true },
+        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456" },
       ] });
       if (!document.querySelector("#workspaceOpenPullRequests")) {
         const pullRequests = document.createElement("section");
@@ -581,7 +581,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).toContainText("Lokale worktrees en branches");
     await expect(worktrees).toContainText("codex/polish");
     await expect(worktrees).toContainText("/tmp/polish");
-    await expect(worktrees.locator(".workspace-worktrees__remove")).toHaveText("Verwijder worktree");
+    await expect(worktrees.locator(".workspace-worktrees__refresh")).toHaveCount(1);
+    await expect(worktrees.locator(".workspace-worktrees__remove")).toHaveCount(0);
     await expect(worktrees).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Scan branches voor opruiming");
     await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Switch naar FF main");
@@ -605,12 +606,48 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).not.toContainText("codex/polish");
   });
 
+  test("analyses every worktree before showing a safe removal action", async ({ page }) => {
+    const projection = { available: true, worktrees: [
+      { path: "/workspace", branch: "main", commit: "123456789abc" },
+      { path: "/tmp/merged", branch: "codex/merged", commit: "abcdef123456" },
+      { path: "/tmp/open", branch: "codex/open", commit: "abcdef123457" },
+    ] };
+    await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: {
+      available: true, worktrees: [
+        { path: "/workspace", branch: "main", decision: "baseline", reason: "main_baseline", removable: false },
+        { path: "/tmp/merged", branch: "codex/merged", decision: "removable", reason: "safe_to_remove", removable: true, pull_request: { number: 964, url: "https://github.com/pcvantol/djconnect/pull/964", state: "MERGED" } },
+        { path: "/tmp/open", branch: "codex/open", decision: "keep", reason: "pull_request_open", removable: false, pull_request: { number: 967, url: "https://github.com/pcvantol/djconnect/pull/967", state: "OPEN" } },
+      ],
+    } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
+    const worktrees = page.locator("#workspaceWorktrees");
+    await expect(worktrees).toContainText("Analyse is nog niet uitgevoerd.");
+    await dispatchDashboardPointerClick(worktrees.locator(".workspace-worktrees__refresh"));
+    await expect(worktrees).toContainText("Veilig te verwijderen");
+    await expect(worktrees).toContainText("de pull request staat nog open");
+    await expect(worktrees.getByRole("link", { name: "Pull request #964 · MERGED" })).toBeVisible();
+    await expect(worktrees.getByRole("link", { name: "Pull request #967 · OPEN" })).toBeVisible();
+    await expect(worktrees.getByRole("button", { name: "Verwijder worktree" })).toHaveCount(1);
+  });
+
   test("confirms a safe per-worktree removal in the shared destructive modal", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     // This interaction supplies its own worktree projection. Keep the
     // dashboard's unrelated initial snapshot from replacing that fixture
     // while the confirmation flow is under test.
-    await page.route("**/api/dashboard-snapshot", (route) => route.abort());
+    const worktreeProjection = { available: true, worktrees: [
+      { path: "/workspace", branch: "main", commit: "123456789abc" },
+      { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", commit: "abcdef123456" },
+    ] };
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: worktreeProjection } }));
+    await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: { available: true, worktrees: [
+      { path: "/workspace", branch: "main", decision: "baseline", reason: "main_baseline", removable: false },
+      { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", decision: "removable", reason: "safe_to_remove", removable: true, pull_request: { number: 964, url: "https://github.com/pcvantol/djconnect/pull/964", state: "MERGED" } },
+    ] } }));
     let removalRequests = 0;
     await page.route("**/api/safe-worktree-removal", async (route) => {
       removalRequests += 1;
@@ -627,10 +664,8 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => window.renderWorkspaceWorktrees({ available: true, worktrees: [
-      { path: "/workspace", branch: "main", commit: "123456789abc" },
-      { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", commit: "abcdef123456", removable: true },
-    ] }));
+    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), worktreeProjection);
+    await dispatchDashboardPointerClick(page.locator("#workspaceWorktrees .workspace-worktrees__refresh"));
 
     const remove = page.getByRole("button", { name: "Verwijder worktree" });
     await expect(remove).toHaveCSS("border-color", "rgb(240, 128, 149)");
@@ -1612,7 +1647,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↓", "↑", "i", "↺", "⌧", "▤", "✓", "✦", "⋯", "—", "⌄",
+      "", "⧉", "↓", "↑", "i", "↺", "↻", "⌧", "▤", "✓", "✦", "⋯", "—", "⌄",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A

@@ -2057,6 +2057,10 @@ function renderWorkspaceGit(workspaceGit) {
   $("workspaceOriginMain").hidden = !workspaceGit.origin_main_available;
   $("workspaceBranchMain").hidden = !workspaceGit.main_action_available;
 }
+let worktreeRemovalAnalysis = null;
+function worktreeAnalysisKey(worktree) {
+  return `${String(worktree?.path || "")}\u0000${String(worktree?.branch || "")}`;
+}
 function renderWorkspaceWorktrees(projection) {
   const workspace = $("workspaceCard");
   if (!workspace) return;
@@ -2073,8 +2077,18 @@ function renderWorkspaceWorktrees(projection) {
     workspace.insertBefore(section, anchor || null);
   }
   section.replaceChildren();
-  const heading = document.createElement("strong");
-  heading.textContent = t("workspace.local_worktrees");
+  const heading = document.createElement("div");
+  heading.className = "workspace-worktrees__header";
+  const headingText = document.createElement("strong");
+  headingText.textContent = t("workspace.local_worktrees");
+  const analyze = document.createElement("button");
+  analyze.className = "workspace-worktrees__refresh";
+  analyze.type = "button";
+  analyze.title = t("workspace.worktree_analysis_refresh");
+  analyze.setAttribute("aria-label", t("workspace.worktree_analysis_refresh"));
+  analyze.textContent = "↻";
+  analyze.addEventListener("click", () => void refreshWorktreeRemovalAnalysis(analyze));
+  heading.append(headingText, analyze);
   section.append(heading);
   const available = projection?.available === true;
   const worktrees = Array.isArray(projection?.worktrees) ? projection.worktrees : [];
@@ -2089,6 +2103,8 @@ function renderWorkspaceWorktrees(projection) {
     return;
   }
   const list = document.createElement("ul");
+  const analyses = new Map(Array.isArray(worktreeRemovalAnalysis?.worktrees)
+    ? worktreeRemovalAnalysis.worktrees.map((item) => [worktreeAnalysisKey(item), item]) : []);
   worktrees.forEach((worktree) => {
     const item = document.createElement("li");
     const branch = document.createElement("code");
@@ -2103,7 +2119,28 @@ function renderWorkspaceWorktrees(projection) {
       : String(worktree?.path || t("format.not_available"));
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
-    if (worktree?.removable === true && typeof worktree?.path === "string" && typeof worktree?.branch === "string") {
+    const analysis = analyses.get(worktreeAnalysisKey(worktree));
+    if (analysis && worktree?.branch !== "main") {
+      const conclusion = document.createElement("p");
+      conclusion.className = `workspace-worktrees__analysis workspace-worktrees__analysis--${analysis.removable === true ? "removable" : "keep"}`;
+      conclusion.textContent = t(`workspace.worktree_analysis_reason.${String(analysis.reason || "pull_request_unverified")}`);
+      item.append(conclusion);
+      if (analysis.pull_request?.url && Number.isInteger(analysis.pull_request?.number)) {
+        const pr = document.createElement("a");
+        pr.className = "workspace-worktrees__pr";
+        pr.href = analysis.pull_request.url;
+        pr.target = "_blank";
+        pr.rel = "noreferrer";
+        pr.textContent = t("workspace.worktree_analysis_pr", { number: analysis.pull_request.number, state: String(analysis.pull_request.state || "") });
+        item.append(pr);
+      }
+    } else if (worktree?.branch !== "main") {
+      const conclusion = document.createElement("p");
+      conclusion.className = "workspace-worktrees__analysis";
+      conclusion.textContent = t("workspace.worktree_analysis_not_run");
+      item.append(conclusion);
+    }
+    if (analysis?.removable === true && typeof worktree?.path === "string" && typeof worktree?.branch === "string") {
       const remove = document.createElement("button");
       remove.className = "workspace-worktrees__remove";
       remove.type = "button";
@@ -2115,6 +2152,25 @@ function renderWorkspaceWorktrees(projection) {
   });
   section.append(list);
   if (branchActions) section.append(branchActions);
+}
+async function refreshWorktreeRemovalAnalysis(button) {
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/worktree-removal-analysis", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const outcome = await response.json();
+    if (!response.ok || outcome?.available !== true || !Array.isArray(outcome?.worktrees)) {
+      throw Error(outcome?.error || t("workspace.worktree_analysis_failed"));
+    }
+    worktreeRemovalAnalysis = outcome;
+    const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" }).then((result) => result.ok ? result.json() : null);
+    if (snapshot?.workspace_worktrees) renderWorkspaceWorktrees(snapshot.workspace_worktrees);
+  } catch (error) {
+    showDashboardError(error.message || t("workspace.worktree_analysis_failed"), t("workspace.worktree_analysis_failed"));
+  } finally {
+    button.disabled = false;
+  }
 }
 let openPullRequestMonitorIntervalMs = 30_000;
 let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;

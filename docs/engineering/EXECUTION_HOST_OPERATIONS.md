@@ -209,15 +209,29 @@ yellow actions are deliberately separate from terminal-status colours:
 - **Switch to FF main** is shown only when `HEAD` differs from `origin/main`.
   After confirmation it refuses dirty workspaces, unavailable `origin`, or
   local commits on `main`; it switches only to the configured `main` branch
-  and fast-forwards only. A yellow result modal reports either the completed
-  switch or the precise safe refusal.
-- **Remove worktree** is shown per non-`main` worktree and always opens the
-  shared destructive confirmation modal. Before removing anything, the server
-  freshly verifies that the dashboard's main worktree is clean and synchronized,
-  the selected worktree is clean, its remote branch is absent, and its content
-  exactly matches `main`. A failed or incomplete check removes nothing. The
-  action removes only the worktree; the now-unchecked-out branch remains for
-  the existing reviewed stale-branch cleanup action.
+  and fast-forwards only. The acknowledgement is sent before Engineering
+  Platform fully restarts in a controlled order: Inbox watcher, dashboard
+  relay, then dashboard. The dashboard is last so the new main revision is
+  loaded by every owned process. The action is refused while an execution is
+  active; a platform refresh never interrupts an execution. A yellow result
+  modal reports either the completed switch and scheduled restart or the
+  precise safe refusal.
+- **Refresh worktree analysis** is the explicit, read-only action in the local
+  worktrees section. It shows a conclusion for every worktree: whether to keep
+  it or whether it is safe to remove, plus the linked GitHub pull request when
+  available. The dashboard does not run this potentially expensive GitHub and
+  Git comparison on its periodic refresh loop.
+- **Remove worktree** appears only after that analysis marks a non-`main`
+  worktree safe, and always opens the shared destructive confirmation modal.
+  Before removing anything, the server repeats the complete fail-closed check:
+  the dashboard's `main` worktree is clean and synchronized, the selected
+  worktree is clean, and its remote branch is absent. Its work must either
+  exactly match `main`, or be the exact preserved head of a GitHub `MERGED`
+  pull request whose recorded merge commit is reachable from `main`; the
+  latter is the safe squash-merge path. A closed-but-unmerged pull request
+  never qualifies through that exception. A failed or incomplete check removes nothing. The action removes
+  only the worktree; the now-unchecked-out branch remains for the existing
+  reviewed stale-branch cleanup action.
 - **Open pull requests** appears as a compact Workspace subblock only when
   GitHub reports open PRs for the repository. Each entry preserves its PR
   link, title and source branch as read-only operator context. If GitHub

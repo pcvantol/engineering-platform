@@ -1136,6 +1136,30 @@ def _restart_component_after_response(component: str, logger: logging.Logger) ->
         log_event(logger, logging.ERROR, "component_restart_failed", diagnostic=str(error))
 
 
+def _restart_engineering_platform_after_main_switch(root: Path, logger: logging.Logger) -> None:
+    """Reload every owned Engineering Platform process after a main switch.
+
+    The dashboard runs the replacement last because restarting it terminates
+    this process.  A newly active execution wins over freshness: it is never
+    interrupted merely to reload the platform.
+    """
+    if _execution_active(root):
+        log_event(logger, logging.WARNING, "engineering_platform_restart_skipped", diagnostic="execution_active")
+        return
+    failed: list[str] = []
+    for component in ("inbox_watcher", "dashboard_relay", "dashboard"):
+        try:
+            _restart_component(component)
+        except OSError:
+            failed.append(component)
+    log_event(
+        logger,
+        logging.INFO if not failed else logging.ERROR,
+        "engineering_platform_restart_completed" if not failed else "engineering_platform_restart_failed",
+        diagnostic="components=" + (",".join(failed) if failed else "inbox_watcher,dashboard_relay,dashboard"),
+    )
+
+
 class InboxLocationChangeError(RuntimeError):
     """Raised when a new Inbox route cannot be confirmed by a fresh watcher."""
 
@@ -1647,51 +1671,123 @@ def _cleanup_stale_local_branches(root: Path, expected_branches: list[str]) -> d
     return {"removed": removed, "removed_count": len(removed)}
 
 
-def _safe_worktree_removal_candidates(root: Path) -> list[dict[str, str]]:
-    """Return only worktrees whose removal is safe after a fresh Git check."""
+def _worktree_removal_analysis(root: Path) -> dict[str, object]:
+    """Read and explain the fail-closed removal decision for every worktree."""
     provider = GitProvider()
     expected_branch = PlatformConfiguration.load(root).workspace.default_branch
     root = root.resolve()
     try:
         root_status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
         active = provider.execute(root, "git", "branch", "--show-current")
-        if root_status.returncode or active.returncode or root_status.stdout.strip() or active.stdout.strip() != expected_branch:
-            raise RuntimeError("De hoofdwerkmap moet schoon en op main staan.")
         if provider.execute(root, "git", "fetch", "--prune", "origin").returncode:
             raise RuntimeError("Remote-branches konden niet veilig worden ververst.")
         divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", f"origin/{expected_branch}...{expected_branch}")
-        if divergence.returncode or divergence.stdout.strip() != "0\t0":
-            raise RuntimeError("main moet eerst met origin worden gesynchroniseerd.")
         observed = provider.execute(root, "git", "worktree", "list", "--porcelain")
         if observed.returncode:
             raise RuntimeError("Actieve Git-worktrees konden niet veilig worden gelezen.")
     except OSError as error:
         raise RuntimeError("Lokale worktree-opruiming is niet beschikbaar.") from error
 
-    candidates: list[dict[str, str]] = []
+    root_ready = (
+        root_status.returncode == 0
+        and active.returncode == 0
+        and not root_status.stdout.strip()
+        and active.stdout.strip() == expected_branch
+        and divergence.returncode == 0
+        and divergence.stdout.strip() == "0\t0"
+    )
+    root_reason = "main_ready" if root_ready else "main_not_ready"
+    try:
+        remote = provider.execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        payload = GitHubProvider().github(
+            "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "all",
+            "--json", "number,url,headRefName,headRefOid,state,mergedAt,mergeCommit", "--limit", "100",
+        ) if match else "[]"
+        pull_requests = json.loads(payload)
+        if not isinstance(pull_requests, list):
+            raise ValueError
+        pull_requests_by_branch = {
+            item["headRefName"]: item for item in pull_requests
+            if isinstance(item, dict) and isinstance(item.get("headRefName"), str)
+            and isinstance(item.get("number"), int) and isinstance(item.get("url"), str)
+            and isinstance(item.get("state"), str)
+        }
+        github_available = match is not None
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        pull_requests_by_branch, github_available = {}, False
+
+    worktrees: list[dict[str, object]] = []
     record: dict[str, str] = {}
     for line in [*str(observed.stdout or "").splitlines(), ""]:
         if line:
             key, _, value = line.partition(" ")
-            if key in {"worktree", "branch"}:
+            if key in {"worktree", "HEAD", "branch"}:
                 record[key] = value
             continue
         path = record.get("worktree", "").strip()
         branch = record.get("branch", "").removeprefix("refs/heads/").strip()
+        head = record.get("HEAD", "").strip()
         record = {}
-        if not path or not branch or branch == expected_branch:
+        if not path or not branch:
             continue
         worktree = Path(path)
-        if worktree.resolve() == root:
+        if branch == expected_branch or worktree.resolve() == root:
+            worktrees.append({"path": str(worktree), "branch": branch, "decision": "baseline", "reason": "main_baseline", "removable": False})
             continue
         status = provider.execute(worktree, "git", "status", "--porcelain", "--untracked-files=all")
-        remote = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
+        remote_branch = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
         comparison = provider.execute(root, "git", "diff", "--quiet", expected_branch, branch)
-        if status.returncode == 0 and not status.stdout.strip() and remote.returncode == 1 and comparison.returncode == 0:
-            candidates.append({"path": str(worktree), "branch": branch})
-        elif status.returncode not in {0, 1} or remote.returncode not in {0, 1} or comparison.returncode not in {0, 1}:
+        if status.returncode not in {0, 1} or remote_branch.returncode not in {0, 1} or comparison.returncode not in {0, 1}:
             raise RuntimeError("Een lokale worktree kon niet veilig worden gecontroleerd.")
-    return candidates
+        pull_request = pull_requests_by_branch.get(branch)
+        pr_state = pull_request.get("state") if isinstance(pull_request, dict) else None
+        pr_head = pull_request.get("headRefOid") if isinstance(pull_request, dict) else None
+        merge_commit = pull_request.get("mergeCommit") if isinstance(pull_request, dict) else None
+        merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        squash_merged_head = False
+        if pr_state == "MERGED" and isinstance(pr_head, str) and pr_head == head and isinstance(merge_oid, str):
+            merged = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+            if merged.returncode not in {0, 1}:
+                raise RuntimeError("De squash-merge kon niet veilig worden gecontroleerd.")
+            squash_merged_head = merged.returncode == 0
+        equivalent_or_verified_squash = (
+            comparison.returncode == 0 and pr_state in {"MERGED", "CLOSED"}
+        ) or squash_merged_head
+        removable = root_ready and status.returncode == 0 and not status.stdout.strip() and remote_branch.returncode == 1 and github_available and equivalent_or_verified_squash
+        if removable:
+            reason = "safe_to_remove"
+        elif not root_ready:
+            reason = root_reason
+        elif status.returncode != 0 or status.stdout.strip():
+            reason = "worktree_dirty"
+        elif remote_branch.returncode == 0:
+            reason = "remote_branch_present"
+        elif comparison.returncode == 1 and not squash_merged_head:
+            reason = "differs_from_main"
+        elif not github_available:
+            reason = "github_unavailable"
+        elif pr_state == "OPEN":
+            reason = "pull_request_open"
+        else:
+            reason = "pull_request_unverified"
+        worktrees.append({
+            "path": str(worktree), "branch": branch, "decision": "removable" if removable else "keep",
+            "reason": reason, "removable": removable,
+            **({"pull_request": {"number": pull_request["number"], "url": pull_request["url"], "state": pr_state}} if isinstance(pull_request, dict) else {}),
+        })
+    return {"available": True, "worktrees": worktrees}
+
+
+def _safe_worktree_removal_candidates(root: Path) -> list[dict[str, str]]:
+    """Return the freshly analysed, GitHub-verified worktrees safe to remove."""
+    analysis = _worktree_removal_analysis(root)
+    return [
+        {"path": item["path"], "branch": item["branch"]}
+        for item in analysis["worktrees"]
+        if isinstance(item, dict) and item.get("removable") is True
+        and isinstance(item.get("path"), str) and isinstance(item.get("branch"), str)
+    ]
 
 
 def _remove_safe_worktree(root: Path, worktree_path: str, branch: str) -> dict[str, object]:
@@ -2802,15 +2898,34 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
+            if request_path == "/api/worktree-removal-analysis":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    outcome = _worktree_removal_analysis(root)
+                    log_event(logger, logging.INFO, "worktree_removal_analysed", diagnostic=f"worktrees={len(outcome['worktrees'])}")
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"Worktree-analyse is nu niet beschikbaar."}', "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
+                return
             if request_path == "/api/workspace-switch-to-main":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if length != 2 or self.rfile.read(length) != b"{}":
                         raise ValueError
+                    if _execution_active(root):
+                        raise RuntimeError("Naar main schakelen en Engineering Platform herstarten kan alleen wanneer geen uitvoering actief is.")
                     outcome = _switch_to_fast_forward_main(root)
                 except (OSError, RuntimeError, ValueError) as error:
                     self._send(json.dumps({"error": str(error) or "Naar main schakelen is niet veilig gelukt."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
+                # The dashboard must acknowledge the operator before it is
+                # replaced. The full platform reload makes the switched main
+                # revision the running revision for watcher, relay and UI.
+                Timer(0.25, _restart_engineering_platform_after_main_switch, args=(root, logger)).start()
+                outcome["engineering_platform"] = "restart_scheduled"
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path == "/api/stale-local-branch-cleanup-preview":
