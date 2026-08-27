@@ -13,6 +13,22 @@ one equally-specific winning rule fails. Rules also fail for duplicate paths,
 unsafe paths, missing required paths, invalid classifications, malformed
 ownership/reason fields and invalid extraction targets.
 
+## Control navigation
+
+The frozen extraction control has four complementary, repository-local
+surfaces. Use them together when reviewing a baseline result; none is a
+substitute for another.
+
+| Surface | Canonical location | Purpose |
+| --- | --- | --- |
+| Baseline description | [EP_2X_EXTRACTION_BASELINE.md](EP_2X_EXTRACTION_BASELINE.md) | Records the frozen baseline and its review boundary. |
+| Classification manifest | [EP_2X_EXTRACTION_MANIFEST.json](EP_2X_EXTRACTION_MANIFEST.json) | Defines the closed candidate and ownership classification vocabulary. |
+| Deterministic audit | [audit_ep_extraction_baseline.py](../../../scripts/engineering/audit_ep_extraction_baseline.py) | Recomputes the candidate, semantic and import controls from repository truth. |
+| Regression coverage | [test_ep_extraction_baseline.py](../../../tests/engineering/test_ep_extraction_baseline.py) | Protects deterministic success and representative control failures. |
+
+The migration sequence and future extraction phases remain in the canonical
+[Engineering Platform extraction and migration plan](../../development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md).
+
 Current result: 245 candidates, 245 classified exactly once, 0 unclassified,
 0 ambiguous. Operations Console source/assets/tests account for 17 candidates,
 all classified exactly once. This includes the current dashboard presentation,

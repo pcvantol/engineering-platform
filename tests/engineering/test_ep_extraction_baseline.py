@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/engineering/audit_ep_extraction_baseline.py"
+AUDIT_DOCUMENT = ROOT / "docs/engineering/extraction/EP_2X_EXTRACTION_AUDIT.md"
 SPEC = importlib.util.spec_from_file_location("ep_extraction_audit", AUDIT)
 assert SPEC and SPEC.loader
 AUDIT_MODULE = importlib.util.module_from_spec(SPEC)
@@ -64,6 +65,19 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         self.assertEqual(projection["classified_exactly_once"], projection["candidate_universe_count"])
         self.assertEqual(projection["unclassified"], 0)
         self.assertEqual(projection["ambiguous"], 0)
+
+    def test_audit_document_navigates_to_each_canonical_control(self) -> None:
+        contents = AUDIT_DOCUMENT.read_text(encoding="utf-8")
+
+        self.assertIn("## Control navigation", contents)
+        for relative_path in (
+            "EP_2X_EXTRACTION_BASELINE.md",
+            "EP_2X_EXTRACTION_MANIFEST.json",
+            "../../../scripts/engineering/audit_ep_extraction_baseline.py",
+            "../../../tests/engineering/test_ep_extraction_baseline.py",
+            "../../development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md",
+        ):
+            self.assertIn(relative_path, contents)
 
     def test_duplicate_path_invalid_classification_and_unsafe_path_fail(self) -> None:
         duplicate = copy.deepcopy(self.manifest)
