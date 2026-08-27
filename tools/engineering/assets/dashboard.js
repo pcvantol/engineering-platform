@@ -4342,7 +4342,9 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.executed_at"), Number.isFinite(timestamp) ? locale.dateTime(new Date(timestamp)) : history.executed_at],
       [t("detail.execution_mode"), history.execution_mode],
       [t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")],
-      [t("detail.execution_diagnostic"), history.execution_diagnostic],
+      ...(promptHistoryIsBlocked(history.status)
+        ? [[t("detail.blocking_reason"), history.blocking_reason || history.execution_diagnostic]]
+        : [[t("detail.execution_diagnostic"), history.execution_diagnostic]]),
     ]),
     promptHistoryMarkdownSection(t("detail.duration"), [
       [t("detail.agent_duration"), Number.isFinite(Number(execution.seconds)) ? durationText(Number(execution.seconds)) : null],
@@ -6220,6 +6222,9 @@ function promptHistoryStatusTone(value) {
     default: return "grey";
   }
 }
+function promptHistoryIsBlocked(value) {
+  return ["BLOCKED", "FAILED"].includes(String(value || "").toUpperCase());
+}
 function promptDetailStatusField(value) {
   const field = detailField(t("detail.prompt_status"), "");
   const output = field.lastElementChild;
@@ -6276,6 +6281,11 @@ function promptDetailExecutionSections(history) {
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
+    ...(promptHistoryIsBlocked(history.status) ? [detailField(
+      t("detail.blocking_reason"),
+      history.blocking_reason || history.execution_diagnostic || t("detail.not_recorded"),
+      true,
+    )] : []),
     detailField(t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")),
     ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
     detailField(t("detail.prompt_title"), history.title),
@@ -6286,7 +6296,7 @@ function promptDetailExecutionSections(history) {
         ? locale.dateTime(new Date(timestamp))
         : history.executed_at,
     ),
-    ...(executionContextValue(history.execution_diagnostic)
+    ...(!promptHistoryIsBlocked(history.status) && executionContextValue(history.execution_diagnostic)
       ? [detailField(t("detail.execution_diagnostic"), history.execution_diagnostic, true)]
       : []),
   ];

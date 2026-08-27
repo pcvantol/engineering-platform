@@ -38,3 +38,6 @@ class AgentResult:
     commit_sha: str | None = None
     validation_evidence: tuple[dict[str, str], ...] = ()
     quality_evidence: tuple[dict[str, str], ...] = ()
+    # A failed validation never becomes a pass. This merely tells the host
+    # when a separate validation-environment recovery is warranted.
+    validation_disposition: str = "product_failure"

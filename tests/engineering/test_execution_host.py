@@ -946,6 +946,34 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("iteration 1 of 3", agent.prompts[0])
         self.assertIn("Create one draft implementation pull request only after", agent.prompts[0])
 
+    def test_local_repository_validation_separates_proven_environment_instability(self) -> None:
+        agent = SequencedFakeAgent([
+            AgentResult(
+                "WAITING", "codex/implementation",
+                diagnostic="The required browser suite timed out, but its isolated rerun passed without a code change.",
+                validation_evidence=(
+                    {"command": "npm run test:engineering-dashboard", "result": "failed: browser timeout"},
+                    {"command": "focused browser rerun", "result": "passed without a code change"},
+                ),
+                validation_disposition="environmental_instability",
+            ),
+        ])
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState(
+            "validation-instability-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+        )
+
+        blocked, result = runner._run_local_repository_validation(
+            state, AgentResult("COMPLETE", "codex/implementation")
+        )
+
+        self.assertEqual(result.pull_request, None)
+        self.assertEqual(blocked.phase, "BLOCKED")
+        self.assertEqual(blocked.next_action, "validation_infrastructure_recovery_required")
+        self.assertEqual(blocked.local_validation_iterations, 1)
+        self.assertIn("separate validation-infrastructure recovery item", blocked.diagnostic)
+
     def test_runtime_failure_replaces_a_stale_operator_merge_terminal_condition(self) -> None:
         class UsageLimitedAgent:
             def available(self) -> bool:

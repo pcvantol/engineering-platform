@@ -354,7 +354,7 @@ Local validation hand-off boundary:
     return f"""You are executing one bounded DJConnect engineering transaction.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
-Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence and quality_evidence. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -621,6 +621,21 @@ class EngineeringRunner:
         ),))
 
     @staticmethod
+    def _is_environmental_validation_instability(result: AgentResult) -> bool:
+        """Require explicit classification and contradictory bounded test evidence.
+
+        This does not pass the implementation run.  It only stops repeated
+        implementation retries when the same validation environment has been
+        demonstrated as unstable.
+        """
+        if result.validation_disposition != "environmental_instability" or not result.validation_evidence:
+            return False
+        summaries = " ".join(item.get("result", "").casefold() for item in result.validation_evidence)
+        passed = any(token in summaries for token in ("pass", "passed", "succeeded"))
+        failed = any(token in summaries for token in ("fail", "failed", "timeout", "timed out", "error"))
+        return passed and failed
+
+    @staticmethod
     def _append_verified_commit_evidence(
         state: TransactionState, *, phase: str, commit_sha: str, description: str
     ) -> TransactionState:
@@ -832,6 +847,13 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 return validation, replace(implementation, branch=branch, pull_request=result.pull_request,
                                            validation_evidence=implementation.validation_evidence + result.validation_evidence)
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
+            if self._is_environmental_validation_instability(result):
+                return self._save_terminal(
+                    validation,
+                    "BLOCKED",
+                    "validation_infrastructure_recovery_required",
+                    "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
+                ), implementation
         return self._save_terminal(validation, "BLOCKED", "local_validation_attempt_limit_reached", "Required local repository validation did not pass after 3 bounded iterations."), implementation
 
     def _run_autonomous_quality_control(

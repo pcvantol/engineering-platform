@@ -332,6 +332,7 @@ class CodexCliClient:
                 "commit_sha",
                 "validation_evidence",
                 "quality_evidence",
+                "validation_disposition",
             ],
             "properties": {
                 "terminal_state": {
@@ -363,6 +364,10 @@ class CodexCliClient:
                     "items": {"type": "object", "additionalProperties": False,
                               "required": ["activity", "result"],
                               "properties": {"activity": {"type": "string", "enum": sorted(_QUALITY_EVIDENCE_ACTIVITIES)}, "result": {"type": "string", "maxLength": 240}}},
+                },
+                "validation_disposition": {
+                    "type": "string",
+                    "enum": ["product_failure", "environmental_instability"],
                 },
             },
         }
@@ -416,6 +421,8 @@ class CodexCliClient:
             result = AgentResult(**raw)
             if not isinstance(result.validation_evidence, (list, tuple)) or not isinstance(result.quality_evidence, (list, tuple)):
                 raise TypeError("execution evidence must be a list")
+            if result.validation_disposition not in {"product_failure", "environmental_instability"}:
+                raise TypeError("validation disposition is invalid")
             if any(
                 not isinstance(item, dict) or item.get("activity") not in _QUALITY_EVIDENCE_ACTIVITIES
                 or not item.get("result")

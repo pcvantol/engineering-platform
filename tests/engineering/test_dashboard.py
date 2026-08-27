@@ -2106,12 +2106,18 @@ class DashboardStatusTest(unittest.TestCase):
                     ),
                 )
 
+            StateStore(root / ".engineering" / "engineering-runs").save(TransactionState(
+                run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True,
+                diagnostic="Checkpoint-owned blocking reason.",
+            ))
+
             payload = json.loads(_prompt_history_detail(root, run_id))
 
             self.assertEqual(
                 payload["history"]["execution_diagnostic"],
-                "Pre-flight is NO-GO: rolling status records are stale.",
+                "Checkpoint-owned blocking reason.",
             )
+            self.assertEqual(payload["history"]["blocking_reason"], "Checkpoint-owned blocking reason.")
 
     def test_prompt_history_detail_projector_owns_evidence_and_presentation(self) -> None:
         entry = {"run_id": "inbox-projector", "target_repository": "stored/repository"}

@@ -1668,16 +1668,16 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("opens execution details from prompt history in its dedicated modal", async ({ page }) => {
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
-      run_id: "inbox-modal", status: "COMPLETE", title: "Modal prompt", executed_at: "2026-08-04T08:00:00Z",
+      run_id: "inbox-modal", status: "BLOCKED", title: "Modal prompt", executed_at: "2026-08-04T08:00:00Z",
     }] } }));
     await page.route("**/api/prompt-history/inbox-modal/details", (route) => route.fulfill({
       json: {
         history: {
           run_id: "inbox-modal",
-          status: "COMPLETE",
+          status: "BLOCKED",
           title: "Modal prompt",
           executed_at: "2026-08-04T08:00:00Z",
-          execution_diagnostic: "The verified execution diagnostic belongs to this run.",
+          blocking_reason: "The verified blocking reason belongs to this run.",
         },
         execution: { seconds: 42, total_seconds: 61 },
         evidence: ["Execution Host: Engineering Platform"],
@@ -1708,7 +1708,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailModal .prompt-detail-modal__header")).toHaveClass(/dashboard-modal-shell__header/);
     await expect(page.locator("#promptHistoryDetailDescription")).toHaveCSS("border-bottom-color", "rgb(141, 199, 255)");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Engineering Platform");
-    await expect(page.locator("#promptHistoryDetailContent")).toContainText("The verified execution diagnostic belongs to this run.");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Blokkadereden");
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("The verified blocking reason belongs to this run.");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("Commits: 2");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("GitHub-controles: 1");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-card--pull-requests")).toContainText("Gewijzigde bestanden: 5");
@@ -1725,7 +1726,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(markdownContent).toContain("# Modal prompt");
     expect(markdownContent).toContain("## Uitvoering");
     expect(markdownContent).toContain("| Veld | Waarde |");
-    expect(markdownContent).toContain("The verified execution diagnostic belongs to this run.");
+    expect(markdownContent).toContain("Blokkadereden");
+    expect(markdownContent).toContain("The verified blocking reason belongs to this run.");
     expect(markdownContent).toContain("## Pull requests");
     expect(markdownContent).toContain("[#948](https://github.com/pcvantol/djconnect/pull/948)");
     expect(markdownContent).toContain("[#949](https://github.com/pcvantol/djconnect/pull/949)");

@@ -154,6 +154,16 @@ run is blocked with its evidence intact and requires a new explicit recovery
 decision. The Console renders these records as iteration evidence and uses
 the same five-language status contract as the rest of the lifecycle.
 
+When a local validation agent records both a failed required suite and a
+passing isolated rerun without an implementation correction, it may classify
+the result as an **environmental instability**. The host still blocks the
+implementation run and never creates a pull request from it. It records the
+distinct `validation_infrastructure_recovery_required` action so an operator
+can create a separate, scoped recovery item for the validation environment
+rather than repeatedly spending the implementation's three-attempt budget.
+Normal product failures, incomplete evidence, and unsupported classifications
+remain on the ordinary bounded validation path.
+
 ## Verified phase-commit timeline
 
 Alongside the per-attempt records, each mutating execution phase may append a

@@ -435,9 +435,17 @@ def _pull_request_github_metrics(root: Path, repository: str, number: int) -> di
 
 
 def _terminal_run_diagnostic(root: Path, run_id: str | None) -> str | None:
-    """Return the latest bounded failure detail only when its log owns this run."""
+    """Return the checkpoint-owned block reason before consulting legacy logs."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
         return None
+    checkpoint = _canonical_checkpoint(root, run_id)
+    if (
+        checkpoint.get("phase") in {"BLOCKED", "FAILED"}
+        and checkpoint.get("terminal") is True
+        and isinstance(checkpoint.get("diagnostic"), str)
+        and checkpoint["diagnostic"].strip()
+    ):
+        return redact_diagnostic(checkpoint["diagnostic"], limit=500)
     try:
         connection = open_storage(root)
         try:
@@ -506,6 +514,8 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         pass
     if diagnostic := _terminal_run_diagnostic(root, run_id):
         entry["execution_diagnostic"] = diagnostic
+        if str(entry.get("status") or "").upper() in {"BLOCKED", "FAILED"}:
+            entry["blocking_reason"] = diagnostic
     return _project_prompt_history_detail(
         entry,
         execution=execution,
