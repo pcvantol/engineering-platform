@@ -8,6 +8,7 @@ export const DASHBOARD_MESSAGES = {
     "action.cancel": "Cancel",
     "action.abort_execution": "Abort execution",
     "action.clear_logs": "Clear logs",
+    "action.clear_date": "Clear date and time",
     "action.confirm": "Confirm",
     "action.dismiss_execution": "Dismiss Execution",
     "action.reset_log_filters": "Reset log filters",
@@ -26,7 +27,7 @@ export const DASHBOARD_MESSAGES = {
     "copy.success": "Copied to clipboard",
     "dashboard.loading": "Loading data…",
     "dashboard.platform_version": "Engineering Platform {version}",
-    "dashboard.title": "Engineering Operations Console",
+    "dashboard.title": "EP Operations",
     "dashboard.health.title": "Platform status",
     "dashboard.health.ready": "Ready",
     "dashboard.health.active": "Execution active",
@@ -619,6 +620,7 @@ export const DASHBOARD_MESSAGES = {
     "action.cancel": "Annuleren",
     "action.abort_execution": "Uitvoering afbreken",
     "action.clear_logs": "Logs wissen",
+    "action.clear_date": "Datum en tijd wissen",
     "action.confirm": "Bevestigen",
     "action.dismiss_execution": "Uitvoering afsluiten",
     "action.reset_log_filters": "Logfilters resetten",
@@ -637,7 +639,7 @@ export const DASHBOARD_MESSAGES = {
     "copy.success": "Gekopieerd naar klembord",
     "dashboard.loading": "Gegevens laden…",
     "dashboard.platform_version": "Engineeringplatform {version}",
-    "dashboard.title": "Engineering Operationele console",
+    "dashboard.title": "EP Operations",
     "dashboard.health.title": "Platformstatus",
     "dashboard.health.ready": "Gereed",
     "dashboard.health.active": "Uitvoering actief",
@@ -1230,6 +1232,7 @@ export const DASHBOARD_MESSAGES = {
     "action.cancel": "Abbrechen",
     "action.abort_execution": "Ausführung abbrechen",
     "action.clear_logs": "Protokolle löschen",
+    "action.clear_date": "Datum und Uhrzeit löschen",
     "action.confirm": "Bestätigen",
     "action.dismiss_execution": "Ausführung schließen",
     "action.reset_log_filters": "Logfilter zurücksetzen",
@@ -1248,7 +1251,7 @@ export const DASHBOARD_MESSAGES = {
     "copy.success": "In die Zwischenablage kopiert",
     "dashboard.loading": "Daten werden geladen…",
     "dashboard.platform_version": "Engineering-Plattform {version}",
-    "dashboard.title": "Engineering-Betriebskonsole",
+    "dashboard.title": "EP Operations",
     "dashboard.health.title": "Plattformstatus",
     "dashboard.health.ready": "Bereit",
     "dashboard.health.active": "Ausführung aktiv",
@@ -1776,6 +1779,7 @@ export const DASHBOARD_MESSAGES = {
     "action.cancel": "Annuler",
     "action.abort_execution": "Abandonner l’exécution",
     "action.clear_logs": "Effacer les journaux",
+    "action.clear_date": "Effacer la date et l’heure",
     "action.confirm": "Confirmer",
     "action.dismiss_execution": "Clore l’exécution",
     "action.reset_log_filters": "Réinitialiser les filtres des journaux",
@@ -1794,7 +1798,7 @@ export const DASHBOARD_MESSAGES = {
     "copy.success": "Copié dans le presse-papiers",
     "dashboard.loading": "Chargement des données…",
     "dashboard.platform_version": "Plateforme d’ingénierie {version}",
-    "dashboard.title": "Console des opérations d’ingénierie",
+    "dashboard.title": "EP Operations",
     "dashboard.health.title": "État de la plateforme",
     "dashboard.health.ready": "Prête",
     "dashboard.health.active": "Exécution active",
@@ -2322,6 +2326,7 @@ export const DASHBOARD_MESSAGES = {
     "action.cancel": "Cancelar",
     "action.abort_execution": "Cancelar ejecución",
     "action.clear_logs": "Borrar registros",
+    "action.clear_date": "Borrar fecha y hora",
     "action.confirm": "Confirmar",
     "action.dismiss_execution": "Cerrar ejecución",
     "action.reset_log_filters": "Restablecer filtros de registros",
@@ -2340,7 +2345,7 @@ export const DASHBOARD_MESSAGES = {
     "copy.success": "Copiado al portapapeles",
     "dashboard.loading": "Cargando datos…",
     "dashboard.platform_version": "Plataforma de ingeniería {version}",
-    "dashboard.title": "Consola de operaciones de ingeniería",
+    "dashboard.title": "EP Operations",
     "dashboard.health.title": "Estado de la plataforma",
     "dashboard.health.ready": "Lista",
     "dashboard.health.active": "Ejecución activa",
@@ -3072,6 +3077,16 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_pull_request.repair_failed
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_pull_request.repair_failed_checks":"Fehlgeschlagene Prüfungen beheben", "workspace.open_pull_request.repair_failed_checks_confirmation":"Die aktuellen fehlgeschlagenen GitHub-Prüfungen bewerten und höchstens einen gezielten Reparatur-Commit für genau diesen Pull-Request-SHA erstellen? Der PR wird niemals automatisch gemergt.", "workspace.open_pull_request.repair_failed_checks_queued":"Eine gezielte PR-Reparatur wurde eingeplant. Die Schaltfläche erscheint nur wieder, wenn die neuen Prüfungen fehlschlagen.", "workspace.open_pull_request.pr_check_repair_invalid_request":"Die PR-Reparaturanfrage ist ungültig.", "workspace.open_pull_request.pr_check_repair_not_eligible":"Dieser PR hat keine terminal fehlgeschlagene Prüfung mehr, die sicher repariert werden kann.", "workspace.open_pull_request.pr_check_repair_provider_not_ready":"GitHub oder Codex ist nicht bereit; keine Reparatur wurde gestartet.", "workspace.open_pull_request.pr_check_repair_capacity_unavailable":"KI-Kapazität oberhalb der konfigurierten Reserve kann nicht bestätigt werden; keine Reparatur wurde gestartet.", "workspace.open_pull_request.pr_check_repair_unavailable":"Aktuelle PR-Nachweise sind nicht verfügbar; keine Reparatur wurde gestartet.", "workspace.open_pull_request.pr_check_repair_dispatch_failed":"Der Reparaturprozess konnte nicht gestartet werden."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_pull_request.repair_failed_checks":"Corriger les contrôles échoués", "workspace.open_pull_request.repair_failed_checks_confirmation":"Évaluer les contrôles GitHub actuellement échoués et créer au plus un commit de correction ciblé pour ce SHA de pull request précis ? La PR ne sera jamais fusionnée automatiquement.", "workspace.open_pull_request.repair_failed_checks_queued":"Une correction ciblée de PR a été mise en file. Le bouton ne revient que si les nouveaux contrôles échouent.", "workspace.open_pull_request.pr_check_repair_invalid_request":"La demande de correction de PR est invalide.", "workspace.open_pull_request.pr_check_repair_not_eligible":"Cette PR n’a plus de contrôle échoué terminal pouvant être corrigé en sécurité.", "workspace.open_pull_request.pr_check_repair_provider_not_ready":"GitHub ou Codex n’est pas prêt ; aucune correction n’a démarré.", "workspace.open_pull_request.pr_check_repair_capacity_unavailable":"La capacité IA au-dessus de la réserve configurée ne peut pas être vérifiée ; aucune correction n’a démarré.", "workspace.open_pull_request.pr_check_repair_unavailable":"Les preuves actuelles de la PR sont indisponibles ; aucune correction n’a démarré.", "workspace.open_pull_request.pr_check_repair_dispatch_failed":"Le processus de correction n’a pas pu démarrer."});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_pull_request.repair_failed_checks":"Corregir comprobaciones fallidas", "workspace.open_pull_request.repair_failed_checks_confirmation":"¿Revisar las comprobaciones fallidas actuales de GitHub y crear como máximo un commit de corrección específico para este SHA exacto de la solicitud de extracción? La PR nunca se fusionará automáticamente.", "workspace.open_pull_request.repair_failed_checks_queued":"Se puso en cola una corrección específica de la PR. El botón solo vuelve si las nuevas comprobaciones terminan con errores.", "workspace.open_pull_request.pr_check_repair_invalid_request":"La solicitud de corrección de PR no es válida.", "workspace.open_pull_request.pr_check_repair_not_eligible":"Esta PR ya no tiene una comprobación fallida terminal que se pueda corregir de forma segura.", "workspace.open_pull_request.pr_check_repair_provider_not_ready":"GitHub o Codex no está listo; no se inició ninguna corrección.", "workspace.open_pull_request.pr_check_repair_capacity_unavailable":"No se puede verificar la capacidad de IA por encima de la reserva configurada; no se inició ninguna corrección.", "workspace.open_pull_request.pr_check_repair_unavailable":"La evidencia actual de la PR no está disponible; no se inició ninguna corrección.", "workspace.open_pull_request.pr_check_repair_dispatch_failed":"No se pudo iniciar el proceso de corrección."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_pull_request.repair_failed_checks_list":"Failed checks"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_pull_request.repair_failed_checks_list":"Mislukte checks"});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_pull_request.repair_failed_checks_list":"Fehlgeschlagene Prüfungen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_pull_request.repair_failed_checks_list":"Vérifications échouées"});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_pull_request.repair_failed_checks_list":"Comprobaciones fallidas"});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_pull_request.repair_completed":"Repair already performed", "workspace.open_pull_request.repair_completed_explanation":"One focused repair was already made for this pull-request head. A new repair cannot be started for the same head."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_pull_request.repair_completed":"Reparatie al uitgevoerd", "workspace.open_pull_request.repair_completed_explanation":"Voor deze pull-request-head is al één gerichte reparatie uitgevoerd. Voor dezelfde head kan geen nieuwe reparatie starten."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_pull_request.repair_completed":"Reparatur bereits ausgeführt", "workspace.open_pull_request.repair_completed_explanation":"Für diesen Pull-Request-Head wurde bereits eine gezielte Reparatur ausgeführt. Für denselben Head kann keine weitere Reparatur starten."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_pull_request.repair_completed":"Correction déjà effectuée", "workspace.open_pull_request.repair_completed_explanation":"Une correction ciblée a déjà été effectuée pour cette tête de pull request. Aucune nouvelle correction ne peut démarrer pour cette même tête."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_pull_request.repair_completed":"Reparación ya realizada", "workspace.open_pull_request.repair_completed_explanation":"Ya se realizó una corrección específica para esta cabecera de la solicitud de extracción. No puede iniciarse otra corrección para la misma cabecera."});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_pull_request.pr_check_repair_execution_active":"An Engineering Platform execution is active; no independent PR repair was started."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_pull_request.pr_check_repair_execution_active":"Er is een Engineering Platform-uitvoering actief; er is geen zelfstandig PR-herstel gestart."});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_pull_request.pr_check_repair_execution_active":"Eine Engineering-Platform-Ausführung ist aktiv; keine unabhängige PR-Reparatur wurde gestartet."});
@@ -3284,6 +3299,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_reason.remote_ab
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Nicht mehr auf origin vorhanden; der Inhalt ist nachweislich in main zusammengeführt.","workspace.worktree_remove_confirmation":"Den Worktree für {branch} unter {path} entfernen?\n\nEngineering Platform prüft erneut:\n• main ist sauber und synchronisiert;\n• der Worktree ist sauber;\n• der Remote-Branch fehlt;\n• sein Commit ist in main enthalten oder Teil eines verifiziert zusammengeführten Pull Requests.\n\nDer Branch bleibt für die Bereinigung veralteter Branches verfügbar.","workspace.worktree_analysis_reason.safe_to_remove":"Sicher zu entfernen: Worktree ist sauber, kein Remote-Branch und sein Commit ist entweder in main enthalten oder Teil eines verifiziert zusammengeführten Pull Requests.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Beibehalten: Dieser losgelöste Commit gehört zu einem noch offenen Pull Request.","workspace.worktree_analysis_reason.detached_head_unverified":"Beibehalten: Dieser losgelöste Commit ist noch nicht nachweislich in main oder einem verifiziert zusammengeführten Pull Request."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"N’existe plus sur origin ; son contenu est prouvé comme étant fusionné dans main.","workspace.worktree_remove_confirmation":"Supprimer l’arborescence de travail de {branch} à {path} ?\n\nEngineering Platform vérifie à nouveau :\n• main est propre et synchronisée ;\n• l’arborescence est propre ;\n• la branche distante est absente ;\n• son commit est dans main ou inclus dans une pull request fusionnée et vérifiée.\n\nLa branche reste disponible pour le nettoyage des branches obsolètes.","workspace.worktree_analysis_reason.safe_to_remove":"Suppression sûre : arborescence propre, aucune branche distante et son commit est dans main ou inclus dans une pull request fusionnée et vérifiée.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Conserver : ce commit détaché appartient à une pull request encore ouverte.","workspace.worktree_analysis_reason.detached_head_unverified":"Conserver : ce commit détaché n’est pas encore prouvé comme étant dans main ou dans une pull request fusionnée et vérifiée."});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Ya no existe en origin; se ha comprobado que su contenido está fusionado en main.","workspace.worktree_remove_confirmation":"¿Eliminar el árbol de trabajo de {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• main está limpia y sincronizada;\n• el árbol de trabajo está limpio;\n• la rama remota no existe;\n• su commit está en main o forma parte de una solicitud de extracción fusionada y verificada.\n\nLa rama seguirá disponible para la limpieza de ramas obsoletas.","workspace.worktree_analysis_reason.safe_to_remove":"Es seguro eliminarlo: árbol limpio, sin rama remota y su commit está en main o forma parte de una solicitud de extracción fusionada y verificada.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Conservar: este commit desacoplado pertenece a una solicitud de extracción que sigue abierta.","workspace.worktree_analysis_reason.detached_head_unverified":"Conservar: aún no se ha demostrado que este commit desacoplado esté en main o en una solicitud de extracción fusionada y verificada."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_reason.remote_branch_exists":"Keep: the branch still exists on origin.","workspace.branch_cleanup_reason.content_differs_from_main":"Keep: its contents still differ from main.","workspace.branch_cleanup_reason.remote_absent_verified_merged_pull_request":"Safe to remove: origin is absent and a verified merged pull request proves its contents are in main.","workspace.branch_cleanup_no_safe_in_modal":"No standalone local branches are safe to remove. The reasons are shown below."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_reason.remote_branch_exists":"Behouden: de branch bestaat nog op origin.","workspace.branch_cleanup_reason.content_differs_from_main":"Behouden: de inhoud verschilt nog van main.","workspace.branch_cleanup_reason.remote_absent_verified_merged_pull_request":"Veilig te verwijderen: origin ontbreekt en een geverifieerd gemergde pull request bewijst dat de inhoud in main zit.","workspace.branch_cleanup_no_safe_in_modal":"Geen losse lokale branches zijn veilig te verwijderen. Hieronder staan de redenen."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_reason.remote_branch_exists":"Beibehalten: Der Branch existiert noch auf origin.","workspace.branch_cleanup_reason.content_differs_from_main":"Beibehalten: Sein Inhalt unterscheidet sich noch von main.","workspace.branch_cleanup_reason.remote_absent_verified_merged_pull_request":"Sicher zu entfernen: origin fehlt und ein verifiziert zusammengeführter Pull Request belegt, dass sein Inhalt in main enthalten ist.","workspace.branch_cleanup_no_safe_in_modal":"Keine eigenständigen lokalen Branches können sicher entfernt werden. Die Gründe stehen unten."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_reason.remote_branch_exists":"Conserver : la branche existe encore sur origin.","workspace.branch_cleanup_reason.content_differs_from_main":"Conserver : son contenu diffère encore de main.","workspace.branch_cleanup_reason.remote_absent_verified_merged_pull_request":"Suppression sûre : origin est absent et une pull request fusionnée et vérifiée prouve que son contenu est dans main.","workspace.branch_cleanup_no_safe_in_modal":"Aucune branche locale autonome ne peut être supprimée en toute sécurité. Les raisons sont indiquées ci-dessous."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_reason.remote_branch_exists":"Conservar: la rama todavía existe en origin.","workspace.branch_cleanup_reason.content_differs_from_main":"Conservar: su contenido todavía difiere de main.","workspace.branch_cleanup_reason.remote_absent_verified_merged_pull_request":"Es seguro eliminarla: origin no existe y una solicitud de extracción fusionada y verificada demuestra que su contenido está en main.","workspace.branch_cleanup_no_safe_in_modal":"No hay ramas locales independientes que se puedan eliminar de forma segura. Los motivos se muestran a continuación."});
 Object.assign(DASHBOARD_MESSAGES.en, {
   "state.LOCAL_REPOSITORY_VALIDATION": "Local repository validation",
   "lifecycle.step.local_repository_validation": "Local repository validation",
@@ -3599,6 +3619,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.worktree_switch_action":"Schake
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.worktree_switch_action":"Zum Worktree wechseln","workspace.worktree_switch_title":"Engineering-Platform-Worktree wechseln","workspace.worktree_switch_confirmation":"Engineering Platform zu {branch} unter {path} wechseln?\n\nEngineering Platform prüft erneut:\n• keine Ausführung ist aktiv;\n• die Inbox-Warteschlange ist leer;\n• dieser registrierte Worktree ist sauber und genau auf {branch}.\n\nAnschließend werden Dashboard, Watcher und Relay aus diesem Worktree neu gestartet.","workspace.worktree_switch_result_title":"Worktree-Wechsel geplant","workspace.worktree_switch_scheduled":"Engineering Platform startet aus {branch} neu.","workspace.worktree_switch_failed":"Ein sicherer Wechsel zu diesem Worktree war nicht möglich."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.worktree_switch_action":"Basculer vers l’arborescence","workspace.worktree_switch_title":"Basculer l’arborescence d’Engineering Platform","workspace.worktree_switch_confirmation":"Basculer Engineering Platform vers {branch} dans {path} ?\n\nEngineering Platform vérifie à nouveau :\n• aucune exécution n’est active ;\n• la file Inbox est vide ;\n• cette arborescence enregistrée est propre et se trouve exactement sur {branch}.\n\nLe tableau de bord, le watcher et le relais redémarrent ensuite depuis cette arborescence.","workspace.worktree_switch_result_title":"Basculement d’arborescence planifié","workspace.worktree_switch_scheduled":"Engineering Platform redémarre depuis {branch}.","workspace.worktree_switch_failed":"Le basculement vers cette arborescence n’a pas pu être effectué en toute sécurité."});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.worktree_switch_action":"Cambiar al árbol de trabajo","workspace.worktree_switch_title":"Cambiar el árbol de trabajo de Engineering Platform","workspace.worktree_switch_confirmation":"¿Cambiar Engineering Platform a {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• no hay ninguna ejecución activa;\n• la cola de Inbox está vacía;\n• este árbol de trabajo registrado está limpio y exactamente en {branch}.\n\nDespués reinicia el panel, el watcher y el relay desde este árbol de trabajo.","workspace.worktree_switch_result_title":"Cambio de árbol de trabajo programado","workspace.worktree_switch_scheduled":"Engineering Platform se está reiniciando desde {branch}.","workspace.worktree_switch_failed":"No se pudo cambiar a este árbol de trabajo de forma segura."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_pull_request.repair_active":"Repair in progress — waiting for GitHub checks", "workspace.open_pull_request.repair_active_checks":"View active checks"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_pull_request.repair_active":"Reparatie actief — wacht op GitHub-checks", "workspace.open_pull_request.repair_active_checks":"Bekijk actieve checks"});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_pull_request.repair_active":"Reparatur läuft — Warten auf GitHub-Prüfungen", "workspace.open_pull_request.repair_active_checks":"Aktive Prüfungen anzeigen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_pull_request.repair_active":"Correction en cours — en attente des vérifications GitHub", "workspace.open_pull_request.repair_active_checks":"Voir les vérifications actives"});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_pull_request.repair_active":"Reparación en curso — esperando las comprobaciones de GitHub", "workspace.open_pull_request.repair_active_checks":"Ver comprobaciones activas"});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_local_folder":"Open {path} in Finder","workspace.open_containing_folder":"Open the folder containing {path} in Finder","workspace.open_local_folder_failed":"The local folder could not be opened."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_local_folder":"Open {path} in Finder","workspace.open_containing_folder":"Open de map met {path} in Finder","workspace.open_local_folder_failed":"De lokale map kon niet worden geopend."});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_local_folder":"{path} im Finder öffnen","workspace.open_containing_folder":"Den Ordner mit {path} im Finder öffnen","workspace.open_local_folder_failed":"Der lokale Ordner konnte nicht geöffnet werden."});

@@ -99,3 +99,80 @@ class ComponentLoggingTest(unittest.TestCase):
             component_logging.clear_component_log(root, "inbox")
             self.assertNotIn(b"inbox_event", component_logging.component_log(root, "inbox"))
             self.assertIn(b"dashboard_event", component_logging.component_log(root, "dashboard"))
+
+    def test_component_log_page_filters_full_history_before_paginating(self) -> None:
+        """Historical rows remain discoverable after newer rows fill a page."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with component_logging.open_storage(root) as connection:
+                for payload, created_at in (
+                    (
+                        {
+                            "timestamp": "2026-08-26T09:00:00+00:00",
+                            "level": "WARNING",
+                            "event": "historical_warning",
+                            "diagnostic": "needle from yesterday",
+                        },
+                        "2026-08-26T09:00:00+00:00",
+                    ),
+                    (
+                        {
+                            "timestamp": "2026-08-26T10:00:00+00:00",
+                            "level": "INFO",
+                            "event": "historical_info",
+                            "diagnostic": "another yesterday record",
+                        },
+                        "2026-08-26T10:00:00+00:00",
+                    ),
+                    (
+                        {
+                            "timestamp": "2026-08-27T09:00:00+00:00",
+                            "level": "INFO",
+                            "event": "newest_record",
+                            "diagnostic": "today",
+                        },
+                        "2026-08-27T09:00:00+00:00",
+                    ),
+                ):
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        ("inbox", json.dumps(payload), created_at),
+                    )
+                # These newer records would have hidden the historical
+                # warning in the former client-side latest-100 sample.
+                for index in range(120):
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        (
+                            "inbox",
+                            json.dumps({
+                                "timestamp": f"2026-08-27T10:{index // 60:02d}:{index % 60:02d}+00:00",
+                                "level": "INFO",
+                                "event": "newest_record",
+                                "diagnostic": "today",
+                            }),
+                            f"2026-08-27T10:{index // 60:02d}:{index % 60:02d}+00:00",
+                        ),
+                    )
+
+            page = component_logging.component_log_page(
+                root,
+                "inbox",
+                page=1,
+                page_size=1,
+                start_at="2026-08-26T00:00:00+00:00",
+                end_at="2026-08-27T00:00:00+00:00",
+                search="needle",
+                level="WARNING",
+                events=("historical_warning",),
+            )
+
+            self.assertEqual(page["total"], 1)
+            self.assertEqual(page["events"], ["historical_warning"])
+            self.assertEqual(page["entries"], [{
+                "timestamp": "2026-08-26T09:00:00+00:00",
+                "level": "WARNING",
+                "event": "historical_warning",
+                "diagnostic": "needle from yesterday",
+                "line": 1,
+            }])

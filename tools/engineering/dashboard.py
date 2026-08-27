@@ -38,6 +38,7 @@ from .component_logging import (
     VALID_LEVELS,
     clear_component_log as clear_stored_component_log,
     component_log as stored_component_log,
+    component_log_page as stored_component_log_page,
     component_log_version,
     component_lifecycle_context,
     component_logger,
@@ -47,7 +48,7 @@ from .component_logging import (
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .agent_state import is_valid_commit_evidence_record, redact_diagnostic
-from .pr_check_repair import PullRequestCheckRepairError, admit as admit_pr_check_repair, attempted as pr_check_repair_attempted, failed_check_names, mark_dispatch_failed as mark_pr_check_repair_dispatch_failed
+from .pr_check_repair import PullRequestCheckRepairError, admit as admit_pr_check_repair, attempted as pr_check_repair_attempted, check_summary as pr_check_repair_check_summary, mark_dispatch_failed as mark_pr_check_repair_dispatch_failed, repair_state as pr_check_repair_state
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
 from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
@@ -73,6 +74,7 @@ from .dashboard_configuration import (
     update_inbox_root,
 )
 from . import dashboard_state
+from .workspace_preflight import execute as execute_workspace_preflight
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
@@ -662,7 +664,7 @@ def _codex_rate_limits() -> bytes:
                     "params": {
                         "clientInfo": {
                             "name": "djconnect_engineering_dashboard",
-                            "title": "Engineering Operations Console",
+                            "title": "EP Operations",
                             "version": DASHBOARD_VERSION,
                         }
                     },
@@ -868,7 +870,7 @@ def _consume_codex_rate_limit_reset_credit() -> str:
                     "params": {
                         "clientInfo": {
                             "name": "djconnect_engineering_dashboard",
-                            "title": "Engineering Operations Console",
+                            "title": "EP Operations",
                             "version": DASHBOARD_VERSION,
                         }
                     },
@@ -929,6 +931,48 @@ def _latest_codex_log(root: Path) -> bytes:
 def _component_log(root: Path, component: str) -> bytes:
     """Return canonical SQLite logs with the file-only fallback retained in logging."""
     return stored_component_log(root, component)
+
+
+def _component_log_page(root: Path, component: str, query: dict[str, list[str]]) -> dict[str, object]:
+    """Validate the browser's bounded filter contract before querying SQLite."""
+    def single(name: str, default: str = "") -> str:
+        values = query.get(name, [])
+        if len(values) > 1:
+            raise ValueError("Ongeldig logfilter.")
+        return values[0] if values else default
+
+    def timestamp(name: str) -> str | None:
+        value = single(name).strip()
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("Ongeldig logtijdvenster.")
+        return parsed.astimezone(timezone.utc).isoformat()
+
+    try:
+        page = int(single("page", "1"))
+        page_size = int(single("page_size", "50"))
+    except ValueError as error:
+        raise ValueError("Ongeldige logpagina.") from error
+    start_at = timestamp("start")
+    end_at = timestamp("end")
+    if start_at and end_at and end_at < start_at:
+        raise ValueError("Eindtijd van het logtijdvenster ligt vóór de begintijd.")
+    return stored_component_log_page(
+        root,
+        component,
+        page=page,
+        page_size=page_size,
+        start_at=start_at,
+        end_at=end_at,
+        inclusive_end=single("inclusive_end") == "1",
+        search=single("search"),
+        level=single("level"),
+        events=query.get("event", []),
+        sort_key=single("sort", "timestamp"),
+        direction=single("direction", "desc"),
+    )
 
 
 def _clear_component_log(root: Path, component: str) -> None:
@@ -1366,7 +1410,16 @@ def _switch_to_fast_forward_main(root: Path) -> dict[str, str]:
             provider.command(root, "git", "merge", "--ff-only", f"origin/{expected_branch}")
     except (OSError, RuntimeError, ValueError) as error:
         raise RuntimeError(str(error) or "Naar main schakelen is niet veilig gelukt.") from error
-    return {"previous_branch": previous_branch, "branch": expected_branch, "synchronized": "true"}
+    # The branch action is the point at which an earlier managed-branch drift
+    # can genuinely be resolved. Replace stale evidence with a fresh Level 2
+    # result before the services are restarted and re-project the dashboard.
+    workspace_preflight = execute_workspace_preflight(root, "Execution Mode: MANAGED")
+    return {
+        "previous_branch": previous_branch,
+        "branch": expected_branch,
+        "synchronized": "true",
+        "workspace_preflight": workspace_preflight.outcome,
+    }
 
 
 def _workspace_git_lock(root: Path, *, now: float | None = None) -> dict[str, object]:
@@ -1410,8 +1463,13 @@ def _recover_stale_workspace_git_lock(root: Path) -> dict[str, object]:
     return {"state": "free", "recovered": True}
 
 
-def _stale_local_branch_candidates(root: Path) -> list[str]:
-    """Return remote-absent branches proven equivalent or merged into main."""
+def _loose_local_branch_analysis(root: Path) -> list[dict[str, object]]:
+    """Assess every standalone local branch without making any change.
+
+    The dashboard must distinguish an empty inventory from an inventory with
+    branches that are deliberately retained.  Only entries marked removable
+    may reach the destructive cleanup endpoint.
+    """
     provider = GitProvider()
     expected_branch = PlatformConfiguration.load(root).workspace.default_branch
     try:
@@ -1435,23 +1493,37 @@ def _stale_local_branch_candidates(root: Path) -> list[str]:
         branches = provider.execute(root, "git", "for-each-ref", "--format=%(refname:short)", "refs/heads")
         if branches.returncode:
             raise RuntimeError("Lokale branches konden niet veilig worden gelezen.")
-        removable: list[str] = []
+        analysis: list[dict[str, object]] = []
         for branch in sorted(name for name in branches.stdout.splitlines() if name and name != expected_branch):
             if branch in active_worktree_branches:
                 continue
             remote = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
             if remote.returncode == 0:
+                analysis.append({"name": branch, "reason": "remote_branch_exists", "removable": False})
                 continue
+            if remote.returncode != 1:
+                raise RuntimeError(f"Remote-branch van {branch} kon niet veilig worden gecontroleerd.")
             comparison = provider.execute(root, "git", "diff", "--quiet", expected_branch, branch)
             if comparison.returncode == 0:
-                removable.append(branch)
+                analysis.append({"name": branch, "reason": "remote_absent_and_matches_main", "removable": True})
             elif comparison.returncode == 1 and _branch_is_verified_merged_into_main(root, expected_branch, branch, provider):
-                removable.append(branch)
+                analysis.append({"name": branch, "reason": "remote_absent_verified_merged_pull_request", "removable": True})
             elif comparison.returncode != 1:
                 raise RuntimeError(f"Branch {branch} kon niet veilig worden vergeleken.")
+            else:
+                analysis.append({"name": branch, "reason": "content_differs_from_main", "removable": False})
     except OSError as error:
         raise RuntimeError("Lokale branch-opruiming is niet beschikbaar.") from error
-    return removable
+    return analysis
+
+
+def _stale_local_branch_candidates(root: Path) -> list[str]:
+    """Return only analysis entries that are proven safe to remove."""
+    return [
+        str(entry["name"])
+        for entry in _loose_local_branch_analysis(root)
+        if entry.get("removable") is True and isinstance(entry.get("name"), str)
+    ]
 
 
 def _branch_is_verified_merged_into_main(
@@ -1531,20 +1603,24 @@ def _github_pull_request_for_detached_commit(
 
 
 def _stale_local_branch_preview(root: Path) -> dict[str, object]:
-    branches = _stale_local_branch_candidates(root)
+    analysis = _loose_local_branch_analysis(root)
+    removable = [str(entry["name"]) for entry in analysis if entry.get("removable") is True]
     pull_requests = {
         branch: _stale_local_branch_pull_request(root, branch)
-        for branch in branches
+        for branch in removable
     }
     return {
         "branches": [
             {
-                "name": branch,
-                "reason": "remote_absent_and_matches_main",
-                **({"pull_request": pull_requests[branch]} if pull_requests[branch] else {}),
+                "name": str(entry["name"]),
+                "reason": str(entry["reason"]),
+                "removable": entry.get("removable") is True,
+                **({"pull_request": pull_requests[str(entry["name"])]}
+                   if entry.get("removable") is True and pull_requests[str(entry["name"])] else {}),
             }
-            for branch in branches
+            for entry in analysis
         ],
+        "removable_branches": removable,
     }
 
 
@@ -1603,7 +1679,13 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
         number, title, url, branch = candidate.get("number"), candidate.get("title"), candidate.get("url"), candidate.get("headRefName")
         if isinstance(number, int) and number > 0 and all(isinstance(value, str) for value in (title, url, branch)) and url.startswith("https://github.com/"):
             head_sha = candidate.get("headRefOid")
-            failed_checks = failed_check_names(candidate.get("statusCheckRollup"))
+            failed_checks, checks_terminal = pr_check_repair_check_summary(candidate.get("statusCheckRollup"))
+            authorization_requested = _owner_authorization_requested(candidate)
+            repair_state = pr_check_repair_state(root, number, head_sha)
+            repair_active = repair_state in {"QUEUED", "RUNNING"} or (
+                repair_state == "SUBMITTED" and not checks_terminal
+            )
+            repair_completed_for_head = repair_state == "SUBMITTED" and checks_terminal
             result.append({
                 "number": number,
                 "title": title,
@@ -1611,11 +1693,14 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
                 "branch": branch,
                 "status": _open_pull_request_status(candidate),
                 "owner_approval": _owner_approval_status(candidate, match.group(1)),
-                "owner_authorization_requested": _owner_authorization_requested(candidate),
+                "owner_authorization_requested": authorization_requested,
+                "failed_checks": failed_checks,
                 # This is an explicit, one-shot operator action for a
                 # human-authored same-repository PR.  Endpoint admission
                 # re-reads all GitHub evidence before any provider is used.
-                "check_repair_available": bool(failed_checks) and not pr_check_repair_attempted(root, number, head_sha),
+                "check_repair_available": bool(failed_checks) and checks_terminal and not authorization_requested and not repair_active and not pr_check_repair_attempted(root, number, head_sha),
+                "check_repair_state": repair_state if repair_active else None,
+                "check_repair_completed_for_head": repair_completed_for_head,
             })
     return result
 
@@ -2704,7 +2789,7 @@ def _dashboard_html(
 <div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
 <div class="dashboard-scroll-region">
 <div class="dashboard-sticky-header">
-<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><div class="dashboard-health" id="dashboardHealth"><button class="dashboard-health__button" id="dashboardHealthIndicator" type="button" aria-expanded="false" aria-controls="dashboardHealthTooltip" data-health-state="unknown" data-testid="dashboard-health-indicator"><span class="dashboard-health__dot" aria-hidden="true"></span><span class="sr-only" id="dashboardHealthAccessibleLabel"></span></button><section class="dashboard-health__tooltip" id="dashboardHealthTooltip" role="tooltip"><strong id="dashboardHealthTooltipTitle"></strong><ul id="dashboardHealthChecks"></ul></section></div><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
+<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><div class="dashboard-health" id="dashboardHealth"><button class="dashboard-health__button" id="dashboardHealthIndicator" type="button" aria-expanded="false" aria-controls="dashboardHealthTooltip" data-health-state="unknown" data-testid="dashboard-health-indicator"><span class="dashboard-health__dot" aria-hidden="true"></span><span class="sr-only" id="dashboardHealthAccessibleLabel"></span></button></div><section class="dashboard-health__tooltip" id="dashboardHealthTooltip" role="tooltip"><strong id="dashboardHealthTooltipTitle"></strong><ul id="dashboardHealthChecks"></ul></section><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--capacity-reserve" id="codexCapacityReserveBanner" role="alert" aria-live="assertive" hidden data-testid="codex-capacity-reserve-banner"><strong data-i18n="notification.codex_capacity_reserve.title"></strong><span id="codexCapacityReserveMessage"></span><a class="codex-capacity-reserve-banner__action" id="codexCapacityReserveAction" href="#rateLimits" data-i18n="notification.codex_capacity_reserve.action"></a></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
@@ -2734,7 +2819,7 @@ def _dashboard_html(
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence lifecycle-detail-modal" id="lifecycleDetailModal" aria-labelledby="lifecycleDetailTitle"><section class="dashboard-modal-shell__panel lifecycle-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="lifecycleDetailTitle"></h2><button class="dashboard-modal-shell__close" id="lifecycleDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="lifecycleDetailContent" class="lifecycle-detail-modal__content" aria-live="polite"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence execution-mode-modal" id="executionModeModal" aria-labelledby="executionModeModalTitle"><section class="dashboard-modal-shell__panel execution-mode-modal__panel"><header class="dashboard-modal-shell__header execution-mode-modal__header"><h2 id="executionModeModalTitle" data-i18n="execution_mode_info.title"></h2><button class="dashboard-modal-shell__close execution-mode-modal__close" id="executionModeModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div class="execution-mode-modal__content"><p data-i18n="execution_mode_info.intro"></p><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.managed_title"></h3><p data-i18n="execution_mode_info.managed_body"></p></section><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.genesis_title"></h3><p data-i18n="execution_mode_info.genesis_body"></p></section></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence confirmation-modal" id="operatorMergeWaitModal" aria-labelledby="operatorMergeWaitModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="operatorMergeWaitModalTitle" data-i18n="merge_wait.title"></h2><button class="dashboard-modal-shell__close" id="operatorMergeWaitModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="operatorMergeWaitModalDescription"></p><p class="estimate-meta" id="operatorMergeWaitModalLastCheck" hidden></p><section class="merge-wait-context" data-i18n-aria-label="merge_wait.context_label"><p id="operatorMergeWaitModalContextIntro"></p><dl><div><dt data-i18n="merge_wait.context_run"></dt><dd id="operatorMergeWaitModalRunId"></dd></div><div><dt data-i18n="merge_wait.context_prompt"></dt><dd id="operatorMergeWaitModalPrompt"></dd></div><div><dt data-i18n="merge_wait.pull_request_status"></dt><dd><span class="open-pr-status" id="operatorMergeWaitModalPullRequestStatus"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span></dd></div><div><dt data-i18n="merge_wait.owner_approval"></dt><dd><span class="open-pr-approval" id="operatorMergeWaitModalOwnerApproval"></span></dd></div></dl></section><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="operatorMergeWaitModalStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--destructive" id="operatorMergeWaitModalAbort" type="button" data-i18n="action.abort_execution"></button><a class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="operatorMergeWaitModalPullRequest" target="_blank" rel="noopener noreferrer"></a></div></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="confirmationModal" aria-labelledby="confirmationModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="confirmationModalTitle" data-i18n="ui.confirm_action"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="confirmationModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="confirmationModalText"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="confirmationModalCancel" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="confirmationModalConfirm" type="button" data-i18n="action.confirm"></button></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="confirmationModal" aria-labelledby="confirmationModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="confirmationModalTitle" data-i18n="ui.confirm_action"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="confirmationModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="confirmationModalText"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="confirmationModalCancel" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="confirmationModalConfirm" type="button" data-i18n="action.confirm"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="dashboardErrorModalRecover" type="button" hidden></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchCleanupResultModal" aria-labelledby="workspaceBranchCleanupResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchCleanupResultTitle" data-i18n="workspace.branch_cleanup_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchCleanupResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchCleanupResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchCleanupResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal" aria-labelledby="workspaceBranchMainResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchMainResultTitle" data-i18n="workspace.branch_main_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchMainResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchMainResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchMainResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
@@ -2745,7 +2830,7 @@ def _dashboard_html(
 <details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="logTimePreset"><span data-i18n="filter.time_period"></span><select id="logTimePreset"><option value="" data-i18n="filter.all_time"></option><option value="today" data-i18n="filter.today"></option><option value="yesterday" data-i18n="filter.yesterday"></option><option value="day" data-i18n="filter.specific_day"></option><option value="range" data-i18n="filter.custom_range"></option></select></label><label for="logSpecificDate" id="logSpecificDateControl" hidden><span data-i18n="filter.specific_day"></span><input id="logSpecificDate" type="date"></label><label for="logDateFrom" id="logDateFromControl" hidden><span data-i18n="filter.from"></span><input id="logDateFrom" type="datetime-local"></label><label for="logDateTo" id="logDateToControl" hidden><span data-i18n="filter.to"></span><input id="logDateTo" type="datetime-local"></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="logs.inbox_watcher"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="inbox" data-testid="download-inbox-log" type="button" data-i18n-title="logs.download_inbox" data-i18n-aria-label="logs.download_inbox">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="inbox" data-testid="clear-inbox-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.inbox_watcher"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="inboxComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="inboxLogPagination" data-i18n-aria-label="logs.inbox_watcher"></nav></div><div class="card"><div class="log-card-header"><strong data-i18n="logs.status_dashboard"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="dashboard" data-testid="download-dashboard-log" type="button" data-i18n-title="logs.download_dashboard" data-i18n-aria-label="logs.download_dashboard">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="dashboard" data-testid="clear-dashboard-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.status_dashboard"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="dashboardComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="dashboardLogPagination" data-i18n-aria-label="logs.status_dashboard"></nav></div></div></details>
 <details class="technical-details" id="technicalDetails" hidden><summary><strong data-i18n="section.technical_details"></strong></summary><p class="category-description" id="technicalDetailsDescription" data-i18n="description.technical_details"></p><p class="technical-diagnosis-summary" id="technicalHealthySummary" hidden></p><div class="technical-grid" id="technicalDiagnosisDetails">
 <div class="card"><strong id="technicalRepositoryTitle" data-i18n="technical.repository"></strong><p class="field"><span class="label" id="technicalRepositoryStateLabel" data-i18n="technical.repository_status"></span><span id="repositoryState"></span></p><p class="field"><span class="label technical-repository-label" id="technicalWorkspaceStateLabel"><span data-i18n="technical.workspace_status"></span><span class="technical-info" id="technicalWorkspaceStateInfo" role="img" tabindex="0" data-i18n-title="technical.workspace_status_help" data-i18n-aria-label="technical.workspace_status_help">i</span></span><span id="workspaceState"></span></p><div class="technical-git-lock" id="technicalGitLock"><p class="field"><span class="label technical-repository-label" id="technicalGitLockLabel"><span data-i18n="technical.git_lock"></span><span class="technical-info" id="technicalGitLockInfo" role="img" tabindex="0" data-i18n-title="technical.git_lock_help" data-i18n-aria-label="technical.git_lock_help">i</span></span><span id="technicalGitLockState" data-i18n="format.loading"></span></p><p class="technical-git-lock__detail" id="technicalGitLockDetail" hidden></p><button class="queue-blocker__repair" id="technicalGitLockRecover" type="button" hidden data-i18n="technical.git_lock_recovery_action"></button><p class="technical-git-lock__status" id="technicalGitLockRecoveryStatus" role="status" aria-live="polite"></p></div></div>
-<div class="card"><strong id="technicalHostPreflightTitle" data-i18n="technical.host_preflight"></strong><p class="field"><span class="label" id="technicalExecutionHostLabel" data-i18n="technical.execution_host"></span><span id="executionHostName" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalExecutionHostVersionLabel" data-i18n="technical.execution_host_version"></span><span id="executionHostVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeLabel" data-i18n="technical.runtime"></span><span id="executionHostRuntime" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimePromptTransportLabel" data-i18n="technical.runtime_prompt_transport"></span><span id="executionHostTransport" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalHostStatusLabel" data-i18n="technical.host_status"></span><span id="hostPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastCheckLabel" data-i18n="technical.last_check"></span><span id="hostPreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalWorkspacePreflightStatusLabel" data-i18n="technical.workspace_status"></span><span id="workspacePreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastWorkspaceCheckLabel" data-i18n="technical.last_workspace_check"></span><span id="workspacePreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalCapabilityStatusLabel" data-i18n="technical.capability_status"></span><span id="capabilityPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecoverabilityLabel" data-i18n="technical.recoverability"></span><span id="capabilityRecoverability" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalFailureOriginLabel" data-i18n="technical.failure_origin"></span><span id="capabilityFailureOrigin" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecommendationLabel" data-i18n="technical.recommended_action"></span><span id="capabilityRecommendation" data-i18n="format.unavailable"></span></p></div>
+<div class="card"><strong id="technicalHostPreflightTitle" data-i18n="technical.host_preflight"></strong><p class="field"><span class="label" id="technicalExecutionHostLabel" data-i18n="technical.execution_host"></span><span id="executionHostName" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalExecutionHostVersionLabel" data-i18n="technical.execution_host_version"></span><span id="executionHostVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeLabel" data-i18n="technical.runtime"></span><span id="executionHostRuntime" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeVersionLabel" data-i18n="detail.codex_cli_version"></span><span id="executionHostRuntimeVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimePathLabel" data-i18n="detail.codex_cli_installation_path"></span><code id="executionHostRuntimePath" data-i18n="format.unavailable"></code></p><p class="field"><span class="label" id="technicalRuntimePromptTransportLabel" data-i18n="technical.runtime_prompt_transport"></span><span id="executionHostTransport" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalHostStatusLabel" data-i18n="technical.host_status"></span><span id="hostPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastCheckLabel" data-i18n="technical.last_check"></span><span id="hostPreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalWorkspacePreflightStatusLabel" data-i18n="technical.workspace_status"></span><span id="workspacePreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastWorkspaceCheckLabel" data-i18n="technical.last_workspace_check"></span><span id="workspacePreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalCapabilityStatusLabel" data-i18n="technical.capability_status"></span><span id="capabilityPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecoverabilityLabel" data-i18n="technical.recoverability"></span><span id="capabilityRecoverability" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalFailureOriginLabel" data-i18n="technical.failure_origin"></span><span id="capabilityFailureOrigin" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecommendationLabel" data-i18n="technical.recommended_action"></span><span id="capabilityRecommendation" data-i18n="format.unavailable"></span></p></div>
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
@@ -2769,6 +2854,7 @@ def _dashboard_html(
         repair = (
             f'<button class="open-pr-check-repair" '
             f'data-open-pull-request-check-repair="{pull_request["number"]}" '
+            f'data-open-pull-request-failed-checks="{escape(json.dumps(pull_request.get("failed_checks", [])), quote=True)}" '
             f'type="button" data-i18n="workspace.open_pull_request.repair_failed_checks"></button>'
             if pull_request.get("check_repair_available") is True else ""
         )
@@ -3740,8 +3826,23 @@ def handler(root: Path, logger: logging.Logger | None = None):
             if self.path == "/api/log/latest":
                 return self._send(_latest_codex_log(root), "text/plain; charset=utf-8")
             if request.path in {"/api/logs/inbox", "/api/logs/dashboard"}:
+                component = request.path.rsplit("/", 1)[-1]
+                query = parse_qs(request.query, keep_blank_values=True)
+                if query.get("format") == ["json"]:
+                    try:
+                        payload = _component_log_page(root, component, query)
+                    except ValueError as error:
+                        return self._send(
+                            json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
+                            "application/json; charset=utf-8",
+                            400,
+                        )
+                    return self._send(
+                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+                        "application/json; charset=utf-8",
+                    )
                 return self._send(
-                    _component_log(root, request.path.rsplit("/", 1)[-1]),
+                    _component_log(root, component),
                     "text/plain; charset=utf-8",
                 )
             if self.path == "/api/log/current":

@@ -258,6 +258,14 @@ status update. With automatic refresh disabled, the visible state remains
 static until the maintainer refreshes or re-enables it. These are presentation
 preferences; they never alter an Engineering run or its evidence.
 
+The title-bar platform-status dot is a separate, read-only disclosure rather
+than a hover-only hint. A click exposes the live Dashboard, Inbox-watcher,
+execution, queue, watcher and workspace checks. On desktop its popout is
+anchored directly below the dot; on compact widths it opens in the title-bar
+flow before the Options panel, so it cannot fall outside the viewport or behind
+the dashboard content. The dot colour is derived from the same current status
+snapshot as those rows, never from a stale diagnostic projection.
+
 On iPhone, the theme, section-expansion and automatic-refresh switches are
 separate direct-touch controls. Each control has `touch-action: manipulation`
 and persists only its own browser-local setting. Playwright covers them with
@@ -489,6 +497,12 @@ required PR check leaves Merge blocked without a completion checkmark and
 renders the localized “Fix pull request checks” current action. This guards
 against presenting a reached PR wait as an already completed merge.
 
+The same suite covers the human-PR one-shot repair boundary: its confirmation
+lists the exact terminal failed checks, an admitted repair remains observable
+with a checks link, and a completed one-shot repair stays visibly disabled for
+the repaired head. It also exercises the title-bar status disclosure in desktop
+and compact layouts, including its stacking order beside the Options panel.
+
 At an operator merge hand-off, **Check pull request status** performs an
 immediate read-only GitHub check. Continuation is scheduled only after the PR
 is merged and its merge commit is proven reachable from `origin/main`; it never
@@ -560,11 +574,21 @@ section in the main dashboard. Pull-request evidence is likewise shown with
 the associated active or historical execution, not duplicated in Diagnostics.
 
 The **Logs** section automatically keeps the redacted JSON records current
-through server-push revisions and parses them locally into selectable, copyable
-tables. Search and level filtering are client-side. Clicking a column heading
-sorts that table and shows the active ascending or descending direction; the
-subtle line number is not a server-side log identifier. Startup, restart and
-orderly-shutdown lifecycle events are visible there as `INFO` records.
+through server-push revisions and renders them into selectable, copyable
+tables. Search, level, event, time-window and sort filtering is executed by
+the local SQLite query service before counting and pagination, rather than over
+an arbitrary browser-side newest-record sample. Each response contains at most
+50 rows, while its total reflects every retained row matching the full filter
+set. Clicking a column heading requests the active ascending or descending
+order; the visible line number is the local stored-row identifier, not a
+portable log identifier. Startup, restart and orderly-shutdown lifecycle events
+are visible there as `INFO` records.
+
+The time-window selector exposes no date fields for **All dates**, **Today**
+or **Yesterday**; it exposes **Specific day** only for that selection and
+**From**/**To** only for a custom range. Each date field has an independent
+clear action. When **From** is set, the browser prevents **To** from preceding
+it and the API rejects an invalid range as a second fail-closed boundary.
 Each watcher and dashboard table has independent filtering, sorting and
 pagination, and its own download and confirmed-clear controls. Downloaded logs
 remain redacted NDJSON. A missing log is presented as an empty log, never as an

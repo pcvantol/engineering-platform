@@ -568,7 +568,14 @@ class DashboardStatusTest(unittest.TestCase):
         ]
 
         preview = dashboard._stale_local_branch_preview(root)
-        self.assertEqual(preview, {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main"}]})
+        self.assertEqual(preview, {
+            "branches": [
+                {"name": "codex/different", "reason": "content_differs_from_main", "removable": False},
+                {"name": "codex/remote", "reason": "remote_branch_exists", "removable": False},
+                {"name": "codex/stale", "reason": "remote_absent_and_matches_main", "removable": True},
+            ],
+            "removable_branches": ["codex/stale"],
+        })
 
         git_provider.return_value.execute.side_effect = [
             completed(("git",), 0, "", ""),
@@ -884,7 +891,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(
             dashboard._stale_local_branch_preview(root),
-            {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main"}]},
+            {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main", "removable": True}], "removable_branches": ["codex/stale"]},
         )
         self.assertNotIn(
             call(root, "git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/codex/in-use"),
@@ -918,13 +925,15 @@ class DashboardStatusTest(unittest.TestCase):
             {"branches": [{
                 "name": "codex/stale",
                 "reason": "remote_absent_and_matches_main",
+                "removable": True,
                 "pull_request": {"number": 847, "url": "https://github.com/pcvantol/djconnect/pull/847"},
-            }]},
+            }], "removable_branches": ["codex/stale"]},
         )
 
+    @patch("tools.engineering.dashboard.execute_workspace_preflight")
     @patch("tools.engineering.dashboard.GitProvider")
     def test_switch_to_fast_forward_main_only_switches_a_clean_branch_and_fast_forwards(
-        self, git_provider: object
+        self, git_provider: object, workspace_preflight: object
     ) -> None:
         root = Path(__file__).parents[2]
         completed = __import__("subprocess").CompletedProcess
@@ -935,10 +944,12 @@ class DashboardStatusTest(unittest.TestCase):
             completed(("git",), 0, "2\t0\n", ""),
         ]
 
+        workspace_preflight.return_value.outcome = "PASS"
         self.assertEqual(
             dashboard._switch_to_fast_forward_main(root),
-            {"previous_branch": "codex/work", "branch": "main", "synchronized": "true"},
+            {"previous_branch": "codex/work", "branch": "main", "synchronized": "true", "workspace_preflight": "PASS"},
         )
+        workspace_preflight.assert_called_once_with(root, "Execution Mode: MANAGED")
         self.assertEqual(
             git_provider.return_value.command.call_args_list,
             [
@@ -1133,7 +1144,10 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(pull_requests, [{
             "number": 849, "title": "Cleanup <safe>", "url": "https://github.com/pcvantol/djconnect/pull/849", "branch": "codex/cleanup", "status": "ready_to_merge", "owner_approval": "approved",
             "owner_authorization_requested": False,
+            "failed_checks": [],
             "check_repair_available": False,
+            "check_repair_state": None,
+            "check_repair_completed_for_head": False,
         }])
         page = _dashboard_html(
             "Engineering Status", workspace_branch="codex/cleanup", workspace_commit="123456789abc",
@@ -1373,14 +1387,16 @@ class DashboardStatusTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "verwachte branch"):
             dashboard._synchronize_managed_branch_with_upstream(root)
 
+    @patch("tools.engineering.dashboard.execute_workspace_preflight")
     @patch("tools.engineering.dashboard.PlatformConfiguration.load")
     @patch("tools.engineering.dashboard.GitProvider")
     def test_switch_to_fast_forward_main_never_overwrites_workspace_or_local_commits(
-        self, git_provider: object, configuration: object
+        self, git_provider: object, configuration: object, workspace_preflight: object
     ) -> None:
         root = Path(__file__).parents[2]
         completed = __import__("subprocess").CompletedProcess
         configuration.return_value.workspace.default_branch = "main"
+        workspace_preflight.return_value.outcome = "PASS"
         git_provider.return_value.execute.side_effect = [
             completed(("git",), 0, "", ""),
             completed(("git",), 0, "codex/feature", ""),
@@ -1389,7 +1405,7 @@ class DashboardStatusTest(unittest.TestCase):
         ]
         self.assertEqual(
             dashboard._switch_to_fast_forward_main(root),
-            {"previous_branch": "codex/feature", "branch": "main", "synchronized": "true"},
+            {"previous_branch": "codex/feature", "branch": "main", "synchronized": "true", "workspace_preflight": "PASS"},
         )
         self.assertEqual(
             git_provider.return_value.command.call_args_list,
@@ -2973,6 +2989,46 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertIn(content_type, response.getheader("Content-Type"))
                 self.assertEqual(response.getheader("Cache-Control"), "no-store")
                 response.read()
+
+    @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])
+    def test_http_component_log_json_route_accepts_server_side_filters(
+        self, _open_pull_requests: object,
+    ) -> None:
+        with self._dashboard_http_connection() as (_, connection):
+            connection.request(
+                "GET",
+                "/api/logs/inbox?format=json&page=1&page_size=50"
+                "&start=2026-08-26T00%3A00%3A00.000Z"
+                "&end=2026-08-27T00%3A00%3A00.000Z&level=INFO",
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("application/json", response.getheader("Content-Type"))
+            payload = json.loads(response.read())
+            self.assertEqual(payload["page"], 1)
+            self.assertEqual(payload["page_size"], 50)
+            self.assertIsInstance(payload["entries"], list)
+            self.assertIsInstance(payload["events"], list)
+            self.assertIsInstance(payload["total"], int)
+
+    @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])
+    def test_http_component_log_json_route_rejects_an_end_before_start(
+        self, _open_pull_requests: object,
+    ) -> None:
+        with self._dashboard_http_connection() as (_, connection):
+            connection.request(
+                "GET",
+                "/api/logs/inbox?format=json"
+                "&start=2026-08-27T00%3A00%3A00.000Z"
+                "&end=2026-08-26T00%3A00%3A00.000Z",
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            self.assertIn("application/json", response.getheader("Content-Type"))
+            self.assertEqual(
+                json.loads(response.read()),
+                {"error": "Eindtijd van het logtijdvenster ligt vóór de begintijd."},
+            )
 
     @patch("tools.engineering.dashboard._request_owner_authorization", return_value={"queued": True, "pull_request": 940})
     @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])

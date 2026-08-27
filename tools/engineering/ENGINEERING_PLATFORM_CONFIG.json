@@ -12,7 +12,7 @@
     "id": "djconnect",
     "name": "DJConnect Engineering",
     "repository": {"provider": "github", "owner": "pcvantol", "name": "djconnect", "default_branch": "main"},
-    "branding": {"dashboard_title": "Engineering Operations Console"},
+    "branding": {"dashboard_title": "EP Operations"},
     "workspace_authorization": {
       "allowed_roots": [],
       "allowed_repositories": [],

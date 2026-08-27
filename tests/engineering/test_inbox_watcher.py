@@ -44,7 +44,9 @@ class InboxWatcherTest(unittest.TestCase):
         )
         self.preflight = patch(
             "tools.engineering.inbox_watcher.execute_host_preflight",
-            return_value=HostPreflightResult("PASS", "Engineering Platform", "2.0.0", "2026.12", "now", 1, ()),
+            return_value=HostPreflightResult(
+                "PASS", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
+            ),
         )
         self.preflight.start()
         self.workspace_preflight = patch(
@@ -1129,7 +1131,9 @@ class InboxWatcherTest(unittest.TestCase):
                 observed_submission.extend(connection.execute(
                     "SELECT received_at FROM execution_submissions"
                 ).fetchall())
-            return HostPreflightResult("PASS", "Engineering Platform", "2.0.0", "2026.12", "now", 1, ())
+            return HostPreflightResult(
+                "PASS", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
+            )
 
         with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
             "tools.engineering.inbox_watcher.execute_host_preflight", side_effect=host_preflight
@@ -1292,7 +1296,9 @@ class InboxWatcherTest(unittest.TestCase):
     def test_failed_host_preflight_prevents_inbox_claim(self) -> None:
         prompt = self.inbox / "host-failure.md"
         prompt.write_text("# Host failure", encoding="utf-8")
-        failed = HostPreflightResult("FAIL", "Engineering Platform", "2.0.0", "2026.12", "now", 1, ())
+        failed = HostPreflightResult(
+            "FAIL", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
+        )
         with patch("tools.engineering.inbox_watcher.execute_host_preflight", return_value=failed), patch(
             "tools.engineering.inbox_watcher.subprocess.run"
         ) as run:
@@ -1682,7 +1688,7 @@ class InboxWatcherTest(unittest.TestCase):
         archived.write_text(original, encoding="utf-8")
         _, run_id, _ = inbox_watcher._job_id(archived, original)
         host_failure = HostPreflightResult(
-            "FAIL", "Engineering Platform", "2.0.0", "2026.12", "now", 1,
+            "FAIL", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1,
             (HostPreflightCheck("git_metadata", "FAIL", "Git metadata is read-only.", "Restore write access."),),
         )
         capability_failure = CapabilityPreflightResult(

@@ -250,6 +250,13 @@ non-draft and terminally failed, the Workspace subblock can show **Fix failed
 checks**. It is an explicit confirmed action, not part of an Inbox execution
 and never resumes or changes an existing transaction.
 
+The confirmation dialog names every terminal failed check from the current
+GitHub projection. This list is operator context, not an admission token: the
+server reads the PR evidence again after confirmation. Once admitted, the card
+stays visible as **Repair active** with a progress glyph and a direct GitHub
+checks link. This makes a queued repair observable without suggesting that the
+browser itself is performing the repair.
+
 Before dispatch, EP re-reads the exact PR number, head SHA, source repository,
 terminal failed checks, GitHub readiness, Codex readiness and capacity reserve.
 It rejects fork PRs, pending checks, changed evidence and unavailable
@@ -257,11 +264,13 @@ providers. The repair runs in a disposable detached worktree at that exact
 SHA. Codex may edit and validate only; the host, not Codex, creates and pushes
 at most one commit with a SHA lease. It never opens, merges or retargets a PR.
 
-The one-shot reservation is durable per PR head SHA. Therefore a second action
-cannot be launched for the same failed revision. Once that single commit has
-caused GitHub checks to finish, a new terminal failure is a new SHA and the
-operator may explicitly use the button again. This keeps human-authored PRs
-repairable without creating an autonomous retry loop.
+The one-shot reservation is durable for both the failed head and the repair
+commit it creates. Therefore a second action cannot be launched while that
+repair is queued/running, nor after it has completed for the repaired head: the
+card remains visible but disabled and explains that the single focused repair
+has already been used. A later human-authored commit creates a genuinely new
+head and can be assessed anew. This keeps human-authored PRs repairable without
+creating an autonomous retry loop.
 
 Neither control rewrites history, stashes work, or deletes a branch without
 the explicit second confirmation.

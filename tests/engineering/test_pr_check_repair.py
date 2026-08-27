@@ -59,6 +59,15 @@ class PullRequestCheckRepairTest(unittest.TestCase):
             pr_check_repair._write_state(root, 972, "b" * 40, {"status": "SUBMITTED"})
             self.assertFalse(pr_check_repair.current_evidence(root, 972)["eligible"])
 
+    def test_repair_state_follows_the_commit_created_by_the_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pr_check_repair._write_state(root, 973, "a" * 40, {
+                "status": "SUBMITTED", "commit_sha": "b" * 40,
+            })
+            self.assertEqual(pr_check_repair.repair_state(root, 973, "a" * 40), "SUBMITTED")
+            self.assertEqual(pr_check_repair.repair_state(root, 973, "b" * 40), "SUBMITTED")
+
 
 if __name__ == "__main__":
     unittest.main()

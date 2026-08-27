@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 
 from .agent_state import redact_diagnostic
 from .dashboard_configuration import get as dashboard_configuration
@@ -22,6 +22,8 @@ LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
 DEFAULT_LOG_LEVEL = "INFO"
 MAX_LOG_BYTES = 1_000_000
 BACKUP_COUNT = 3
+COMPONENT_LOG_PAGE_SIZE = 50
+MAX_COMPONENT_LOG_PAGE_SIZE = 200
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LIFECYCLE_CONTEXT_KEYS = frozenset(
     {
@@ -160,6 +162,114 @@ def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
         return ("\n".join(lines) or "Nog geen applicatielog beschikbaar.").encode()
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
         return _fallback_component_log(root, component, limit=limit)
+
+
+def component_log_page(
+    root: Path,
+    component: str,
+    *,
+    page: int = 1,
+    page_size: int = COMPONENT_LOG_PAGE_SIZE,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    inclusive_end: bool = False,
+    search: str = "",
+    level: str = "",
+    events: Iterable[str] = (),
+    sort_key: str = "timestamp",
+    direction: str = "desc",
+) -> dict[str, object]:
+    """Return one bounded, filtered page from canonical component-log storage.
+
+    Filtering happens before pagination so a historical date, event or text
+    search never disappears merely because newer rows filled an arbitrary
+    client-side sample.
+    """
+    if component not in {"inbox", "dashboard"}:
+        raise ValueError("Onbekende componentlog.")
+    if not isinstance(page, int) or page < 1:
+        raise ValueError("Ongeldige logpagina.")
+    if not isinstance(page_size, int) or not 1 <= page_size <= MAX_COMPONENT_LOG_PAGE_SIZE:
+        raise ValueError("Ongeldige logpaginagrootte.")
+    normalized_level = level.upper().strip()
+    if normalized_level and normalized_level not in VALID_LEVELS:
+        raise ValueError("Ongeldig logniveau.")
+    normalized_search = str(search).strip()
+    if len(normalized_search) > 160:
+        raise ValueError("Zoekterm voor logs is te lang.")
+    normalized_events = tuple(
+        sorted({str(event).strip() for event in events if str(event).strip()})
+    )
+    if len(normalized_events) > 50 or any(len(event) > 160 for event in normalized_events):
+        raise ValueError("Ongeldige gebeurtenisfilter.")
+    sort_columns = {
+        "line": "id",
+        "timestamp": "created_at",
+        "level": "json_extract(payload, '$.level')",
+        "event": "json_extract(payload, '$.event')",
+        "runId": "COALESCE(json_extract(payload, '$.run_id'), '')",
+        "details": "COALESCE(json_extract(payload, '$.diagnostic'), '')",
+    }
+    if sort_key not in sort_columns or direction not in {"asc", "desc"}:
+        raise ValueError("Ongeldige logsorteervolgorde.")
+
+    clauses = ["component=?"]
+    parameters: list[object] = [component]
+    if start_at:
+        clauses.append("created_at >= ?")
+        parameters.append(start_at)
+    if end_at:
+        clauses.append("created_at <= ?" if inclusive_end else "created_at < ?")
+        parameters.append(end_at)
+    if normalized_search:
+        escaped = normalized_search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'")
+        parameters.append(f"%{escaped}%")
+    if normalized_level:
+        clauses.append("json_extract(payload, '$.level')=?")
+        parameters.append(normalized_level)
+    event_option_clauses = list(clauses)
+    event_option_parameters = list(parameters)
+    if normalized_events:
+        clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in normalized_events) + ")")
+        parameters.extend(normalized_events)
+    where = " WHERE " + " AND ".join(clauses)
+
+    connection = open_storage(root)
+    try:
+        total = int(connection.execute(
+            "SELECT COUNT(*) FROM engineering_component_logs" + where,
+            parameters,
+        ).fetchone()[0])
+        rows = connection.execute(
+            "SELECT id,payload FROM engineering_component_logs" + where
+            + f" ORDER BY {sort_columns[sort_key]} {direction.upper()}, id {direction.upper()} LIMIT ? OFFSET ?",
+            [*parameters, page_size, (page - 1) * page_size],
+        ).fetchall()
+        event_rows = connection.execute(
+            "SELECT DISTINCT json_extract(payload, '$.event') FROM engineering_component_logs WHERE "
+            + " AND ".join(event_option_clauses)
+            + " AND json_extract(payload, '$.event') IS NOT NULL ORDER BY 1 LIMIT 500",
+            event_option_parameters,
+        ).fetchall()
+        records: list[dict[str, object]] = []
+        for row_id, raw in rows:
+            try:
+                record = json.loads(str(raw))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict):
+                record["line"] = int(row_id)
+                records.append(record)
+        return {
+            "entries": records,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "events": [str(row[0]) for row in event_rows if row[0]],
+        }
+    finally:
+        connection.close()
 
 
 def component_log_version(root: Path, component: str) -> str:

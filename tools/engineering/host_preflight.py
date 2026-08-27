@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -43,6 +44,8 @@ class HostPreflightResult:
     execution_host: str
     version: str
     bootstrap_contract: str
+    runtime_path: str | None
+    runtime_version: str | None
     timestamp: str
     duration_ms: int
     checks: tuple[HostPreflightCheck, ...]
@@ -58,6 +61,15 @@ class HostPreflightResult:
 
 def _check(identifier: str, passed: bool, reason: str, recovery: str) -> HostPreflightCheck:
     return HostPreflightCheck(identifier, "PASS" if passed else "FAIL", reason, recovery)
+
+
+_RUNTIME_VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?")
+
+
+def _runtime_version(output: str) -> str | None:
+    """Keep only the compact version token reported by the managed runtime."""
+    match = _RUNTIME_VERSION.search(output.strip())
+    return match.group(0) if match else None
 
 
 def _minimum_free_bytes() -> int:
@@ -143,8 +155,11 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         free = shutil.disk_usage(root).free
         checks.append(_check("disk_space", free >= threshold, "Sufficient free disk space is available." if free >= threshold else "Free disk space is below the configured host threshold.", "Free disk space or lower the configured host preflight threshold."))
 
+    runtime_path: str | None = None
+    runtime_version: str | None = None
     try:
         executable = str(configuration.resolver(root).resolve_runtime()) if configuration is not None else None
+        runtime_path = executable
     except PlatformConfigurationError:
         executable = None
     checks.append(_check("runtime_executable", bool(executable), "Configured runtime executable is available." if executable else "Configured runtime executable is unavailable.", "Install or expose the Codex CLI on the Execution Host PATH."))
@@ -152,6 +167,8 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         try:
             invoked = LocalProcessProvider().execute(root, (executable, "--version"))
             available = invoked.returncode == 0
+            if available:
+                runtime_version = _runtime_version(invoked.stdout)
         except OSError:
             available = False
         checks.append(_check("runtime_invocation", available, "Configured runtime executable is invokable." if available else "Configured runtime executable cannot be invoked.", "Repair the Codex CLI installation before accepting work."))
@@ -189,6 +206,8 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
         configuration.platform.name if configuration else "Engineering Platform",
         manifest.platform_version if manifest else "unavailable",
         manifest.bootstrap_contract if manifest else "unavailable",
+        runtime_path,
+        runtime_version,
         timestamp,
         round((monotonic() - started) * 1000),
         tuple(checks),
@@ -207,4 +226,4 @@ def latest(root: Path) -> dict[str, object]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in ("outcome", "timestamp", "duration_ms", "execution_host", "version", "bootstrap_contract", "checks", "drift_evidence", "resume_guidance", "run_id") if key in payload}
+    return {key: payload[key] for key in ("outcome", "timestamp", "duration_ms", "execution_host", "version", "bootstrap_contract", "runtime_path", "runtime_version", "checks", "drift_evidence", "resume_guidance", "run_id") if key in payload}

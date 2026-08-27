@@ -13,6 +13,40 @@ from tools.engineering.storage import record_submission
 
 
 class DashboardStateTest(unittest.TestCase):
+    @patch("tools.engineering.dashboard_state.latest_capability_preflight", return_value={})
+    @patch("tools.engineering.dashboard_state.latest_workspace_preflight")
+    @patch("tools.engineering.dashboard_state.latest_host_preflight", return_value={})
+    def test_snapshot_hides_drift_superseded_by_a_passing_preflight(
+        self, _: object, workspace_preflight: object, __: object,
+    ) -> None:
+        workspace_preflight.return_value = {
+            "outcome": "PASS",
+            "drift_evidence": [{"drift_id": "old-managed-branch-drift"}],
+        }
+        payload = json.loads(dashboard_state.snapshot(
+            Path("/workspace"),
+            status_reader=lambda _: b"{}",
+            unavailable_reader=dashboard_state.unavailable_status,
+            prompt_started_reader=lambda _: b"{}",
+            usage_reader=lambda _: b"{}",
+            rate_limits_reader=lambda: b"{}",
+            usage_for_run_reader=lambda _, __: b"{}",
+            completion_commits_reader=lambda _: b"{}",
+            last_executed_commits_reader=lambda _: b"{}",
+            reviewer_agents_reader=lambda _, __: b"[]",
+            execution_reader=lambda _, __: b"{}",
+            runtime_metadata_reader=lambda _, __: b"{}",
+            report_analysis_available_reader=lambda _, __: False,
+            telemetry_reader=lambda _: [],
+            process_metrics_reader=lambda: b"{}",
+            build_commit_reader=lambda _: "abc123",
+            component_log_versions_reader=lambda _: {},
+            dashboard_version="2.0.0",
+            worker_version="2.0.0",
+        ))
+
+        self.assertEqual(payload["current_drift"], {})
+
     def test_status_prefers_the_live_projection_for_an_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

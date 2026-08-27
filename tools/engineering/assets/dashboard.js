@@ -961,6 +961,7 @@ function structuredLogEntries(text) {
             "event",
             "run_id",
             "component",
+            "line",
           ]),
           details = Object.entries(entry)
             .filter(([key]) => !known.has(key))
@@ -1041,6 +1042,54 @@ function updateLogTimeFilterControls() {
   $("logSpecificDateControl").hidden = preset !== "day";
   $("logDateFromControl").hidden = preset !== "range";
   $("logDateToControl").hidden = preset !== "range";
+  synchronizeLogRangeBounds();
+}
+function synchronizeLogRangeBounds() {
+  const from = $("logDateFrom"), to = $("logDateTo");
+  if (!from || !to) return;
+  // datetime-local values use an order-preserving ISO-like representation.
+  // Keep the native picker and any already entered end value valid together.
+  to.min = from.value;
+  if (from.value && to.value && to.value < from.value) to.value = from.value;
+}
+function updateLogDateClearButtons() {
+  for (const input of document.querySelectorAll(
+    "#logSpecificDate, #logDateFrom, #logDateTo",
+  )) {
+    const button = document.querySelector(
+      `[data-clear-log-date="${input.id}"]`,
+    );
+    if (button) button.hidden = !input.value;
+  }
+}
+function installLogDateClearButtons() {
+  const label = t("action.clear_date");
+  for (const input of document.querySelectorAll(
+    "#logSpecificDate, #logDateFrom, #logDateTo",
+  )) {
+    const field = document.createElement("span"), button = document.createElement("button");
+    field.className = "log-date-control__field";
+    input.replaceWith(field);
+    field.append(input);
+    button.className = "log-date-control__clear";
+    button.type = "button";
+    button.hidden = !input.value;
+    button.textContent = "×";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("data-i18n-title", "action.clear_date");
+    button.setAttribute("data-i18n-aria-label", "action.clear_date");
+    button.dataset.clearLogDate = input.id;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      input.value = "";
+      synchronizeLogRangeBounds();
+      updateLogDateClearButtons();
+      refreshComponentLogsForFilters();
+    });
+    field.append(button);
+    input.addEventListener("input", updateLogDateClearButtons);
+  }
 }
 function entryMatchesLogTimeRange(entry) {
   const range = selectedLogTimeRange();
@@ -1050,33 +1099,10 @@ function entryMatchesLogTimeRange(entry) {
   return timestamp >= range.start && (range.inclusiveEnd ? timestamp <= range.end : timestamp < range.end);
 }
 function loadComponentLogs() {
-  if (componentLogsLoaded) return;
-  $("loadComponentLogs").disabled = true;
-  $("loadComponentLogs").textContent = t("logs.loading");
-  Promise.all([
-    fetch("/api/logs/inbox").then((x) => x.text()),
-    fetch("/api/logs/dashboard").then((x) => x.text()),
-  ])
-    .then(([inbox, dashboard]) => {
-      componentLogEntries.inbox = structuredLogEntries(inbox);
-      componentLogEntries.dashboard = structuredLogEntries(dashboard);
-      componentLogsLoaded = true;
-      $("componentLogControls").hidden = false;
-      renderComponentLogs();
-      $("loadComponentLogs").textContent = t("logs.loaded");
-    })
-    .catch(() => {
-      componentLogEntries.inbox = structuredLogEntries(
-        JSON.stringify({ level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable") }),
-      );
-      componentLogEntries.dashboard = structuredLogEntries(
-        JSON.stringify({ level: "ERROR", event: "dashboard_log_unavailable", diagnostic: t("logs.dashboard_unavailable") }),
-      );
-      $("componentLogControls").hidden = false;
-      renderComponentLogs();
-      $("loadComponentLogs").disabled = false;
-      $("loadComponentLogs").textContent = t("logs.retry");
-    });
+  // Retain this callable for old dashboard markup, but never reintroduce the
+  // former latest-100 sample. Every interactive view is a server-filtered
+  // page from the full retained SQLite history.
+  refreshComponentLogs({}, true);
 }
 const CHAT_HISTORY_KEY = "djconnect-engineering-chat-history",
   CHAT_HISTORY_LIMIT = 20;
@@ -1260,6 +1286,8 @@ const PREFLIGHT_PRESENTATIONS = Object.freeze([
   ["host_preflight", [
     ["hostPreflightStatus", "outcome"],
     ["hostPreflightTimestamp", "timestamp", "timestamp"],
+    ["executionHostRuntimeVersion", "runtime_version"],
+    ["executionHostRuntimePath", "runtime_path"],
   ]],
   ["workspace_preflight", [
     ["workspacePreflightStatus", "outcome"],
@@ -2421,14 +2449,37 @@ function renderOpenPullRequests(pullRequests) {
       authorize.title = t("workspace.open_pull_request.authorize_owner");
       item.append(authorize);
     }
-    if (pullRequest.check_repair_available === true) {
+    if (pullRequest.check_repair_available === true || pullRequest.check_repair_completed_for_head === true) {
       const repair = document.createElement("button");
       repair.className = "open-pr-check-repair";
-      repair.dataset.openPullRequestCheckRepair = String(pullRequest.number || "");
       repair.type = "button";
-      repair.textContent = t("workspace.open_pull_request.repair_failed_checks");
-      repair.title = t("workspace.open_pull_request.repair_failed_checks");
+      if (pullRequest.check_repair_completed_for_head === true) {
+        repair.disabled = true;
+        repair.textContent = t("workspace.open_pull_request.repair_completed");
+        repair.title = t("workspace.open_pull_request.repair_completed_explanation");
+      } else {
+        repair.dataset.openPullRequestCheckRepair = String(pullRequest.number || "");
+        repair.dataset.openPullRequestFailedChecks = JSON.stringify(
+          Array.isArray(pullRequest.failed_checks) ? pullRequest.failed_checks : [],
+        );
+        repair.textContent = t("workspace.open_pull_request.repair_failed_checks");
+        repair.title = t("workspace.open_pull_request.repair_failed_checks");
+      }
       item.append(repair);
+    }
+    if (["QUEUED", "RUNNING", "SUBMITTED"].includes(String(pullRequest.check_repair_state || "").toUpperCase())) {
+      const progress = document.createElement("div"), spinner = document.createElement("span"), message = document.createElement("span"), checksLink = document.createElement("a");
+      progress.className = "open-pr-check-repair-progress";
+      progress.setAttribute("role", "status");
+      spinner.className = "open-pr-check-repair-progress__spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      message.textContent = t("workspace.open_pull_request.repair_active");
+      checksLink.href = `${String(pullRequest.url || "").replace(/\/+$/, "")}/checks`;
+      checksLink.target = "_blank";
+      checksLink.rel = "noreferrer";
+      checksLink.textContent = t("workspace.open_pull_request.repair_active_checks");
+      progress.append(spinner, message, checksLink);
+      item.append(progress);
     }
     return item;
   }));
@@ -2462,20 +2513,16 @@ async function refreshOpenPullRequests() {
     if (refreshButton) refreshButton.disabled = false;
   }
 }
-function ownerAuthorizationErrorMessage(error) {
+function openPullRequestActionErrorMessage(error) {
   const code = String(error || "").trim();
   const key = `workspace.open_pull_request.${code}`;
   return DASHBOARD_MESSAGES[dashboardLocale]?.[key] || t("ui.action_failed");
 }
-function refreshOpenPullRequestsAfterOwnerAuthorization() {
+function refreshOpenPullRequestsAfterAction() {
   void refreshOpenPullRequests();
-  // GitHub dispatch is accepted before its status check is materialized.  Read
-  // the authoritative projection again shortly afterwards instead of leaving
-  // an owner-approval control stale until the normal polling interval.
-  // The workflow dispatch is asynchronous: GitHub can accept it while the
-  // exact-SHA status is still one projection cycle away. Keep a final retry at
-  // twice the previous wait so the user does not see a false failure at the
-  // edge of that propagation window.
+  // Both owner authorization and one-shot repair are asynchronous GitHub
+  // actions. Re-read their authoritative PR projection during the propagation
+  // window instead of keeping a stale button until the normal polling interval.
   for (const delay of [900, 2500, 6000, 12000]) {
     setTimeout(() => void refreshOpenPullRequests(), delay);
   }
@@ -2498,21 +2545,37 @@ async function requestOpenPullRequestOwnerAuthorization(button) {
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw Error(payload?.error);
     showDashboardToast(t("workspace.open_pull_request.owner_authorization_queued"));
-    refreshOpenPullRequestsAfterOwnerAuthorization();
+    refreshOpenPullRequestsAfterAction();
   } catch (error) {
-    showDashboardToast(ownerAuthorizationErrorMessage(error?.message));
+    showDashboardToast(openPullRequestActionErrorMessage(error?.message));
   } finally {
     button.disabled = false;
+  }
+}
+function failedCheckNamesFromButton(button) {
+  try {
+    const values = JSON.parse(button?.dataset.openPullRequestFailedChecks || "[]");
+    return Array.isArray(values)
+      ? values.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim())
+      : [];
+  } catch {
+    return [];
   }
 }
 async function requestOpenPullRequestCheckRepair(button) {
   const number = Number(button?.dataset.openPullRequestCheckRepair);
   if (!Number.isInteger(number) || number < 1) return;
+  const failedChecks = failedCheckNamesFromButton(button);
   const confirmed = await confirmDashboardAction(
     t("workspace.open_pull_request.repair_failed_checks"),
     t("workspace.open_pull_request.repair_failed_checks_confirmation"),
     t("workspace.open_pull_request.repair_failed_checks"),
-    { accent: "#f3d36a", variant: "check-repair" },
+    {
+      accent: "#f3d36a",
+      items: failedChecks,
+      itemsLabel: t("workspace.open_pull_request.repair_failed_checks_list"),
+      variant: "check-repair",
+    },
   );
   if (!confirmed) return;
   button.disabled = true;
@@ -2523,9 +2586,9 @@ async function requestOpenPullRequestCheckRepair(button) {
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw Error(payload?.error);
     showDashboardToast(t("workspace.open_pull_request.repair_failed_checks_queued"));
-    refreshOpenPullRequestsAfterOwnerAuthorization();
+    refreshOpenPullRequestsAfterAction();
   } catch (error) {
-    showDashboardToast(ownerAuthorizationErrorMessage(error?.message));
+    showDashboardToast(openPullRequestActionErrorMessage(error?.message));
   } finally {
     button.disabled = false;
   }
@@ -2657,6 +2720,8 @@ function localizeTechnicalDetails() {
     [["#technicalExecutionHostLabel"], "technical.execution_host"],
     [["#technicalExecutionHostVersionLabel"], "technical.execution_host_version"],
     [["#technicalRuntimeLabel"], "technical.runtime"],
+    [["#technicalRuntimeVersionLabel"], "detail.codex_cli_version"],
+    [["#technicalRuntimePathLabel"], "detail.codex_cli_installation_path"],
     [["#technicalRuntimePromptTransportLabel"], "technical.runtime_prompt_transport"],
     [["#technicalHostStatusLabel"], "technical.host_status"],
     [["#technicalLastCheckLabel"], "technical.last_check"],
@@ -3064,23 +3129,69 @@ chatMessage = (role, text) => {
 };
 renderChatHistory();
 $("chatSend").querySelector("span").textContent = "↑";
-let componentLogVersion = "";
-function refreshComponentLogs(versions = {}) {
+const LOG_PAGE_SIZE = 50,
+  independentLogPageStates = { inbox: 1, dashboard: 1 },
+  independentLogSortStates = {
+    inbox: { key: "timestamp", direction: "desc" },
+    dashboard: { key: "timestamp", direction: "desc" },
+  },
+  componentLogTotals = { inbox: 0, dashboard: 0 },
+  componentLogAvailableEvents = { inbox: [], dashboard: [] },
+  selectedComponentLogRows = { inbox: new Set(), dashboard: new Set() },
+  componentLogSelectionAnchor = { inbox: null, dashboard: null };
+let componentLogVersion = "",
+  componentLogServerPaged = false,
+  componentLogRequestId = 0;
+function componentLogRequestUrl(component) {
+  const query = new URLSearchParams({
+    format: "json",
+    page: String(independentLogPageStates[component]),
+    page_size: String(LOG_PAGE_SIZE),
+    sort: independentLogSortStates[component].key,
+    direction: independentLogSortStates[component].direction,
+  });
+  const range = selectedLogTimeRange();
+  if (range) {
+    if (Number.isFinite(range.start)) query.set("start", new Date(range.start).toISOString());
+    if (Number.isFinite(range.end)) query.set("end", new Date(range.end).toISOString());
+    if (range.inclusiveEnd) query.set("inclusive_end", "1");
+  }
+  const search = $("logFilter").value.trim(), level = $("logLevelFilter").value;
+  if (search) query.set("search", search);
+  if (level) query.set("level", level);
+  [...($("logEventFilter")?.selectedOptions || [])].forEach((option) => query.append("event", option.value));
+  return "/api/logs/" + encodeURIComponent(component) + "?" + query;
+}
+function normalizedComponentLogEntries(records) {
+  return structuredLogEntries((Array.isArray(records) ? records : []).map((record) => JSON.stringify(record)).join("\n"))
+    .map((entry, index) => ({ ...entry, line: Number(records[index]?.line) || entry.line }));
+}
+function refreshComponentLogs(versions = {}, force = false) {
   const version = JSON.stringify(versions);
-  if (componentLogsLoaded && version === componentLogVersion) return;
+  if (!force && componentLogsLoaded && version === componentLogVersion) return;
   componentLogVersion = version;
+  const requestId = ++componentLogRequestId;
   Promise.all([
-    fetch("/api/logs/inbox").then((response) => response.text()),
-    fetch("/api/logs/dashboard").then((response) => response.text()),
+    fetch(componentLogRequestUrl("inbox")).then((response) => response.ok ? response.json() : Promise.reject(Error("inbox logs unavailable"))),
+    fetch(componentLogRequestUrl("dashboard")).then((response) => response.ok ? response.json() : Promise.reject(Error("dashboard logs unavailable"))),
   ])
     .then(([inbox, dashboard]) => {
-      componentLogEntries.inbox = structuredLogEntries(inbox);
-      componentLogEntries.dashboard = structuredLogEntries(dashboard);
+      if (requestId !== componentLogRequestId) return;
+      componentLogEntries.inbox = normalizedComponentLogEntries(inbox.entries);
+      componentLogEntries.dashboard = normalizedComponentLogEntries(dashboard.entries);
+      componentLogTotals.inbox = Number(inbox.total) || 0;
+      componentLogTotals.dashboard = Number(dashboard.total) || 0;
+      componentLogAvailableEvents.inbox = Array.isArray(inbox.events) ? inbox.events : [];
+      componentLogAvailableEvents.dashboard = Array.isArray(dashboard.events) ? dashboard.events : [];
+      componentLogServerPaged = true;
       componentLogsLoaded = true;
       $("componentLogControls").hidden = false;
       renderComponentLogs();
     })
     .catch(() => {
+      if (requestId !== componentLogRequestId) return;
+      componentLogServerPaged = false;
+      componentLogsLoaded = true;
       componentLogEntries.inbox = structuredLogEntries(JSON.stringify({
         level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable"),
       }));
@@ -3973,10 +4084,6 @@ function renderDashboardTelemetry(snapshot) {
   executionTelemetry(snapshot.telemetry);
 }
 updateFavicon();
-const independentLogSortStates = {
-  inbox: { key: "timestamp", direction: "desc" },
-  dashboard: { key: "timestamp", direction: "desc" },
-};
 function logComponentForTable(table) {
   return table.querySelector("#inboxComponentLog") ? "inbox" : "dashboard";
 }
@@ -4009,7 +4116,8 @@ function setIndependentLogSort(component, key) {
       : { key: key, direction: key === "timestamp" ? "desc" : "asc" };
   independentLogPageStates[component] = 1;
   clearComponentLogSelection(component);
-  renderComponentLogs();
+  if (componentLogServerPaged) void refreshComponentLogs({}, true);
+  else renderComponentLogs();
 }
 document.querySelectorAll(".log-table").forEach((table) => {
   const component = logComponentForTable(table);
@@ -4032,10 +4140,6 @@ document.querySelectorAll(".log-table").forEach((table) => {
   });
 });
 updateIndependentLogSortHeaders();
-const LOG_PAGE_SIZE = 50,
-  independentLogPageStates = { inbox: 1, dashboard: 1 },
-  selectedComponentLogRows = { inbox: new Set(), dashboard: new Set() },
-  componentLogSelectionAnchor = { inbox: null, dashboard: null };
 function componentLogRowKey(entry) {
   return [entry.line, entry.timestamp, entry.level, entry.event, entry.runId, entry.details]
     .map((value) => String(value ?? ""))
@@ -4113,6 +4217,7 @@ document.addEventListener("copy", (event) => {
   void recordUserAction("component_log_rows_copied");
 });
 function filteredComponentLogEntries(component) {
+  if (componentLogServerPaged) return componentLogEntries[component];
   const needle = locale.lower($("logFilter").value.trim()),
     level = $("logLevelFilter").value,
     events = new Set(
@@ -4141,8 +4246,12 @@ function filteredComponentLogEntries(component) {
     });
 }
 function visibleComponentLogEntries(component) {
-  const rows = filteredComponentLogEntries(component),
-    pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
+  const rows = filteredComponentLogEntries(component);
+  // A server response contains just one page.  Do not derive the page count
+  // from that response: doing so turns every requested page after page one
+  // back into page one before it can be rendered.
+  if (componentLogServerPaged) return rows;
+  const pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
     page = Math.min(
       Math.max(1, independentLogPageStates[component]),
       pageCount,
@@ -4151,7 +4260,9 @@ function visibleComponentLogEntries(component) {
   return rows.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
 }
 function updateLogValueFilters() {
-  const entries = [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
+  const entries = componentLogServerPaged
+    ? [...componentLogAvailableEvents.inbox, ...componentLogAvailableEvents.dashboard].map((event) => ({ event }))
+    : [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
   for (const [id, key] of [["logEventFilter", "event"]]) {
     const select = $(id);
     if (!select) continue;
@@ -4185,12 +4296,14 @@ function renderLogPagination(component, total, pageCount) {
   previous.addEventListener("click", () => {
     independentLogPageStates[component] = page - 1;
     clearComponentLogSelection(component);
-    renderComponentLogs();
+    if (componentLogServerPaged) void refreshComponentLogs({}, true);
+    else renderComponentLogs();
   });
   next.addEventListener("click", () => {
     independentLogPageStates[component] = page + 1;
     clearComponentLogSelection(component);
-    renderComponentLogs();
+    if (componentLogServerPaged) void refreshComponentLogs({}, true);
+    else renderComponentLogs();
   });
   navigation.append(summary, previous, next);
 }
@@ -4200,7 +4313,8 @@ function renderComponentLogs() {
   for (const component of ["inbox", "dashboard"]) {
     const rows = filteredComponentLogEntries(component),
       body = $(component + "ComponentLog"),
-      pageCount = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE)),
+      total = componentLogServerPaged ? componentLogTotals[component] : rows.length,
+      pageCount = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE)),
       visible = visibleComponentLogEntries(component);
     const copy = document.querySelector(`.component-log-copy[data-component="${component}"]`);
     if (copy) copy.disabled = !visible.length;
@@ -4242,7 +4356,7 @@ function renderComponentLogs() {
         }
         body.append(row);
       }
-    renderLogPagination(component, rows.length, pageCount);
+    renderLogPagination(component, total, pageCount);
   }
   updateIndependentLogSortHeaders();
 }
@@ -4250,7 +4364,13 @@ for (const [id, label] of [["logEventFilter", t("table.event")]]) {
   const control = document.createElement("label"), select = document.createElement("select");
   select.id = id; select.multiple = true; select.setAttribute("aria-label", label);
   control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
-  select.addEventListener("change", () => { independentLogPageStates.inbox = independentLogPageStates.dashboard = 1; clearAllComponentLogSelections(); renderComponentLogs(); });
+  select.addEventListener("change", () => refreshComponentLogsForFilters());
+}
+function refreshComponentLogsForFilters() {
+  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+  clearAllComponentLogSelections();
+  if (componentLogServerPaged) void refreshComponentLogs({}, true);
+  else renderComponentLogs();
 }
 const resetLogFiltersButton = document.createElement("button");
 resetLogFiltersButton.className = "reset-log-filters";
@@ -4270,29 +4390,23 @@ resetLogFiltersButton.addEventListener("click", () => {
   syncDashboardSelectPicker($("logTimePreset"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
   updateLogTimeFilterControls();
-  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
-  clearAllComponentLogSelections();
-  renderComponentLogs();
+  refreshComponentLogsForFilters();
 });
 $("componentLogControls").append(resetLogFiltersButton);
 $("logFilter").addEventListener("input", () => {
-  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
-  clearAllComponentLogSelections();
-  renderComponentLogs();
+  refreshComponentLogsForFilters();
 });
 $("logLevelFilter").addEventListener("change", () => {
-  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
-  clearAllComponentLogSelections();
-  renderComponentLogs();
+  refreshComponentLogsForFilters();
 });
 for (const id of ["logTimePreset", "logSpecificDate", "logDateFrom", "logDateTo"]) {
   $(id).addEventListener("change", () => {
     updateLogTimeFilterControls();
-    independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
-    clearAllComponentLogSelections();
-    renderComponentLogs();
+    refreshComponentLogsForFilters();
   });
 }
+$("logDateFrom").addEventListener("input", synchronizeLogRangeBounds);
+installLogDateClearButtons();
 updateLogTimeFilterControls();
 renderComponentLogs();
 function clearComponentLog(component, button) {
@@ -4519,8 +4633,8 @@ $("dashboardHealthIndicator")?.addEventListener("click", () => {
   indicator.setAttribute("aria-expanded", String(!expanded));
 });
 document.addEventListener("click", (event) => {
-  const health = $("dashboardHealth"), indicator = $("dashboardHealthIndicator");
-  if (!health || !indicator || health.contains(event.target)) return;
+  const health = $("dashboardHealth"), indicator = $("dashboardHealthIndicator"), tooltip = $("dashboardHealthTooltip");
+  if (!health || !indicator || health.contains(event.target) || tooltip?.contains(event.target)) return;
   health.classList.remove("dashboard-health--open");
   indicator.setAttribute("aria-expanded", "false");
 });
@@ -6590,7 +6704,10 @@ function promptDetailExecutionSections(history) {
       true,
     )] : []),
     detailField(t("detail.operator_handling"), history.emergency_cancelled_at ? t("handling.cancelled") : history.dismissed ? t("handling.dismissed") : t("handling.open")),
-    ...(history.dismissed_at ? [detailField(t("detail.dismissed_at"), history.dismissed_at)] : []),
+    ...(history.dismissed_at ? [detailField(
+      t("detail.dismissed_at"),
+      formatTimestamp(history.dismissed_at, String(history.dismissed_at)),
+    )] : []),
     detailField(t("detail.prompt_title"), history.title),
     promptHistoryRunIdField(history.run_id),
     detailField(
@@ -7263,6 +7380,9 @@ async function cleanupStaleLocalBranches() {
     const preview = await previewResponse.json();
     if (!previewResponse.ok) throw Error(preview.error || t("workspace.branch_cleanup_failed"));
     const branches = Array.isArray(preview?.branches) ? preview.branches : [];
+    const removableBranches = Array.isArray(preview?.removable_branches)
+      ? preview.removable_branches.map(String).filter(Boolean)
+      : branches.filter((branch) => branch?.removable === true).map((branch) => String(branch?.name || "")).filter(Boolean);
     if (!branches.length) {
       if (modal.open) {
         body.replaceChildren(Object.assign(document.createElement("p"), {
@@ -7287,16 +7407,29 @@ async function cleanupStaleLocalBranches() {
       pull_request: branch?.pull_request,
     }));
     body.replaceChildren(
-      Object.assign(document.createElement("p"), { textContent: t("workspace.branch_cleanup_confirmation") }),
+      Object.assign(document.createElement("p"), {
+        textContent: removableBranches.length
+          ? t("workspace.branch_cleanup_confirmation")
+          : t("workspace.branch_cleanup_no_safe_in_modal"),
+      }),
       workspaceBranchCleanupDetails(details),
     );
+    if (!removableBranches.length) {
+      confirm.textContent = t("action.close");
+      confirm.disabled = false;
+      $("confirmationModalCancel").hidden = true;
+      confirm.classList.remove("dashboard-modal-shell__action--destructive");
+      confirm.classList.add("dashboard-modal-shell__action--primary");
+      await confirmation;
+      return;
+    }
     confirm.disabled = false;
     const confirmed = await confirmation;
     if (!confirmed) return;
     const response = await fetch("/api/stale-local-branch-cleanup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ branches: branches.map((branch) => String(branch?.name || "")) }),
+      body: JSON.stringify({ branches: removableBranches }),
     });
     const result = await response.json();
     if (!response.ok) throw Error(result.error || t("workspace.branch_cleanup_failed"));
@@ -7470,7 +7603,7 @@ function workspaceBranchCleanupDetails(details) {
   }
   return list;
 }
-function confirmDashboardAction(title, text, confirmLabel, { destructive = false, accent = "", details = [], loading = false, variant = "" } = {}) {
+function confirmDashboardAction(title, text, confirmLabel, { destructive = false, accent = "", details = [], items = [], itemsLabel = "", loading = false, variant = "" } = {}) {
   const modal = $("confirmationModal"),
     heading = $("confirmationModalTitle"),
     body = $("confirmationModalText"),
@@ -7487,6 +7620,14 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
   }));
   if (details.length) {
     body.append(workspaceBranchCleanupDetails(details));
+  }
+  if (items.length) {
+    const label = document.createElement("strong"), list = document.createElement("ul");
+    label.className = "confirmation-modal__list-label";
+    label.textContent = itemsLabel;
+    list.className = "confirmation-modal__list";
+    for (const item of items) list.append(Object.assign(document.createElement("li"), { textContent: item }));
+    body.append(label, list);
   }
   confirm.textContent = confirmLabel;
   confirm.disabled = loading;
@@ -7747,6 +7888,11 @@ for (const binding of [
     (value) => (componentLogsLoaded = value),
   ],
   ["componentLogEntries", () => componentLogEntries],
+  [
+    "componentLogServerPaged",
+    () => componentLogServerPaged,
+    (value) => (componentLogServerPaged = Boolean(value)),
+  ],
   ["independentLogPageStates", () => independentLogPageStates],
   [
     "promptHistoryEntries",

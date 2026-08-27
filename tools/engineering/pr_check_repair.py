@@ -83,8 +83,8 @@ def _write_state(root: Path, number: int, sha: str, payload: dict[str, object]) 
         Path(temporary).unlink(missing_ok=True)
 
 
-def _check_summary(pull_request: dict[str, object]) -> tuple[list[str], bool]:
-    checks = pull_request.get("statusCheckRollup")
+def check_summary(checks: object) -> tuple[list[str], bool]:
+    """Return failed names and whether the GitHub check projection is stable."""
     if not isinstance(checks, list) or not checks:
         return [], False
     failed = failed_check_names(checks)
@@ -97,6 +97,29 @@ def _check_summary(pull_request: dict[str, object]) -> tuple[list[str], bool]:
         if conclusion not in FAILED_CONCLUSIONS | SUCCESSFUL_CONCLUSIONS or (status and status != "COMPLETED"):
             terminal = False
     return failed, terminal
+
+
+def repair_state(root: Path, number: int, sha: object) -> str | None:
+    """Return the durable repair state for this head, including its repair commit."""
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None
+    direct = _read_state(root, number, sha)
+    if direct is not None:
+        status = direct.get("status")
+        return str(status) if isinstance(status, str) else None
+    try:
+        candidates = (root / STATE_DIRECTORY).glob(f"{number}-*.json")
+    except OSError:
+        return None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict) and value.get("commit_sha") == sha:
+            status = value.get("status")
+            return str(status) if isinstance(status, str) else None
+    return None
 
 
 def current_evidence(root: Path, number: int) -> dict[str, object]:
@@ -117,7 +140,7 @@ def current_evidence(root: Path, number: int) -> dict[str, object]:
     sha, branch = pull_request.get("headRefOid"), pull_request.get("headRefName")
     head_repository = pull_request.get("headRepository")
     head_repository_name = head_repository.get("nameWithOwner") if isinstance(head_repository, dict) else None
-    failed_checks, terminal = _check_summary(pull_request)
+    failed_checks, terminal = check_summary(pull_request.get("statusCheckRollup"))
     eligible = (
         str(pull_request.get("state") or "").upper() == "OPEN"
         and pull_request.get("isDraft") is not True

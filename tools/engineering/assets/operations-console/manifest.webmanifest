@@ -1,6 +1,6 @@
 {
-  "name": "Engineering Operations Console",
-  "short_name": "Operations Console",
+  "name": "EP Operations",
+  "short_name": "EP Operations",
   "display": "standalone",
   "background_color": "#0a6b9d",
   "theme_color": "#0a6b9d",

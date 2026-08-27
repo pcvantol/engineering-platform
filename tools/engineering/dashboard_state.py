@@ -476,8 +476,13 @@ def snapshot(
     host_preflight = latest_host_preflight(root)
     workspace_preflight = latest_workspace_preflight(root)
     capability_preflight = latest_capability_preflight(root)
-    current_drift = next((item for preflight in (host_preflight, workspace_preflight, capability_preflight)
-                          for item in preflight.get("drift_evidence", []) if isinstance(item, dict)), None)
+    # A successful preflight supersedes any evidence it may have replaced on
+    # disk. Only unresolved checks belong in the current-drift projection.
+    current_drift = next((
+        item for preflight in (host_preflight, workspace_preflight, capability_preflight)
+        if str(preflight.get("outcome", "")).upper() != "PASS"
+        for item in preflight.get("drift_evidence", []) if isinstance(item, dict)
+    ), None)
     return json.dumps(
         {
             "status": status_payload,

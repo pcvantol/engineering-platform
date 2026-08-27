@@ -157,7 +157,18 @@ repository movement.
    candidate item as EP product source, EP test, EP documentation, EP workflow,
    EP release asset, consumer adapter, DJConnect retained, generated local-only
    or excluded.
-4. Confirm public command compatibility: neutral commands stay neutral, and
+4. Analyse the current CI workflows and their individual jobs/steps before
+   selecting the standalone pipeline. Record each check's purpose, inputs,
+   owner, blocking status and whether it is EP-standalone relevant, EP
+   consumer-integration relevant, or excluded. Retain or replace only the
+   standalone-relevant evidence (for example EP unit, browser, localisation,
+   package, migration/recovery, security and installer checks). Keep
+   Home-Assistant integration validation, HACS, hassfest and other
+   DJConnect-consumer checks in the consumer repository unless an explicit EP
+   consumer-contract integration test needs them. The resulting matrix must
+   name any equivalent standalone replacement rather than silently dropping a
+   required assurance property.
+5. Confirm public command compatibility: neutral commands stay neutral, and
    consumer-specific commands are either adapters or explicitly retired under a
    migration notice.
 
@@ -167,6 +178,9 @@ repository movement.
   repository-name dependency in EP product code;
 - a complete export list of source, tests, documentation, workflows and
   qualification assets; and
+- a reviewed current-CI-to-standalone-CI matrix, including every retained,
+  replaced and consumer-only check/step with its rationale and the required
+  standalone evidence replacement where applicable;
 - an approved baseline tag, source commit, EP version, storage schema, Consumer
   Contract version, qualification evidence and rollback reference.
 - public entry-point, runtime-name and filesystem/current-working-directory
