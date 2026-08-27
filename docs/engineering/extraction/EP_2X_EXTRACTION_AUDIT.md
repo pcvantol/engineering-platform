@@ -29,16 +29,19 @@ substitute for another.
 The migration sequence and future extraction phases remain in the canonical
 [Engineering Platform extraction and migration plan](../../development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md).
 
-Current result: 245 candidates, 245 classified exactly once, 0 unclassified,
-0 ambiguous. Operations Console source/assets/tests account for 17 candidates,
-all classified exactly once. This includes the current dashboard presentation,
+The frozen baseline records its own candidate universe. The current result is
+the deterministic projection for the checked-out repository, so it advances
+when newly classified Engineering Platform candidates are added: 254
+candidates, 254 classified exactly once, 0 unclassified and 0 ambiguous.
+Operations Console source/assets/tests account for 17 candidates, all
+classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
 browser/status-store tests from the PR #940 baseline.
 
 ## Import, filesystem and entry-point coverage
 
-The import audit is run over every effective `EP_PRODUCT_SOURCE` file: 76
-files, 58 Python files and 371 static imports. It found 0 unknown imports, 0
+The import audit is run over every effective `EP_PRODUCT_SOURCE` file: 80
+files, 62 Python files and 395 static imports. It found 0 unknown imports, 0
 DJConnect runtime imports, 0 Home Assistant runtime imports and 0
 repository-local support imports; extraction-blocking imports are therefore 0.
 
@@ -53,9 +56,9 @@ and dashboard launchers, dashboard commands, Inbox watcher, runner/bootstrap
 scripts and workflow invocation. Each is within a candidate root and has an
 effective classification; unclassified entry points: 0.
 
-Ownership coverage is whole-set rather than sample-based: 43 EP test candidates
+Ownership coverage is whole-set rather than sample-based: 47 EP test candidates
 (including browser/contract/migration/consumer-integration tests), 24 workflow
-candidates (5 EP workflow, 19 DJConnect retained), 32 EP documentation
+candidates (5 EP workflow, 19 DJConnect retained), 33 EP documentation
 candidates, 0 historical/generated-evidence candidates (immutable generated
 run evidence is deliberately excluded from the candidate universe) and 66 consumer
 adapter files. Qualification registry/assets are classified as EP release
