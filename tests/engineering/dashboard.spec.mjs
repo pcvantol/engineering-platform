@@ -824,6 +824,32 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
+  test("hides an acknowledged main switch while the old dashboard document awaits restart", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/workspace-switch-to-main", async (route) => {
+      await route.fulfill({ status: 202, json: {
+        previous_branch: "codex/polish-workspace-actions",
+        branch: "main",
+        synchronized: "true",
+        engineering_platform: "restart_scheduled",
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#workspaceBranchMain").evaluate((element) => { element.hidden = false; });
+
+    const switchMain = page.locator("#workspaceBranchMain");
+    await expect(switchMain).toBeVisible();
+    await dispatchDashboardPointerClick(switchMain);
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(page.locator("#workspaceBranchMainResultModal")).toBeVisible();
+    await expect(switchMain).toBeHidden();
+    expect(readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8")).toContain(
+      "workspaceMainSwitchScheduled || !workspaceGit.main_action_available",
+    );
+  });
+
   test("does not offer a worktree switch for the active worktree", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     const projection = { available: true, worktrees: [

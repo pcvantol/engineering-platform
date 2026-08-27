@@ -2165,6 +2165,12 @@ function renderDashboardStatus(status, snapshot) {
 function r(status, snapshot = {}) {
   dashboardStatusStore.update(status, snapshot);
 }
+// A successful main switch deliberately restarts the platform.  Until the old
+// dashboard document is replaced it can still receive an earlier SSE snapshot,
+// whose Git projection truthfully describes the *previous* branch.  Keep the
+// acknowledged switch visible in this short hand-off window so that an old
+// snapshot cannot offer the same action again.
+let workspaceMainSwitchScheduled = false;
 function renderWorkspaceGit(workspaceGit) {
   if (!workspaceGit || typeof workspaceGit !== "object") return;
   $("workspaceBranch").textContent =
@@ -2174,7 +2180,7 @@ function renderWorkspaceGit(workspaceGit) {
   $("workspaceOriginMainCommit").textContent =
     workspaceGit.origin_main_commit || t("format.not_available");
   $("workspaceOriginMain").hidden = !workspaceGit.origin_main_available;
-  $("workspaceBranchMain").hidden = !workspaceGit.main_action_available;
+  $("workspaceBranchMain").hidden = workspaceMainSwitchScheduled || !workspaceGit.main_action_available;
 }
 let worktreeRemovalAnalysis = null;
 function worktreeAnalysisKey(worktree) {
@@ -7184,19 +7190,28 @@ async function switchToFastForwardMain() {
     { accent: workspaceModalAccent() },
   );
   if (!confirmed) return;
+  let switchScheduled = false;
   button.disabled = true;
   try {
     const response = await fetch("/api/workspace-switch-to-main", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
     });
     const outcome = await response.json();
+    if (response.ok) {
+      switchScheduled = true;
+      workspaceMainSwitchScheduled = true;
+      // The old page remains usable for a moment while the controlled restart
+      // replaces it. Hide immediately, rather than waiting for a new status
+      // snapshot that may still describe the branch we just left.
+      button.hidden = true;
+    }
     showWorkspaceBranchMainResult(response.ok
       ? t("workspace.branch_main_success", { previous_branch: outcome.previous_branch, branch: outcome.branch })
       : outcome.error || t("workspace.branch_main_failed"));
   } catch (error) {
     showWorkspaceBranchMainResult(error.message || t("workspace.branch_main_failed"));
   } finally {
-    button.disabled = false;
+    if (!switchScheduled) button.disabled = false;
   }
 }
 async function switchEngineeringPlatformToWorktree(worktree) {
