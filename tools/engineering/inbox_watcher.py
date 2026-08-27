@@ -23,7 +23,7 @@ import uuid
 from .platform_version import EngineeringPlatformManifest
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .platform_api import PlatformConfigurationError, RUNTIME_EXECUTABLE_ENVIRONMENT, execution_host_configuration
-from .platform_bootstrap import provision_workspace
+from .platform_bootstrap import WorkspaceMigrationBlockedError, provision_runtime_workspace as provision_workspace
 from .providers import GitProvider, LaunchdProvider, LocalProcessProvider
 from .status_model import build, publish
 from .component_logging import (
@@ -83,6 +83,15 @@ LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
 WATCHER_READY_PROJECTION = "inbox_watcher_ready"
+
+
+def _source_revision(repo: Path) -> str | None:
+    """Return the checked-out source revision without changing repository state."""
+    completed = LocalProcessProvider().execute(repo, ("git", "rev-parse", "HEAD"))
+    if completed.returncode:
+        return None
+    revision = completed.stdout.strip()
+    return revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None
 
 
 def publish_ready_record(repo: Path, root: Path) -> None:
@@ -758,7 +767,9 @@ def dismiss_execution(repo: Path, run_id: str, *, dismissed_by: str = "dashboard
         except (OSError, json.JSONDecodeError) as error:
             raise RetrySubmissionError("Er is geen actieve terminale uitvoering om te bevestigen.") from error
         if current.get("watcher_state") == "ENGINEERING_RUN_ACTIVE" or current.get("run_id"):
-            raise RetrySubmissionError("Een actieve uitvoering kan niet worden bevestigd.")
+            raise RetrySubmissionError(
+                "Deze mislukte uitvoering kan pas worden afgesloten nadat de andere actieve uitvoering is afgerond."
+            )
         phase = _terminal_phase_for_run(repo, run_id)
         if phase not in TERMINAL_PHASES:
             raise RetrySubmissionError("Alleen een terminale uitvoering kan worden bevestigd.")
@@ -1683,8 +1694,6 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         reconciled = reconcile_stale(repo)
         if reconciled:
             log_event(logger, logging.WARNING, "active_run_lease_reconciled", diagnostic=f"reconciled_runs={len(reconciled)}")
-        candidates = _scan_queue(root, interval)
-        log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         waiting_merge = _operator_merge_wait(repo)
         if waiting_merge is not None:
             if _operator_merge_poll_due(repo, waiting_merge.run_id):
@@ -1705,10 +1714,13 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                         _publish_resumed_merge_transition(
                             repo,
                             waiting_merge,
-                            queue_items=_queue_items(candidates),
-                            queue_depth=len(candidates),
+                            queue_items=[],
+                            queue_depth=0,
                         )
                         return 0
+            candidates = _scan_queue(root, interval)
+            log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
+            if waiting_merge is not None:
                 _publish_operator_merge_wait(
                     repo, waiting_merge, queue_items=_queue_items(candidates), queue_depth=len(candidates),
                 )
@@ -1716,6 +1728,8 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             # reconciliation polls.  Do not rewrite its timestamp each cycle,
             # otherwise the poll would never become due.
             return 0
+        candidates = _scan_queue(root, interval)
+        log_event(logger, logging.DEBUG, "inbox_scan", diagnostic=f"eligible_jobs={len(candidates)}")
         child_run_id = os.environ.get(BACKGROUND_RUN_ID_ENVIRONMENT)
         child_job_id = os.environ.get(BACKGROUND_JOB_ID_ENVIRONMENT)
         if _active_transaction(repo) and not child_run_id:
@@ -2184,7 +2198,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=15)
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
-    provision_workspace(repo)
+    try:
+        provision_workspace(repo)
+    except WorkspaceMigrationBlockedError as error:
+        status(
+            repo,
+            "WATCHER_WORKSPACE_MIGRATION_BLOCKED",
+            current_action="workspace_migration_blocked_by_active_dashboard",
+            diagnostic=(
+                "De watcher kon niet herstarten doordat werkruimtemigratie door "
+                "dashboardactiviteit is geblokkeerd."
+                if error.component == "dashboard"
+                else "De watcher kon niet herstarten omdat een actieve component werkruimtemigratie blokkeert."
+            ),
+        )
+        return 1
     root = cloud_root(args.icloud_root, repo)
     if args.command == "once":
         return once(repo, root, 0.0, background=True)
@@ -2201,6 +2229,7 @@ def main(argv: list[str] | None = None) -> int:
                 with shutdown_signal_logging(logger, lifecycle_context):
                     publish_ready_record(repo, root)
                     log_event(logger, logging.INFO, "watcher_started", context=lifecycle_context)
+                    started_revision = _source_revision(repo)
                     try:
                         while True:
                             interval = _configured_scan_interval(repo, args.interval)
@@ -2231,6 +2260,15 @@ def main(argv: list[str] | None = None) -> int:
                                         diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                                     )
                                     log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
+                            current_revision = _source_revision(repo)
+                            if started_revision and current_revision and current_revision != started_revision:
+                                log_event(
+                                    logger,
+                                    logging.INFO,
+                                    "watcher_source_revision_changed",
+                                    diagnostic="Watcher restarts after this completed cycle so LaunchAgent can load the current source.",
+                                )
+                                return 0
                             time.sleep(interval)
                     finally:
                         log_event(

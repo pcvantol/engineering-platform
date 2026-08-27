@@ -2781,6 +2781,7 @@ Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.mission_title":"Titre d
 Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.mission_title":"Título de la misión","execution_context.mission_lifecycle":"Ciclo de vida de la misión","execution_context.business_summary":"Resumen de negocio","execution_context.engineering_summary":"Resumen de ingeniería","execution_context.current_intent":"Intención actual","execution_context.current_engineering_action":"Acción de ingeniería actual","execution_context.execution_phase":"Fase de ejecución","execution_context.planning_confidence":"Confianza de planificación","execution_context.current_iteration":"Iteración actual","execution_context.last_runtime_update":"Última actualización de runtime","execution_context.version":"Versión del contexto de ejecución"});
 
 Object.assign(DASHBOARD_MESSAGES.en, {
+  "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Watcher restart blocked by workspace migration",
   "logs.event_fallback":"System event: {event}",
   "log_event.watcher_started":"Inbox watcher started", "log_event.watcher_shutdown_completed":"Inbox watcher stopped", "log_event.watcher_cycle_failed":"Inbox watcher cycle failed", "log_event.watcher_idle":"Inbox watcher is idle",
   "log_event.runner_started":"Execution runner started", "log_event.runner_detached":"Execution runner detached", "log_event.job_claimed":"Execution claimed", "log_event.job_completed":"Execution completed", "log_event.job_failed":"Execution failed",
@@ -2794,6 +2795,7 @@ Object.assign(DASHBOARD_MESSAGES.en, {
   "log_event.inbox_log_unavailable":"Inbox watcher log unavailable", "log_event.dashboard_log_unavailable":"Status dashboard log unavailable"
 });
 Object.assign(DASHBOARD_MESSAGES.nl, {
+  "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Watcherherstart geblokkeerd door werkruimtemigratie",
   "logs.event_fallback":"Systeemgebeurtenis: {event}",
   "log_event.watcher_started":"Inbox-watcher gestart", "log_event.watcher_shutdown_completed":"Inbox-watcher gestopt", "log_event.watcher_cycle_failed":"Cyclus van Inbox-watcher mislukt", "log_event.watcher_idle":"Inbox-watcher is inactief",
   "log_event.runner_started":"Uitvoeringsrunner gestart", "log_event.runner_detached":"Uitvoeringsrunner losgekoppeld", "log_event.job_claimed":"Uitvoering opgepakt", "log_event.job_completed":"Uitvoering voltooid", "log_event.job_failed":"Uitvoering mislukt",
@@ -2807,6 +2809,7 @@ Object.assign(DASHBOARD_MESSAGES.nl, {
   "log_event.inbox_log_unavailable":"Log van Inbox-watcher niet beschikbaar", "log_event.dashboard_log_unavailable":"Log van statusdashboard niet beschikbaar"
 });
 Object.assign(DASHBOARD_MESSAGES.de, {
+  "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Watcher-Neustart durch Arbeitsbereichsmigration blockiert",
   "logs.event_fallback":"Systemereignis: {event}",
   "log_event.watcher_started":"Inbox-Watcher gestartet", "log_event.watcher_shutdown_completed":"Inbox-Watcher angehalten", "log_event.watcher_cycle_failed":"Inbox-Watcher-Zyklus fehlgeschlagen", "log_event.watcher_idle":"Inbox-Watcher ist inaktiv",
   "log_event.runner_started":"Ausführungsrunner gestartet", "log_event.runner_detached":"Ausführungsrunner getrennt", "log_event.job_claimed":"Ausführung übernommen", "log_event.job_completed":"Ausführung abgeschlossen", "log_event.job_failed":"Ausführung fehlgeschlagen",
@@ -2820,6 +2823,7 @@ Object.assign(DASHBOARD_MESSAGES.de, {
   "log_event.inbox_log_unavailable":"Inbox-Watcher-Protokoll nicht verfügbar", "log_event.dashboard_log_unavailable":"Status-Dashboard-Protokoll nicht verfügbar"
 });
 Object.assign(DASHBOARD_MESSAGES.fr, {
+  "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Redémarrage du surveillant bloqué par la migration de l’espace de travail",
   "logs.event_fallback":"Événement système : {event}",
   "log_event.watcher_started":"Surveillant de boîte de réception démarré", "log_event.watcher_shutdown_completed":"Surveillant de boîte de réception arrêté", "log_event.watcher_cycle_failed":"Cycle du surveillant échoué", "log_event.watcher_idle":"Surveillant de boîte de réception inactif",
   "log_event.runner_started":"Exécuteur d’exécution démarré", "log_event.runner_detached":"Exécuteur d’exécution détaché", "log_event.job_claimed":"Exécution prise en charge", "log_event.job_completed":"Exécution terminée", "log_event.job_failed":"Exécution échouée",
@@ -2833,6 +2837,7 @@ Object.assign(DASHBOARD_MESSAGES.fr, {
   "log_event.inbox_log_unavailable":"Journal du surveillant de boîte de réception indisponible", "log_event.dashboard_log_unavailable":"Journal du tableau de bord d’état indisponible"
 });
 Object.assign(DASHBOARD_MESSAGES.es, {
+  "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Reinicio del monitor bloqueado por la migración del espacio de trabajo",
   "logs.event_fallback":"Evento del sistema: {event}",
   "log_event.watcher_started":"Monitor de bandeja de entrada iniciado", "log_event.watcher_shutdown_completed":"Monitor de bandeja de entrada detenido", "log_event.watcher_cycle_failed":"Ciclo del monitor fallido", "log_event.watcher_idle":"Monitor de bandeja de entrada inactivo",
   "log_event.runner_started":"Ejecutor de ejecución iniciado", "log_event.runner_detached":"Ejecutor de ejecución desconectado", "log_event.job_claimed":"Ejecución tomada", "log_event.job_completed":"Ejecución completada", "log_event.job_failed":"Ejecución fallida",
@@ -3200,6 +3205,8 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "operational.run_local_repository_validation",
   "operational.poll_required_checks",
   "operational.provider_auth_repair_required",
+  "operational.create_finalization",
+  "operational.workspace_migration_blocked_by_active_dashboard",
   "operational.reconcile_rolling_records_on_main",
   "reviewer.home_assistant_integration",
   "merge_wait.check_status",
@@ -3217,6 +3224,8 @@ Object.assign(DASHBOARD_MESSAGES.en, {
   "reviewer.home_assistant_integration": "Home Assistant integration",
   "operational.poll_required_checks": "Checking required pull request checks",
   "operational.provider_auth_repair_required": "Provider sign-in recovery is required before continuing",
+  "operational.create_finalization": "Preparing finalization",
+  "operational.workspace_migration_blocked_by_active_dashboard": "Watcher restart is blocked by dashboard activity during workspace migration",
   "operational.reconcile_rolling_records_on_main": "Reconciling rolling records on main",
   "operational.run_local_repository_validation": "Running local repository validation",
 });
@@ -3224,6 +3233,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {
   "reviewer.home_assistant_integration": "Home Assistant-integratie",
   "operational.poll_required_checks": "Vereiste pullrequestcontroles controleren",
   "operational.provider_auth_repair_required": "Herstel van provider-aanmelding is vereist vóór voortzetting",
+  "operational.create_finalization": "Finalisatie voorbereiden",
+  "operational.workspace_migration_blocked_by_active_dashboard": "Watcherherstart is geblokkeerd door dashboardactiviteit tijdens werkruimtemigratie",
   "operational.reconcile_rolling_records_on_main": "Doorlopende registraties op main reconciliëren",
   "operational.run_local_repository_validation": "Lokale repositoryvalidatie uitvoeren",
 });
@@ -3231,6 +3242,8 @@ Object.assign(DASHBOARD_MESSAGES.de, {
   "reviewer.home_assistant_integration": "Home-Assistant-Integration",
   "operational.poll_required_checks": "Erforderliche Pull-Request-Prüfungen werden überprüft",
   "operational.provider_auth_repair_required": "Die Wiederherstellung der Provider-Anmeldung ist vor der Fortsetzung erforderlich",
+  "operational.create_finalization": "Finalisierung vorbereiten",
+  "operational.workspace_migration_blocked_by_active_dashboard": "Der Neustart des Watchers wird während der Arbeitsbereichsmigration durch Dashboard-Aktivität blockiert",
   "operational.reconcile_rolling_records_on_main": "Fortlaufende Einträge auf main werden abgeglichen",
   "operational.run_local_repository_validation": "Lokale Repositoryvalidierung ausführen",
 });
@@ -3238,6 +3251,8 @@ Object.assign(DASHBOARD_MESSAGES.fr, {
   "reviewer.home_assistant_integration": "Intégration Home Assistant",
   "operational.poll_required_checks": "Vérification des contrôles requis de la pull request",
   "operational.provider_auth_repair_required": "La récupération de la connexion du fournisseur est requise avant de continuer",
+  "operational.create_finalization": "Préparation de la finalisation",
+  "operational.workspace_migration_blocked_by_active_dashboard": "Le redémarrage du surveillant est bloqué par l’activité du tableau de bord pendant la migration de l’espace de travail",
   "operational.reconcile_rolling_records_on_main": "Rapprochement des enregistrements courants sur main",
   "operational.run_local_repository_validation": "Exécution de la validation locale du dépôt",
 });
@@ -3245,6 +3260,8 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "reviewer.home_assistant_integration": "Integración de Home Assistant",
   "operational.poll_required_checks": "Comprobando las verificaciones obligatorias de la solicitud de extracción",
   "operational.provider_auth_repair_required": "Se requiere recuperar el inicio de sesión del proveedor antes de continuar",
+  "operational.create_finalization": "Preparando la finalización",
+  "operational.workspace_migration_blocked_by_active_dashboard": "El reinicio del monitor está bloqueado por la actividad del panel durante la migración del espacio de trabajo",
   "operational.reconcile_rolling_records_on_main": "Conciliando los registros continuos en main",
   "operational.run_local_repository_validation": "Ejecutando la validación local del repositorio",
 });

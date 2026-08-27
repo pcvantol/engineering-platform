@@ -2694,6 +2694,8 @@ test.describe("Engineering Status browser smoke", () => {
       return { first: { right: first.right, bottom: first.bottom }, second: { left: second.left, top: second.top } };
     });
     await expect(mergeLink).toHaveCSS("min-height", "40px");
+    await expect(page.locator("#operatorMergeStatusCheck")).toHaveCSS("background-color", "rgb(32, 42, 54)");
+    await expect(page.locator("#operatorMergeStatusCheck")).toHaveCSS("border-top-color", "rgb(141, 199, 255)");
     expect(
       actionLayout.first.bottom <= actionLayout.second.top || actionLayout.first.right <= actionLayout.second.left,
     ).toBe(true);

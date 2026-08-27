@@ -28,6 +28,7 @@ from tools.engineering.platform_bootstrap import (
     _validate_legacy_merge,
     migrate_legacy_workspace,
     migrate_worktree_workspace,
+    provision_runtime_workspace,
     provision_workspace,
     render_template,
     validate_repository,
@@ -188,6 +189,39 @@ class PlatformProductizationTest(unittest.TestCase):
             lock.parent.mkdir(parents=True)
             lock.write_text(json.dumps({"component": "dashboard", "pid": os.getpid()}), encoding="utf-8")
 
+            with self.assertRaisesRegex(RuntimeError, "running components to stop"):
+                migrate_worktree_workspace(runtime)
+
+    def test_runtime_workspace_reuses_valid_shared_store_while_dashboard_legacy_lock_exists(self) -> None:
+        """Normal components never migrate another worktree while Dashboard is open."""
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "repository"
+            runtime = Path(temporary) / "runtime"
+            common = repository / ".git"
+            worktree_git = common / "worktrees" / "runtime"
+            common.mkdir(parents=True)
+            runtime.mkdir()
+            (runtime / ".git").write_text(f"gitdir: {worktree_git}\n", encoding="utf-8")
+            worktree_git.mkdir(parents=True)
+            (worktree_git / "commondir").write_text("../..\n", encoding="utf-8")
+            for root in (repository, runtime):
+                target = root / "tools/engineering"
+                target.mkdir(parents=True)
+                (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
+                    (ROOT / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            shared = common / "engineering-platform"
+            shared.mkdir()
+            (runtime / ".engineering").symlink_to(shared, target_is_directory=True)
+            lock = repository / ".engineering" / "locks" / "dashboard.lock"
+            lock.parent.mkdir(parents=True)
+            lock.write_text(json.dumps({"component": "dashboard", "pid": os.getpid()}), encoding="utf-8")
+
+            paths = provision_runtime_workspace(runtime)
+
+            self.assertEqual(paths["workspace"], shared.resolve())
+            self.assertTrue(paths["status"].is_dir())
             with self.assertRaisesRegex(RuntimeError, "running components to stop"):
                 migrate_worktree_workspace(runtime)
 

@@ -266,6 +266,49 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(log_event.call_args_list[-1].args[2], "watcher_shutdown_completed")
         self.assertEqual(log_event.call_args_list[-1].kwargs["context"], lifecycle_context)
 
+    def test_watcher_restarts_after_a_completed_cycle_when_source_revision_changes(self) -> None:
+        lifecycle_context = {
+            "application_version": inbox_watcher.WATCHER_VERSION,
+            "git_commit": "abc123def456",
+            "launchd_label": inbox_watcher.LABEL,
+            "launch_agent_path": "/tmp/inbox.plist",
+        }
+        with (
+            patch("tools.engineering.inbox_watcher.provision_workspace"),
+            patch("tools.engineering.inbox_watcher.cloud_root", return_value=self.root),
+            patch("tools.engineering.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
+            patch("tools.engineering.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
+            patch("tools.engineering.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
+            patch("tools.engineering.inbox_watcher.single_instance", return_value=nullcontext()),
+            patch("tools.engineering.inbox_watcher.once") as once,
+            patch("tools.engineering.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
+            patch("tools.engineering.inbox_watcher.log_event") as log_event,
+        ):
+            self.assertEqual(
+                inbox_watcher.main(["run", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                0,
+            )
+
+        once.assert_called_once_with(self.repo.resolve(), self.root, 15.0, background=True)
+        self.assertIn(
+            "watcher_source_revision_changed",
+            [call.args[2] for call in log_event.call_args_list],
+        )
+
+    def test_watcher_projects_dashboard_migration_block_instead_of_stale_merge_wait(self) -> None:
+        from tools.engineering.platform_bootstrap import WorkspaceMigrationBlockedError
+
+        with patch(
+            "tools.engineering.inbox_watcher.provision_workspace",
+            side_effect=WorkspaceMigrationBlockedError("dashboard"),
+        ):
+            self.assertEqual(inbox_watcher.main(["once", "--repo", str(self.repo)]), 1)
+
+        projected = json_status(self.repo)
+        self.assertEqual(projected["watcher_state"], "WATCHER_WORKSPACE_MIGRATION_BLOCKED")
+        self.assertEqual(projected["current_action"], "workspace_migration_blocked_by_active_dashboard")
+        self.assertIn("dashboardactiviteit", projected["diagnostic"])
+
     def test_launch_agent_uses_a_shell_exec_launcher_for_the_selected_runtime(self) -> None:
         with patch("tools.engineering.inbox_watcher.Path.home", return_value=Path(self.temp.name)):
             agent = inbox_watcher.launch_agent(self.repo)
@@ -814,6 +857,42 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertFalse(source.exists())
         self.assertTrue((inbox_watcher.local_folders(self.repo)["Completed"] / "merge-resumed__prompt.md").exists())
         self.assertEqual(json_status(self.repo)["watcher_state"], "JOB_COMPLETED")
+
+    def test_verified_merge_resumes_before_inbox_scan(self) -> None:
+        from tools.engineering.agent_state import StateStore, TransactionState
+
+        run_id = "inbox-verified-merge-first"
+        source = inbox_watcher.local_folders(self.repo)["Running"] / "verified-merge.md"
+        source.write_text("# Resume verified merge\n", encoding="utf-8")
+        waiting = TransactionState(
+            run_id=run_id,
+            repository="pcvantol/djconnect",
+            prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE",
+            implementation_pull_request=832,
+            next_action="resume_verified_merge",
+        )
+        store = StateStore(self.repo / ".engineering" / "engineering-runs")
+        store.save(waiting)
+
+        def begin_finalization(*_: object) -> None:
+            store.save(replace(
+                waiting,
+                phase="FINALIZE_AGENT",
+                transaction_kind="FINALIZATION",
+                next_action="create_finalization",
+            ))
+
+        with (
+            patch("tools.engineering.inbox_watcher._scan_queue", side_effect=AssertionError("Inbox scan must wait")),
+            patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=begin_finalization) as execute_runner,
+        ):
+            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        execute_runner.assert_called_once_with(self.repo, source, run_id)
+        published = json_status(self.repo)
+        self.assertEqual(published["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(published["current_phase"], "FINALIZE_AGENT")
 
     def test_operator_merge_wait_replaces_its_status_after_merge_starts_finalization(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState
@@ -1690,6 +1769,24 @@ class InboxWatcherTest(unittest.TestCase):
         older = next(item for item in history if item["run_id"] == older_run)
         self.assertTrue(older["dismissed"])
         self.assertFalse(older["can_retry"])
+
+    def test_dismissal_explains_that_another_active_execution_must_finish_first(self) -> None:
+        run_id = "inbox-dismissed"
+        runs = self.repo / ".engineering" / "engineering-runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.json").write_text(json.dumps({"phase": "FAILED"}), encoding="utf-8")
+        status = self.repo / ".engineering" / "status"
+        status.mkdir(parents=True, exist_ok=True)
+        (status / "status.json").write_text(
+            json.dumps({"watcher_state": "ENGINEERING_RUN_ACTIVE", "run_id": "inbox-new-run"}),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            inbox_watcher.RetrySubmissionError,
+            "nadat de andere actieve uitvoering is afgerond",
+        ):
+            inbox_watcher.dismiss_execution(self.repo, run_id)
 
     def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
         (self.root / "Completed").mkdir()

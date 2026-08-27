@@ -52,7 +52,7 @@ from .prompt_history import record_terminal_report
 from .producer import ProducerMetadata, parse_producer_metadata
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
-from .platform_bootstrap import migrate_legacy_workspace
+from .platform_bootstrap import runtime_workspace
 from .providers import GitProvider, GitHubProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
@@ -2086,7 +2086,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     raw_args = argv if argv is not None else __import__("sys").argv[1:]
     root = Path.cwd().resolve()
-    migrate_legacy_workspace(root)
+    runtime_workspace(root)
     if raw_args == ["status"]:
         return print_live_status(root)
     if raw_args == ["qualify"]:

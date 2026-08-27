@@ -20,6 +20,14 @@ _AUTO_IDENTIFIER_TABLES = frozenset({
 })
 
 
+class WorkspaceMigrationBlockedError(RuntimeError):
+    """A one-time workspace migration found a component that is still live."""
+
+    def __init__(self, component: str | None = None) -> None:
+        self.component = component or "another component"
+        super().__init__("Engineering workspace migration requires running components to stop first.")
+
+
 def _worktree_roots(root: Path) -> tuple[Path, ...]:
     """Return accessible worktrees that share ``root``'s Git common directory."""
     root = root.resolve()
@@ -187,7 +195,8 @@ def _discard_inactive_component_locks(workspace: Path) -> None:
             process_id = payload.get("pid") if isinstance(payload, dict) else None
             if isinstance(process_id, int) and process_id > 0:
                 os.kill(process_id, 0)
-                raise RuntimeError("Engineering workspace migration requires running components to stop first.")
+                component = payload.get("component") if isinstance(payload, dict) else None
+                raise WorkspaceMigrationBlockedError(component if isinstance(component, str) else None)
         except ProcessLookupError:
             continue
         except PermissionError as error:
@@ -309,11 +318,45 @@ def migrate_legacy_workspace(root: Path) -> Path:
 def provision_workspace(root: Path) -> dict[str, Path]:
     """Provision only platform-owned local directories; safe to repeat."""
     workspace = migrate_legacy_workspace(root)
+    return _provision_workspace_paths(root, workspace)
+
+
+def runtime_workspace(root: Path) -> Path:
+    """Return the already-valid shared store without starting a migration.
+
+    A long-running dashboard is allowed to coexist with a watcher or runner.
+    When this worktree already points to the canonical shared store, a normal
+    component start must not inspect or merge dormant legacy stores belonging
+    to another worktree.  Such a merge remains an explicit, fail-closed
+    migration through :func:`migrate_legacy_workspace`.
+    """
+    root = root.resolve()
+    shared = shared_workspace_store(root)
+    local = root / WORKSPACE_DIRECTORY
+    legacy = root / LEGACY_WORKSPACE_DIRECTORY
+    if (
+        shared != local
+        and local.is_symlink()
+        and local.resolve() == shared.resolve()
+        and shared.is_dir()
+        and not legacy.exists()
+    ):
+        return shared.resolve()
+    return migrate_legacy_workspace(root)
+
+
+def _provision_workspace_paths(root: Path, workspace: Path) -> dict[str, Path]:
+    """Create the repeatable directories for an already-selected workspace."""
     PlatformConfiguration.load(root)
     paths = {"workspace": workspace, "reports": workspace / "reports", "status": workspace / "status", "runs": workspace / "engineering-runs", "diagnostics": workspace / "logs"}
     for path in paths.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return paths
+
+
+def provision_runtime_workspace(root: Path) -> dict[str, Path]:
+    """Provision a watcher, runner, or dashboard without implicit migration."""
+    return _provision_workspace_paths(root, runtime_workspace(root))
 
 
 def validate_repository(root: Path) -> PlatformConfiguration:

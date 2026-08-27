@@ -170,6 +170,7 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
   run_local_repository_validation: "operational.run_local_repository_validation",
+  workspace_migration_blocked_by_active_dashboard: "operational.workspace_migration_blocked_by_active_dashboard",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
   FINALIZATION_REPAIR_AGENT: "lifecycle.step.repair_agent",
   poll_required_checks: "operational.poll_required_checks",

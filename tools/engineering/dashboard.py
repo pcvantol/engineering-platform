@@ -25,7 +25,7 @@ import time
 import uuid
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
-from .platform_bootstrap import provision_workspace
+from .platform_bootstrap import provision_runtime_workspace as provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .provider_readiness import status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
