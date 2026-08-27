@@ -223,5 +223,25 @@ yellow actions are deliberately separate from terminal-status colours:
   link, title and source branch as read-only operator context. If GitHub
   context is unavailable or no PR is open, the subblock is omitted.
 
+### One-shot repair for human pull requests
+
+For a same-repository pull request that GitHub currently reports as open,
+non-draft and terminally failed, the Workspace subblock can show **Fix failed
+checks**. It is an explicit confirmed action, not part of an Inbox execution
+and never resumes or changes an existing transaction.
+
+Before dispatch, EP re-reads the exact PR number, head SHA, source repository,
+terminal failed checks, GitHub readiness, Codex readiness and capacity reserve.
+It rejects fork PRs, pending checks, changed evidence and unavailable
+providers. The repair runs in a disposable detached worktree at that exact
+SHA. Codex may edit and validate only; the host, not Codex, creates and pushes
+at most one commit with a SHA lease. It never opens, merges or retargets a PR.
+
+The one-shot reservation is durable per PR head SHA. Therefore a second action
+cannot be launched for the same failed revision. Once that single commit has
+caused GitHub checks to finish, a new terminal failure is a new SHA and the
+operator may explicitly use the button again. This keeps human-authored PRs
+repairable without creating an autonomous retry loop.
+
 Neither control rewrites history, stashes work, or deletes a branch without
 the explicit second confirmation.

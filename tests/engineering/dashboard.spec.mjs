@@ -1324,6 +1324,37 @@ test.describe("Engineering Status browser smoke", () => {
       .toContain("for (const delay of [900, 2500, 6000, 12000])");
   });
 
+  test("queues one explicit repair for terminal failed pull-request checks", async ({ page }) => {
+    let dispatched = null;
+    await page.route("**/api/open-pull-requests/941/repair-failed-checks", async (route) => {
+      dispatched = { method: route.request().method(), body: route.request().postData() };
+      await route.fulfill({ status: 202, json: { queued: true, pull_request: 941 } });
+    });
+    await page.route("**/api/open-pull-requests", (route) => route.fulfill({ json: { pull_requests: [] } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      const section = document.createElement("section");
+      section.id = "workspaceOpenPullRequests";
+      section.className = "workspace-open-prs";
+      section.innerHTML = "<ul></ul>";
+      document.body.append(section);
+      renderOpenPullRequests([{
+        number: 941, title: "Human submitted", url: "https://github.com/pcvantol/djconnect/pull/941",
+        branch: "feature/human-pr", status: "issues", owner_approval: "not_required",
+        check_repair_available: true,
+      }]);
+    });
+    const repair = page.locator("[data-open-pull-request-check-repair='941']");
+    await expect(repair).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_failed_checks"]);
+    await expect(repair).toHaveCSS("border-top-color", "rgb(98, 199, 225)");
+    await repair.click();
+    await expect(page.locator("#confirmationModal")).toBeVisible();
+    await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--destructive/);
+    expect(dispatched).toBeNull();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => dispatched).toEqual({ method: "POST", body: "{}" });
+  });
+
   test("keeps the last known open pull requests visible when GitHub refresh is unavailable", async ({ page }) => {
     await page.route("**/api/open-pull-requests", (route) => route.fulfill({ status: 503, json: { error: "temporarily unavailable" } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });

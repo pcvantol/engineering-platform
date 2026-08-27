@@ -700,6 +700,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(pull_requests, [{
             "number": 849, "title": "Cleanup <safe>", "url": "https://github.com/pcvantol/djconnect/pull/849", "branch": "codex/cleanup", "status": "ready_to_merge", "owner_approval": "approved",
             "owner_authorization_requested": False,
+            "check_repair_available": False,
         }])
         page = _dashboard_html(
             "Engineering Status", workspace_branch="codex/cleanup", workspace_commit="123456789abc",
@@ -2548,6 +2549,27 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(response.status, 202)
             self.assertEqual(json.loads(response.read()), {"queued": True, "pull_request": 940})
         request_authorization.assert_called_once_with(root, 940)
+
+    @patch("tools.engineering.dashboard.LocalProcessProvider")
+    @patch("tools.engineering.dashboard.admit_pr_check_repair", return_value={"head_sha": "a" * 40})
+    @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])
+    def test_http_pr_check_repair_dispatches_only_an_admitted_exact_sha(
+        self, _open_pull_requests: object, admit: object, process: object
+    ) -> None:
+        with self._dashboard_http_connection() as (root, connection):
+            connection.request(
+                "POST", "/api/open-pull-requests/940/repair-failed-checks",
+                body=b"{}", headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 202)
+            self.assertEqual(json.loads(response.read()), {"queued": True, "pull_request": 940})
+        admit.assert_called_once_with(root, 940)
+        process.return_value.spawn_detached.assert_called_once()
+        arguments = process.return_value.spawn_detached.call_args.args[1]
+        self.assertIn("--pull-request", arguments)
+        self.assertIn("940", arguments)
+        self.assertIn("a" * 40, arguments)
 
     def test_http_configuration_routes_preserve_the_server_side_safety_contract(self) -> None:
         """Exercise successful configuration changes and their guarded counterparts."""

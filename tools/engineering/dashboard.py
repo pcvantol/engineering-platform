@@ -46,6 +46,7 @@ from .component_logging import (
 )
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .agent_state import is_valid_commit_evidence_record, redact_diagnostic
+from .pr_check_repair import PullRequestCheckRepairError, admit as admit_pr_check_repair, attempted as pr_check_repair_attempted, failed_check_names, mark_dispatch_failed as mark_pr_check_repair_dispatch_failed
 from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
 from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
@@ -1427,7 +1428,7 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
             return None
         payload = GitHubProvider().github(
             "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "open",
-            "--json", "number,title,url,headRefName,isDraft,mergeStateStatus,reviewDecision,reviews,statusCheckRollup", "--limit", "20",
+            "--json", "number,title,url,headRefOid,headRefName,isDraft,mergeStateStatus,reviewDecision,reviews,statusCheckRollup", "--limit", "20",
         )
         candidates = json.loads(payload)
     except (OSError, RuntimeError, json.JSONDecodeError):
@@ -1440,6 +1441,8 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
             continue
         number, title, url, branch = candidate.get("number"), candidate.get("title"), candidate.get("url"), candidate.get("headRefName")
         if isinstance(number, int) and number > 0 and all(isinstance(value, str) for value in (title, url, branch)) and url.startswith("https://github.com/"):
+            head_sha = candidate.get("headRefOid")
+            failed_checks = failed_check_names(candidate.get("statusCheckRollup"))
             result.append({
                 "number": number,
                 "title": title,
@@ -1448,6 +1451,10 @@ def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
                 "status": _open_pull_request_status(candidate),
                 "owner_approval": _owner_approval_status(candidate, match.group(1)),
                 "owner_authorization_requested": _owner_authorization_requested(candidate),
+                # This is an explicit, one-shot operator action for a
+                # human-authored same-repository PR.  Endpoint admission
+                # re-reads all GitHub evidence before any provider is used.
+                "check_repair_available": bool(failed_checks) and not pr_check_repair_attempted(root, number, head_sha),
             })
     return result
 
@@ -2393,12 +2400,18 @@ def _dashboard_html(
             f'type="button" data-i18n="workspace.open_pull_request.authorize_owner"></button>'
             if pull_request.get("owner_authorization_requested") is True else ""
         )
+        repair = (
+            f'<button class="open-pr-check-repair" '
+            f'data-open-pull-request-check-repair="{pull_request["number"]}" '
+            f'type="button" data-i18n="workspace.open_pull_request.repair_failed_checks"></button>'
+            if pull_request.get("check_repair_available") is True else ""
+        )
         return (
             f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" '
             f'target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a>'
             f'<span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "waiting_for_checks")), quote=True)}">'
             f'<span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span>'
-            f'{authorization}<code>{escape(str(pull_request["branch"]))}</code></li>'
+            f'{authorization}{repair}<code>{escape(str(pull_request["branch"]))}</code></li>'
         )
 
     pull_request_items = "".join(
@@ -2545,6 +2558,35 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     self._send(b'{"error":"owner_authorization_invalid_request"}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(outcome).encode(), "application/json; charset=utf-8", 202)
+                return
+            pr_check_repair_match = re.fullmatch(r"/api/open-pull-requests/([1-9][0-9]*)/repair-failed-checks", request_path)
+            if pr_check_repair_match:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    number = int(pr_check_repair_match.group(1))
+                    if _execution_active(root):
+                        raise PullRequestCheckRepairError("pr_check_repair_execution_active")
+                    evidence = admit_pr_check_repair(root, number)
+                    sha = str(evidence["head_sha"])
+                    try:
+                        LocalProcessProvider().spawn_detached(
+                            root,
+                            (sys.executable, "-m", "tools.engineering.pr_check_repair", "--root", str(root), "--pull-request", str(number), "--head-sha", sha),
+                            os.environ.copy(),
+                        )
+                    except OSError:
+                        mark_pr_check_repair_dispatch_failed(root, number, sha)
+                        raise PullRequestCheckRepairError("pr_check_repair_dispatch_failed")
+                    log_event(logger, logging.INFO, "pr_check_repair_dispatched", diagnostic=f"pull_request={number}")
+                except PullRequestCheckRepairError as error:
+                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
+                    return
+                except ValueError:
+                    self._send(b'{"error":"pr_check_repair_invalid_request"}', "application/json; charset=utf-8", 400)
+                    return
+                self._send(json.dumps({"queued": True, "pull_request": number}).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path.startswith("/api/components/") and request_path.endswith("/restart"):
                 component = request_path.removeprefix("/api/components/").removesuffix("/restart").rstrip("/")

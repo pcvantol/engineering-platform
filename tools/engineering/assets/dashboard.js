@@ -2198,6 +2198,15 @@ function renderOpenPullRequests(pullRequests) {
       authorize.title = t("workspace.open_pull_request.authorize_owner");
       item.append(authorize);
     }
+    if (pullRequest.check_repair_available === true) {
+      const repair = document.createElement("button");
+      repair.className = "open-pr-check-repair";
+      repair.dataset.openPullRequestCheckRepair = String(pullRequest.number || "");
+      repair.type = "button";
+      repair.textContent = t("workspace.open_pull_request.repair_failed_checks");
+      repair.title = t("workspace.open_pull_request.repair_failed_checks");
+      item.append(repair);
+    }
     return item;
   }));
   localizeOpenPullRequestStatuses();
@@ -2273,9 +2282,35 @@ async function requestOpenPullRequestOwnerAuthorization(button) {
     button.disabled = false;
   }
 }
+async function requestOpenPullRequestCheckRepair(button) {
+  const number = Number(button?.dataset.openPullRequestCheckRepair);
+  if (!Number.isInteger(number) || number < 1) return;
+  const confirmed = await confirmDashboardAction(
+    t("workspace.open_pull_request.repair_failed_checks"),
+    t("workspace.open_pull_request.repair_failed_checks_confirmation"),
+    t("workspace.open_pull_request.repair_failed_checks"),
+    { destructive: true },
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/open-pull-requests/${number}/repair-failed-checks`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw Error(payload?.error);
+    showDashboardToast(t("workspace.open_pull_request.repair_failed_checks_queued"));
+    refreshOpenPullRequestsAfterOwnerAuthorization();
+  } catch (error) {
+    showDashboardToast(ownerAuthorizationErrorMessage(error?.message));
+  } finally {
+    button.disabled = false;
+  }
+}
 document.addEventListener("click", (event) => {
   const authorize = event.target.closest("[data-open-pull-request-owner-authorization]");
   if (authorize) void requestOpenPullRequestOwnerAuthorization(authorize);
+  else if (event.target.closest("[data-open-pull-request-check-repair]")) void requestOpenPullRequestCheckRepair(event.target.closest("[data-open-pull-request-check-repair]"));
   else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests();
 });
 let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
