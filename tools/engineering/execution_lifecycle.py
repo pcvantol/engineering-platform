@@ -138,7 +138,7 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 "SELECT execution_mode FROM execution_runs WHERE run_id=?", (run_id,)
             ).fetchone()
             phase_spans = connection.execute(
-                "SELECT phase_id,parent_phase_id,phase_name,attempt,started_at,completed_at,duration_ms,outcome "
+                "SELECT phase_id,parent_phase_id,phase_name,attempt,started_at,completed_at,duration_ms,outcome,metadata "
                 "FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal",
                 (run_id,),
             ).fetchall()
@@ -243,6 +243,10 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         for phase_id, parent_phase_id, *_ in phase_spans
         if parent_phase_id is not None
     }
+    metadata_by_phase_id = {
+        str(phase_id): _checkpoint(metadata)
+        for phase_id, *_, metadata in phase_spans
+    }
 
     def is_nested_below(parent_phase_id: object, owner_phase_ids: set[str]) -> bool:
         """Return whether a span is nested below a visible lifecycle owner."""
@@ -255,13 +259,29 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
             phase_id = parent_by_phase_id.get(phase_id)
         return False
 
-    def belongs_to_step(step_id: str, parent_phase_id: object, phase_name: object) -> bool:
+    def is_local_validation_phase(phase_id: object, parent_phase_id: object) -> bool:
+        """Return whether a span belongs to the local-validation invocation."""
+        current_id = str(phase_id)
+        current_parent = parent_phase_id
+        seen: set[str] = set()
+        while current_id and current_id not in seen:
+            if metadata_by_phase_id.get(current_id, {}).get("lifecycle_step") == "LOCAL_REPOSITORY_VALIDATION":
+                return True
+            seen.add(current_id)
+            current_id = str(current_parent) if current_parent is not None else ""
+            current_parent = parent_by_phase_id.get(current_id)
+        return False
+
+    def belongs_to_step(step_id: str, phase_id: object, parent_phase_id: object, phase_name: object) -> bool:
         """Keep nested provider timing with its visible lifecycle owner."""
         name = str(phase_name)
         nested_in_quality = is_nested_below(parent_phase_id, quality_phase_ids)
         nested_in_repair = is_nested_below(parent_phase_id, repair_phase_ids)
+        local_validation = is_local_validation_phase(phase_id, parent_phase_id)
         if step_id == "EXECUTE_AGENT":
-            return name in _STEP_PHASES[step_id] and not nested_in_quality and not nested_in_repair
+            return name in _STEP_PHASES[step_id] and not nested_in_quality and not nested_in_repair and not local_validation
+        if step_id == "LOCAL_REPOSITORY_VALIDATION":
+            return name in _STEP_PHASES[step_id] and local_validation
         if step_id == "QUALITY_CONTROL_AGENT":
             return name == "QUALITY_CONTROL" or nested_in_quality
         if step_id in {"REPAIR_AGENT", "FINALIZATION_REPAIR_AGENT"}:
@@ -356,8 +376,8 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
                 "duration_ms": duration_ms,
                 "outcome": outcome,
             }
-            for _, parent_phase_id, phase_name, attempt, started_at, completed_at, duration_ms, outcome in phase_spans
-            if belongs_to_step(step_id, parent_phase_id, phase_name)
+            for phase_id, parent_phase_id, phase_name, attempt, started_at, completed_at, duration_ms, outcome, _ in phase_spans
+            if belongs_to_step(step_id, phase_id, parent_phase_id, phase_name)
         ]
         # Timing is supporting evidence, not lifecycle authority.  In
         # particular, admission can record a short reconciliation span before

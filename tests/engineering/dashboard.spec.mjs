@@ -3547,11 +3547,24 @@ test.describe("Engineering Status browser smoke", () => {
     expect(timelineBounds).not.toBeNull();
     expect(timelineBounds.x).toBeGreaterThan(usageBounds.x);
     expect(Math.abs(timelineBounds.y - usageBounds.y)).toBeLessThanOrEqual(1);
-    await expect(cards.nth(1).locator(".prompt-detail-commit-timeline__list")).toHaveCSS("overflow-y", "auto");
+    await expect(cards.nth(1)).toHaveCSS("align-self", "stretch");
+    const timelineList = cards.nth(1).locator(".prompt-detail-commit-timeline__list");
+    await expect(timelineList).toHaveCSS("overflow-y", "auto");
+    await expect(timelineList).toHaveCSS("flex-grow", "1");
+    await expect(timelineList).toHaveCSS("align-content", "start");
     const phaseCaption = cards.nth(1).locator(".prompt-detail-commit-timeline__phase h4");
     await expect(phaseCaption.locator(".prompt-detail-commit-timeline__kind")).toHaveText(DASHBOARD_MESSAGES.nl["detail.commit_type.repair"]);
     await expect(phaseCaption.locator(".prompt-detail-commit-timeline__phase-name")).toHaveText(DASHBOARD_MESSAGES.nl["state.REPAIR_AGENT"]);
-    await expect(page.locator("#promptHistoryDetailContent .prompt-detail-provider-review-stack .prompt-detail-card--reviewers")).toHaveCount(1);
+    const stack = page.locator("#promptHistoryDetailContent .prompt-detail-provider-review-stack");
+    const reviewersCard = stack.locator(".prompt-detail-card--reviewers");
+    await expect(reviewersCard).toHaveCount(1);
+    const [stackBounds, reviewerBounds] = await Promise.all([
+      stack.boundingBox(), reviewersCard.boundingBox(),
+    ]);
+    expect(stackBounds).not.toBeNull();
+    expect(reviewerBounds).not.toBeNull();
+    expect(reviewerBounds.x).toBeGreaterThanOrEqual(stackBounds.x - 1);
+    expect(reviewerBounds.x + reviewerBounds.width).toBeLessThanOrEqual(stackBounds.x + stackBounds.width + 1);
 
     await page.setViewportSize({ width: 390, height: 844 });
     const [narrowUsage, narrowTimeline] = await Promise.all([
@@ -7386,6 +7399,11 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(page.locator("#promptHistoryRows tr td").nth(1));
     await expect(page.locator("#promptHistoryDetailModal")).toBeVisible();
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeFocused();
+    const runtimeCard = page.locator("#promptHistoryDetailContent .prompt-detail-card").filter({
+      has: page.locator("h3", { hasText: DASHBOARD_MESSAGES.nl["detail.runtime"] }),
+    });
+    await expect(runtimeCard).toContainText(DASHBOARD_MESSAGES.nl["technical.runtime_value.codex_cli"]);
+    await expect(runtimeCard).not.toContainText("codex_cli");
     await page.locator("#promptHistoryDetailContent .execution-lifecycle__node").click();
     const lifecycleDetail = page.locator("#lifecycleDetailModal");
     await expect(lifecycleDetail).toBeVisible();

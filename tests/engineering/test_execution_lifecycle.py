@@ -263,6 +263,37 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
             "duration_ms": 12000, "outcome": "COMPLETE",
         }])
 
+    def test_local_validation_provider_timing_is_not_repeated_on_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = datetime(2026, 8, 16, 14, 0, tzinfo=timezone.utc)
+            self._state(root, "EXECUTE_AGENT")
+            implementation = start_phase(
+                root, "inbox-flow", "PROVIDER_EXECUTION", started_at=started, monotonic_clock=10.0,
+            )
+            complete_phase(root, implementation, completed_at=started + timedelta(seconds=12), monotonic_clock=22.0)
+            self._state(root, "LOCAL_REPOSITORY_VALIDATION")
+            validation_provider = start_phase(
+                root, "inbox-flow", "PROVIDER_EXECUTION", started_at=started + timedelta(seconds=13),
+                monotonic_clock=23.0, metadata={"lifecycle_step": "LOCAL_REPOSITORY_VALIDATION"},
+            )
+            local_validation = start_phase(
+                root, "inbox-flow", "VALIDATION", parent_phase_id=validation_provider.phase_id,
+                started_at=started + timedelta(seconds=14), monotonic_clock=24.0,
+            )
+            complete_phase(root, local_validation, completed_at=started + timedelta(seconds=16), monotonic_clock=26.0)
+            complete_phase(root, validation_provider, completed_at=started + timedelta(seconds=18), monotonic_clock=28.0)
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(
+            [span["phase"] for span in by_id["EXECUTE_AGENT"]["timing"]["spans"]],
+            ["PROVIDER_EXECUTION"],
+        )
+        self.assertEqual(
+            [span["phase"] for span in by_id["LOCAL_REPOSITORY_VALIDATION"]["timing"]["spans"]],
+            ["PROVIDER_EXECUTION", "VALIDATION"],
+        )
+
     def test_unreached_step_does_not_project_timing_from_admission_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

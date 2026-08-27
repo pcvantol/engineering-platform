@@ -132,6 +132,10 @@ function technicalMachineLabel(id, value, keyPrefix) {
   element.textContent = raw ? t(`${keyPrefix}.${raw}`, {}, raw) : t("format.not_available");
   element.title = raw;
 }
+function runtimeProviderLabel(value) {
+  const raw = String(value || "").trim();
+  return raw ? t("technical.runtime_value." + raw, {}, raw) : raw;
+}
 function sanitizeFreeText(value, maximumLength, multiline = false) {
   const normalized = String(value ?? "")
     .normalize("NFC")
@@ -165,6 +169,7 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   ENGINEERING_RUN_STALE: "operational.stale_run",
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
+  run_local_repository_validation: "operational.run_local_repository_validation",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
   FINALIZATION_REPAIR_AGENT: "lifecycle.step.repair_agent",
   poll_required_checks: "operational.poll_required_checks",
@@ -4357,7 +4362,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       ...Object.entries(context).map(([key, value]) => [promptHistoryMarkdownLabel(key), value]),
     ]),
     promptHistoryMarkdownSection(t("detail.runtime"), [
-      [t("detail.runtime_provider"), runtime.runtime_provider],
+      [t("detail.runtime_provider"), runtimeProviderLabel(runtime.runtime_provider)],
       [t("detail.model"), runtime.model],
       [t("detail.reasoning_profile"), runtime.reasoning_profile],
       [t("detail.configuration_profile"), runtime.configuration_profile],
@@ -6324,7 +6329,7 @@ function promptDetailDurationSection(execution) {
 }
 function promptDetailRuntimeSection(runtime) {
   const fields = [
-    [t("detail.runtime_provider"), runtime.runtime_provider],
+    [t("detail.runtime_provider"), runtimeProviderLabel(runtime.runtime_provider)],
     [t("detail.model"), runtime.model],
     [t("detail.reasoning_profile"), runtime.reasoning_profile],
     [t("detail.configuration_profile"), runtime.configuration_profile],

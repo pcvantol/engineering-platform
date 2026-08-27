@@ -3197,6 +3197,7 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "operational.stale_run",
   "operational.waiting_for_operator_merge",
   "operational.stale_host_ownership",
+  "operational.run_local_repository_validation",
   "operational.poll_required_checks",
   "operational.provider_auth_repair_required",
   "operational.reconcile_rolling_records_on_main",
@@ -3217,30 +3218,35 @@ Object.assign(DASHBOARD_MESSAGES.en, {
   "operational.poll_required_checks": "Checking required pull request checks",
   "operational.provider_auth_repair_required": "Provider sign-in recovery is required before continuing",
   "operational.reconcile_rolling_records_on_main": "Reconciling rolling records on main",
+  "operational.run_local_repository_validation": "Running local repository validation",
 });
 Object.assign(DASHBOARD_MESSAGES.nl, {
   "reviewer.home_assistant_integration": "Home Assistant-integratie",
   "operational.poll_required_checks": "Vereiste pullrequestcontroles controleren",
   "operational.provider_auth_repair_required": "Herstel van provider-aanmelding is vereist vóór voortzetting",
   "operational.reconcile_rolling_records_on_main": "Doorlopende registraties op main reconciliëren",
+  "operational.run_local_repository_validation": "Lokale repositoryvalidatie uitvoeren",
 });
 Object.assign(DASHBOARD_MESSAGES.de, {
   "reviewer.home_assistant_integration": "Home-Assistant-Integration",
   "operational.poll_required_checks": "Erforderliche Pull-Request-Prüfungen werden überprüft",
   "operational.provider_auth_repair_required": "Die Wiederherstellung der Provider-Anmeldung ist vor der Fortsetzung erforderlich",
   "operational.reconcile_rolling_records_on_main": "Fortlaufende Einträge auf main werden abgeglichen",
+  "operational.run_local_repository_validation": "Lokale Repositoryvalidierung ausführen",
 });
 Object.assign(DASHBOARD_MESSAGES.fr, {
   "reviewer.home_assistant_integration": "Intégration Home Assistant",
   "operational.poll_required_checks": "Vérification des contrôles requis de la pull request",
   "operational.provider_auth_repair_required": "La récupération de la connexion du fournisseur est requise avant de continuer",
   "operational.reconcile_rolling_records_on_main": "Rapprochement des enregistrements courants sur main",
+  "operational.run_local_repository_validation": "Exécution de la validation locale du dépôt",
 });
 Object.assign(DASHBOARD_MESSAGES.es, {
   "reviewer.home_assistant_integration": "Integración de Home Assistant",
   "operational.poll_required_checks": "Comprobando las verificaciones obligatorias de la solicitud de extracción",
   "operational.provider_auth_repair_required": "Se requiere recuperar el inicio de sesión del proveedor antes de continuar",
   "operational.reconcile_rolling_records_on_main": "Conciliando los registros continuos en main",
+  "operational.run_local_repository_validation": "Ejecutando la validación local del repositorio",
 });
 
 Object.assign(DASHBOARD_MESSAGES.en, {

@@ -691,7 +691,7 @@ class EngineeringRunner:
             return "tests"
         return None
 
-    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, attempt: int | None = None) -> AgentResult:
+    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
         self._require_agent_readiness(state)
         parent = (
@@ -699,9 +699,16 @@ class EngineeringRunner:
             if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
         )
         provider_attempt = attempt if attempt is not None else max(1, state.repair_iterations + 1)
+        provider_metadata: dict[str, object] = {"provider": "codex_cli"}
+        if local_validation:
+            # This invocation is distinct from the implementation agent even
+            # though both emit PROVIDER_EXECUTION spans.  The read-only
+            # lifecycle projection uses this bounded marker to avoid showing
+            # their combined duration on both visible steps.
+            provider_metadata["lifecycle_step"] = "LOCAL_REPOSITORY_VALIDATION"
         provider = start_phase(
             self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
-            attempt=provider_attempt, metadata={"provider": "codex_cli"},
+            attempt=provider_attempt, metadata=provider_metadata,
         )
         validation_spans: dict[str, ActivePhase | None] = {}
 
@@ -795,6 +802,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 result = self._invoke_agent_with_timing(
                     validation,
                     assemble_prompt(Path(validation.prompt_path), validation, managed_target=self.root) + instruction,
+                    local_validation=True,
                     attempt=iteration,
                 )
                 validation = self._record_agent_execution_time(validation)
