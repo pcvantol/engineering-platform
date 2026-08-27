@@ -1000,6 +1000,10 @@ def generate_terminal_report(
     reported_model = runtime_metadata.get("model", "not reported")
     reported_reasoning = runtime_metadata.get("reasoning_profile", "not reported")
     reported_configuration = runtime_metadata.get("configuration_profile", "not reported")
+    reported_cli_installation_path = (
+        runtime_metadata.get("codex_cli_installation_path", "not reported")
+        if runtime_provider == "codex_cli" else "not applicable"
+    )
     raw_execution_metadata = execution_metadata or {}
     safe_execution_metadata = {
         key: max(0, value)
@@ -1202,6 +1206,7 @@ def generate_terminal_report(
             f"- Reasoning Profile: `{reported_reasoning}`",
             f"- Configuration Profile: `{reported_configuration}`",
             f"- Codex CLI Version: `{detected_cli or 'unavailable'}`",
+            f"- Codex CLI Installation Path: `{reported_cli_installation_path}`",
             "",
             "## Execution Metadata",
             f"- Provider-Stage Files Modified: `{safe_execution_metadata.get('modified', 0)}`",

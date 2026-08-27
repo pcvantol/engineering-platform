@@ -27,6 +27,23 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.loading": "Loading data…",
     "dashboard.platform_version": "Engineering Platform {version}",
     "dashboard.title": "Engineering Operations Console",
+    "dashboard.health.title": "Platform status",
+    "dashboard.health.ready": "Ready",
+    "dashboard.health.active": "Execution active",
+    "dashboard.health.blocked": "Blocked",
+    "dashboard.health.error": "Attention required",
+    "dashboard.health.unknown": "Checking platform status",
+    "dashboard.health.dashboard": "Dashboard",
+    "dashboard.health.watcher": "Inbox watcher",
+    "dashboard.health.execution": "Execution",
+    "dashboard.health.queue": "Inbox queue",
+    "dashboard.health.watcher_state": "Watcher status",
+    "dashboard.health.workspace": "Workspace",
+    "dashboard.health.running": "Running",
+    "dashboard.health.not_running": "Not running",
+    "dashboard.health.none_active": "No execution active",
+    "dashboard.health.queue_empty": "Empty",
+    "dashboard.health.queue_waiting": "{count} waiting",
     "notification.codex_usage_limit.title": "Codex usage limit reached.",
     "notification.codex_usage_limit.body": "Add Codex credits or resume after the account limit resets.",
     "notification.codex_usage_warning.title": "Codex limit is nearly reached.",
@@ -103,6 +120,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.capability": "Capability",
     "detail.cost": "Cost",
     "detail.codex_cli_version": "Codex CLI version",
+    "detail.codex_cli_installation_path": "Codex CLI installation path",
     "detail.completed": "Completed",
     "detail.configuration_profile": "Configuration profile",
     "detail.duration": "Duration",
@@ -620,6 +638,23 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.loading": "Gegevens laden…",
     "dashboard.platform_version": "Engineeringplatform {version}",
     "dashboard.title": "Engineering Operationele console",
+    "dashboard.health.title": "Platformstatus",
+    "dashboard.health.ready": "Gereed",
+    "dashboard.health.active": "Uitvoering actief",
+    "dashboard.health.blocked": "Geblokkeerd",
+    "dashboard.health.error": "Aandacht vereist",
+    "dashboard.health.unknown": "Platformstatus wordt gecontroleerd",
+    "dashboard.health.dashboard": "Dashboard",
+    "dashboard.health.watcher": "Inbox-watcher",
+    "dashboard.health.execution": "Uitvoering",
+    "dashboard.health.queue": "Inbox-queue",
+    "dashboard.health.watcher_state": "Watcherstatus",
+    "dashboard.health.workspace": "Werkruimte",
+    "dashboard.health.running": "Actief",
+    "dashboard.health.not_running": "Niet actief",
+    "dashboard.health.none_active": "Geen uitvoering actief",
+    "dashboard.health.queue_empty": "Leeg",
+    "dashboard.health.queue_waiting": "{count} wachtend",
     "notification.codex_usage_limit.title": "Codex-gebruikslimiet bereikt.",
     "notification.codex_usage_limit.body": "Voeg Codex-credits toe of hervat wanneer de accountlimiet is gereset.",
     "notification.codex_usage_warning.title": "Codex-limiet is bijna bereikt.",
@@ -696,6 +731,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.capability": "Capaciteit",
     "detail.cost": "Kosten",
     "detail.codex_cli_version": "Codex CLI-versie",
+    "detail.codex_cli_installation_path": "Codex CLI-installatiepad",
     "detail.completed": "Uitgevoerd",
     "detail.configuration_profile": "Configuratieprofiel",
     "detail.duration": "Doorlooptijd",
@@ -1213,6 +1249,23 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.loading": "Daten werden geladen…",
     "dashboard.platform_version": "Engineering-Plattform {version}",
     "dashboard.title": "Engineering-Betriebskonsole",
+    "dashboard.health.title": "Plattformstatus",
+    "dashboard.health.ready": "Bereit",
+    "dashboard.health.active": "Ausführung aktiv",
+    "dashboard.health.blocked": "Blockiert",
+    "dashboard.health.error": "Aktion erforderlich",
+    "dashboard.health.unknown": "Plattformstatus wird geprüft",
+    "dashboard.health.dashboard": "Dashboard",
+    "dashboard.health.watcher": "Inbox-Wächter",
+    "dashboard.health.execution": "Ausführung",
+    "dashboard.health.queue": "Inbox-Warteschlange",
+    "dashboard.health.watcher_state": "Watcher-Status",
+    "dashboard.health.workspace": "Arbeitsbereich",
+    "dashboard.health.running": "Aktiv",
+    "dashboard.health.not_running": "Nicht aktiv",
+    "dashboard.health.none_active": "Keine Ausführung aktiv",
+    "dashboard.health.queue_empty": "Leer",
+    "dashboard.health.queue_waiting": "{count} wartend",
     "notification.codex_usage_limit.title": "Codex-Nutzungslimit erreicht.",
     "notification.codex_usage_limit.body": "Fügen Sie Codex-Guthaben hinzu oder setzen Sie fort, wenn das Kontolimit zurückgesetzt ist.",
     "notification.codex_usage_warning.title": "Das Codex-Limit ist fast erreicht.",
@@ -1289,6 +1342,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.capability": "Fähigkeit",
     "detail.cost": "Kosten",
     "detail.codex_cli_version": "Codex-CLI-Version",
+    "detail.codex_cli_installation_path": "Codex-CLI-Installationspfad",
     "detail.completed": "Ausgeführt",
     "detail.configuration_profile": "Konfigurationsprofil",
     "detail.duration": "Dauer",
@@ -1741,6 +1795,23 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.loading": "Chargement des données…",
     "dashboard.platform_version": "Plateforme d’ingénierie {version}",
     "dashboard.title": "Console des opérations d’ingénierie",
+    "dashboard.health.title": "État de la plateforme",
+    "dashboard.health.ready": "Prête",
+    "dashboard.health.active": "Exécution active",
+    "dashboard.health.blocked": "Bloquée",
+    "dashboard.health.error": "Attention requise",
+    "dashboard.health.unknown": "Vérification de l’état de la plateforme",
+    "dashboard.health.dashboard": "Tableau de bord",
+    "dashboard.health.watcher": "Surveillant de l’Inbox",
+    "dashboard.health.execution": "Exécution",
+    "dashboard.health.queue": "File Inbox",
+    "dashboard.health.watcher_state": "État du surveillant",
+    "dashboard.health.workspace": "Espace de travail",
+    "dashboard.health.running": "Actif",
+    "dashboard.health.not_running": "Inactif",
+    "dashboard.health.none_active": "Aucune exécution active",
+    "dashboard.health.queue_empty": "Vide",
+    "dashboard.health.queue_waiting": "{count} en attente",
     "notification.codex_usage_limit.title": "Limite d’utilisation Codex atteinte.",
     "notification.codex_usage_limit.body": "Ajoutez des crédits Codex ou reprenez lorsque la limite du compte est réinitialisée.",
     "notification.codex_usage_warning.title": "La limite Codex est presque atteinte.",
@@ -1817,6 +1888,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.capability": "Capacité",
     "detail.cost": "Coût",
     "detail.codex_cli_version": "Version de Codex CLI",
+    "detail.codex_cli_installation_path": "Chemin d’installation de Codex CLI",
     "detail.completed": "Exécuté",
     "detail.configuration_profile": "Profil de configuration",
     "detail.duration": "Durée",
@@ -2269,6 +2341,23 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.loading": "Cargando datos…",
     "dashboard.platform_version": "Plataforma de ingeniería {version}",
     "dashboard.title": "Consola de operaciones de ingeniería",
+    "dashboard.health.title": "Estado de la plataforma",
+    "dashboard.health.ready": "Lista",
+    "dashboard.health.active": "Ejecución activa",
+    "dashboard.health.blocked": "Bloqueada",
+    "dashboard.health.error": "Requiere atención",
+    "dashboard.health.unknown": "Comprobando el estado de la plataforma",
+    "dashboard.health.dashboard": "Panel",
+    "dashboard.health.watcher": "Vigilante de Inbox",
+    "dashboard.health.execution": "Ejecución",
+    "dashboard.health.queue": "Cola de Inbox",
+    "dashboard.health.watcher_state": "Estado del vigilante",
+    "dashboard.health.workspace": "Espacio de trabajo",
+    "dashboard.health.running": "Activo",
+    "dashboard.health.not_running": "Inactivo",
+    "dashboard.health.none_active": "No hay ejecución activa",
+    "dashboard.health.queue_empty": "Vacía",
+    "dashboard.health.queue_waiting": "{count} en espera",
     "notification.codex_usage_limit.title": "Se alcanzó el límite de uso de Codex.",
     "notification.codex_usage_limit.body": "Añada créditos de Codex o reanude cuando se restablezca el límite de la cuenta.",
     "notification.codex_usage_warning.title": "El límite de Codex está casi alcanzado.",
@@ -2345,6 +2434,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.capability": "Capacidad",
     "detail.cost": "Coste",
     "detail.codex_cli_version": "Versión de Codex CLI",
+    "detail.codex_cli_installation_path": "Ruta de instalación de Codex CLI",
     "detail.completed": "Ejecutado",
     "detail.configuration_profile": "Perfil de configuración",
     "detail.duration": "Duración",
@@ -2901,11 +2991,11 @@ Object.assign(DASHBOARD_MESSAGES.de, {"log_event.execution_emergency_rollback_co
 Object.assign(DASHBOARD_MESSAGES.fr, {"log_event.execution_emergency_rollback_completed":"Arrêt d’urgence et annulation terminés"});
 Object.assign(DASHBOARD_MESSAGES.es, {"log_event.execution_emergency_rollback_completed":"Parada de emergencia y reversión completadas"});
 
-Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_scan_action":"Scan branches for cleanup","workspace.branch_cleanup_confirm_action":"Remove reviewed branches","workspace.branch_cleanup_title":"Clean stale local branches","workspace.branch_cleanup_confirmation":"This checks a clean, synchronized main workspace first. The reviewed branches below are the only branches that will be removed.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"No longer exists on origin; contents exactly match main.","workspace.branch_cleanup_failed":"Stale local branches could not be cleaned safely.","workspace.branch_cleanup_result_title":"Branch cleanup complete","workspace.branch_cleanup_result_removed":"Removed {count} stale local branch(es).","workspace.branch_cleanup_result_empty":"No stale local branches were found."});
-Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_scan_action":"Scan branches voor opruiming","workspace.branch_cleanup_confirm_action":"Verwijder gecontroleerde branches","workspace.branch_cleanup_title":"Verouderde lokale branches opruimen","workspace.branch_cleanup_confirmation":"Dit controleert eerst of main schoon en gesynchroniseerd is. Alleen de hieronder gecontroleerde branches worden verwijderd.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Bestaat niet meer op origin; inhoud is exact gelijk aan main.","workspace.branch_cleanup_failed":"Verouderde lokale branches konden niet veilig worden opgeruimd.","workspace.branch_cleanup_result_title":"Branch-opruiming voltooid","workspace.branch_cleanup_result_removed":"{count} verouderde lokale branch(es) verwijderd.","workspace.branch_cleanup_result_empty":"Geen verouderde lokale branches gevonden."});
-Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_scan_action":"Branches zur Bereinigung prüfen","workspace.branch_cleanup_confirm_action":"Geprüfte Branches entfernen","workspace.branch_cleanup_title":"Veraltete lokale Branches bereinigen","workspace.branch_cleanup_confirmation":"Zuerst wird geprüft, ob main sauber und synchronisiert ist. Nur die unten geprüften Branches werden entfernt.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Nicht mehr auf origin vorhanden; Inhalt entspricht exakt main.","workspace.branch_cleanup_failed":"Veraltete lokale Branches konnten nicht sicher bereinigt werden.","workspace.branch_cleanup_result_title":"Branch-Bereinigung abgeschlossen","workspace.branch_cleanup_result_removed":"{count} veraltete lokale Branch(es) entfernt.","workspace.branch_cleanup_result_empty":"Keine veralteten lokalen Branches gefunden."});
-Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_scan_action":"Analyser les branches à nettoyer","workspace.branch_cleanup_confirm_action":"Supprimer les branches vérifiées","workspace.branch_cleanup_title":"Nettoyer les branches locales obsolètes","workspace.branch_cleanup_confirmation":"Cette action vérifie d’abord que main est propre et synchronisée. Seules les branches vérifiées ci-dessous seront supprimées.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"N’existe plus sur origin ; le contenu correspond exactement à main.","workspace.branch_cleanup_failed":"Les branches locales obsolètes n’ont pas pu être nettoyées en toute sécurité.","workspace.branch_cleanup_result_title":"Nettoyage des branches terminé","workspace.branch_cleanup_result_removed":"{count} branche(s) locale(s) obsolète(s) supprimée(s).","workspace.branch_cleanup_result_empty":"Aucune branche locale obsolète trouvée."});
-Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_scan_action":"Analizar ramas para limpiar","workspace.branch_cleanup_confirm_action":"Eliminar ramas revisadas","workspace.branch_cleanup_title":"Limpiar ramas locales obsoletas","workspace.branch_cleanup_confirmation":"Primero se comprueba que main esté limpia y sincronizada. Solo se eliminarán las ramas verificadas que se muestran a continuación.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Ya no existe en origin; el contenido coincide exactamente con main.","workspace.branch_cleanup_failed":"No se pudieron limpiar de forma segura las ramas locales obsoletas.","workspace.branch_cleanup_result_title":"Limpieza de ramas completada","workspace.branch_cleanup_result_removed":"Se eliminaron {count} rama(s) local(es) obsoleta(s).","workspace.branch_cleanup_result_empty":"No se encontraron ramas locales obsoletas."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_scan_action":"Review standalone local branches","workspace.branch_cleanup_confirm_action":"Remove safely reviewed branches","workspace.branch_cleanup_title":"Clean up standalone local branches","workspace.branch_cleanup_confirmation":"This reviews standalone local Git branches only; worktrees are not affected. It first confirms that main is clean and synchronized. Only the reviewed branches below will be removed.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"No longer exists on origin; contents exactly match main.","workspace.branch_cleanup_failed":"Standalone local branches could not be cleaned safely.","workspace.branch_cleanup_result_title":"Standalone branch cleanup complete","workspace.branch_cleanup_result_removed":"Removed {count} standalone local branch(es).","workspace.branch_cleanup_result_empty":"No standalone local branches were found."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_scan_action":"Beoordeel losse lokale branches","workspace.branch_cleanup_confirm_action":"Verwijder veilig beoordeelde branches","workspace.branch_cleanup_title":"Losse lokale branches veilig opruimen","workspace.branch_cleanup_confirmation":"Dit beoordeelt alleen losse lokale Git-branches; worktrees blijven onaangeraakt. Eerst wordt bevestigd dat main schoon en gesynchroniseerd is. Alleen de hieronder beoordeelde branches worden verwijderd.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Bestaat niet meer op origin; inhoud is exact gelijk aan main.","workspace.branch_cleanup_failed":"Losse lokale branches konden niet veilig worden opgeruimd.","workspace.branch_cleanup_result_title":"Opruimen losse lokale branches voltooid","workspace.branch_cleanup_result_removed":"{count} losse lokale branch(es) verwijderd.","workspace.branch_cleanup_result_empty":"Geen losse lokale branches gevonden."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_scan_action":"Eigenständige lokale Branches prüfen","workspace.branch_cleanup_confirm_action":"Sicher geprüfte Branches entfernen","workspace.branch_cleanup_title":"Eigenständige lokale Branches sicher bereinigen","workspace.branch_cleanup_confirmation":"Dies prüft nur eigenständige lokale Git-Branches; Worktrees bleiben unberührt. Zuerst wird bestätigt, dass main sauber und synchronisiert ist. Nur die unten geprüften Branches werden entfernt.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Nicht mehr auf origin vorhanden; Inhalt entspricht exakt main.","workspace.branch_cleanup_failed":"Eigenständige lokale Branches konnten nicht sicher bereinigt werden.","workspace.branch_cleanup_result_title":"Bereinigung eigenständiger lokaler Branches abgeschlossen","workspace.branch_cleanup_result_removed":"{count} eigenständige lokale Branch(es) entfernt.","workspace.branch_cleanup_result_empty":"Keine eigenständigen lokalen Branches gefunden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_scan_action":"Examiner les branches locales autonomes","workspace.branch_cleanup_confirm_action":"Supprimer les branches évaluées en toute sécurité","workspace.branch_cleanup_title":"Nettoyer les branches locales autonomes en toute sécurité","workspace.branch_cleanup_confirmation":"Cette action évalue uniquement les branches Git locales autonomes ; les worktrees ne sont pas concernés. Elle confirme d’abord que main est propre et synchronisée. Seules les branches évaluées ci-dessous seront supprimées.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"N’existe plus sur origin ; le contenu correspond exactement à main.","workspace.branch_cleanup_failed":"Les branches locales autonomes n’ont pas pu être nettoyées en toute sécurité.","workspace.branch_cleanup_result_title":"Nettoyage des branches locales autonomes terminé","workspace.branch_cleanup_result_removed":"{count} branche(s) locale(s) autonome(s) supprimée(s).","workspace.branch_cleanup_result_empty":"Aucune branche locale autonome trouvée."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_scan_action":"Revisar ramas locales independientes","workspace.branch_cleanup_confirm_action":"Eliminar ramas revisadas de forma segura","workspace.branch_cleanup_title":"Limpiar ramas locales independientes de forma segura","workspace.branch_cleanup_confirmation":"Esto revisa solo las ramas Git locales independientes; los worktrees no se ven afectados. Primero confirma que main está limpia y sincronizada. Solo se eliminarán las ramas revisadas que se muestran a continuación.","workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Ya no existe en origin; el contenido coincide exactamente con main.","workspace.branch_cleanup_failed":"No se pudieron limpiar de forma segura las ramas locales independientes.","workspace.branch_cleanup_result_title":"Limpieza de ramas locales independientes completada","workspace.branch_cleanup_result_removed":"Se eliminaron {count} rama(s) local(es) independiente(s).","workspace.branch_cleanup_result_empty":"No se encontraron ramas locales independientes."});
 Object.assign(DASHBOARD_MESSAGES.en, {"detail.repair_history":"Repair history","detail.audit_evidence":"Audit evidence","detail.repair_iteration":"Iteration","detail.failed_checks":"Failed checks","detail.proposed_action":"Proposed action","detail.ai_repair_summary":"AI repair summary","detail.commit":"Commit","detail.outcome":"Outcome"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"detail.repair_history":"Herstelhistorie","detail.audit_evidence":"Auditbewijs","detail.repair_iteration":"Iteratie","detail.failed_checks":"Mislukte checks","detail.proposed_action":"Beoogde actie","detail.ai_repair_summary":"AI-hersteloverzicht","detail.commit":"Commit","detail.outcome":"Uitkomst"});
 Object.assign(DASHBOARD_MESSAGES.de, {"detail.repair_history":"Reparaturverlauf","detail.audit_evidence":"Prüfnachweis","detail.repair_iteration":"Iteration","detail.failed_checks":"Fehlgeschlagene Checks","detail.proposed_action":"Vorgesehene Maßnahme","detail.ai_repair_summary":"KI-Reparaturzusammenfassung","detail.commit":"Commit","detail.outcome":"Ergebnis"});
@@ -2916,11 +3006,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_pr_link":"PR #{n
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_pr_link":"PR #{number}"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_pr_link":"PR nº {number}"});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_pr_link":"PR n.º {number}"});
-Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_scanning":"Scanning local branches safely…"});
-Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_scanning":"Lokale branches worden veilig gescand…"});
-Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_scanning":"Lokale Branches werden sicher geprüft…"});
-Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_scanning":"Analyse sécurisée des branches locales…"});
-Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_scanning":"Analizando de forma segura las ramas locales…"});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_scanning":"Reviewing standalone local branches safely…"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_scanning":"Losse lokale branches worden veilig beoordeeld…"});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_scanning":"Eigenständige lokale Branches werden sicher geprüft…"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_scanning":"Évaluation sécurisée des branches locales autonomes…"});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_scanning":"Revisando de forma segura las ramas locales independientes…"});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_main_action":"Switch to FF main","workspace.branch_main_title":"Switch to synchronized main","workspace.branch_main_confirmation":"This only switches when the workspace is clean and main can fast-forward from origin. Engineering Platform then fully restarts to load the switched revision.","workspace.branch_main_confirm_action":"Switch to main","workspace.branch_main_success":"Switched from {previous_branch} to synchronized {branch}. Engineering Platform is restarting.","workspace.branch_main_failed":"Switching to synchronized main was not safe."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_main_action":"Switch naar FF main","workspace.branch_main_title":"Schakel naar gesynchroniseerde main","workspace.branch_main_confirmation":"Dit schakelt alleen wanneer de werkmap schoon is en main vanaf origin kan fast-forwarden. Engineering Platform herstart daarna volledig om de nieuwe revisie te laden.","workspace.branch_main_confirm_action":"Schakel naar main","workspace.branch_main_success":"Geschakeld van {previous_branch} naar gesynchroniseerde {branch}. Engineering Platform herstart.","workspace.branch_main_failed":"Naar gesynchroniseerde main schakelen was niet veilig."});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_main_action":"Zu FF main wechseln","workspace.branch_main_title":"Zu synchronisiertem main wechseln","workspace.branch_main_confirmation":"Dies wechselt nur, wenn der Arbeitsbereich sauber ist und main von origin fast-forwarden kann. Engineering Platform startet danach vollständig neu, um die neue Revision zu laden.","workspace.branch_main_confirm_action":"Zu main wechseln","workspace.branch_main_success":"Von {previous_branch} zu synchronisiertem {branch} gewechselt. Engineering Platform startet neu.","workspace.branch_main_failed":"Der Wechsel zu synchronisiertem main war nicht sicher."});
@@ -2936,11 +3026,16 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.current_branch":"Huidige branch
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.current_branch":"Aktueller Branch"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.current_branch":"Branche actuelle"});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.current_branch":"Rama actual"});
-Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_empty_in_modal":"No stale local branches were found."});
-Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_empty_in_modal":"Geen verouderde lokale branches gevonden."});
-Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_empty_in_modal":"Keine veralteten lokalen Branches gefunden."});
-Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_empty_in_modal":"Aucune branche locale obsolète trouvée."});
-Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_empty_in_modal":"No se encontraron ramas locales obsoletas."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_empty_in_modal":"No standalone local branches were found."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_empty_in_modal":"Geen losse lokale branches gevonden."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_empty_in_modal":"Keine eigenständigen lokalen Branches gefunden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_empty_in_modal":"Aucune branche locale autonome trouvée."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_empty_in_modal":"No se encontraron ramas locales independientes."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_worktree_folder":"Open {path} in Finder","workspace.open_worktree_folder_failed":"The local worktree folder could not be opened."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_worktree_folder":"Open {path} in Finder","workspace.open_worktree_folder_failed":"De lokale worktreemap kon niet worden geopend."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_worktree_folder":"{path} im Finder öffnen","workspace.open_worktree_folder_failed":"Der lokale Worktree-Ordner konnte nicht geöffnet werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_worktree_folder":"Ouvrir {path} dans le Finder","workspace.open_worktree_folder_failed":"Le dossier worktree local n’a pas pu être ouvert."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_worktree_folder":"Abrir {path} en Finder","workspace.open_worktree_folder_failed":"No se pudo abrir la carpeta local del worktree."});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.current_commit":"Git commit"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.current_commit":"Git commit"});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.current_commit":"Git-Commit"});
@@ -3164,6 +3259,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.local_worktrees":"Lokale worktr
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.local_worktrees":"Lokale Worktrees und Branches","workspace.no_local_worktrees":"Keine lokalen Worktrees gefunden.","workspace.worktrees_unavailable":"Lokale Worktrees sind derzeit nicht verfügbar.","workspace.detached_head":"Losgelöster HEAD","workspace.not_checked_out":"Lokal nicht ausgecheckt"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.local_worktrees":"Arborescences de travail et branches locales","workspace.no_local_worktrees":"Aucune arborescence de travail locale trouvée.","workspace.worktrees_unavailable":"Les arborescences de travail locales sont actuellement indisponibles.","workspace.detached_head":"HEAD détachée","workspace.not_checked_out":"Non extraite localement"});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.local_worktrees":"Árboles de trabajo y ramas locales","workspace.no_local_worktrees":"No se encontraron árboles de trabajo locales.","workspace.worktrees_unavailable":"Los árboles de trabajo locales no están disponibles ahora.","workspace.detached_head":"HEAD desacoplado","workspace.not_checked_out":"No extraída localmente"});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.active_worktree":"Current active worktree"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.active_worktree":"Huidige actieve worktree"});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.active_worktree":"Aktueller aktiver Worktree"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.active_worktree":"Arborescence de travail active actuelle"});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.active_worktree":"Árbol de trabajo activo actual"});
 Object.assign(DASHBOARD_MESSAGES.en, {"workspace.worktree_remove_action":"Remove worktree","workspace.worktree_remove_title":"Remove safe worktree","workspace.worktree_remove_confirmation":"Remove the worktree for {branch} at {path}? Engineering Platform checks again that main is clean and synchronized, the worktree is clean, the remote branch is absent, and its contents match main. The branch remains available for stale-branch cleanup.","workspace.worktree_remove_result_title":"Worktree removed","workspace.worktree_remove_success":"Worktree for {branch} removed. You can now clean up its stale branch.","workspace.worktree_remove_failed":"The worktree could not be removed safely."});
 Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.worktree_remove_action":"Verwijder worktree","workspace.worktree_remove_title":"Veilige worktree verwijderen","workspace.worktree_remove_confirmation":"De worktree van {branch} op {path} verwijderen? Engineering Platform controleert opnieuw dat main schoon en gesynchroniseerd is, de worktree schoon is, de remote branch ontbreekt en de inhoud gelijk is aan main. De branch blijft beschikbaar voor de stale-branch-opruiming.","workspace.worktree_remove_result_title":"Worktree verwijderd","workspace.worktree_remove_success":"Worktree van {branch} verwijderd. Je kunt de stale branch nu opruimen.","workspace.worktree_remove_failed":"De worktree kon niet veilig worden verwijderd."});
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.worktree_remove_action":"Worktree entfernen","workspace.worktree_remove_title":"Sicheren Worktree entfernen","workspace.worktree_remove_confirmation":"Den Worktree für {branch} unter {path} entfernen? Engineering Platform prüft erneut, dass main sauber und synchronisiert ist, der Worktree sauber ist, der Remote-Branch fehlt und der Inhalt main entspricht. Der Branch bleibt für die Bereinigung veralteter Branches verfügbar.","workspace.worktree_remove_result_title":"Worktree entfernt","workspace.worktree_remove_success":"Worktree für {branch} entfernt. Der veraltete Branch kann jetzt bereinigt werden.","workspace.worktree_remove_failed":"Der Worktree konnte nicht sicher entfernt werden."});
@@ -3179,6 +3279,11 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.worktree_remove_confirmation":"
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.worktree_remove_confirmation":"Den Worktree für {branch} unter {path} entfernen? Engineering Platform prüft erneut, dass main sauber und synchronisiert ist, der Worktree sauber ist, der Remote-Branch fehlt und der Worktree entweder main entspricht oder exakt der Head eines verifiziert per Squash zusammengeführten Pull Requests ist. Der Branch bleibt für die Bereinigung veralteter Branches verfügbar.","workspace.worktree_analysis_reason.safe_to_remove":"Sicher zu entfernen: Worktree ist sauber, kein Remote-Branch und der Inhalt entspricht entweder main oder exakt dem Head eines verifiziert per Squash zusammengeführten Pull Requests."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.worktree_remove_confirmation":"Supprimer l’arborescence de travail de {branch} à {path} ? Engineering Platform vérifie à nouveau que main est propre et synchronisée, que l’arborescence est propre, que la branche distante est absente et que l’arborescence correspond à main ou est exactement le head d’une pull request fusionnée par squash et vérifiée. La branche reste disponible pour le nettoyage des branches obsolètes.","workspace.worktree_analysis_reason.safe_to_remove":"Suppression sûre : arborescence propre, aucune branche distante et contenu identique à main ou exactement le head d’une pull request fusionnée par squash et vérifiée."});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.worktree_remove_confirmation":"¿Eliminar el árbol de trabajo de {branch} en {path}? Engineering Platform vuelve a comprobar que main esté limpia y sincronizada, que el árbol esté limpio, que la rama remota no exista y que el árbol coincida con main o sea exactamente el head de una solicitud de extracción fusionada mediante squash y verificada. La rama seguirá disponible para la limpieza de ramas obsoletas.","workspace.worktree_analysis_reason.safe_to_remove":"Es seguro eliminarlo: árbol limpio, sin rama remota y contenido igual a main o exactamente el head de una solicitud de extracción fusionada mediante squash y verificada."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"No longer exists on origin; its contents are proven to be merged into main.","workspace.worktree_remove_confirmation":"Remove the worktree for {branch} at {path}?\n\nEngineering Platform checks again:\n• main is clean and synchronized;\n• the worktree is clean;\n• the remote branch is absent;\n• its commit is in main or contained by a verified merged pull request.\n\nThe branch remains available for stale-branch cleanup.","workspace.worktree_analysis_reason.safe_to_remove":"Safe to remove: clean worktree, no remote branch, and its commit is either in main or contained by a verified merged pull request.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Keep: this detached commit belongs to a pull request that is still open.","workspace.worktree_analysis_reason.detached_head_unverified":"Keep: this detached commit is not yet proven to be in main or a verified merged pull request."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Bestaat niet meer op origin; de inhoud is aantoonbaar in main gemergd.","workspace.worktree_remove_confirmation":"De worktree van {branch} op {path} verwijderen?\n\nEngineering Platform controleert opnieuw:\n• main is schoon en gesynchroniseerd;\n• de worktree is schoon;\n• de remote branch ontbreekt;\n• de commit zit in main of is onderdeel van een geverifieerd gemergde pull request.\n\nDe branch blijft beschikbaar voor de stale-branch-opruiming.","workspace.worktree_analysis_reason.safe_to_remove":"Veilig te verwijderen: worktree is schoon, remote branch ontbreekt en de commit zit óf in main óf is onderdeel van een geverifieerd gemergde pull request.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Behouden: deze losgekoppelde commit hoort bij een pull request die nog openstaat.","workspace.worktree_analysis_reason.detached_head_unverified":"Behouden: deze losgekoppelde commit is nog niet aantoonbaar in main of een geverifieerd gemergde pull request."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Nicht mehr auf origin vorhanden; der Inhalt ist nachweislich in main zusammengeführt.","workspace.worktree_remove_confirmation":"Den Worktree für {branch} unter {path} entfernen?\n\nEngineering Platform prüft erneut:\n• main ist sauber und synchronisiert;\n• der Worktree ist sauber;\n• der Remote-Branch fehlt;\n• sein Commit ist in main enthalten oder Teil eines verifiziert zusammengeführten Pull Requests.\n\nDer Branch bleibt für die Bereinigung veralteter Branches verfügbar.","workspace.worktree_analysis_reason.safe_to_remove":"Sicher zu entfernen: Worktree ist sauber, kein Remote-Branch und sein Commit ist entweder in main enthalten oder Teil eines verifiziert zusammengeführten Pull Requests.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Beibehalten: Dieser losgelöste Commit gehört zu einem noch offenen Pull Request.","workspace.worktree_analysis_reason.detached_head_unverified":"Beibehalten: Dieser losgelöste Commit ist noch nicht nachweislich in main oder einem verifiziert zusammengeführten Pull Request."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"N’existe plus sur origin ; son contenu est prouvé comme étant fusionné dans main.","workspace.worktree_remove_confirmation":"Supprimer l’arborescence de travail de {branch} à {path} ?\n\nEngineering Platform vérifie à nouveau :\n• main est propre et synchronisée ;\n• l’arborescence est propre ;\n• la branche distante est absente ;\n• son commit est dans main ou inclus dans une pull request fusionnée et vérifiée.\n\nLa branche reste disponible pour le nettoyage des branches obsolètes.","workspace.worktree_analysis_reason.safe_to_remove":"Suppression sûre : arborescence propre, aucune branche distante et son commit est dans main ou inclus dans une pull request fusionnée et vérifiée.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Conserver : ce commit détaché appartient à une pull request encore ouverte.","workspace.worktree_analysis_reason.detached_head_unverified":"Conserver : ce commit détaché n’est pas encore prouvé comme étant dans main ou dans une pull request fusionnée et vérifiée."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.branch_cleanup_reason.remote_absent_and_matches_main":"Ya no existe en origin; se ha comprobado que su contenido está fusionado en main.","workspace.worktree_remove_confirmation":"¿Eliminar el árbol de trabajo de {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• main está limpia y sincronizada;\n• el árbol de trabajo está limpio;\n• la rama remota no existe;\n• su commit está en main o forma parte de una solicitud de extracción fusionada y verificada.\n\nLa rama seguirá disponible para la limpieza de ramas obsoletas.","workspace.worktree_analysis_reason.safe_to_remove":"Es seguro eliminarlo: árbol limpio, sin rama remota y su commit está en main o forma parte de una solicitud de extracción fusionada y verificada.","workspace.worktree_analysis_reason.detached_head_pull_request_open":"Conservar: este commit desacoplado pertenece a una solicitud de extracción que sigue abierta.","workspace.worktree_analysis_reason.detached_head_unverified":"Conservar: aún no se ha demostrado que este commit desacoplado esté en main o en una solicitud de extracción fusionada y verificada."});
 Object.assign(DASHBOARD_MESSAGES.en, {
   "state.LOCAL_REPOSITORY_VALIDATION": "Local repository validation",
   "lifecycle.step.local_repository_validation": "Local repository validation",
@@ -3489,3 +3594,13 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "filter.yesterday": "Ayer", "filter.specific_day": "Día específico", "filter.custom_range": "Intervalo personalizado",
   "filter.from": "Desde", "filter.to": "Hasta",
 });
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.worktree_switch_action":"Switch to worktree","workspace.worktree_switch_title":"Switch Engineering Platform worktree","workspace.worktree_switch_confirmation":"Switch Engineering Platform to {branch} at {path}?\n\nEngineering Platform checks again:\n• no execution is active;\n• the Inbox queue is empty;\n• this registered worktree is clean and exactly on {branch}.\n\nIt then restarts the dashboard, watcher, and relay from this worktree.","workspace.worktree_switch_result_title":"Worktree switch scheduled","workspace.worktree_switch_scheduled":"Engineering Platform is restarting from {branch}.","workspace.worktree_switch_failed":"Switching to this worktree could not be done safely."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.worktree_switch_action":"Schakel naar worktree","workspace.worktree_switch_title":"Naar worktree schakelen","workspace.worktree_switch_confirmation":"Engineering Platform naar {branch} in {path} schakelen?\n\nEngineering Platform controleert opnieuw:\n• er is geen uitvoering actief;\n• de Inbox-queue is leeg;\n• deze geregistreerde worktree is schoon en staat exact op {branch}.\n\nDaarna starten dashboard, watcher en relay opnieuw vanuit deze worktree.","workspace.worktree_switch_result_title":"Worktree-switch gepland","workspace.worktree_switch_scheduled":"Engineering Platform start opnieuw vanuit {branch}.","workspace.worktree_switch_failed":"Naar deze worktree schakelen is niet veilig gelukt."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.worktree_switch_action":"Zum Worktree wechseln","workspace.worktree_switch_title":"Engineering-Platform-Worktree wechseln","workspace.worktree_switch_confirmation":"Engineering Platform zu {branch} unter {path} wechseln?\n\nEngineering Platform prüft erneut:\n• keine Ausführung ist aktiv;\n• die Inbox-Warteschlange ist leer;\n• dieser registrierte Worktree ist sauber und genau auf {branch}.\n\nAnschließend werden Dashboard, Watcher und Relay aus diesem Worktree neu gestartet.","workspace.worktree_switch_result_title":"Worktree-Wechsel geplant","workspace.worktree_switch_scheduled":"Engineering Platform startet aus {branch} neu.","workspace.worktree_switch_failed":"Ein sicherer Wechsel zu diesem Worktree war nicht möglich."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.worktree_switch_action":"Basculer vers l’arborescence","workspace.worktree_switch_title":"Basculer l’arborescence d’Engineering Platform","workspace.worktree_switch_confirmation":"Basculer Engineering Platform vers {branch} dans {path} ?\n\nEngineering Platform vérifie à nouveau :\n• aucune exécution n’est active ;\n• la file Inbox est vide ;\n• cette arborescence enregistrée est propre et se trouve exactement sur {branch}.\n\nLe tableau de bord, le watcher et le relais redémarrent ensuite depuis cette arborescence.","workspace.worktree_switch_result_title":"Basculement d’arborescence planifié","workspace.worktree_switch_scheduled":"Engineering Platform redémarre depuis {branch}.","workspace.worktree_switch_failed":"Le basculement vers cette arborescence n’a pas pu être effectué en toute sécurité."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.worktree_switch_action":"Cambiar al árbol de trabajo","workspace.worktree_switch_title":"Cambiar el árbol de trabajo de Engineering Platform","workspace.worktree_switch_confirmation":"¿Cambiar Engineering Platform a {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• no hay ninguna ejecución activa;\n• la cola de Inbox está vacía;\n• este árbol de trabajo registrado está limpio y exactamente en {branch}.\n\nDespués reinicia el panel, el watcher y el relay desde este árbol de trabajo.","workspace.worktree_switch_result_title":"Cambio de árbol de trabajo programado","workspace.worktree_switch_scheduled":"Engineering Platform se está reiniciando desde {branch}.","workspace.worktree_switch_failed":"No se pudo cambiar a este árbol de trabajo de forma segura."});
+Object.assign(DASHBOARD_MESSAGES.en, {"workspace.open_local_folder":"Open {path} in Finder","workspace.open_containing_folder":"Open the folder containing {path} in Finder","workspace.open_local_folder_failed":"The local folder could not be opened."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_local_folder":"Open {path} in Finder","workspace.open_containing_folder":"Open de map met {path} in Finder","workspace.open_local_folder_failed":"De lokale map kon niet worden geopend."});
+Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_local_folder":"{path} im Finder öffnen","workspace.open_containing_folder":"Den Ordner mit {path} im Finder öffnen","workspace.open_local_folder_failed":"Der lokale Ordner konnte nicht geöffnet werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_local_folder":"Ouvrir {path} dans le Finder","workspace.open_containing_folder":"Ouvrir le dossier contenant {path} dans le Finder","workspace.open_local_folder_failed":"Le dossier local n’a pas pu être ouvert."});
+Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_local_folder":"Abrir {path} en Finder","workspace.open_containing_folder":"Abrir la carpeta que contiene {path} en Finder","workspace.open_local_folder_failed":"No se pudo abrir la carpeta local."});

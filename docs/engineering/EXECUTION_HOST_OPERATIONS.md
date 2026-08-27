@@ -219,19 +219,25 @@ yellow actions are deliberately separate from terminal-status colours:
 - **Refresh worktree analysis** is the explicit, read-only action in the local
   worktrees section. It shows a conclusion for every worktree: whether to keep
   it or whether it is safe to remove, plus the linked GitHub pull request when
-  available. The dashboard does not run this potentially expensive GitHub and
-  Git comparison on its periodic refresh loop.
+  available. This includes a detached HEAD: Engineering Platform records its
+  exact commit and checks whether GitHub associates that commit with an open,
+  merged or closed pull request. An open pull request is shown as a specific
+  keep reason; it is never treated as removal evidence. The dashboard does not
+  run this potentially expensive GitHub and Git comparison on its periodic
+  refresh loop.
 - **Remove worktree** appears only after that analysis marks a non-`main`
   worktree safe, and always opens the shared destructive confirmation modal.
   Before removing anything, the server repeats the complete fail-closed check:
   the dashboard's `main` worktree is clean and synchronized, the selected
-  worktree is clean, and its remote branch is absent. Its work must either
-  exactly match `main`, or be the exact preserved head of a GitHub `MERGED`
-  pull request whose recorded merge commit is reachable from `main`; the
-  latter is the safe squash-merge path. A closed-but-unmerged pull request
-  never qualifies through that exception. A failed or incomplete check removes nothing. The action removes
-  only the worktree; the now-unchecked-out branch remains for the existing
-  reviewed stale-branch cleanup action.
+  worktree is clean, and its remote branch is absent. A detached HEAD has no
+  remote branch to remove, but its exact commit must be an ancestor of `main`
+  or be associated by GitHub with a `MERGED` pull request whose recorded merge
+  commit is reachable from `main`. A branch worktree follows the same proof,
+  with the additional absent-remote-branch requirement. A closed-but-unmerged
+  pull request never qualifies through that exception. A failed or incomplete
+  check removes nothing. The action removes only the worktree; the
+  now-unchecked-out branch remains for the existing reviewed stale-branch
+  cleanup action.
 - **Open pull requests** appears as a compact Workspace subblock only when
   GitHub reports open PRs for the repository. Each entry preserves its PR
   link, title and source branch as read-only operator context. If GitHub

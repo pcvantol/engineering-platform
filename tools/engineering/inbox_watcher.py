@@ -312,7 +312,7 @@ def _report_runtime_metadata(report: Path | None) -> dict[str, str]:
     }
     result: dict[str, str] = {}
     for key, label in labels.items():
-        match = re.search(rf"^- {re.escape(label)}: `([^`\\n]{{1,120}})`$", text, re.MULTILINE)
+        match = re.search(rf"^- {re.escape(label)}: `([^`\n]{{1,120}})`$", text, re.MULTILINE)
         if match:
             result[key] = match.group(1)
     return result

@@ -340,6 +340,20 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
+  test("opens the displayed Engineering Inbox location through the approved Finder route", async ({ page }) => {
+    let requestedDirectory = null;
+    await page.route("**/api/open-local-directory", async (route) => {
+      requestedDirectory = JSON.parse(route.request().postData()).directory_path;
+      await route.fulfill({ status: 202, json: { opened_directory: requestedDirectory } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
+    const location = page.locator("#configurationInboxLocation");
+    const inboxPath = await location.textContent();
+    await dispatchDashboardPointerClick(location);
+    await expect.poll(() => requestedDirectory).toBe(inboxPath?.trim());
+  });
+
   test("shows localized provider login states in Configuration", async ({ page }) => {
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
@@ -569,7 +583,7 @@ test.describe("Engineering Status browser smoke", () => {
       const workspace = document.querySelector("#workspaceCard");
       window.renderWorkspaceWorktrees({ available: true, worktrees: [
         { path: "/workspace", branch: "main", commit: "123456789abc" },
-        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456" },
+        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456", active: true },
       ] });
       if (!document.querySelector("#workspaceOpenPullRequests")) {
         const pullRequests = document.createElement("section");
@@ -580,11 +594,15 @@ test.describe("Engineering Status browser smoke", () => {
     const worktrees = page.locator("#workspaceWorktrees");
     await expect(worktrees).toContainText("Lokale worktrees en branches");
     await expect(worktrees).toContainText("codex/polish");
+    await expect(worktrees.locator(".workspace-worktrees__active")).toHaveAttribute("aria-label", "Huidige actieve worktree");
     await expect(worktrees).toContainText("/tmp/polish");
     await expect(worktrees.locator(".workspace-worktrees__refresh")).toHaveCount(1);
     await expect(worktrees.locator(".workspace-worktrees__remove")).toHaveCount(0);
+    await expect(worktrees.locator(".workspace-worktrees__path--open")).toHaveCount(2);
     await expect(worktrees).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Scan branches voor opruiming");
+    await expect(worktrees.locator("ul")).toHaveCSS("overflow-y", "auto");
+    await expect(worktrees.locator("ul").first().locator("li").first()).toHaveCSS("padding-bottom", "16px");
+    await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Beoordeel losse lokale branches");
     await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Switch naar FF main");
     expect(await page.evaluate(() => {
       const worktrees = document.querySelector("#workspaceWorktrees");
@@ -604,6 +622,75 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).toContainText("Niet lokaal uitgecheckt");
     await expect(worktrees).toContainText("codex/refreshed");
     await expect(worktrees).not.toContainText("codex/polish");
+  });
+
+  test("opens a current worktree folder in Finder from its path", async ({ page }) => {
+    const projection = { available: true, worktrees: [
+      { path: "/tmp/finder-worktree", branch: "codex/finder", commit: "abcdef123456" },
+    ] };
+    let requestedPath = null;
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.route("**/api/open-worktree-folder", async (route) => {
+      requestedPath = JSON.parse(route.request().postData()).worktree_path;
+      await route.fulfill({ status: 202, json: { opened_worktree: requestedPath } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
+    await dispatchDashboardPointerClick(page.locator(".workspace-worktrees__path--open"));
+    await expect.poll(() => requestedPath).toBe("/tmp/finder-worktree");
+  });
+
+  test("opens displayed local workspace and checkout folders through the approved Finder route", async ({ page }) => {
+    const requestedDirectories = [];
+    await page.route("**/api/open-local-directory", async (route) => {
+      requestedDirectories.push(JSON.parse(route.request().postData()).directory_path);
+      await route.fulfill({ status: 202, json: { opened_directory: requestedDirectories.at(-1) } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    const workspace = page.locator("#workspaceCard .local-folder-link").first();
+    const workspacePath = await workspace.textContent();
+    const restingLinkColor = await workspace.evaluate((element) => getComputedStyle(element).color);
+    await workspace.hover();
+    await expect(workspace).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(workspace).toHaveCSS("color", restingLinkColor);
+    await workspace.focus();
+    await expect(workspace).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(workspace).toHaveCSS("color", restingLinkColor);
+    await dispatchDashboardPointerClick(workspace);
+    await expect.poll(() => requestedDirectories).toEqual([workspacePath]);
+
+    await page.evaluate(() => rateLimits({
+      provider: "Codex CLI", provider_version: "0.150.1",
+      provider_path: "/Users/example/.local/share/engineering-platform/codex-cli",
+      windows: [], reset_credits: 0,
+    }));
+    const installationPath = page.locator("#rateLimitProviderPath");
+    await dispatchDashboardPointerClick(installationPath);
+    await expect.poll(() => requestedDirectories).toEqual([
+      workspacePath,
+      "/Users/example/.local/share/engineering-platform/codex-cli",
+    ]);
+
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "folder-route",
+      execution_mode: "MANAGED",
+      target_repository: "pcvantol/djconnect",
+      checkout_path: "/Users/example/Documents/GitHub/djconnect",
+      active_branch: "main",
+    }, {}));
+    const checkout = page.locator("#executionContext .local-folder-link");
+    await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
+    await dispatchDashboardPointerClick(checkout);
+    await expect.poll(() => requestedDirectories).toEqual([
+      workspacePath,
+      "/Users/example/.local/share/engineering-platform/codex-cli",
+      "/Users/example/Documents/GitHub/djconnect",
+    ]);
   });
 
   test("analyses every worktree before showing a safe removal action", async ({ page }) => {
@@ -632,6 +719,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees.getByRole("link", { name: "Pull request #964 · MERGED" })).toBeVisible();
     await expect(worktrees.getByRole("link", { name: "Pull request #967 · OPEN" })).toBeVisible();
     await expect(worktrees.getByRole("button", { name: "Verwijder worktree" })).toHaveCount(1);
+    await page.locator("#themeToggle").click();
+    await expect(worktrees.locator(".workspace-worktrees__analysis--keep")).toHaveCSS("color", "rgb(143, 87, 0)");
   });
 
   test("confirms a safe per-worktree removal in the shared destructive modal", async ({ page }) => {
@@ -669,12 +758,20 @@ test.describe("Engineering Status browser smoke", () => {
 
     const remove = page.getByRole("button", { name: "Verwijder worktree" });
     await expect(remove).toHaveCSS("border-color", "rgb(240, 128, 149)");
+    expect(readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8")).toContain(
+      ".workspace-worktrees .workspace-worktrees__remove:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}",
+    );
+    const dashboardScript = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8");
+    expect(dashboardScript).toContain("void refreshAfterOperatorAction();");
+    expect(dashboardScript).not.toContain("void refresh();");
     await dispatchDashboardPointerClick(remove);
     const confirmation = page.locator("#confirmationModal");
     await expect(confirmation).toBeVisible();
     await expect(page.locator("#confirmationModalTitle")).toHaveText("Veilige worktree verwijderen");
-    await expect(page.locator("#confirmationModalText")).toContainText("main schoon en gesynchroniseerd");
+    await expect(page.locator("#confirmationModalText")).toContainText("main is schoon en gesynchroniseerd");
     await expect(page.locator("#confirmationModalText")).toContainText("codex/merged-worktree");
+    await expect(page.locator("#confirmationModalText")).toContainText("Engineering Platform controleert opnieuw:");
+    expect(await page.locator("#confirmationModalText").textContent()).toContain("\n\nDe branch blijft beschikbaar");
     await expect(page.locator("#confirmationModalConfirm")).toHaveClass(/dashboard-modal-shell__action--destructive/);
     await expect(confirmation.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
     await page.locator("#confirmationModalCancel").click();
@@ -687,6 +784,59 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#workspaceBranchMainResultTitle")).toHaveText("Worktree verwijderd");
     await expect(result).toContainText("Worktree van codex/merged-worktree verwijderd.");
     expect(removalRequests).toBe(1);
+  });
+
+  test("schedules a safe Engineering Platform switch to a registered worktree", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    const projection = { available: true, worktrees: [
+      { path: "/workspace", branch: "main", commit: "123456789abc" },
+      { path: "/tmp/selected-worktree", branch: "codex/selected-worktree", commit: "abcdef123456" },
+    ] };
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    let switchPayload = null;
+    await page.route("**/api/workspace-switch-to-worktree", async (route) => {
+      switchPayload = JSON.parse(route.request().postData());
+      await route.fulfill({ status: 202, json: {
+        branch: "codex/selected-worktree",
+        worktree_path: "/tmp/selected-worktree",
+        engineering_platform: "restart_scheduled",
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
+
+    const switchWorktree = page.getByRole("button", { name: "Schakel naar worktree" });
+    await expect(switchWorktree).toBeVisible();
+    await dispatchDashboardPointerClick(switchWorktree);
+    await expect(page.locator("#confirmationModalTitle")).toHaveText("Naar worktree schakelen");
+    await expect(page.locator("#confirmationModalText")).toContainText("de Inbox-queue is leeg");
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => switchPayload).toEqual({
+      worktree_path: "/tmp/selected-worktree",
+      branch: "codex/selected-worktree",
+    });
+    await expect(page.locator("#workspaceBranchMainResultModal")).toBeVisible();
+    await expect(page.locator("#workspaceBranchMainResultTitle")).toHaveText("Worktree-switch gepland");
+    await expect(page.locator("#workspaceBranchMainResultContent")).toContainText(
+      "Engineering Platform start opnieuw vanuit codex/selected-worktree.",
+    );
+  });
+
+  test("does not offer a worktree switch for the active worktree", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    const projection = { available: true, worktrees: [
+      { path: "/workspace", branch: "main", commit: "123456789abc" },
+      { path: "/tmp/current-worktree", branch: "codex/current-worktree", commit: "abcdef123456", active: true },
+    ] };
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
+
+    await expect(page.locator(".workspace-worktrees__active")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Schakel naar worktree" })).toHaveCount(0);
   });
 
   test("keeps project-scoped Inbox settings with the project queue", async ({ page }) => {
@@ -1371,6 +1521,7 @@ test.describe("Engineering Status browser smoke", () => {
       const section = document.createElement("section");
       section.id = "workspaceOpenPullRequests";
       section.className = "workspace-open-prs";
+      section.style.setProperty("--category-color", "#c7a6ff");
       section.innerHTML = "<ul></ul>";
       document.body.append(section);
       renderOpenPullRequests([{
@@ -1381,10 +1532,16 @@ test.describe("Engineering Status browser smoke", () => {
     });
     const repair = page.locator("[data-open-pull-request-check-repair='941']");
     await expect(repair).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.repair_failed_checks"]);
-    await expect(repair).toHaveCSS("border-top-color", "rgb(98, 199, 225)");
+    await expect(repair).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
+    await expect(repair).toHaveCSS("padding-top", "9px");
+    await expect(repair).toHaveCSS("font-size", "13px");
+    await expect(page.locator("#workspaceOpenPullRequests ul")).toHaveCSS("overflow-y", "auto");
+    await expect(page.locator("#workspaceOpenPullRequests li")).toHaveCSS("padding-bottom", "16px");
+    await expect(page.locator("#workspaceOpenPullRequests li")).toHaveCSS("border-bottom-style", "solid");
     await repair.click();
     await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--destructive/);
+    await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--check-repair/);
+    await expect(page.locator("#confirmationModal")).not.toHaveClass(/dashboard-modal-shell--destructive/);
     expect(dispatched).toBeNull();
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => dispatched).toEqual({ method: "POST", body: "{}" });
@@ -1647,7 +1804,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↓", "↑", "i", "↺", "↻", "⌧", "▤", "✓", "✦", "⋯", "—", "⌄",
+      "", "⧉", "↓", "↑", "i", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A
@@ -4002,8 +4159,11 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(scroll).toHaveAttribute("role", "region");
       await expect(scroll).not.toHaveAttribute("tabindex");
       await expect(scroll).toHaveCSS("border-top-style", "solid");
+      await expect(scroll).toHaveCSS("border-top-width", "1px");
       await expect(scroll).toHaveCSS("border-top-left-radius", "9px");
-      expect(await scroll.evaluate((element) => getComputedStyle(element).borderTopColor)).not.toBe("rgba(0, 0, 0, 0)");
+      expect(await scroll.evaluate((element) => getComputedStyle(element).borderTopColor)).toBe(
+        await page.locator("#executionTelemetry .telemetry-table th").first().evaluate((element) => getComputedStyle(element).borderBottomColor),
+      );
     }
     const runScrollGeometry = await runScroll.evaluate((element) => {
       const modalContent = element.closest(".telemetry-detail-modal__content");
@@ -4733,6 +4893,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/log/**", (route) => route.abort());
+    await page.route("**/health", (route) => route.fulfill({ json: { components: {
+      dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+    } } }));
     // This visual reference is for the running-execution surface. Keep the
     // machine-specific provider checks out of the fixture; their banners have
     // dedicated behavioural coverage elsewhere in this suite.
@@ -8409,7 +8572,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(await page.locator("#workspaceBranchCleanup").evaluate(
       (button) => getComputedStyle(button, "::before").content,
     )).toBe('"⌕"');
-    await dispatchDashboardPointerClick(page.getByRole("button", { name: "Scan branches voor opruiming" }));
+    await dispatchDashboardPointerClick(page.getByRole("button", { name: "Beoordeel losse lokale branches" }));
 
     const confirmation = page.locator("#confirmationModal");
     await previewRequest;
@@ -8421,11 +8584,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(confirmation.locator(".workspace-branch-cleanup__spinner")).toHaveCount(0);
     await expect(page.locator("#confirmationModalConfirm")).toBeEnabled();
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
+    await expect(page.locator("#confirmationModalTitle")).toHaveText("Losse lokale branches veilig opruimen");
+    await expect(page.locator("#confirmationModalText")).toContainText("worktrees blijven onaangeraakt");
     const candidates = confirmation.locator(".workspace-branch-cleanup__preview-list");
     await expect(candidates).toHaveCount(1);
     await expect(candidates.locator("li")).toHaveCount(28);
     await expect(candidates.first()).toContainText("codex/stale-01");
-    await expect(candidates.first()).toContainText("Bestaat niet meer op origin; inhoud is exact gelijk aan main.");
+    await expect(candidates.first()).toContainText("Bestaat niet meer op origin; de inhoud is aantoonbaar in main gemergd.");
     await expect(candidates.first().getByRole("link", { name: "PR #847" })).toHaveAttribute(
       "href", "https://github.com/pcvantol/djconnect/pull/847",
     );
@@ -8435,7 +8600,7 @@ test.describe("Engineering Status browser smoke", () => {
     const result = page.locator("#workspaceBranchCleanupResultModal");
     await expect(result).toBeVisible();
     await expect(result.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
-    await expect(result).toContainText("28 verouderde lokale branch(es) verwijderd.");
+    await expect(result).toContainText("28 losse lokale branch(es) verwijderd.");
     await expect(result.locator(".workspace-branch-cleanup__result-list li")).toHaveCount(28);
   });
 
@@ -8691,5 +8856,33 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await expect(page.locator(".dashboard-scroll-region")).toHaveCSS("padding-left", "14px");
     await expect(page.locator(".dashboard-scroll-region")).toHaveCSS("padding-right", "14px");
+  });
+
+  test("shows live platform readiness in the titlebar health indicator", async ({ page }) => {
+    await page.route("**/health", (route) => route.fulfill({ json: { components: {
+      dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+    } } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+      } });
+      r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
+    });
+    const indicator = page.getByTestId("dashboard-health-indicator");
+    await expect(indicator).toHaveAttribute("data-health-state", "ready");
+    await indicator.hover();
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Inbox-watcher");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Geen uitvoering actief");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Werkruimte gereed");
+
+    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
+    await expect(indicator).toHaveAttribute("data-health-state", "active");
+    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE", current_phase: "BLOCKED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
+    await expect(indicator).toHaveAttribute("data-health-state", "blocked");
+    await page.evaluate(() => r({ watcher_state: "HOST_PREFLIGHT_FAILED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
+    await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 });

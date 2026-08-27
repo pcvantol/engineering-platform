@@ -38,7 +38,7 @@ const $ = (id) => document.getElementById(id),
     workspace_state: "UNKNOWN",
     diagnostic: t("dashboard.status_unavailable"),
   };
-let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDashboardSnapshot, latestDurationEstimate,
+let currentLogRun, lastLogRun, lastRefresh, promptStartedAt, latestStatus, latestDashboardSnapshot, latestDurationEstimate, latestPlatformHealth,
   shownOperatorMergeWaitRun;
 function formatTimestamp(value, fallback = t("format.timestamp_unavailable")) {
   const timestamp = Date.parse(String(value || ""));
@@ -348,6 +348,55 @@ function hasVisibleStaleLifecycle(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
     x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED";
 }
+function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
+  const current = status && typeof status === "object" ? status : null,
+    components = platformHealth?.components && typeof platformHealth.components === "object"
+      ? platformHealth.components
+      : null,
+    dashboardHealthy = components?.dashboard?.healthy === true,
+    watcherHealthy = components?.inbox_watcher?.healthy === true,
+    queueDepth = Math.max(0, Number(current?.queue_depth) || 0),
+    watcherState = String(current?.watcher_state || ""),
+    workspaceState = String(current?.workspace_state || ""),
+    phase = String(current?.current_phase || "").toUpperCase(),
+    watcherStateUpper = watcherState.toUpperCase(),
+    active = isActiveRun(current || {}),
+    blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
+    failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
+      (components && (!dashboardHealthy || !watcherHealthy));
+  let state = "unknown";
+  if (failed) state = "error";
+  else if (blocked || queueDepth > 0) state = "blocked";
+  else if (active) state = "active";
+  else if (dashboardHealthy && watcherHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
+  const checks = [
+    ["dashboard", dashboardHealthy ? "running" : components ? "not_running" : "unknown", dashboardHealthy ? "good" : components ? "bad" : "unknown"],
+    ["watcher", watcherHealthy ? "running" : components ? "not_running" : "unknown", watcherHealthy ? "good" : components ? "bad" : "unknown"],
+    ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
+    ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
+    ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
+    ["workspace", workspaceState || "unknown", workspaceState === "WORKSPACE_READY" ? "good" : workspaceState ? "bad" : "unknown"],
+  ];
+  return { state, checks };
+}
+function renderDashboardHealth(status = latestStatus, platformHealth = latestPlatformHealth) {
+  const indicator = $("dashboardHealthIndicator"), tooltipTitle = $("dashboardHealthTooltipTitle"), checks = $("dashboardHealthChecks"), accessibleLabel = $("dashboardHealthAccessibleLabel");
+  if (!indicator || !tooltipTitle || !checks || !accessibleLabel) return;
+  const presentation = dashboardHealthPresentation(status, platformHealth), title = t("dashboard.health." + presentation.state);
+  indicator.dataset.healthState = presentation.state;
+  indicator.setAttribute("aria-label", t("dashboard.health.title") + ": " + title);
+  accessibleLabel.textContent = t("dashboard.health.title") + ": " + title;
+  tooltipTitle.textContent = t("dashboard.health.title") + " · " + title;
+  checks.replaceChildren();
+  for (const [name, value, tone, values = {}] of presentation.checks) {
+    const item = document.createElement("li"), label = document.createElement("span"), result = document.createElement("span");
+    item.dataset.health = tone;
+    label.textContent = t("dashboard.health." + name);
+    result.textContent = t("dashboard.health." + value, values, translate(value));
+    item.append(label, result);
+    checks.append(item);
+  }
+}
 function checkBuild(build) {
   if (build === DASHBOARD_BUILD) {
     sessionStorage.removeItem(DASHBOARD_BUILD_KEY);
@@ -509,7 +558,11 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   $("rateLimits").hidden =
     !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
-  $("rateLimitProviderPath").textContent = providerPath;
+  let providerPathElement = $("rateLimitProviderPath");
+  if (!(providerPathElement instanceof HTMLButtonElement)) {
+    providerPathElement = replaceWithLocalFolderButton(providerPathElement);
+  }
+  configureLocalFolderButton(providerPathElement, providerPath);
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -1272,15 +1325,80 @@ function executionContextValue(value) {
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
   return "";
 }
-function executionContextField(label, value, badge = false) {
+function localFolderPath(value) {
+  return typeof value === "string" && value.startsWith("/") ? value.trim() : "";
+}
+async function openLocalFolder(directoryPath) {
+  const path = localFolderPath(directoryPath);
+  if (!path) {
+    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
+    return;
+  }
+  try {
+    const response = await fetch("/api/open-local-directory", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory_path: path }),
+    });
+    // A reverse proxy or a temporarily restarting dashboard can return a
+    // non-JSON error page.  Do not surface a browser parser exception to the
+    // operator; the route has one clear, actionable fallback instead.
+    const outcome = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(outcome?.error || t("workspace.open_local_folder_failed"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    showDashboardError(
+      message === "The string did not match the expected pattern."
+        ? t("workspace.open_local_folder_failed")
+        : message || t("workspace.open_local_folder_failed"),
+      t("workspace.open_local_folder_failed"),
+    );
+  }
+}
+function configureLocalFolderButton(button, value, { containingFolder = false } = {}) {
+  const path = localFolderPath(value);
+  button.classList.add("local-folder-link");
+  button.type = "button";
+  button.textContent = String(value || t("format.not_available"));
+  button.disabled = !path;
+  button.onclick = null;
+  button.removeAttribute("title");
+  button.removeAttribute("aria-label");
+  if (!path) {
+    return;
+  }
+  const directoryPath = containingFolder ? path.replace(/\/[^/]+$/, "") : path;
+  const label = t(
+    containingFolder ? "workspace.open_containing_folder" : "workspace.open_local_folder",
+    { path },
+  );
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.onclick = () => void openLocalFolder(directoryPath);
+}
+function localFolderButton(value, options = {}) {
+  const button = document.createElement("button");
+  configureLocalFolderButton(button, value, options);
+  return button;
+}
+function replaceWithLocalFolderButton(element, options = {}) {
+  if (!element) return null;
+  const button = localFolderButton(element.textContent.trim(), options);
+  if (element.id) button.id = element.id;
+  element.replaceWith(button);
+  return button;
+}
+function executionContextField(label, value, badge = false, folder = false) {
   const field = document.createElement("p"), caption = document.createElement("span"), content = document.createElement("span");
   field.className = "field";
   caption.className = "label";
   caption.textContent = label;
   const supplied = executionContextValue(value);
-  content.textContent = supplied || t("execution_context.not_supplied");
-  if (badge) content.className = "execution-context__phase";
-  field.append(caption, content);
+  const output = folder && localFolderPath(supplied)
+    ? localFolderButton(supplied)
+    : content;
+  if (output === content) content.textContent = supplied || t("execution_context.not_supplied");
+  if (badge) output.classList.add("execution-context__phase");
+  field.append(caption, output);
   return field;
 }
 function inheritModalAccent(modal, trigger) {
@@ -1332,7 +1450,7 @@ function renderExecutionContext(context, execution = {}) {
   if (!context || typeof context !== "object") {
     card.replaceChildren(
       Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-      ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value)),
+      ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, false, label === t("detail.target_checkout"))),
       Object.assign(document.createElement("p"), { textContent: t("execution_context.not_supplied") }),
     );
     return;
@@ -1359,7 +1477,7 @@ function renderExecutionContext(context, execution = {}) {
   ];
   card.replaceChildren(
     Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
-    ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value)),
+    ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, false, label === t("detail.target_checkout"))),
     ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)),
   );
 }
@@ -1907,6 +2025,7 @@ function renderHealthStatus(x, snapshot = {}) {
   clock();
   x = x && typeof x === "object" ? x : fallback;
   latestStatus = x;
+  renderDashboardHealth(x, latestPlatformHealth);
   if (latestCodexCliUpdateStatus) renderCodexCliUpdate(latestCodexCliUpdateStatus);
   latestDashboardSnapshot = snapshot;
   latestDurationEstimate = snapshot.duration_estimate || {};
@@ -2108,15 +2227,32 @@ function renderWorkspaceWorktrees(projection) {
   worktrees.forEach((worktree) => {
     const item = document.createElement("li");
     const branch = document.createElement("code");
-    const path = document.createElement("code");
+    const path = document.createElement("button");
     const commit = document.createElement("code");
     branch.className = "workspace-worktrees__branch";
-    path.className = "workspace-worktrees__path";
+    path.className = "workspace-worktrees__path workspace-worktrees__path--open";
+    path.type = "button";
     commit.className = "workspace-worktrees__commit";
     branch.textContent = worktree?.branch || t("workspace.detached_head");
+    if (worktree?.active === true) {
+      const active = document.createElement("span");
+      active.className = "workspace-worktrees__active";
+      active.textContent = "◉";
+      active.setAttribute("role", "img");
+      active.setAttribute("aria-label", t("workspace.active_worktree"));
+      active.title = t("workspace.active_worktree");
+      branch.prepend(active);
+    }
     path.textContent = worktree?.checked_out === false
       ? t("workspace.not_checked_out")
       : String(worktree?.path || t("format.not_available"));
+    if (typeof worktree?.path === "string" && worktree.path) {
+      path.title = t("workspace.open_worktree_folder", { path: worktree.path });
+      path.setAttribute("aria-label", t("workspace.open_worktree_folder", { path: worktree.path }));
+      path.addEventListener("click", () => void openWorktreeFolder(worktree.path));
+    } else {
+      path.disabled = true;
+    }
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
     const analysis = analyses.get(worktreeAnalysisKey(worktree));
@@ -2140,18 +2276,43 @@ function renderWorkspaceWorktrees(projection) {
       conclusion.textContent = t("workspace.worktree_analysis_not_run");
       item.append(conclusion);
     }
-    if (analysis?.removable === true && typeof worktree?.path === "string" && typeof worktree?.branch === "string") {
+    if (
+      worktree?.branch !== "main"
+      && worktree?.active !== true
+      && typeof worktree?.path === "string" && worktree.path
+      && typeof worktree?.branch === "string" && worktree.branch
+    ) {
+      const switchWorktree = document.createElement("button");
+      switchWorktree.className = "workspace-worktrees__switch";
+      switchWorktree.type = "button";
+      switchWorktree.textContent = t("workspace.worktree_switch_action");
+      switchWorktree.addEventListener("click", () => void switchEngineeringPlatformToWorktree(worktree));
+      item.append(switchWorktree);
+    }
+    if (analysis?.removable === true && typeof worktree?.path === "string" && (typeof worktree?.branch === "string" || typeof analysis?.head === "string")) {
       const remove = document.createElement("button");
       remove.className = "workspace-worktrees__remove";
       remove.type = "button";
       remove.textContent = t("workspace.worktree_remove_action");
-      remove.addEventListener("click", () => removeSafeWorktree(worktree));
+      remove.addEventListener("click", () => removeSafeWorktree(worktree, analysis));
       item.append(remove);
     }
     list.append(item);
   });
   section.append(list);
   if (branchActions) section.append(branchActions);
+}
+async function openWorktreeFolder(worktreePath) {
+  try {
+    const response = await fetch("/api/open-worktree-folder", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worktree_path: worktreePath }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) throw Error(outcome?.error || t("workspace.open_worktree_folder_failed"));
+  } catch (error) {
+    showDashboardError(error.message || t("workspace.open_worktree_folder_failed"), t("workspace.open_worktree_folder_failed"));
+  }
 }
 async function refreshWorktreeRemovalAnalysis(button) {
   button.disabled = true;
@@ -2345,7 +2506,7 @@ async function requestOpenPullRequestCheckRepair(button) {
     t("workspace.open_pull_request.repair_failed_checks"),
     t("workspace.open_pull_request.repair_failed_checks_confirmation"),
     t("workspace.open_pull_request.repair_failed_checks"),
-    { destructive: true },
+    { accent: "#f3d36a", variant: "check-repair" },
   );
   if (!confirmed) return;
   button.disabled = true;
@@ -3146,6 +3307,8 @@ $("operatorMergeWaitModal").addEventListener("click", (event) => {
 function renderPlatformHealth(payload) {
   const container = $("platformHealthComponents");
   if (!container) return;
+  latestPlatformHealth = payload && typeof payload === "object" ? payload : null;
+  renderDashboardHealth(latestStatus, latestPlatformHealth);
   const components =
     payload && typeof payload.components === "object"
       ? payload.components
@@ -4342,6 +4505,24 @@ function refreshDashboard() {
   window.location.reload();
 }
 $("pageRefresh")?.addEventListener("click", refreshDashboard);
+$("dashboardHealthIndicator")?.addEventListener("click", () => {
+  const health = $("dashboardHealth"), indicator = $("dashboardHealthIndicator");
+  if (!health || !indicator) return;
+  const expanded = indicator.getAttribute("aria-expanded") === "true";
+  health.classList.toggle("dashboard-health--open", !expanded);
+  indicator.setAttribute("aria-expanded", String(!expanded));
+});
+document.addEventListener("click", (event) => {
+  const health = $("dashboardHealth"), indicator = $("dashboardHealthIndicator");
+  if (!health || !indicator || health.contains(event.target)) return;
+  health.classList.remove("dashboard-health--open");
+  indicator.setAttribute("aria-expanded", "false");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  $("dashboardHealth")?.classList.remove("dashboard-health--open");
+  $("dashboardHealthIndicator")?.setAttribute("aria-expanded", "false");
+});
 $("githubRateLimitRefresh")?.addEventListener("click", () => void refreshGithubRateLimit());
 document.addEventListener("touchstart", startPullRefresh, { passive: true });
 document.addEventListener("touchmove", movePullRefresh, { passive: false });
@@ -4469,6 +4650,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.reasoning_profile"), runtime.reasoning_profile],
       [t("detail.configuration_profile"), runtime.configuration_profile],
       [t("detail.codex_cli_version"), runtime.codex_cli_version],
+      [t("detail.codex_cli_installation_path"), runtime.codex_cli_installation_path],
     ]),
     promptHistoryMarkdownSection(t("detail.provider_usage"), Object.entries(usage)
       .filter(([, value]) => value !== null && typeof value !== "object")
@@ -5096,7 +5278,7 @@ if (workspaceDatabaseField) {
   const content = document.createElement("div"), download = document.createElement("a");
   content.className = "workspace-database__content";
   const path = workspaceDatabaseField.querySelector("pre");
-  if (path) content.append(path);
+  if (path) content.append(localFolderButton(path.textContent.trim(), { containingFolder: true }));
   download.className = "dashboard-action dashboard-action--download workspace-database__download";
   download.id = "workspaceDatabaseDownload";
   download.href = "/api/engineering-database/download?audit=download";
@@ -5107,6 +5289,9 @@ if (workspaceDatabaseField) {
   content.append(download);
   workspaceDatabaseField.append(content);
 }
+const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
+replaceWithLocalFolderButton(workspaceLocation);
+replaceWithLocalFolderButton($("rateLimitProviderPath"));
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
@@ -5273,12 +5458,21 @@ function renderConfigurationInboxLocation() {
   field.classList.add("configuration-inbox-field");
   let value = $("configurationInboxLocation");
   if (!value) {
-    value = document.createElement("code");
+    value = document.createElement("button");
     value.id = "configurationInboxLocation";
-    value.className = "configuration-inbox-location";
+    value.className = "configuration-inbox-location local-folder-link";
+    value.type = "button";
     label.after(value);
   }
   value.textContent = location || "—";
+  const path = localFolderPath(location);
+  value.disabled = !path;
+  if (path) {
+    const labelText = t("workspace.open_local_folder", { path });
+    value.title = labelText;
+    value.setAttribute("aria-label", labelText);
+    value.onclick = () => void openLocalFolder(path);
+  } else value.onclick = null;
 }
 function providerLoginStatusBlock() {
   const configuration = $("configuration");
@@ -6287,15 +6481,19 @@ function openPromptHistoryDocument(runId, kind = "report") {
       );
     });
 }
-function detailField(label, value, preformatted = false) {
+function detailField(label, value, preformatted = false, folder = false) {
   const field = document.createElement("p"),
     name = document.createElement("span"),
     output = document.createElement(preformatted ? "pre" : "span");
   field.className = "field";
   name.className = "label";
   name.textContent = label;
-  output.textContent = String(value ?? "—");
-  field.append(name, output);
+  const supplied = String(value ?? "—");
+  const content = folder && localFolderPath(supplied)
+    ? localFolderButton(supplied)
+    : output;
+  if (content === output) output.textContent = supplied;
+  field.append(name, content);
   return field;
 }
 function promptHistoryRunIdField(runId) {
@@ -6412,7 +6610,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),
     detailField(t("detail.target_repository"), history.target_repository || t("detail.not_recorded")),
     detailField(t("ui.active_branch"), history.target_branch || t("detail.not_recorded"), true),
-    detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true),
+    detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true, true),
     detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
     detailField(t("detail.files_modified"), history.execution_metadata?.modified ?? t("detail.not_recorded")),
     detailField(t("detail.files_created"), history.execution_metadata?.created ?? t("detail.not_recorded")),
@@ -6444,9 +6642,10 @@ function promptDetailRuntimeSection(runtime) {
     [t("detail.reasoning_profile"), runtime.reasoning_profile],
     [t("detail.configuration_profile"), runtime.configuration_profile],
     [t("detail.codex_cli_version"), runtime.codex_cli_version],
+    [t("detail.codex_cli_installation_path"), runtime.codex_cli_installation_path, true],
   ]
     .filter(([, value]) => value)
-    .map(([label, value]) => detailField(label, value));
+    .map(([label, value, folder]) => detailField(label, value, false, folder));
   return fields.length ? promptDetailCard(t("detail.runtime"), fields) : null;
 }
 function promptDetailUsageSection(usage) {
@@ -7000,6 +7199,35 @@ async function switchToFastForwardMain() {
     button.disabled = false;
   }
 }
+async function switchEngineeringPlatformToWorktree(worktree) {
+  const path = String(worktree?.path || ""), branch = String(worktree?.branch || "");
+  if (!path || !branch || branch === "main") return;
+  const confirmed = await confirmDashboardAction(
+    t("workspace.worktree_switch_title"),
+    t("workspace.worktree_switch_confirmation", { branch, path }),
+    t("workspace.worktree_switch_action"),
+    { accent: workspaceModalAccent() },
+  );
+  if (!confirmed) return;
+  try {
+    const response = await fetch("/api/workspace-switch-to-worktree", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worktree_path: path, branch }),
+    });
+    const outcome = await response.json();
+    showWorkspaceBranchMainResult(
+      response.ok
+        ? t("workspace.worktree_switch_scheduled", { branch })
+        : outcome?.error || t("workspace.worktree_switch_failed"),
+      "workspace.worktree_switch_result_title",
+    );
+  } catch (error) {
+    showWorkspaceBranchMainResult(
+      error.message || t("workspace.worktree_switch_failed"),
+      "workspace.worktree_switch_result_title",
+    );
+  }
+}
 async function cleanupStaleLocalBranches() {
   const button = $("workspaceBranchCleanup");
   if (!button || button.disabled) return;
@@ -7065,12 +7293,13 @@ async function cleanupStaleLocalBranches() {
     button.disabled = false;
   }
 }
-async function removeSafeWorktree(worktree) {
-  const path = String(worktree?.path || ""), branch = String(worktree?.branch || "");
-  if (!path || !branch) return;
+async function removeSafeWorktree(worktree, analysis = null) {
+  const path = String(worktree?.path || ""), branch = String(worktree?.branch || ""), head = String(analysis?.head || "");
+  if (!path || (!branch && !head)) return;
+  const target = branch || `${t("workspace.detached_head")} ${head.slice(0, 12)}`;
   const confirmed = await confirmDashboardAction(
     t("workspace.worktree_remove_title"),
-    t("workspace.worktree_remove_confirmation", { branch, path }),
+    t("workspace.worktree_remove_confirmation", { branch: target, path }),
     t("workspace.worktree_remove_action"),
     { destructive: true },
   );
@@ -7078,15 +7307,15 @@ async function removeSafeWorktree(worktree) {
   try {
     const response = await fetch("/api/safe-worktree-removal", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ worktree_path: path, branch }),
+      body: JSON.stringify(branch ? { worktree_path: path, branch } : { worktree_path: path, head }),
     });
     const outcome = await response.json();
     if (!response.ok) throw Error(outcome.error || t("workspace.worktree_remove_failed"));
     showWorkspaceBranchMainResult(
-      t("workspace.worktree_remove_success", { branch }),
+      t("workspace.worktree_remove_success", { branch: target }),
       "workspace.worktree_remove_result_title",
     );
-    void refresh();
+    void refreshAfterOperatorAction();
   } catch (error) {
     showDashboardError(error.message || t("workspace.worktree_remove_failed"), t("workspace.worktree_remove_failed"));
   }
@@ -7251,12 +7480,14 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
   confirm.classList.toggle("dashboard-modal-shell__action--destructive", destructive);
   modal.classList.toggle("dashboard-modal-shell--destructive", destructive);
   modal.classList.toggle("dashboard-modal-shell--owner-authorization", variant === "owner-authorization");
+  modal.classList.toggle("dashboard-modal-shell--check-repair", variant === "check-repair");
   modal.style.setProperty("--modal-accent", accent || (destructive ? "#ff718f" : "#f0b66a"));
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.close();
       modal.classList.remove("dashboard-modal-shell--destructive");
       modal.classList.remove("dashboard-modal-shell--owner-authorization");
+      modal.classList.remove("dashboard-modal-shell--check-repair");
       confirm.classList.add("dashboard-modal-shell__action--primary");
       confirm.classList.remove("dashboard-modal-shell__action--destructive");
       confirm.disabled = false;

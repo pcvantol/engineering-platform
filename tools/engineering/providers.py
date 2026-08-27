@@ -80,18 +80,24 @@ def engineering_platform_codex_cli_prefix() -> Path:
 
 
 def codex_cli_executable() -> str | None:
-    """Prefer EP's managed CLI over a system-wide installation when present."""
+    """Return only Engineering Platform's managed Codex CLI executable."""
     managed = engineering_platform_codex_cli_prefix() / "bin" / "codex"
     if managed.is_file() and os.access(managed, os.X_OK):
         return str(managed)
-    return shutil.which("codex")
+    return None
 
 
 class CodexCliProvider(LocalProcessProvider):
-    """Codex process adapter pinned to the host-admitted launcher when present."""
+    """Codex process adapter pinned exclusively to EP's managed launcher."""
 
     def __init__(self, executable: str | None = None) -> None:
-        self._executable = executable or os.environ.get("DJCONNECT_ENGINEERING_CODEX_EXECUTABLE") or codex_cli_executable() or "codex"
+        del executable  # Runtime injection must not bypass EP's managed CLI.
+        self._executable = codex_cli_executable() or ""
+
+    def managed_installation_path(self) -> str | None:
+        """Return provenance only when this invocation is pinned to EP's CLI."""
+        managed = engineering_platform_codex_cli_prefix() / "bin" / "codex"
+        return str(engineering_platform_codex_cli_prefix()) if self._executable == str(managed) else None
 
     def _arguments(self, arguments: Sequence[str]) -> tuple[str, ...]:
         if arguments and arguments[0] == "codex":
@@ -99,18 +105,18 @@ class CodexCliProvider(LocalProcessProvider):
         return tuple(arguments)
 
     def status(self) -> ProviderStatus:
-        available = (
-            bool(shutil.which("codex"))
-            if self._executable == "codex"
-            else Path(self._executable).is_file() and os.access(self._executable, os.X_OK)
-        )
+        available = bool(self._executable) and Path(self._executable).is_file() and os.access(self._executable, os.X_OK)
         return ProviderStatus("codex_cli", "configured", available, "available" if available else "codex unavailable")
 
     def command(self, *args: str) -> subprocess.CompletedProcess[str]:
+        if not self._executable:
+            raise FileNotFoundError("Engineering Platform managed Codex CLI is unavailable")
         return subprocess.run((self._executable, *args), text=True, capture_output=True, check=False)
 
     def app_server(self) -> subprocess.Popen[str]:
         """Open the provider-owned interactive Codex app-server channel."""
+        if not self._executable:
+            raise FileNotFoundError("Engineering Platform managed Codex CLI is unavailable")
         return subprocess.Popen(
             (self._executable, "app-server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1,

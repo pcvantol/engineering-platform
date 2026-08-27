@@ -269,7 +269,9 @@ evidence:
 - **AI Model**, as actually reported by the provider;
 - **Reasoning Profile**, when reported;
 - **Configuration Profile**, when reported; and
-- **Codex CLI Version**, when detected.
+- **Codex CLI Version**, when detected; and
+- **Codex CLI Installation Path**, captured at invocation time only when the
+  runtime is the Engineering Platform-managed Codex CLI.
 
 A value is explicitly shown as `not reported` when the provider does not emit
 it. The runner never infers or fabricates model, reasoning or configuration
@@ -277,8 +279,8 @@ metadata. These fields describe the process that produced this specific report;
 they are not a claim about a currently configured provider or a later run.
 
 The matching **Promptgeschiedenis** detail dialog reads provenance only from
-the selected terminal report. It therefore cannot display a model or profile
-from an unrelated current run.
+the selected terminal report. It therefore cannot display a model, profile or
+CLI installation path from an unrelated current run.
 
 ## Retry executions
 

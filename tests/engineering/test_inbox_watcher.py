@@ -33,6 +33,11 @@ class InboxWatcherTest(unittest.TestCase):
         self.runtime = self.repo / "tools/engineering/engineering-execution-host"
         self.runtime.write_text("#!/bin/sh\n", encoding="utf-8")
         self.runtime.chmod(0o700)
+        self.managed_runtime_prefix = self.repo / "managed-codex"
+        self.managed_runtime = self.managed_runtime_prefix / "bin" / "codex"
+        self.managed_runtime.parent.mkdir(parents=True)
+        self.managed_runtime.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.managed_runtime.chmod(0o700)
         (self.repo / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").write_text(
             (Path(__file__).resolve().parents[2] / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -56,6 +61,11 @@ class InboxWatcherTest(unittest.TestCase):
             "tools.engineering.inbox_watcher._admit_dependabot_pull_requests", return_value=0
         )
         self.dependabot_admission.start()
+        self.managed_runtime_prefix_patch = patch(
+            "tools.engineering.platform_api.engineering_platform_codex_cli_prefix",
+            return_value=self.managed_runtime_prefix,
+        )
+        self.managed_runtime_prefix_patch.start()
         # CI deliberately has no Codex CLI.  Every watcher fixture receives a
         # harmless executable so the tests exercise watcher admission rather
         # than host installation.
@@ -72,6 +82,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.workspace_preflight.stop()
         self.capability_preflight.stop()
         self.dependabot_admission.stop()
+        self.managed_runtime_prefix_patch.stop()
         self.runtime_environment.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()

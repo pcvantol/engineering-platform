@@ -57,7 +57,7 @@ class PlatformProductizationTest(unittest.TestCase):
         self.assertIn("status", providers["runtime"])
 
     def test_execution_host_configuration_resolves_capabilities_deterministically(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch("tools.engineering.platform_api.shutil.which", return_value="/usr/local/bin/codex"):
+        with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             target = root / "tools" / "engineering"
             target.mkdir(parents=True)
@@ -65,15 +65,21 @@ class PlatformProductizationTest(unittest.TestCase):
                 (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            resolver = execution_host_configuration(root)
-            self.assertEqual(resolver.resolve_runtime_prompt_transport().provider, "icloud_inbox")
-            self.assertEqual(resolver.resolve_status_store(), root.resolve() / ".engineering" / "status")
-            self.assertEqual(resolver.resolve_report_store(), root.resolve() / ".engineering" / "reports")
-            self.assertEqual(resolver.resolve_log_store(), root.resolve() / ".engineering" / "logs")
-            self.assertEqual(resolver.resolve_telemetry_store(), root.resolve() / ".engineering" / "engineering.db")
-            self.assertEqual(resolver.resolve_runtime(), Path("/usr/local/bin/codex"))
-            identity = resolver.resolve_execution_host_identity()
-            self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
+            executable = root / "managed-codex" / "bin" / "codex"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+            managed_prefix = executable.parent.parent
+            with patch("tools.engineering.platform_api.engineering_platform_codex_cli_prefix", return_value=managed_prefix):
+                resolver = execution_host_configuration(root)
+                self.assertEqual(resolver.resolve_runtime_prompt_transport().provider, "icloud_inbox")
+                self.assertEqual(resolver.resolve_status_store(), root.resolve() / ".engineering" / "status")
+                self.assertEqual(resolver.resolve_report_store(), root.resolve() / ".engineering" / "reports")
+                self.assertEqual(resolver.resolve_log_store(), root.resolve() / ".engineering" / "logs")
+                self.assertEqual(resolver.resolve_telemetry_store(), root.resolve() / ".engineering" / "engineering.db")
+                self.assertEqual(resolver.resolve_runtime(), executable)
+                identity = resolver.resolve_execution_host_identity()
+                self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
 
     def test_execution_host_uses_validated_local_inbox_override(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,11 +107,11 @@ class PlatformProductizationTest(unittest.TestCase):
                 (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            executable = root / "bin" / "codex"
-            executable.parent.mkdir()
+            executable = root / "managed-codex" / "bin" / "codex"
+            executable.parent.mkdir(parents=True)
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
             executable.chmod(0o700)
-            with patch.dict(os.environ, {RUNTIME_EXECUTABLE_ENVIRONMENT: str(executable)}, clear=False):
+            with patch("tools.engineering.platform_api.engineering_platform_codex_cli_prefix", return_value=executable.parent.parent), patch.dict(os.environ, {RUNTIME_EXECUTABLE_ENVIRONMENT: "/opt/homebrew/bin/codex"}, clear=False):
                 environment = execution_host_configuration(root).runtime_environment()
 
         self.assertEqual(environment[RUNTIME_EXECUTABLE_ENVIRONMENT], str(executable))

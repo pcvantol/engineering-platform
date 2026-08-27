@@ -70,7 +70,7 @@ def write_live_status(
             previous_runtime = {
                 key: value[:120]
                 for key, value in previous["runtime_metadata"].items()
-                if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
+                if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile", "codex_cli_installation_path"}
                 and isinstance(value, str)
             }
         if isinstance(previous.get("workspace_recovery"), dict):
@@ -78,7 +78,7 @@ def write_live_status(
     safe_runtime = previous_runtime if runtime_metadata is None else {
         key: value[:120]
         for key, value in runtime_metadata.items()
-        if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile"}
+        if key in {"runtime_provider", "model", "reasoning_profile", "configuration_profile", "codex_cli_installation_path"}
         and isinstance(value, str)
     }
     previous_progress = previous.get("workspace_progress") if previous.get("run_id") == state.run_id else None

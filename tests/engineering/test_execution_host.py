@@ -427,6 +427,19 @@ class ClientContractTest(unittest.TestCase):
             CodexCliClient(Provider(1)).version()
         self.assertEqual(CodexCliClient(Provider(0, "codex-cli 0.146.0")).version(), "0.146.0")
 
+    def test_codex_client_records_only_the_managed_cli_installation_path(self) -> None:
+        with patch(
+            "tools.engineering.execution_executor.CodexCliProvider.managed_installation_path",
+            return_value="/managed/engineering-platform/codex-cli",
+        ):
+            self.assertEqual(
+                CodexCliClient().last_runtime_metadata,
+                {
+                    "runtime_provider": "codex_cli",
+                    "codex_cli_installation_path": "/managed/engineering-platform/codex-cli",
+                },
+            )
+
     def test_repository_client_inspects_and_translates_provider_failures(self) -> None:
         class Provider:
             def command(self, root: Path, *args: str) -> str:
@@ -2222,6 +2235,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 "model": "gpt-5.6-terra",
                 "reasoning_profile": "medium",
                 "configuration_profile": "workspace-write",
+                "codex_cli_installation_path": "/managed/engineering-platform/codex-cli",
             },
         )
         body = report.read_text(encoding="utf-8")
@@ -2231,6 +2245,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Reasoning Profile: `medium`", body)
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
+        self.assertIn("Codex CLI Installation Path: `/managed/engineering-platform/codex-cli`", body)
 
     def test_terminal_report_labels_cumulative_input_without_calling_it_context(self) -> None:
         state = TransactionState("provider-usage-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)

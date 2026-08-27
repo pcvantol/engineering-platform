@@ -11,9 +11,8 @@ import json
 from copy import deepcopy
 from pathlib import Path
 import os
-import shutil
 import sys
-from .providers import registry
+from .providers import engineering_platform_codex_cli_prefix, registry
 from .dashboard_configuration import inbox_root as configured_inbox_root
 
 
@@ -181,18 +180,10 @@ class ExecutionHostConfigurationResolver:
     def resolve_runtime(self) -> Path:
         if self._configuration.providers["runtime"] != "codex_cli":
             raise PlatformConfigurationError("Configured Execution Host runtime is unsupported.")
-        configured = os.environ.get(RUNTIME_EXECUTABLE_ENVIRONMENT)
-        if configured:
-            executable = Path(configured).expanduser()
-            if executable.is_file() and os.access(executable, os.X_OK):
-                return executable
-            raise PlatformConfigurationError("Configured Execution Host runtime is unavailable.")
-        executable = shutil.which("codex")
-        if not executable:
-            raise PlatformConfigurationError("Configured Execution Host runtime is unavailable.")
-        # Do not resolve the Homebrew launcher symlink.  Its directory is the
-        # one that must be retained for launchd's PATH and Node resolution.
-        return Path(executable)
+        executable = engineering_platform_codex_cli_prefix() / "bin" / "codex"
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise PlatformConfigurationError("Engineering Platform managed Codex CLI is unavailable.")
+        return executable
 
     def runtime_environment(self) -> dict[str, str]:
         """Return a child-safe environment pinned to the admitted CLI launcher."""

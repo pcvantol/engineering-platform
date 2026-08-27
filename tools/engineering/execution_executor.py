@@ -164,10 +164,10 @@ class CodexCliClient:
         self.last_usage_snapshots: tuple[dict[str, int], ...] = ()
         self.last_churn: dict[str, int] = {}
         self.last_execution_seconds: float | None = None
-        self.last_runtime_metadata: dict[str, str] = {"runtime_provider": "codex_cli"}
-        # This deliberately contains only aggregate counters.  Command text,
-        # paths and command output are never retained in live or terminal
-        # execution metadata.
+        self.last_runtime_metadata = self._runtime_metadata()
+        # This deliberately contains only aggregate counters, plus the
+        # approved EP-managed CLI prefix as invocation provenance. Command
+        # text and command output are never retained in execution metadata.
         self.last_execution_metadata: dict[str, int] = {
             "modified": 0,
             "created": 0,
@@ -181,6 +181,14 @@ class CodexCliClient:
         self._command_callback: Callable[[str, str, str], None] | None = None
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
         self._handoff_deadline_callback: Callable[[], bool] | None = None
+
+    def _runtime_metadata(self) -> dict[str, str]:
+        metadata = {"runtime_provider": "codex_cli"}
+        installation_path_reader = getattr(self.provider, "managed_installation_path", None)
+        installation_path = installation_path_reader() if callable(installation_path_reader) else None
+        if isinstance(installation_path, str) and installation_path:
+            metadata["codex_cli_installation_path"] = installation_path
+        return metadata
 
     def set_activity_callback(self, callback: Callable[[str], None] | None) -> None:
         """Set the optional local-only sink for safe live activity labels."""
@@ -233,7 +241,7 @@ class CodexCliClient:
         self.last_usage = {}
         self.last_churn = {}
         self.last_execution_seconds = None
-        self.last_runtime_metadata = {"runtime_provider": "codex_cli"}
+        self.last_runtime_metadata = self._runtime_metadata()
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -277,9 +285,9 @@ class CodexCliClient:
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
             self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
-            self.last_runtime_metadata = extract_codex_runtime_metadata(
+            self.last_runtime_metadata.update(extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr
-            )
+            ))
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:
@@ -316,7 +324,7 @@ class CodexCliClient:
         self.last_usage_snapshots = ()
         self.last_churn = {}
         self.last_execution_seconds = None
-        self.last_runtime_metadata = {"runtime_provider": "codex_cli"}
+        self.last_runtime_metadata = self._runtime_metadata()
         state_directory = root / ".engineering" / "engineering-runs"
         state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         schema = {
@@ -400,9 +408,9 @@ class CodexCliClient:
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
             self.last_usage_snapshots = usage_snapshots_from_jsonl(completed.stdout, completed.stderr)
             self.last_churn = churn_from_jsonl(completed.stdout, completed.stderr)
-            self.last_runtime_metadata = extract_codex_runtime_metadata(
+            self.last_runtime_metadata.update(extract_codex_runtime_metadata(
                 completed.stdout, completed.stderr
-            )
+            ))
         finally:
             schema_path.unlink(missing_ok=True)
         if completed.returncode:

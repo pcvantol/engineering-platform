@@ -32,8 +32,13 @@ class HostPreflightTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def _execute(self):
-        with patch("tools.engineering.host_preflight.shutil.which", return_value="/usr/bin/codex"), patch(
-        "tools.engineering.providers.subprocess.run",
+        managed_prefix = self.root / "managed-codex-cli"
+        executable = managed_prefix / "bin" / "codex"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+        with patch("tools.engineering.platform_api.engineering_platform_codex_cli_prefix", return_value=managed_prefix), patch(
+            "tools.engineering.providers.subprocess.run",
             return_value=subprocess.CompletedProcess(("codex", "--version"), 0, "codex 1.0", ""),
         ):
             return host_preflight.execute(self.root, run_id="inbox-preflight")
@@ -47,7 +52,10 @@ class HostPreflightTest(unittest.TestCase):
         self.assertEqual(evidence["execution_host"], "Engineering Platform")
 
     def test_missing_runtime_executable_fails_closed(self) -> None:
-        with patch("tools.engineering.host_preflight.shutil.which", return_value=None):
+        with patch(
+            "tools.engineering.platform_api.engineering_platform_codex_cli_prefix",
+            return_value=self.root / "missing-managed-cli",
+        ):
             result = host_preflight.execute(self.root)
         self.assertEqual(result.outcome, "FAIL")
         self.assertIn("runtime_executable", {check.identifier for check in result.checks if check.outcome == "FAIL"})

@@ -13,7 +13,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
@@ -25,6 +25,9 @@ from tools.engineering.execution_lease import acquire
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_canonical_checkpoint_rejects_an_invalid_run_identifier(self) -> None:
+        self.assertEqual(dashboard._canonical_checkpoint(Path("/repository"), "../outside"), {})
+
     def test_browser_dashboard_validation_uses_bounded_ci_workers(self) -> None:
         config = (Path(__file__).parents[2] / "playwright.config.mjs").read_text(encoding="utf-8")
 
@@ -222,9 +225,9 @@ class DashboardStatusTest(unittest.TestCase):
         projection = _workspace_worktrees(Path("/workspace"))
 
         self.assertEqual(projection, {"available": True, "worktrees": [
-            {"path": "/workspace", "branch": "main", "commit": "123456789abc", "detached": False},
-        {"path": "/tmp/polish", "branch": "codex/polish", "commit": "abcdef123456", "detached": False, "removable": True},
-            {"path": "/tmp/detached", "branch": None, "commit": "ffffff123456", "detached": True},
+            {"path": "/workspace", "branch": "main", "commit": "123456789abc", "detached": False, "active": True},
+        {"path": "/tmp/polish", "branch": "codex/polish", "commit": "abcdef123456", "detached": False, "active": False, "removable": True},
+            {"path": "/tmp/detached", "branch": None, "commit": "ffffff123456", "detached": True, "active": False},
         ]})
 
     @patch("tools.engineering.dashboard.GitProvider")
@@ -239,8 +242,71 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(projection, {"available": True, "worktrees": [
             {"path": None, "branch": "main", "commit": "abcdef123456", "detached": False, "checked_out": False},
-        {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False, "removable": True},
+            {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False, "active": True, "removable": True},
         ]})
+
+    def test_open_worktree_in_finder_accepts_only_a_current_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
+            with (
+                patch("tools.engineering.dashboard.sys.platform", "darwin"),
+                patch("tools.engineering.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("tools.engineering.dashboard.LocalProcessProvider.execute", return_value=completed) as execute,
+            ):
+                self.assertEqual(_open_worktree_in_finder(root, str(worktree)), {"opened_worktree": str(worktree.resolve())})
+                execute.assert_called_once_with(root, ("open", str(worktree.resolve())))
+            with patch("tools.engineering.dashboard.sys.platform", "darwin"), patch(
+                "tools.engineering.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": []},
+            ):
+                with self.assertRaises(RuntimeError):
+                    _open_worktree_in_finder(root, str(worktree))
+            with patch("tools.engineering.dashboard.sys.platform", "darwin"):
+                with self.assertRaisesRegex(RuntimeError, "actuele lokale worktree"):
+                    _open_worktree_in_finder(root, str(root / "missing"))
+            with (
+                patch("tools.engineering.dashboard.sys.platform", "darwin"),
+                patch("tools.engineering.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("tools.engineering.dashboard.LocalProcessProvider.execute", side_effect=OSError),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Finder kon"):
+                    _open_worktree_in_finder(root, str(worktree))
+            with patch("tools.engineering.dashboard.sys.platform", "linux"):
+                with self.assertRaisesRegex(RuntimeError, "kan niet veilig"):
+                    _open_worktree_in_finder(root, str(worktree))
+            with (
+                patch("tools.engineering.dashboard.sys.platform", "darwin"),
+                patch("tools.engineering.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("tools.engineering.dashboard.LocalProcessProvider.execute", return_value=__import__("subprocess").CompletedProcess(("open",), 1, "", "")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Finder kon"):
+                    _open_worktree_in_finder(root, str(worktree))
+
+    def test_open_local_directory_in_finder_accepts_only_current_dashboard_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            root.mkdir()
+            (root / ".engineering").mkdir()
+            inbox = Path(temporary) / "Inbox"
+            inbox.mkdir()
+            configuration = MagicMock()
+            configuration.resolver.return_value.resolve_runtime_prompt_transport.return_value.inbox = inbox
+            completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
+            with (
+                patch("tools.engineering.dashboard.sys.platform", "darwin"),
+                patch("tools.engineering.dashboard.PlatformConfiguration.load", return_value=configuration),
+                patch("tools.engineering.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": []}),
+                patch("tools.engineering.dashboard.LocalProcessProvider.execute", return_value=completed) as execute,
+            ):
+                self.assertEqual(
+                    dashboard._open_local_directory_in_finder(root, str(inbox)),
+                    {"opened_directory": str(inbox.resolve())},
+                )
+                execute.assert_called_once_with(root, ("open", str(inbox.resolve())))
+                with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
+                    dashboard._open_local_directory_in_finder(root, str(Path(temporary)))
 
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]
@@ -478,10 +544,11 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertFalse(lock.exists())
 
+    @patch("tools.engineering.dashboard._branch_is_verified_merged_into_main", return_value=False)
     @patch("tools.engineering.dashboard._stale_local_branch_pull_request", return_value=None)
     @patch("tools.engineering.dashboard.GitProvider")
     def test_stale_local_branch_cleanup_removes_only_reviewed_patch_equivalent_branches(
-        self, git_provider: object, _: object
+        self, git_provider: object, _: object, __: object
     ) -> None:
         root = Path(__file__).parents[2]
         completed = __import__("subprocess").CompletedProcess
@@ -532,18 +599,44 @@ class DashboardStatusTest(unittest.TestCase):
         self, candidates: object, git_provider: object
     ) -> None:
         root = Path("/repository")
-        selected = {"path": "/worktrees/stale", "branch": "codex/stale"}
-        candidates.return_value = [selected]
+        with tempfile.TemporaryDirectory() as temporary:
+            selected = {"path": temporary, "branch": "codex/stale"}
+            candidates.return_value = [selected]
 
-        self.assertEqual(
-            dashboard._remove_safe_worktree(root, selected["path"], selected["branch"]),
-            {"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True},
-        )
-        git_provider.return_value.command.assert_called_once_with(
-            root, "git", "worktree", "remove", "--", "/worktrees/stale"
-        )
-        with self.assertRaisesRegex(RuntimeError, "controle is gewijzigd"):
-            dashboard._remove_safe_worktree(root, "/worktrees/other", "codex/other")
+            self.assertEqual(
+                dashboard._remove_safe_worktree(root, selected["path"], selected["branch"]),
+                {"removed_worktree": str(Path(temporary).resolve()), "branch": "codex/stale", "branch_pending_cleanup": True},
+            )
+            git_provider.return_value.command.assert_called_once_with(
+                root, "git", "worktree", "remove", "--", str(Path(temporary).resolve())
+            )
+            with self.assertRaisesRegex(RuntimeError, "controle is gewijzigd"):
+                dashboard._remove_safe_worktree(root, "/worktrees/other", "codex/other")
+            with self.assertRaisesRegex(RuntimeError, "ongeldig"):
+                dashboard._remove_safe_worktree(root, "", selected["branch"])
+            candidates.return_value = [{"path": str(Path(temporary) / "missing"), "branch": selected["branch"]}]
+            with self.assertRaisesRegex(RuntimeError, "kon niet veilig worden verwijderd"):
+                dashboard._remove_safe_worktree(root, str(Path(temporary) / "missing"), selected["branch"])
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    @patch("tools.engineering.dashboard._safe_worktree_removal_candidates")
+    def test_safe_worktree_removal_accepts_only_the_reviewed_detached_head(
+        self, candidates: object, git_provider: object
+    ) -> None:
+        root = Path("/repository")
+        with tempfile.TemporaryDirectory() as temporary:
+            selected = {"path": temporary, "head": "a0496fea7ef1"}
+            candidates.return_value = [selected]
+
+            self.assertEqual(
+                dashboard._remove_safe_worktree(root, selected["path"], head=selected["head"]),
+                {"removed_worktree": str(Path(temporary).resolve()), "head": "a0496fea7ef1"},
+            )
+            git_provider.return_value.command.assert_called_once_with(
+                root, "git", "worktree", "remove", "--", str(Path(temporary).resolve())
+            )
+            with self.assertRaisesRegex(RuntimeError, "controle is gewijzigd"):
+                dashboard._remove_safe_worktree(root, selected["path"], head="other-head")
 
     @patch("tools.engineering.dashboard.PlatformConfiguration.load")
     @patch("tools.engineering.dashboard.GitHubProvider")
@@ -598,24 +691,178 @@ class DashboardStatusTest(unittest.TestCase):
             completed(("git",), 0, "0\t0\n", ""),
             completed(("git",), 0, "\n".join((
                 "worktree /repository", "HEAD main-head", "branch refs/heads/main", "",
-                "worktree /worktrees/squash", "HEAD source-head", "branch refs/heads/codex/squash", "",
+                "worktree /worktrees/squash", "HEAD older-source-head", "branch refs/heads/codex/squash", "",
             )), ""),
             completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
             completed(("git",), 0, "", ""),
             completed(("git",), 1, "", ""),
             completed(("git",), 1, "", ""),
             completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
         ]
-        github_provider.return_value.github.return_value = json.dumps([{
-            "number": 123, "url": "https://github.com/pcvantol/djconnect/pull/123",
-            "headRefName": "codex/squash", "headRefOid": "source-head", "state": "MERGED",
-            "mergedAt": "2026-08-27T00:00:00Z", "mergeCommit": {"oid": "squash-commit"},
-        }])
+        github_provider.return_value.github.side_effect = [
+            json.dumps([{
+                "number": 123, "url": "https://github.com/pcvantol/djconnect/pull/123",
+                "headRefName": "codex/squash", "headRefOid": "source-head", "state": "MERGED",
+                "mergedAt": "2026-08-27T00:00:00Z", "mergeCommit": {"oid": "squash-commit"},
+            }]),
+            json.dumps({"commits": [{"oid": "older-source-head"}]}),
+        ]
 
         self.assertEqual(
             dashboard._safe_worktree_removal_candidates(root),
             [{"path": "/worktrees/squash", "branch": "codex/squash"}],
         )
+
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_worktree_removal_analysis_explains_a_detached_head_in_an_open_pull_request(
+        self, git_provider: object, github_provider: object, configuration: object
+    ) -> None:
+        root = Path("/repository")
+        configuration.return_value.workspace.default_branch = "main"
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "\n".join((
+                "worktree /repository", "HEAD main-head", "branch refs/heads/main", "",
+                "worktree /worktrees/detached", "HEAD a0496fea7ef1", "detached", "",
+            )), ""),
+            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 1, "", ""),
+        ]
+        github_provider.return_value.github.side_effect = [
+            "[]",
+            json.dumps([{
+                "number": 969, "html_url": "https://github.com/pcvantol/djconnect/pull/969",
+                "state": "open", "merged_at": None, "merge_commit_sha": None,
+            }]),
+        ]
+
+        self.assertEqual(dashboard._worktree_removal_analysis(root), {"available": True, "worktrees": [{
+            "path": "/repository", "branch": "main", "head": "main-head",
+            "decision": "baseline", "reason": "main_baseline", "removable": False,
+        }, {
+            "path": "/worktrees/detached", "branch": None, "head": "a0496fea7ef1", "detached": True,
+            "decision": "keep", "reason": "detached_head_pull_request_open", "removable": False,
+            "pull_request": {"number": 969, "url": "https://github.com/pcvantol/djconnect/pull/969", "state": "OPEN"},
+        }]})
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_detached_commit_evidence_prefers_a_verified_merged_pull_request(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.return_value = completed(("git",), 0, "", "")
+        github_provider.return_value.github.return_value = json.dumps([
+            {"number": 1, "html_url": "https://example.test/pull/1", "state": "closed", "merged_at": None, "merge_commit_sha": None},
+            {"number": 2, "html_url": "https://example.test/pull/2", "state": "closed", "merged_at": "2026-08-27T00:00:00Z", "merge_commit_sha": "merge-head"},
+        ])
+
+        self.assertEqual(
+            dashboard._github_pull_request_for_detached_commit(
+                Path("/repository"), "pcvantol/djconnect", "a0496fea7ef1", "main", git_provider.return_value,
+            ),
+            {"number": 2, "url": "https://example.test/pull/2", "state": "MERGED", "verified": True},
+        )
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_detached_commit_evidence_keeps_an_open_pull_request_as_the_best_blocker(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.return_value = completed(("git",), 1, "", "")
+        github_provider.return_value.github.return_value = json.dumps([
+            {"number": 1, "html_url": "https://example.test/pull/1", "state": "closed", "merged_at": None, "merge_commit_sha": None},
+            {"number": 2, "html_url": "https://example.test/pull/2", "state": "open", "merged_at": None, "merge_commit_sha": None},
+            {"number": "invalid", "html_url": "https://example.test/pull/3", "state": "open"},
+        ])
+
+        self.assertEqual(
+            dashboard._github_pull_request_for_detached_commit(
+                Path("/repository"), "pcvantol/djconnect", "a0496fea7ef1", "main", git_provider.return_value,
+            ),
+            {"number": 2, "url": "https://example.test/pull/2", "state": "OPEN", "verified": False},
+        )
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    def test_detached_commit_evidence_fails_closed_for_an_invalid_github_response(self, github_provider: object) -> None:
+        github_provider.return_value.github.return_value = "{}"
+
+        self.assertIsNone(
+            dashboard._github_pull_request_for_detached_commit(
+                Path("/repository"), "pcvantol/djconnect", "a0496fea7ef1", "main", MagicMock(),
+            )
+        )
+
+    @patch("tools.engineering.dashboard._github_pull_request_for_detached_commit", return_value=None)
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_worktree_removal_analysis_accepts_a_clean_detached_commit_already_in_main(
+        self, git_provider: object, github_provider: object, configuration: object, _: object
+    ) -> None:
+        root = Path("/repository")
+        configuration.return_value.workspace.default_branch = "main"
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "\n".join((
+                "worktree /repository", "HEAD main-head", "branch refs/heads/main", "",
+                "worktree /worktrees/detached", "HEAD a0496fea7ef1", "detached", "",
+            )), ""),
+            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+        ]
+        github_provider.return_value.github.return_value = "[]"
+
+        self.assertEqual(
+            dashboard._safe_worktree_removal_candidates(root),
+            [{"path": "/worktrees/detached", "head": "a0496fea7ef1"}],
+        )
+
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_stale_branch_scan_accepts_an_older_head_in_a_verified_merged_pull_request(
+        self, git_provider: object, github_provider: object, configuration: object
+    ) -> None:
+        root = Path("/repository")
+        configuration.return_value.workspace.default_branch = "main"
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "worktree /repository\nHEAD main-head\nbranch refs/heads/main\n", ""),
+            completed(("git",), 0, "codex/squash\nmain\n", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
+            completed(("git",), 0, "older-source-head\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+        ]
+        github_provider.return_value.github.side_effect = [
+            json.dumps([{
+                "number": 123, "headRefName": "codex/squash", "headRefOid": "source-head", "mergeCommit": {"oid": "squash-commit"},
+            }]),
+            json.dumps({"commits": [{"oid": "older-source-head"}]}),
+        ]
+
+        self.assertEqual(dashboard._stale_local_branch_candidates(root), ["codex/squash"])
 
     @patch("tools.engineering.dashboard._stale_local_branch_pull_request", return_value=None)
     @patch("tools.engineering.dashboard.GitProvider")
@@ -736,6 +983,121 @@ class DashboardStatusTest(unittest.TestCase):
         log_event.assert_called_once_with(
             logger, logging.INFO, "engineering_platform_restart_completed",
             diagnostic="components=inbox_watcher,dashboard_relay,dashboard",
+        )
+
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard._workspace_worktrees")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_registered_worktree_switch_target_requires_the_exact_clean_registered_worktree(
+        self, git_provider: object, worktrees: object, configuration: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            target = Path(temporary) / "target"
+            (target / "tools" / "engineering").mkdir(parents=True)
+            (target / "tools" / "engineering" / "dashboard.py").touch()
+            (target / "tools" / "engineering" / "inbox_watcher.py").touch()
+            configuration.return_value.workspace.default_branch = "main"
+            worktrees.return_value = {"worktrees": [
+                {"path": str(root), "branch": "main"},
+                {"path": str(target), "branch": "codex/selected"},
+            ]}
+            completed = __import__("subprocess").CompletedProcess
+            git_provider.return_value.execute.side_effect = [
+                completed(("git",), 0, "", ""),
+                completed(("git",), 0, "codex/selected\n", ""),
+            ]
+
+            self.assertEqual(
+                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected"),
+                target.resolve(),
+            )
+
+            git_provider.return_value.execute.side_effect = [
+                completed(("git",), 0, " M dashboard.py\n", ""),
+                completed(("git",), 0, "codex/selected\n", ""),
+            ]
+            with self.assertRaisesRegex(RuntimeError, "moet schoon"):
+                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
+
+            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "main"}]}
+            with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
+                dashboard._registered_worktree_switch_target(root, str(target), "main")
+
+            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "codex/other"}]}
+            with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
+                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
+
+            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "codex/selected"}]}
+            (target / "tools" / "engineering" / "inbox_watcher.py").unlink()
+            with self.assertRaisesRegex(RuntimeError, "complete Engineering Platform-installatie"):
+                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
+            (target / "tools" / "engineering" / "inbox_watcher.py").touch()
+
+            git_provider.return_value.execute.side_effect = OSError("git unavailable")
+            with self.assertRaisesRegex(RuntimeError, "kon niet worden gecontroleerd"):
+                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
+
+    @patch("tools.engineering.dashboard._workspace_worktrees")
+    def test_registered_worktree_path_rejects_invalid_and_ambiguous_selectors(self, worktrees: object) -> None:
+        root = Path("/repository")
+        with self.assertRaisesRegex(ValueError, "ongeldig"):
+            dashboard._registered_worktree_path(root, None)
+
+        worktrees.return_value = {"worktrees": [
+            {"path": "/worktrees/duplicate", "branch": "codex/selected"},
+            {"path": "/worktrees/duplicate", "branch": "codex/selected"},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
+            dashboard._registered_worktree_path(root, "/worktrees/duplicate", "codex/selected")
+
+    @patch("tools.engineering.dashboard._registered_worktree_switch_target")
+    @patch("tools.engineering.dashboard._inbox_has_items")
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard._execution_active")
+    def test_worktree_switch_gate_requires_idle_execution_and_empty_inbox(
+        self, execution_active: object, configuration: object, inbox_has_items: object, _: object
+    ) -> None:
+        root = Path("/repository")
+        execution_active.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "geen uitvoering actief"):
+            dashboard._worktree_switch_target_when_idle(root, "/worktrees/selected", "codex/selected")
+
+        execution_active.return_value = False
+        runtime = MagicMock()
+        runtime.resolve_runtime_prompt_transport.return_value.inbox = Path("/private/inbox")
+        configuration.return_value.resolver.return_value = runtime
+        inbox_has_items.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "Inbox-queue leeg"):
+            dashboard._worktree_switch_target_when_idle(root, "/worktrees/selected", "codex/selected")
+
+    @patch("tools.engineering.dashboard.log_event")
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    @patch("tools.engineering.dashboard.launch_agent")
+    @patch("tools.engineering.dashboard.relay_launch_agent")
+    @patch("tools.engineering.dashboard.inbox_watcher.launch_agent")
+    @patch("tools.engineering.dashboard.build_relay")
+    @patch("tools.engineering.dashboard._worktree_switch_target_when_idle")
+    def test_worktree_switch_reinstalls_all_owned_services_from_target(
+        self, target_when_idle: object, build: object, watcher_agent: object, relay_agent: object,
+        dashboard_agent: object, launchd: object, log_event: object,
+    ) -> None:
+        root, target = Path("/repository"), Path("/worktrees/selected")
+        target_when_idle.return_value = target
+        build.return_value = Path("/worktrees/selected/bin/relay")
+        watcher_agent.return_value = Path("/tmp/watcher.plist")
+        relay_agent.return_value = Path("/tmp/relay.plist")
+        dashboard_agent.return_value = Path("/tmp/dashboard.plist")
+
+        dashboard._activate_engineering_platform_worktree(root, str(target), "codex/selected", logging.getLogger("test"))
+
+        self.assertEqual(launchd.return_value.install.call_args_list, [
+            call(dashboard.WATCHER_LABEL, watcher_agent.return_value),
+            call(dashboard.RELAY_LABEL, relay_agent.return_value),
+            call(dashboard.LABEL, dashboard_agent.return_value),
+        ])
+        log_event.assert_called_once_with(
+            ANY, logging.INFO, "workspace_switch_completed", diagnostic="branch=codex/selected",
         )
 
     @patch("tools.engineering.dashboard.log_event")
@@ -1087,6 +1449,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         with (
             patch("tools.engineering.dashboard.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+            patch("tools.engineering.dashboard.codex_cli_executable", return_value="/managed/bin/codex"),
             patch("tools.engineering.dashboard.LocalProcessProvider.execute", side_effect=[
                 completed(("codex", "--version"), 0, "codex-cli 0.149.0", ""),
                 completed(("npm", "view"), 0, '"0.150.0"', ""),
@@ -1102,6 +1465,7 @@ class DashboardStatusTest(unittest.TestCase):
         dashboard._codex_update_cache = None
         with (
             patch("tools.engineering.dashboard.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+            patch("tools.engineering.dashboard.codex_cli_executable", return_value="/managed/bin/codex"),
             patch("tools.engineering.dashboard.LocalProcessProvider.execute", side_effect=[
                 completed(("codex", "--version"), 0, "codex-cli 0.149.0", ""),
                 completed(("npm", "view"), 0, '"0.150.0"', ""),
@@ -1240,8 +1604,8 @@ class DashboardStatusTest(unittest.TestCase):
         page = _dashboard_html("Engineering Status").decode()
 
         self.assertIn("<title>Engineering Status</title>", page)
-        self.assertIn('href="/assets/dashboard.css"', page)
-        self.assertIn('src="/assets/dashboard.js" type="module"', page)
+        self.assertIn('href="/assets/dashboard.css?build=onbekend"', page)
+        self.assertIn('src="/assets/dashboard.js?build=onbekend" type="module"', page)
         self.assertIn('id="pageRefresh"', page)
         self.assertIn('id="promptHistoryScrollHint"', page)
         self.assertIn('aria-describedby="promptHistoryScrollHint"', page)
@@ -1431,9 +1795,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(dashboard._github_rate_limit_status(), {"limited": False})
 
     @patch("tools.engineering.dashboard.subprocess.run")
-    @patch("tools.engineering.dashboard.shutil.which", return_value="/usr/local/bin/codex")
-    @patch("tools.engineering.dashboard.codex_cli_executable", return_value="/usr/local/bin/codex")
-    def test_codex_provider_identity_includes_the_resolved_cli_path(
+    @patch("tools.engineering.dashboard.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex-cli"))
+    @patch("tools.engineering.dashboard.codex_cli_executable", return_value="/managed/codex-cli/bin/codex")
+    def test_codex_provider_identity_includes_the_managed_cli_path(
         self, _: object, __: object, run: object
     ) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(
@@ -1445,7 +1809,7 @@ class DashboardStatusTest(unittest.TestCase):
             {
                 "provider": "Codex CLI",
                 "provider_version": "0.146.0",
-                "provider_path": "/usr/local/bin/codex",
+                "provider_path": "/managed/codex-cli",
             },
         )
         dashboard._codex_identity_cache = None
@@ -1457,11 +1821,9 @@ class DashboardStatusTest(unittest.TestCase):
             str(managed_prefix),
         )
 
-    @patch("tools.engineering.dashboard.shutil.which", return_value=None)
-    def test_codex_cli_installation_path_is_unavailable_when_no_executable_resolves(
-        self, _: object
-    ) -> None:
+    def test_codex_cli_installation_path_rejects_non_managed_executables(self) -> None:
         self.assertIsNone(_codex_cli_installation_path("codex"))
+        self.assertIsNone(_codex_cli_installation_path("/opt/homebrew/bin/codex"))
 
     def test_codex_rate_limits_reads_a_deterministic_app_server_response(self) -> None:
         class RecordingInput:
@@ -1520,6 +1882,7 @@ class DashboardStatusTest(unittest.TestCase):
         with (
             patch("tools.engineering.dashboard.subprocess.Popen", return_value=process),
             patch("tools.engineering.dashboard.select.select", return_value=([process.stdout], [], [])),
+            patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
                 "tools.engineering.dashboard._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "0.146.0"},
@@ -1552,6 +1915,7 @@ class DashboardStatusTest(unittest.TestCase):
         process = FakeProcess()
         with (
             patch("tools.engineering.dashboard.subprocess.Popen", return_value=process),
+            patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
                 "tools.engineering.dashboard._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"},
@@ -1566,6 +1930,7 @@ class DashboardStatusTest(unittest.TestCase):
     def test_codex_rate_limits_fails_closed_when_app_server_cannot_start(self) -> None:
         with (
             patch("tools.engineering.dashboard.subprocess.Popen", side_effect=OSError),
+            patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
                 "tools.engineering.dashboard._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"},
@@ -1615,6 +1980,7 @@ class DashboardStatusTest(unittest.TestCase):
         with (
             patch("tools.engineering.dashboard.subprocess.Popen", return_value=process),
             patch("tools.engineering.dashboard.select.select", return_value=([process.stdout], [], [])),
+            patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/bin/codex"),
         ):
             self.assertEqual(dashboard._consume_codex_rate_limit_reset_credit(), "reset")
         request = "".join(process.stdin.chunks)
@@ -1682,6 +2048,7 @@ class DashboardStatusTest(unittest.TestCase):
                         "- Reasoning Profile: `medium`",
                         "- Configuration Profile: `workspace-write`",
                         "- Codex CLI Version: `0.146.0`",
+                        "- Codex CLI Installation Path: `/managed/engineering-platform/codex-cli`",
                     )
                 ),
                 encoding="utf-8",
@@ -1694,6 +2061,7 @@ class DashboardStatusTest(unittest.TestCase):
                     "reasoning_profile": "medium",
                     "configuration_profile": "workspace-write",
                     "codex_cli_version": "0.146.0",
+                    "codex_cli_installation_path": "/managed/engineering-platform/codex-cli",
                 },
             )
             self.assertEqual(json.loads(_last_executed_runtime_metadata(root, "bad/run")), {})
@@ -2894,6 +3262,7 @@ class DashboardStatusTest(unittest.TestCase):
             ("/api/safe-worktree-removal", {"worktree_path": "/worktrees/stale", "branch": "codex/stale"}, 202),
             ("/api/worktree-removal-analysis", {}, 200),
             ("/api/workspace-switch-to-main", {}, 202),
+            ("/api/workspace-switch-to-worktree", {"worktree_path": "/worktrees/selected", "branch": "codex/selected"}, 202),
             ("/api/stale-local-branch-cleanup-preview", {}, 200),
             ("/api/execution-retry", {"run_id": "run-1"}, 202),
             ("/api/status-reconciliation-preview", {"run_id": "run-1"}, 200),
@@ -2915,6 +3284,7 @@ class DashboardStatusTest(unittest.TestCase):
             patches.enter_context(patch("tools.engineering.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}))
             patches.enter_context(patch("tools.engineering.dashboard._worktree_removal_analysis", return_value={"available": True, "worktrees": []}))
             patches.enter_context(patch("tools.engineering.dashboard._switch_to_fast_forward_main", return_value={"previous_branch": "feature", "branch": "main", "synchronized": "true"}))
+            patches.enter_context(patch("tools.engineering.dashboard._worktree_switch_target_when_idle", return_value=Path("/worktrees/selected")))
             patches.enter_context(patch("tools.engineering.dashboard._execution_active", return_value=False))
             patches.enter_context(patch("tools.engineering.dashboard._stale_local_branch_preview", return_value={"branches": []}))
             patches.enter_context(patch("tools.engineering.dashboard.retry_admission_preflight"))
@@ -3326,6 +3696,18 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(response.status, 202)
                 self.assertEqual(json.loads(response.read())["branch"], "codex/stale")
                 remove.assert_called_once_with(root, "/worktrees/stale", "codex/stale")
+            with patch("tools.engineering.dashboard._open_worktree_in_finder", return_value={"opened_worktree": "/worktrees/stale"}) as open_folder:
+                connection.request("POST", "/api/open-worktree-folder", body='{"worktree_path":"/worktrees/stale"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), {"opened_worktree": "/worktrees/stale"})
+                open_folder.assert_called_once_with(root, "/worktrees/stale")
+            with patch("tools.engineering.dashboard._open_local_directory_in_finder", return_value={"opened_directory": "/repository"}) as open_folder:
+                connection.request("POST", "/api/open-local-directory", body='{"directory_path":"/repository"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read()), {"opened_directory": "/repository"})
+                open_folder.assert_called_once_with(root, "/repository")
             execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),

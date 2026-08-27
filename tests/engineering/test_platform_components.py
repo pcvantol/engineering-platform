@@ -62,12 +62,13 @@ class ProviderContractTest(unittest.TestCase):
         self.assertFalse(TailscaleProvider().status().qualified)
 
     @patch("tools.engineering.providers.subprocess.run")
-    def test_codex_provider_uses_the_admitted_launcher_instead_of_path_lookup(self, run: object) -> None:
-        executable = "/opt/homebrew/bin/codex"
+    @patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/codex")
+    def test_codex_provider_uses_only_the_managed_launcher(self, _: object, run: object) -> None:
+        executable = "/managed/codex"
         run.return_value = __import__("subprocess").CompletedProcess((executable, "--version"), 0, "codex", "")
 
-        CodexCliProvider(executable).command("--version")
-        CodexCliProvider(executable).invoke(Path("/repository"), ("codex", "exec", "status"))
+        CodexCliProvider("/opt/homebrew/bin/codex").command("--version")
+        CodexCliProvider("/Applications/ChatGPT.app/Contents/Resources/codex").invoke(Path("/repository"), ("codex", "exec", "status"))
 
         self.assertEqual(run.call_args_list[0].args[0], (executable, "--version"))
         self.assertEqual(run.call_args_list[1].args[0], (executable, "exec", "status"))

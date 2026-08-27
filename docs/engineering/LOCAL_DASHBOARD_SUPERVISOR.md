@@ -598,9 +598,10 @@ an explicit unavailable value rather than guessing.
 The active and last execution cards use provider-neutral wording. The last
 execution card reads the exact report-bound runtime provenance for that run:
 **Runtime Provider**, **AI Model**, any reported **Reasoning Profile** and
-**Configuration Profile**, plus **Codex CLI Version**. Values that the CLI did
-not report remain explicitly unavailable; the dashboard never substitutes the
-current provider configuration or guesses a model. This preserves a future
+**Configuration Profile**, **Codex CLI Version** and, exclusively for the
+EP-managed CLI, the invocation-time **Codex CLI Installation Path**. Values
+that the CLI did not report remain explicitly unavailable; the dashboard never
+substitutes the current provider configuration, installation path or guesses a model. This preserves a future
 provider abstraction without concealing which adapter executed the displayed
 transaction.
 

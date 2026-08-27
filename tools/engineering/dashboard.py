@@ -31,6 +31,7 @@ from .provider_readiness import status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
+from . import inbox_watcher
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -601,19 +602,13 @@ def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | No
 
 
 def _codex_cli_installation_path(executable: str | None) -> str | None:
-    """Return the managed prefix or resolved executable used by the active CLI."""
+    """Return EP's managed CLI prefix, never a PATH-resolved alternative."""
     if not executable:
         return None
     managed_prefix = engineering_platform_codex_cli_prefix()
     if Path(executable).expanduser() == managed_prefix / "bin" / "codex":
         return str(managed_prefix)
-    resolved_executable = shutil.which(executable)
-    if not resolved_executable:
-        return None
-    try:
-        return str(Path(resolved_executable).resolve())
-    except OSError:
-        return resolved_executable
+    return None
 
 
 def _codex_provider_identity(*, refresh: bool = False) -> dict[str, str]:
@@ -757,14 +752,8 @@ def _codex_cli_version_key(value: str) -> tuple[int, int, int, int, str]:
 
 
 def _npm_executable() -> str | None:
-    """Resolve npm from PATH or beside the admitted local Codex executable."""
-    if npm := shutil.which("npm"):
-        return npm
-    if codex := shutil.which("codex"):
-        sibling = Path(codex).with_name("npm")
-        if sibling.is_file() and os.access(sibling, os.X_OK):
-            return str(sibling)
-    return None
+    """Resolve npm for managed-CLI installation without selecting another CLI."""
+    return shutil.which("npm")
 
 
 def _execution_active(root: Path) -> bool:
@@ -1160,6 +1149,76 @@ def _restart_engineering_platform_after_main_switch(root: Path, logger: logging.
     )
 
 
+def _registered_worktree_path(root: Path, worktree_path: object, branch: object | None = None) -> Path:
+    """Resolve one worktree from Git's current registration, never from HTTP input."""
+    if not isinstance(worktree_path, str) or not worktree_path or (branch is not None and not isinstance(branch, str)):
+        raise ValueError("De gekozen worktree is ongeldig.")
+    projection = _workspace_worktrees(root)
+    candidates = [
+        item for item in projection.get("worktrees", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and item["path"] == worktree_path
+        and (branch is None or item.get("branch") == branch)
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
+    target = Path(candidates[0]["path"]).resolve()
+    if not target.is_absolute():
+        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
+    return target
+
+
+def _registered_worktree_switch_target(root: Path, worktree_path: object, branch: object) -> Path:
+    """Return one clean, currently registered non-main worktree or fail closed."""
+    if not isinstance(branch, str) or not branch:
+        raise ValueError("De gekozen worktree is ongeldig.")
+    target = _registered_worktree_path(root, worktree_path, branch)
+    if branch == PlatformConfiguration.load(root).workspace.default_branch:
+        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
+    if not target.is_dir() or not (target / "tools" / "engineering" / "dashboard.py").is_file() or not (target / "tools" / "engineering" / "inbox_watcher.py").is_file():
+        raise RuntimeError("De gekozen worktree bevat geen complete Engineering Platform-installatie.")
+    provider = GitProvider()
+    try:
+        status = provider.execute(target, "git", "status", "--porcelain", "--untracked-files=all")
+        active = provider.execute(target, "git", "branch", "--show-current")
+    except OSError as error:
+        raise RuntimeError("De gekozen worktree kon niet worden gecontroleerd.") from error
+    if status.returncode or active.returncode or status.stdout.strip() or active.stdout.strip() != branch:
+        raise RuntimeError("De gekozen worktree moet schoon zijn en exact op de geregistreerde branch staan.")
+    return target
+
+
+def _worktree_switch_target_when_idle(root: Path, worktree_path: object, branch: object) -> Path:
+    """Gate a worktree switch on authoritative run and Inbox state."""
+    if _execution_active(root):
+        raise RuntimeError("Naar een worktree schakelen kan alleen wanneer geen uitvoering actief is.")
+    active_inbox = PlatformConfiguration.load(root).resolver(root).resolve_runtime_prompt_transport().inbox
+    if _inbox_has_items(active_inbox):
+        raise RuntimeError("Naar een worktree schakelen kan alleen wanneer de Inbox-queue leeg is.")
+    return _registered_worktree_switch_target(root, worktree_path, branch)
+
+
+def _activate_engineering_platform_worktree(root: Path, worktree_path: str, branch: str, logger: logging.Logger) -> None:
+    """Revalidate and move the owned services to a selected clean worktree."""
+    try:
+        target = _worktree_switch_target_when_idle(root, worktree_path, branch)
+        relay = build_relay(target)
+        watcher_agent = inbox_watcher.launch_agent(target)
+        relay_agent = relay_launch_agent(target, relay)
+        dashboard_agent = launch_agent(target)
+        launchd = LaunchdProvider()
+        launchd.install(WATCHER_LABEL, watcher_agent)
+        launchd.install(RELAY_LABEL, relay_agent)
+        # Dashboard is deliberately last: its replacement terminates the
+        # current process only after watcher and relay point at the same root.
+        launchd.install(LABEL, dashboard_agent)
+    except (OSError, RuntimeError, ValueError) as error:
+        log_event(logger, logging.ERROR, "workspace_switch_failed", diagnostic=str(error))
+        return
+    log_event(logger, logging.INFO, "workspace_switch_completed", diagnostic=f"branch={branch}")
+
+
 class InboxLocationChangeError(RuntimeError):
     """Raised when a new Inbox route cannot be confirmed by a fresh watcher."""
 
@@ -1352,7 +1411,7 @@ def _recover_stale_workspace_git_lock(root: Path) -> dict[str, object]:
 
 
 def _stale_local_branch_candidates(root: Path) -> list[str]:
-    """Return branches that are absent remotely and content-equivalent to main."""
+    """Return remote-absent branches proven equivalent or merged into main."""
     provider = GitProvider()
     expected_branch = PlatformConfiguration.load(root).workspace.default_branch
     try:
@@ -1386,11 +1445,89 @@ def _stale_local_branch_candidates(root: Path) -> list[str]:
             comparison = provider.execute(root, "git", "diff", "--quiet", expected_branch, branch)
             if comparison.returncode == 0:
                 removable.append(branch)
+            elif comparison.returncode == 1 and _branch_is_verified_merged_into_main(root, expected_branch, branch, provider):
+                removable.append(branch)
             elif comparison.returncode != 1:
                 raise RuntimeError(f"Branch {branch} kon niet veilig worden vergeleken.")
     except OSError as error:
         raise RuntimeError("Lokale branch-opruiming is niet beschikbaar.") from error
     return removable
+
+
+def _branch_is_verified_merged_into_main(
+    root: Path, expected_branch: str, branch: str, provider: GitProvider
+) -> bool:
+    """Accept an older local head only when a merged PR proves it reached main."""
+    try:
+        remote = provider.execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match:
+            return False
+        payload = GitHubProvider().github(
+            "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "merged", "--head", branch,
+            "--json", "number,headRefName,headRefOid,mergeCommit", "--limit", "2",
+        )
+        pull_requests = json.loads(payload)
+        if not isinstance(pull_requests, list):
+            return False
+        pull_request = next((item for item in pull_requests if isinstance(item, dict) and item.get("headRefName") == branch), None)
+        number = pull_request.get("number") if isinstance(pull_request, dict) else None
+        merge_commit = pull_request.get("mergeCommit") if isinstance(pull_request, dict) else None
+        merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        local_head = provider.execute(root, "git", "rev-parse", "--verify", branch)
+        if not isinstance(number, int) or not isinstance(merge_oid, str) or local_head.returncode or not local_head.stdout.strip():
+            return False
+        merged_into_main = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+        return (
+            merged_into_main.returncode == 0
+            and _github_pull_request_contains_commit(f"{match.group(1)}/{match.group(2)}", number, local_head.stdout.strip())
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _github_pull_request_contains_commit(repository: str, number: int, commit_sha: str) -> bool:
+    """Use GitHub's immutable PR commit record when a deleted head is not local."""
+    try:
+        payload = GitHubProvider().github("pr", "view", str(number), "--repo", repository, "--json", "commits")
+        pull_request = json.loads(payload)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return False
+    commits = pull_request.get("commits") if isinstance(pull_request, dict) else None
+    return isinstance(commits, list) and any(
+        isinstance(item, dict) and isinstance(item.get("oid"), str) and item["oid"] == commit_sha
+        for item in commits
+    )
+
+
+def _github_pull_request_for_detached_commit(
+    root: Path, repository: str, commit_sha: str, expected_branch: str, provider: GitProvider,
+) -> dict[str, object] | None:
+    """Return immutable PR evidence for one detached commit, if GitHub can prove it."""
+    try:
+        payload = json.loads(GitHubProvider().github("api", f"repos/{repository}/commits/{commit_sha}/pulls"))
+        if not isinstance(payload, list):
+            return None
+        fallback: dict[str, object] | None = None
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("number"), int) or not isinstance(item.get("html_url"), str):
+                continue
+            state = "MERGED" if item.get("merged_at") else str(item.get("state") or "").upper()
+            merge_oid = item.get("merge_commit_sha")
+            verified = False
+            if state == "MERGED" and isinstance(merge_oid, str) and merge_oid:
+                merged = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+                if merged.returncode not in {0, 1}:
+                    continue
+                verified = merged.returncode == 0
+            evidence = {"number": item["number"], "url": item["html_url"], "state": state, "verified": verified}
+            if verified:
+                return evidence
+            if fallback is None or (state == "OPEN" and fallback.get("state") != "OPEN"):
+                fallback = evidence
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return None
+    return fallback
 
 
 def _stale_local_branch_preview(root: Path) -> dict[str, object]:
@@ -1724,18 +1861,50 @@ def _worktree_removal_analysis(root: Path) -> dict[str, object]:
             key, _, value = line.partition(" ")
             if key in {"worktree", "HEAD", "branch"}:
                 record[key] = value
+            elif key == "detached":
+                record["detached"] = "true"
             continue
         path = record.get("worktree", "").strip()
         branch = record.get("branch", "").removeprefix("refs/heads/").strip()
         head = record.get("HEAD", "").strip()
+        detached = record.get("detached") == "true"
         record = {}
-        if not path or not branch:
+        if not path or (not branch and not detached):
             continue
         worktree = Path(path)
         if branch == expected_branch or worktree.resolve() == root:
-            worktrees.append({"path": str(worktree), "branch": branch, "decision": "baseline", "reason": "main_baseline", "removable": False})
+            worktrees.append({"path": str(worktree), "branch": branch or None, "head": head or None, "decision": "baseline", "reason": "main_baseline", "removable": False})
             continue
         status = provider.execute(worktree, "git", "status", "--porcelain", "--untracked-files=all")
+        if detached:
+            merged_into_main = provider.execute(root, "git", "merge-base", "--is-ancestor", head, expected_branch)
+            if status.returncode not in {0, 1} or merged_into_main.returncode not in {0, 1}:
+                raise RuntimeError("Een losgekoppelde worktree kon niet veilig worden gecontroleerd.")
+            pull_request = _github_pull_request_for_detached_commit(
+                root, f"{match.group(1)}/{match.group(2)}", head, expected_branch, provider,
+            ) if github_available and match and head else None
+            verified_pull_request = isinstance(pull_request, dict) and pull_request.get("verified") is True
+            removable = root_ready and status.returncode == 0 and not status.stdout.strip() and (
+                merged_into_main.returncode == 0 or verified_pull_request
+            )
+            if removable:
+                reason = "safe_to_remove"
+            elif status.returncode != 0 or status.stdout.strip():
+                reason = "worktree_dirty"
+            elif isinstance(pull_request, dict) and pull_request.get("state") == "OPEN":
+                reason = "detached_head_pull_request_open"
+            elif not root_ready:
+                reason = root_reason
+            elif not github_available:
+                reason = "github_unavailable"
+            else:
+                reason = "detached_head_unverified"
+            worktrees.append({
+                "path": str(worktree), "branch": None, "head": head, "detached": True,
+                "decision": "removable" if removable else "keep", "reason": reason, "removable": removable,
+                **({"pull_request": {key: pull_request[key] for key in ("number", "url", "state")}} if isinstance(pull_request, dict) else {}),
+            })
+            continue
         remote_branch = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
         comparison = provider.execute(root, "git", "diff", "--quiet", expected_branch, branch)
         if status.returncode not in {0, 1} or remote_branch.returncode not in {0, 1} or comparison.returncode not in {0, 1}:
@@ -1751,6 +1920,13 @@ def _worktree_removal_analysis(root: Path) -> dict[str, object]:
             if merged.returncode not in {0, 1}:
                 raise RuntimeError("De squash-merge kon niet veilig worden gecontroleerd.")
             squash_merged_head = merged.returncode == 0
+        elif pr_state == "MERGED" and isinstance(merge_oid, str) and isinstance(pull_request.get("number"), int) and match:
+            merged = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+            if merged.returncode not in {0, 1}:
+                raise RuntimeError("De squash-merge kon niet veilig worden gecontroleerd.")
+            squash_merged_head = merged.returncode == 0 and _github_pull_request_contains_commit(
+                f"{match.group(1)}/{match.group(2)}", pull_request["number"], head,
+            )
         equivalent_or_verified_squash = (
             comparison.returncode == 0 and pr_state in {"MERGED", "CLOSED"}
         ) or squash_merged_head
@@ -1779,29 +1955,115 @@ def _worktree_removal_analysis(root: Path) -> dict[str, object]:
     return {"available": True, "worktrees": worktrees}
 
 
-def _safe_worktree_removal_candidates(root: Path) -> list[dict[str, str]]:
+def _safe_worktree_removal_candidates(root: Path) -> list[dict[str, object]]:
     """Return the freshly analysed, GitHub-verified worktrees safe to remove."""
     analysis = _worktree_removal_analysis(root)
     return [
-        {"path": item["path"], "branch": item["branch"]}
+        {key: item[key] for key in ("path", "branch", "head") if item.get(key) is not None}
         for item in analysis["worktrees"]
         if isinstance(item, dict) and item.get("removable") is True
-        and isinstance(item.get("path"), str) and isinstance(item.get("branch"), str)
+        and isinstance(item.get("path"), str) and (isinstance(item.get("branch"), str) or isinstance(item.get("head"), str))
     ]
 
 
-def _remove_safe_worktree(root: Path, worktree_path: str, branch: str) -> dict[str, object]:
+def _remove_safe_worktree(root: Path, worktree_path: str, branch: str | None = None, head: str | None = None) -> dict[str, object]:
     """Remove exactly one freshly verified stale worktree, never its branch."""
-    if not isinstance(worktree_path, str) or not isinstance(branch, str) or not worktree_path or not branch:
+    if not isinstance(worktree_path, str) or not worktree_path or (not isinstance(branch, str) and not isinstance(head, str)):
         raise RuntimeError("De geselecteerde worktree is ongeldig.")
-    selected = {"path": worktree_path, "branch": branch}
-    if selected not in _safe_worktree_removal_candidates(root):
+    selected = next(
+        (
+            candidate
+            for candidate in _safe_worktree_removal_candidates(root)
+            if candidate.get("path") == worktree_path and candidate.get("branch") == branch and candidate.get("head") == head
+        ),
+        None,
+    )
+    if selected is None:
         raise RuntimeError("De worktree-controle is gewijzigd; controleer de lijst opnieuw.")
     try:
-        GitProvider().command(root, "git", "worktree", "remove", "--", worktree_path)
+        # The request path is only a selector.  Git receives the independently
+        # revalidated path returned by the current worktree analysis.
+        verified_path = Path(selected["path"]).resolve(strict=True)
+        GitProvider().command(root, "git", "worktree", "remove", "--", str(verified_path))
     except OSError as error:
         raise RuntimeError("De worktree kon niet veilig worden verwijderd.") from error
-    return {"removed_worktree": worktree_path, "branch": branch, "branch_pending_cleanup": True}
+    if isinstance(selected.get("branch"), str):
+        return {"removed_worktree": str(verified_path), "branch": selected["branch"], "branch_pending_cleanup": True}
+    return {"removed_worktree": str(verified_path), "head": selected.get("head")}
+
+
+def _open_worktree_in_finder(root: Path, worktree_path: str) -> dict[str, str]:
+    """Open only a currently registered local worktree in macOS Finder."""
+    if sys.platform != "darwin" or not isinstance(worktree_path, str) or not worktree_path:
+        raise RuntimeError("De lokale worktreemap kan niet veilig worden geopend.")
+    try:
+        # The HTTP value only selects a current Git worktree.  Finder receives
+        # the independently registered path, never the request value itself.
+        requested = _registered_worktree_path(root, worktree_path).resolve(strict=True)
+    except (RuntimeError, ValueError) as error:
+        raise RuntimeError("De geselecteerde map is geen actuele lokale worktree.") from error
+    except OSError as error:
+        raise RuntimeError("De lokale worktreemap kan niet veilig worden geopend.") from error
+    try:
+        outcome = LocalProcessProvider().execute(root, ("open", str(requested)))
+    except OSError as error:
+        raise RuntimeError("Finder kon de lokale worktreemap niet openen.") from error
+    if outcome.returncode:
+        raise RuntimeError("Finder kon de lokale worktreemap niet openen.")
+    return {"opened_worktree": str(requested)}
+
+
+def _approved_local_directories(root: Path) -> dict[str, Path]:
+    """Map current, locally derived directory labels to Finder-safe paths."""
+    candidates = {
+        root,
+        root / ".engineering",
+        Path.home() / "Library" / "LaunchAgents",
+        engineering_platform_codex_cli_prefix(),
+    }
+    try:
+        candidates.add(PlatformConfiguration.load(root).resolver(root).resolve_runtime_prompt_transport().inbox)
+    except (EngineeringStorageError, OSError, TypeError, ValueError, KeyError):
+        pass
+    try:
+        candidates.update(
+            Path(str(item["path"]))
+            for item in _workspace_worktrees(root).get("worktrees", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        )
+    except OSError:
+        pass
+    approved: dict[str, Path] = {}
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_dir():
+            # Retain both server-derived spellings. macOS commonly exposes
+            # ``/tmp`` while canonical resolution yields ``/private/tmp``.
+            approved[str(candidate)] = resolved
+            approved[str(resolved)] = resolved
+    return approved
+
+
+def _open_local_directory_in_finder(root: Path, directory_path: str) -> dict[str, str]:
+    """Open one current, server-approved local directory in macOS Finder."""
+    if sys.platform != "darwin" or not isinstance(directory_path, str) or not directory_path:
+        raise RuntimeError("De lokale map kan niet veilig worden geopend.")
+    # Treat the HTTP value only as a selector.  The filesystem path passed to
+    # Finder is derived from the server-approved projection, never parsed from
+    # the request.
+    requested = _approved_local_directories(root).get(directory_path)
+    if requested is None:
+        raise RuntimeError("De geselecteerde map is niet beschikbaar in dit dashboard.")
+    try:
+        outcome = LocalProcessProvider().execute(root, ("open", str(requested)))
+    except OSError as error:
+        raise RuntimeError("Finder kon de lokale map niet openen.") from error
+    if outcome.returncode:
+        raise RuntimeError("Finder kon de lokale map niet openen.")
+    return {"opened_directory": str(requested)}
 
 
 def _codex_process_metrics(root: Path) -> bytes:
@@ -2101,10 +2363,11 @@ def _last_executed_runtime_metadata(root: Path, run_id: str | None) -> bytes:
         "reasoning_profile": "Reasoning Profile",
         "configuration_profile": "Configuration Profile",
         "codex_cli_version": "Codex CLI Version",
+        "codex_cli_installation_path": "Codex CLI Installation Path",
     }
     metadata: dict[str, str] = {}
     for key, label in fields.items():
-        match = re.search(rf"^- {re.escape(label)}: `([^`\\n]{{1,120}})`$", text, re.MULTILINE)
+        match = re.search(rf"^- {re.escape(label)}: `([^`\n]{{1,120}})`$", text, re.MULTILINE)
         if match:
             metadata[key] = match.group(1)
     return json.dumps(metadata, separators=(",", ":")).encode()
@@ -2304,11 +2567,18 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
         path = str(record.get("worktree") or "").strip()
         if path:
             reference = str(record.get("branch") or "")
+            try:
+                active = Path(path).resolve() == root.resolve()
+            except OSError:
+                # A stale worktree path is diagnostic evidence only; never
+                # present it as the active checkout.
+                active = False
             worktrees.append({
                 "path": path,
                 "branch": reference.removeprefix("refs/heads/") or None,
                 "commit": str(record.get("HEAD") or "")[:12] or None,
                 "detached": bool(record.get("detached")),
+                "active": active,
             })
         record = {}
     # `main` is the repository's stable baseline even when it is not currently
@@ -2425,7 +2695,7 @@ def _dashboard_html(
 <script>try{const state=JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1")||"{}");document.documentElement.dataset.theme=state.theme==="light"?"light":"dark"}catch{document.documentElement.dataset.theme="dark"}</script>
 
 
-<link rel="stylesheet" href="/assets/dashboard.css">
+<link rel="stylesheet" href="/assets/dashboard.css?build=$BUILD_COMMIT">
 </head>
 <body data-project-id="$WORKSPACE_ID" data-project-name="$PROJECT_NAME">
 <a class="skip-link" href="#engineering-dashboard-content" data-i18n="header.skip"></a>
@@ -2434,7 +2704,7 @@ def _dashboard_html(
 <div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
 <div class="dashboard-scroll-region">
 <div class="dashboard-sticky-header">
-<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
+<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><div class="dashboard-health" id="dashboardHealth"><button class="dashboard-health__button" id="dashboardHealthIndicator" type="button" aria-expanded="false" aria-controls="dashboardHealthTooltip" data-health-state="unknown" data-testid="dashboard-health-indicator"><span class="dashboard-health__dot" aria-hidden="true"></span><span class="sr-only" id="dashboardHealthAccessibleLabel"></span></button><section class="dashboard-health__tooltip" id="dashboardHealthTooltip" role="tooltip"><strong id="dashboardHealthTooltipTitle"></strong><ul id="dashboardHealthChecks"></ul></section></div><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--capacity-reserve" id="codexCapacityReserveBanner" role="alert" aria-live="assertive" hidden data-testid="codex-capacity-reserve-banner"><strong data-i18n="notification.codex_capacity_reserve.title"></strong><span id="codexCapacityReserveMessage"></span><a class="codex-capacity-reserve-banner__action" id="codexCapacityReserveAction" href="#rateLimits" data-i18n="notification.codex_capacity_reserve.action"></a></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
@@ -2485,7 +2755,7 @@ def _dashboard_html(
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
-<script src="/assets/dashboard.js" type="module"></script>
+<script src="/assets/dashboard.js?build=$BUILD_COMMIT" type="module"></script>
 
 </body>
 </html>"""
@@ -2889,12 +3159,41 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"worktree_path", "branch"}:
+                    if not isinstance(payload, dict) or set(payload) not in ({"worktree_path", "branch"}, {"worktree_path", "head"}):
                         raise ValueError
-                    outcome = _remove_safe_worktree(root, payload["worktree_path"], payload["branch"])
-                    log_event(logger, logging.INFO, "safe_worktree_removed", diagnostic=f"branch={outcome['branch']}")
+                    outcome = (
+                        _remove_safe_worktree(root, payload["worktree_path"], payload["branch"])
+                        if "branch" in payload else _remove_safe_worktree(root, payload["worktree_path"], head=payload["head"])
+                    )
+                    log_event(logger, logging.INFO, "safe_worktree_removed", diagnostic=f"target={outcome.get('branch') or outcome.get('head')}")
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     self._send(b'{"error":"De worktree kon niet veilig worden verwijderd."}', "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/open-worktree-folder":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"worktree_path"}:
+                        raise ValueError
+                    outcome = _open_worktree_in_finder(root, payload["worktree_path"])
+                    log_event(logger, logging.INFO, "worktree_folder_opened", diagnostic=f"path={outcome['opened_worktree']}")
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De lokale worktreemap kon niet veilig worden geopend."}', "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/open-local-directory":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"directory_path"}:
+                        raise ValueError
+                    outcome = _open_local_directory_in_finder(root, payload["directory_path"])
+                    log_event(logger, logging.INFO, "local_directory_opened", diagnostic=f"path={outcome['opened_directory']}")
+                except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De lokale map kon niet veilig worden geopend."}', "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
@@ -2927,6 +3226,21 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 Timer(0.25, _restart_engineering_platform_after_main_switch, args=(root, logger)).start()
                 outcome["engineering_platform"] = "restart_scheduled"
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/workspace-switch-to-worktree":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"worktree_path", "branch"}:
+                        raise ValueError
+                    target = _worktree_switch_target_when_idle(root, payload["worktree_path"], payload["branch"])
+                except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                    self._send(json.dumps({"error": str(error) or "Naar de worktree schakelen is niet veilig gelukt."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                # Validate again after this response: a newly claimed run or
+                # Inbox item always wins over a requested service relocation.
+                Timer(0.25, _activate_engineering_platform_worktree, args=(root, str(target), str(payload["branch"]), logger)).start()
+                self._send(json.dumps({"branch": payload["branch"], "worktree_path": str(target), "engineering_platform": "restart_scheduled"}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path == "/api/stale-local-branch-cleanup-preview":
                 try:
