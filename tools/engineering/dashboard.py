@@ -1640,6 +1640,67 @@ def _cleanup_stale_local_branches(root: Path, expected_branches: list[str]) -> d
     return {"removed": removed, "removed_count": len(removed)}
 
 
+def _safe_worktree_removal_candidates(root: Path) -> list[dict[str, str]]:
+    """Return only worktrees whose removal is safe after a fresh Git check."""
+    provider = GitProvider()
+    expected_branch = PlatformConfiguration.load(root).workspace.default_branch
+    root = root.resolve()
+    try:
+        root_status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
+        active = provider.execute(root, "git", "branch", "--show-current")
+        if root_status.returncode or active.returncode or root_status.stdout.strip() or active.stdout.strip() != expected_branch:
+            raise RuntimeError("De hoofdwerkmap moet schoon en op main staan.")
+        if provider.execute(root, "git", "fetch", "--prune", "origin").returncode:
+            raise RuntimeError("Remote-branches konden niet veilig worden ververst.")
+        divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", f"origin/{expected_branch}...{expected_branch}")
+        if divergence.returncode or divergence.stdout.strip() != "0\t0":
+            raise RuntimeError("main moet eerst met origin worden gesynchroniseerd.")
+        observed = provider.execute(root, "git", "worktree", "list", "--porcelain")
+        if observed.returncode:
+            raise RuntimeError("Actieve Git-worktrees konden niet veilig worden gelezen.")
+    except OSError as error:
+        raise RuntimeError("Lokale worktree-opruiming is niet beschikbaar.") from error
+
+    candidates: list[dict[str, str]] = []
+    record: dict[str, str] = {}
+    for line in [*str(observed.stdout or "").splitlines(), ""]:
+        if line:
+            key, _, value = line.partition(" ")
+            if key in {"worktree", "branch"}:
+                record[key] = value
+            continue
+        path = record.get("worktree", "").strip()
+        branch = record.get("branch", "").removeprefix("refs/heads/").strip()
+        record = {}
+        if not path or not branch or branch == expected_branch:
+            continue
+        worktree = Path(path)
+        if worktree.resolve() == root:
+            continue
+        status = provider.execute(worktree, "git", "status", "--porcelain", "--untracked-files=all")
+        remote = provider.execute(root, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
+        comparison = provider.execute(root, "git", "diff", "--quiet", expected_branch, branch)
+        if status.returncode == 0 and not status.stdout.strip() and remote.returncode == 1 and comparison.returncode == 0:
+            candidates.append({"path": str(worktree), "branch": branch})
+        elif status.returncode not in {0, 1} or remote.returncode not in {0, 1} or comparison.returncode not in {0, 1}:
+            raise RuntimeError("Een lokale worktree kon niet veilig worden gecontroleerd.")
+    return candidates
+
+
+def _remove_safe_worktree(root: Path, worktree_path: str, branch: str) -> dict[str, object]:
+    """Remove exactly one freshly verified stale worktree, never its branch."""
+    if not isinstance(worktree_path, str) or not isinstance(branch, str) or not worktree_path or not branch:
+        raise RuntimeError("De geselecteerde worktree is ongeldig.")
+    selected = {"path": worktree_path, "branch": branch}
+    if selected not in _safe_worktree_removal_candidates(root):
+        raise RuntimeError("De worktree-controle is gewijzigd; controleer de lijst opnieuw.")
+    try:
+        GitProvider().command(root, "git", "worktree", "remove", "--", worktree_path)
+    except OSError as error:
+        raise RuntimeError("De worktree kon niet veilig worden verwijderd.") from error
+    return {"removed_worktree": worktree_path, "branch": branch, "branch_pending_cleanup": True}
+
+
 def _codex_process_metrics(root: Path) -> bytes:
     """Measure only the process group explicitly recorded by the Execution Host."""
     try:
@@ -2166,6 +2227,14 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
     # Stable sorting keeps Git's worktree order intact while pinning main as
     # the first, recognisable baseline entry.
     worktrees.sort(key=lambda item: item.get("branch") != "main")
+    # The action itself performs the fresh, fail-closed Git verification.
+    # Keep this projection read-only so periodic dashboard refreshes never
+    # run Git checks inside every listed worktree.
+    for item in worktrees:
+        path = item.get("path")
+        branch = item.get("branch")
+        if isinstance(path, str) and isinstance(branch, str) and branch != "main":
+            item["removable"] = True
     return {"available": True, "worktrees": worktrees}
 
 
@@ -2675,6 +2744,19 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         "application/json; charset=utf-8",
                         409,
                     )
+                    return
+                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/safe-worktree-removal":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"worktree_path", "branch"}:
+                        raise ValueError
+                    outcome = _remove_safe_worktree(root, payload["worktree_path"], payload["branch"])
+                    log_event(logger, logging.INFO, "safe_worktree_removed", diagnostic=f"branch={outcome['branch']}")
+                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self._send(b'{"error":"De worktree kon niet veilig worden verwijderd."}', "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return

@@ -569,7 +569,7 @@ test.describe("Engineering Status browser smoke", () => {
       const workspace = document.querySelector("#workspaceCard");
       window.renderWorkspaceWorktrees({ available: true, worktrees: [
         { path: "/workspace", branch: "main", commit: "123456789abc" },
-        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456" },
+        { path: "/tmp/polish", branch: "codex/polish", commit: "abcdef123456", removable: true },
       ] });
       if (!document.querySelector("#workspaceOpenPullRequests")) {
         const pullRequests = document.createElement("section");
@@ -581,6 +581,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).toContainText("Lokale worktrees en branches");
     await expect(worktrees).toContainText("codex/polish");
     await expect(worktrees).toContainText("/tmp/polish");
+    await expect(worktrees.locator(".workspace-worktrees__remove")).toHaveText("Verwijder worktree");
     await expect(worktrees).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Scan branches voor opruiming");
     await expect(worktrees.locator(".workspace-branch-actions")).toContainText("Switch naar FF main");
@@ -602,6 +603,55 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).toContainText("Niet lokaal uitgecheckt");
     await expect(worktrees).toContainText("codex/refreshed");
     await expect(worktrees).not.toContainText("codex/polish");
+  });
+
+  test("confirms a safe per-worktree removal in the shared destructive modal", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    // This interaction supplies its own worktree projection. Keep the
+    // dashboard's unrelated initial snapshot from replacing that fixture
+    // while the confirmation flow is under test.
+    await page.route("**/api/dashboard-snapshot", (route) => route.abort());
+    let removalRequests = 0;
+    await page.route("**/api/safe-worktree-removal", async (route) => {
+      removalRequests += 1;
+      expect(JSON.parse(route.request().postData())).toEqual({
+        worktree_path: "/tmp/merged-worktree",
+        branch: "codex/merged-worktree",
+      });
+      await route.fulfill({ status: 202, json: {
+        removed_worktree: "/tmp/merged-worktree",
+        branch: "codex/merged-worktree",
+        branch_pending_cleanup: true,
+      } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => window.renderWorkspaceWorktrees({ available: true, worktrees: [
+      { path: "/workspace", branch: "main", commit: "123456789abc" },
+      { path: "/tmp/merged-worktree", branch: "codex/merged-worktree", commit: "abcdef123456", removable: true },
+    ] }));
+
+    const remove = page.getByRole("button", { name: "Verwijder worktree" });
+    await expect(remove).toHaveCSS("border-color", "rgb(240, 128, 149)");
+    await dispatchDashboardPointerClick(remove);
+    const confirmation = page.locator("#confirmationModal");
+    await expect(confirmation).toBeVisible();
+    await expect(page.locator("#confirmationModalTitle")).toHaveText("Veilige worktree verwijderen");
+    await expect(page.locator("#confirmationModalText")).toContainText("main schoon en gesynchroniseerd");
+    await expect(page.locator("#confirmationModalText")).toContainText("codex/merged-worktree");
+    await expect(page.locator("#confirmationModalConfirm")).toHaveClass(/dashboard-modal-shell__action--destructive/);
+    await expect(confirmation.locator(".confirmation-modal__panel")).toHaveCSS("border-top-color", "rgb(255, 113, 143)");
+    await page.locator("#confirmationModalCancel").click();
+    expect(removalRequests).toBe(0);
+
+    await dispatchDashboardPointerClick(remove);
+    await page.locator("#confirmationModalConfirm").click();
+    const result = page.locator("#workspaceBranchMainResultModal");
+    await expect(result).toBeVisible();
+    await expect(page.locator("#workspaceBranchMainResultTitle")).toHaveText("Worktree verwijderd");
+    await expect(result).toContainText("Worktree van codex/merged-worktree verwijderd.");
+    expect(removalRequests).toBe(1);
   });
 
   test("keeps project-scoped Inbox settings with the project queue", async ({ page }) => {

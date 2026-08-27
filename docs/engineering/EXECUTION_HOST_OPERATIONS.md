@@ -211,6 +211,13 @@ yellow actions are deliberately separate from terminal-status colours:
   local commits on `main`; it switches only to the configured `main` branch
   and fast-forwards only. A yellow result modal reports either the completed
   switch or the precise safe refusal.
+- **Remove worktree** is shown per non-`main` worktree and always opens the
+  shared destructive confirmation modal. Before removing anything, the server
+  freshly verifies that the dashboard's main worktree is clean and synchronized,
+  the selected worktree is clean, its remote branch is absent, and its content
+  exactly matches `main`. A failed or incomplete check removes nothing. The
+  action removes only the worktree; the now-unchecked-out branch remains for
+  the existing reviewed stale-branch cleanup action.
 - **Open pull requests** appears as a compact Workspace subblock only when
   GitHub reports open PRs for the repository. Each entry preserves its PR
   link, title and source branch as read-only operator context. If GitHub

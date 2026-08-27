@@ -2103,6 +2103,14 @@ function renderWorkspaceWorktrees(projection) {
       : String(worktree?.path || t("format.not_available"));
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
+    if (worktree?.removable === true && typeof worktree?.path === "string" && typeof worktree?.branch === "string") {
+      const remove = document.createElement("button");
+      remove.className = "workspace-worktrees__remove";
+      remove.type = "button";
+      remove.textContent = t("workspace.worktree_remove_action");
+      remove.addEventListener("click", () => removeSafeWorktree(worktree));
+      item.append(remove);
+    }
     list.append(item);
   });
   section.append(list);
@@ -6862,9 +6870,10 @@ function showWorkspaceBranchCleanupResult(outcome) {
 function workspaceModalAccent() {
   return getComputedStyle($("workspaceCard")).getPropertyValue("--category-color").trim() || "#f3d36a";
 }
-function showWorkspaceBranchMainResult(message) {
+function showWorkspaceBranchMainResult(message, titleKey = "workspace.branch_main_result_title") {
   const modal = $("workspaceBranchMainResultModal"), content = $("workspaceBranchMainResultContent"),
     close = $("workspaceBranchMainResultClose"), dismiss = $("workspaceBranchMainResultDismiss");
+  $("workspaceBranchMainResultTitle").textContent = t(titleKey);
   modal.style.setProperty("--modal-parent-accent", workspaceModalAccent());
   content.replaceChildren(Object.assign(document.createElement("p"), { textContent: message }));
   const finish = () => {
@@ -6963,6 +6972,32 @@ async function cleanupStaleLocalBranches() {
     showDashboardError(error.message, t("workspace.branch_cleanup_failed"));
   } finally {
     button.disabled = false;
+  }
+}
+async function removeSafeWorktree(worktree) {
+  const path = String(worktree?.path || ""), branch = String(worktree?.branch || "");
+  if (!path || !branch) return;
+  const confirmed = await confirmDashboardAction(
+    t("workspace.worktree_remove_title"),
+    t("workspace.worktree_remove_confirmation", { branch, path }),
+    t("workspace.worktree_remove_action"),
+    { destructive: true },
+  );
+  if (!confirmed) return;
+  try {
+    const response = await fetch("/api/safe-worktree-removal", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worktree_path: path, branch }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) throw Error(outcome.error || t("workspace.worktree_remove_failed"));
+    showWorkspaceBranchMainResult(
+      t("workspace.worktree_remove_success", { branch }),
+      "workspace.worktree_remove_result_title",
+    );
+    void refresh();
+  } catch (error) {
+    showDashboardError(error.message || t("workspace.worktree_remove_failed"), t("workspace.worktree_remove_failed"));
   }
 }
 function submitExecutionRetry(entry) {

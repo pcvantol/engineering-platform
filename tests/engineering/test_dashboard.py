@@ -223,7 +223,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(projection, {"available": True, "worktrees": [
             {"path": "/workspace", "branch": "main", "commit": "123456789abc", "detached": False},
-            {"path": "/tmp/polish", "branch": "codex/polish", "commit": "abcdef123456", "detached": False},
+        {"path": "/tmp/polish", "branch": "codex/polish", "commit": "abcdef123456", "detached": False, "removable": True},
             {"path": "/tmp/detached", "branch": None, "commit": "ffffff123456", "detached": True},
         ]})
 
@@ -239,7 +239,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(projection, {"available": True, "worktrees": [
             {"path": None, "branch": "main", "commit": "abcdef123456", "detached": False, "checked_out": False},
-            {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False},
+        {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False, "removable": True},
         ]})
 
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
@@ -524,6 +524,56 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(
             git_provider.return_value.execute.call_args_list[-1],
             call(root, "git", "branch", "-D", "--", "codex/stale"),
+        )
+
+    @patch("tools.engineering.dashboard.GitProvider")
+    @patch("tools.engineering.dashboard._safe_worktree_removal_candidates")
+    def test_safe_worktree_removal_removes_only_the_reviewed_worktree(
+        self, candidates: object, git_provider: object
+    ) -> None:
+        root = Path("/repository")
+        selected = {"path": "/worktrees/stale", "branch": "codex/stale"}
+        candidates.return_value = [selected]
+
+        self.assertEqual(
+            dashboard._remove_safe_worktree(root, selected["path"], selected["branch"]),
+            {"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True},
+        )
+        git_provider.return_value.command.assert_called_once_with(
+            root, "git", "worktree", "remove", "--", "/worktrees/stale"
+        )
+        with self.assertRaisesRegex(RuntimeError, "controle is gewijzigd"):
+            dashboard._remove_safe_worktree(root, "/worktrees/other", "codex/other")
+
+    @patch("tools.engineering.dashboard.PlatformConfiguration.load")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_safe_worktree_removal_candidates_require_clean_synced_main_and_stale_worktree(
+        self, git_provider: object, configuration: object
+    ) -> None:
+        root = Path("/repository")
+        configuration.return_value.workspace.default_branch = "main"
+        completed = __import__("subprocess").CompletedProcess
+        git_provider.return_value.execute.side_effect = [
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "main\n", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "0\t0\n", ""),
+            completed(("git",), 0, "\n".join((
+                "worktree /repository", "HEAD a", "branch refs/heads/main", "",
+                "worktree /worktrees/stale", "HEAD b", "branch refs/heads/codex/stale", "",
+                "worktree /worktrees/remote", "HEAD c", "branch refs/heads/codex/remote", "",
+            )), ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 1, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+            completed(("git",), 0, "", ""),
+        ]
+
+        self.assertEqual(
+            dashboard._safe_worktree_removal_candidates(root),
+            [{"path": "/worktrees/stale", "branch": "codex/stale"}],
         )
 
     @patch("tools.engineering.dashboard._stale_local_branch_pull_request", return_value=None)
@@ -2748,6 +2798,7 @@ class DashboardStatusTest(unittest.TestCase):
             ("/api/managed-branch-synchronization", {}, 202),
             ("/api/stale-git-lock-recovery", {}, 202),
             ("/api/stale-local-branch-cleanup", {"branches": ["codex/merged"]}, 202),
+            ("/api/safe-worktree-removal", {"worktree_path": "/worktrees/stale", "branch": "codex/stale"}, 202),
             ("/api/workspace-switch-to-main", {}, 202),
             ("/api/stale-local-branch-cleanup-preview", {}, 200),
             ("/api/execution-retry", {"run_id": "run-1"}, 202),
@@ -2766,6 +2817,7 @@ class DashboardStatusTest(unittest.TestCase):
             patches.enter_context(patch("tools.engineering.dashboard._synchronize_managed_branch_with_upstream", return_value={"branch": "main", "upstream": "origin/main", "watcher": "restarted"}))
             patches.enter_context(patch("tools.engineering.dashboard._recover_stale_workspace_git_lock", return_value={"state": "free", "recovered": True}))
             patches.enter_context(patch("tools.engineering.dashboard._cleanup_stale_local_branches", return_value={"removed_count": 1}))
+            patches.enter_context(patch("tools.engineering.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}))
             patches.enter_context(patch("tools.engineering.dashboard._switch_to_fast_forward_main", return_value={"previous_branch": "feature", "branch": "main", "synchronized": "true"}))
             patches.enter_context(patch("tools.engineering.dashboard._stale_local_branch_preview", return_value={"branches": []}))
             patches.enter_context(patch("tools.engineering.dashboard.retry_admission_preflight"))
@@ -3171,6 +3223,12 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 409)
                 self.assertEqual(json.loads(response.read()), {"error": "Lokale branches konden niet veilig worden opgeruimd."})
+            with patch("tools.engineering.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}) as remove:
+                connection.request("POST", "/api/safe-worktree-removal", body='{"worktree_path":"/worktrees/stale","branch":"codex/stale"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.read())["branch"], "codex/stale")
+                remove.assert_called_once_with(root, "/worktrees/stale", "codex/stale")
             execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
             with (
                 patch("tools.engineering.dashboard.cloud_root", return_value=root),
