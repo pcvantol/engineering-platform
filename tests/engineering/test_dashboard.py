@@ -1694,7 +1694,7 @@ class DashboardStatusTest(unittest.TestCase):
             run.return_value = __import__("subprocess").CompletedProcess(
                 ("ps",),
                 0,
-                "bad\n1 x 3 dashboard.py\n2 4 5 python -m tools.engineering.dashboard run\n3 12 01:05 python -m tools.engineering.dashboard run\n",
+                "bad\n1 x 3 dashboard.py\n2 4 5 python -m tools.engineering.dashboard run\n3 12 01:05 python -m tools.engineering.dashboard run\n4 32 00:20 python -m tools.engineering.dashboard /tmp/djconnect-dashboard-test-example\n",
                 "",
             )
             self.assertEqual(

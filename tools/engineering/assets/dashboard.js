@@ -348,6 +348,9 @@ function hasVisibleStaleLifecycle(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
     x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED";
 }
+function watcherDelegatedToActiveHost(component, status = latestStatus) {
+  return component?.component === "inbox_watcher" && component?.healthy !== true && isActiveRun(status || {});
+}
 function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
   const current = status && typeof status === "object" ? status : null,
     components = platformHealth?.components && typeof platformHealth.components === "object"
@@ -362,16 +365,17 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     phase = String(current?.current_phase || "").toUpperCase(),
     watcherStateUpper = watcherState.toUpperCase(),
     active = isActiveRun(current || {}),
+    watcherDelegatedToActiveHost = active && components && !watcherHealthy,
     workspaceActive = active && workspaceState === "ACTIVE",
     blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
     failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
-      (components && (!dashboardHealthy || !watcherHealthy || !relayHealthy));
+      (components && (!dashboardHealthy || !relayHealthy || (!watcherHealthy && !watcherDelegatedToActiveHost)));
   let state = "unknown";
   if (failed) state = "error";
   else if (blocked || queueDepth > 0) state = "blocked";
   else if (active) state = "active";
   else if (dashboardHealthy && watcherHealthy && relayHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
-  const componentCheck = (name, componentKey, healthy) => {
+  const componentCheck = (name, componentKey, healthy, delegatedToActiveHost = false) => {
     const component = components?.[componentKey];
     const unavailable = components ? "not_running" : "unknown";
     const reasonCode = !healthy && components && typeof component?.reason_code === "string"
@@ -382,15 +386,15 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
       : "";
     return [
       name,
-      healthy ? "running" : unavailable,
-      healthy ? "good" : components ? "bad" : "unknown",
+      delegatedToActiveHost ? "execution_host_active" : healthy ? "running" : unavailable,
+      delegatedToActiveHost ? "warning" : healthy ? "good" : components ? "bad" : "unknown",
       {},
-      { component: components ? componentKey : null, reason },
+      { component: components ? componentKey : null, reason: delegatedToActiveHost ? "" : reason },
     ];
   };
   const checks = [
     componentCheck("dashboard", "dashboard", dashboardHealthy),
-    componentCheck("watcher", "inbox_watcher", watcherHealthy),
+    componentCheck("watcher", "inbox_watcher", watcherHealthy, watcherDelegatedToActiveHost),
     componentCheck("relay", "dashboard_relay", relayHealthy),
     ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
     ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
@@ -3338,10 +3342,11 @@ function showComponentModal(payload) {
   content.replaceChildren();
   const fields = document.createElement("dl");
   componentDetailField(fields, t("component.machine"), payload.machine);
+  const delegatedToActiveHost = watcherDelegatedToActiveHost(payload);
   componentDetailField(
     fields,
     t("component.status"),
-    (payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
       (payload.detail || payload.state || t("ui.no_component_explanation")),
   );
@@ -3504,26 +3509,27 @@ function renderPlatformHealth(payload) {
       detail = document.createElement("span"),
       info = document.createElement("span"),
       componentHealthy = Boolean(component?.healthy),
+      delegatedToActiveHost = watcherDelegatedToActiveHost({ component: key, healthy: componentHealthy }),
       version =
         typeof component?.version === "string"
           ? " · Versie " + component.version
           : "",
       uptime = formatComponentUptime(component?.uptime_seconds);
     item.className = "platform-health__component";
-    item.dataset.health = String(componentHealthy);
+    item.dataset.health = delegatedToActiveHost ? "delegated" : String(componentHealthy);
     item.tabIndex = 0;
     item.setAttribute("role", "button");
     item.setAttribute(
       "aria-label",
       t("component.more_information", { component: healthComponentLabel(key) }),
     );
-    indicator.className = healthIndicatorClass(componentHealthy);
+    indicator.className = healthIndicatorClass(delegatedToActiveHost || componentHealthy);
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
     name.textContent = healthComponentLabel(key);
     detail.className = "platform-health__component-detail";
     detail.textContent =
-      (componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
       String(component?.detail || component?.state || t("ui.no_component_explanation")) +
       version +

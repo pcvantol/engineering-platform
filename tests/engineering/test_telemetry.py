@@ -135,14 +135,14 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                     )
             record_phase(root, run_id, "QUEUE_WAIT", started_at=datetime(2026, 8, 25, 19, 31, 17, tzinfo=timezone.utc), completed_at=datetime(2026, 8, 25, 19, 31, 18, tzinfo=timezone.utc))
             record_phase(root, run_id, "TOTAL_EXECUTION", started_at=datetime(2026, 8, 25, 19, 31, 18, tzinfo=timezone.utc), completed_at=datetime(2026, 8, 25, 20, 2, 44, tzinfo=timezone.utc))
-            self.assertEqual(recover_terminal_telemetry(root, run_id), "recovered")
+            self.assertEqual(recover_missing_terminal_telemetry(root), {"recovered": 1, "failed": 0, "candidates": 1})
             self.assertEqual(recover_terminal_telemetry(root, run_id), "already_materialized")
             with open_storage(root) as connection:
                 self.assertEqual(connection.execute("SELECT execution_date,terminal_state FROM execution_runs WHERE run_id=?", (run_id,)).fetchone(), ("2026-08-25", "COMPLETE"))
                 self.assertEqual(connection.execute("SELECT source,state FROM terminal_telemetry_outbox WHERE run_id=?", (run_id,)).fetchone(), ("RECOVERY", "PROCESSED"))
             self.assertEqual(next(item for item in daily_statistics(root) if item["date"] == "2026-08-25")["prompt_count"], 1)
 
-    def test_automatic_recovery_fails_closed_when_terminal_timing_is_missing(self) -> None:
+    def test_automatic_recovery_skips_incomplete_terminal_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             persist_execution(root, self._record("run-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
@@ -150,7 +150,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 with connection:
                     connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("run-missing-time", '{"repository":"pcvantol/djconnect","execution_mode":"MANAGED"}', "COMPLETE", "2026-08-25T20:04:22Z"))
                     connection.execute("INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,execution_metadata,updated_at) VALUES(?,?,?,?,?,?)", ("run-missing-time", "COMPLETE", "Missing", "2026-08-25T20:04:22Z", "{}", "2026-08-25T20:04:22Z"))
-            self.assertEqual(recover_missing_terminal_telemetry(root), {"recovered": 0, "failed": 1, "candidates": 1})
+            self.assertEqual(recover_missing_terminal_telemetry(root), {"recovered": 0, "failed": 0, "candidates": 0})
             with open_storage(root) as connection:
                 self.assertIsNone(connection.execute("SELECT 1 FROM execution_runs WHERE run_id='run-missing-time'").fetchone())
 

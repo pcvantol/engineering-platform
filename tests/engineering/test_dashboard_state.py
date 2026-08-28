@@ -215,6 +215,38 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["execution_liveness"]["state"], "STALE")
         self.assertNotEqual(payload["current_action"], "Engineeringuitvoering is actief.")
 
+    @patch("tools.engineering.dashboard_state.os.killpg")
+    @patch("tools.engineering.dashboard_state.os.getpgid", return_value=4321)
+    def test_status_prefers_a_live_runner_checkpoint_over_a_stale_watcher_projection(
+        self, _: object, __: object,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(
+                json.dumps({"watcher_state": "RUNNER_STARTING", "run_id": "inbox-active"}),
+                encoding="utf-8",
+            )
+            (status / "current.json").write_text(
+                json.dumps({"run_id": "inbox-active", "phase": "EXECUTE_AGENT"}),
+                encoding="utf-8",
+            )
+            (status / "runner_process.json").write_text(
+                json.dumps({"run_id": "inbox-active", "pid": 1234, "process_group": 4321}),
+                encoding="utf-8",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("inbox-active", "repo", "prompt.md", "EXECUTE_AGENT")
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(payload["run_id"], "inbox-active")
+        self.assertEqual(payload["current_phase"], "EXECUTE_AGENT")
+        self.assertEqual(payload["execution_liveness"]["source"], "RUNNER_PROCESS")
+
     def test_status_keeps_later_lifecycle_phase_visible_when_watcher_lags_merge_wait(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

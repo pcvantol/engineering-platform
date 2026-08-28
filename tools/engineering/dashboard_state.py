@@ -8,6 +8,7 @@ without giving it lifecycle or transaction authority.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,47 @@ from .agent_state import redact_diagnostic
 JsonReader = Callable[[Path], bytes]
 RunJsonReader = Callable[[Path, str | None], bytes]
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+
+
+def _active_runner_checkpoint(root: Path) -> tuple[dict[str, object], dict[str, object]] | None:
+    """Return a current checkpoint only while its recorded runner group exists.
+
+    The watcher intentionally detaches while a managed execution is running.
+    Its last status publication can therefore lag the runner.  The runner's
+    atomic checkpoint is safe to present only when the exact recorded process
+    group is still alive; a status file by itself never establishes liveness.
+    """
+    try:
+        current = json.loads((root / ".engineering" / "status" / "current.json").read_text(encoding="utf-8"))
+        runner = json.loads((root / ".engineering" / "status" / "runner_process.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    run_id, phase = current.get("run_id"), current.get("phase")
+    pid, process_group = runner.get("pid"), runner.get("process_group")
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or not isinstance(phase, str)
+        or phase in TERMINAL_PHASES
+        or runner.get("run_id") != run_id
+        or not isinstance(pid, int)
+        or pid <= 0
+        or not isinstance(process_group, int)
+        or process_group <= 0
+    ):
+        return None
+    try:
+        if os.getpgid(pid) != process_group:
+            return None
+        os.killpg(process_group, 0)
+    except OSError:
+        return None
+    return current, {
+        "state": "LIVE",
+        "source": "RUNNER_PROCESS",
+        "runner_pid": pid,
+        "process_group": process_group,
+    }
 
 
 def _active_prompt_metadata(root: Path, run_id: object) -> tuple[str | None, str | None]:
@@ -215,6 +257,14 @@ def status(root: Path) -> bytes:
             live = import_legacy_projection_once(
                 root, "live_status", root / ".engineering" / "status" / "current.json"
             )
+        runner_checkpoint = _active_runner_checkpoint(root)
+        if runner_checkpoint is not None:
+            # A detached watcher can retain RUNNER_STARTING while the exact
+            # Execution Host process group continues the run. The fresh runner
+            # checkpoint is then the authoritative dashboard run projection.
+            live, runner_liveness = runner_checkpoint
+        else:
+            runner_liveness = None
         watcher = watcher or {}
         # The dashboard is a read model, but it must not repeat a stale
         # compatibility projection after SQLite has recorded dismissal.  The
@@ -246,6 +296,8 @@ def status(root: Path) -> bytes:
         if live is None:
             raise ValueError("No canonical live status")
         live_liveness = lease_liveness(root, live.get("run_id"))
+        if runner_liveness is not None and runner_liveness.get("state") == "LIVE":
+            live_liveness = {**live_liveness, **runner_liveness}
         transient_action = _transient_live_action(root, live.get("run_id"))
         lifecycle = lifecycle_projection(root, live.get("run_id"))
         if isinstance(lifecycle, dict) and transient_action:

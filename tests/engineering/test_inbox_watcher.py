@@ -1375,6 +1375,13 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(inbox_watcher._safe_detail("line one\nline two"), "line one line two")
         self.assertEqual(inbox_watcher._prompt_title("no title", "fallback.md"), "fallback.md")
         self.assertEqual(inbox_watcher._prompt_title("# Visible title\nbody", "fallback.md"), "Visible title")
+        self.assertEqual(
+            inbox_watcher._prompt_title(
+                "TITLE\nRun Qualification Evidence Closure v2\n\nWerk de evidence bij.",
+                "fallback.md",
+            ),
+            "Run Qualification Evidence Closure v2",
+        )
 
     def test_lock_recovers_only_stale_owner_and_prevents_parallel_owner(self) -> None:
         with inbox_watcher._lock(self.repo):

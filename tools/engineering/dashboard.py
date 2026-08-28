@@ -1090,6 +1090,11 @@ def _component_processes(component: str) -> list[dict[str, int | str]]:
         parts = line.strip().split(maxsplit=3)
         if len(parts) != 4 or not any(pattern in parts[3] for pattern in patterns):
             continue
+        # Browser tests launch disposable dashboard servers in temporary
+        # ``djconnect-dashboard-test-*`` directories.  They are not managed
+        # platform components and must not inflate production health evidence.
+        if "djconnect-dashboard-test-" in parts[3]:
+            continue
         try:
             elapsed = _process_elapsed_seconds(parts[2])
             processes.append(

@@ -446,10 +446,17 @@ def _corrected_terminal_report(run_id: str, phase: str | None, diagnostic: str |
 
 
 def _prompt_title(content: str, filename: str) -> str:
-    """Expose only a bounded Markdown title, never the submitted prompt body."""
-    for line in content.splitlines():
+    """Expose only a bounded submitted title, never the prompt body."""
+    lines = content.splitlines()
+    for line in lines:
         if line.startswith("# ") and line[2:].strip():
             return redact_diagnostic(line[2:].strip(), limit=240)
+    for index, line in enumerate(lines[:-1]):
+        if line.strip() != "TITLE":
+            continue
+        for candidate in lines[index + 1 :]:
+            if candidate.strip():
+                return redact_diagnostic(candidate.strip(), limit=240)
     return redact_diagnostic(filename, limit=240)
 
 
@@ -1700,7 +1707,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             reconstructed = recover_missing_terminal_telemetry(repo)
             if recovered["processed"] or recovered["failed"]:
                 log_event(logger, logging.INFO, "terminal_telemetry_reconciled", diagnostic=json.dumps(recovered, sort_keys=True))
-            if reconstructed["recovered"] or reconstructed["failed"]:
+            if reconstructed["recovered"]:
                 log_event(logger, logging.INFO, "terminal_telemetry_reconstructed", diagnostic=json.dumps(reconstructed, sort_keys=True))
         except Exception as error:
             log_event(logger, logging.WARNING, "terminal_telemetry_reconciliation_failed", diagnostic=str(error))

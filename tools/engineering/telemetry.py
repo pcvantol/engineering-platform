@@ -324,7 +324,7 @@ def recover_terminal_telemetry(root: Path, run_id: str, *, source: Literal["RECO
 
 
 def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25) -> dict[str, int]:
-    """Boundedly repair missing projections from canonical terminal records."""
+    """Boundedly repair only missing projections with complete source evidence."""
     if limit < 1 or limit > 250:
         raise ValueError("terminal telemetry recovery limit is invalid")
     connection = open_storage(root, create=False)
@@ -332,7 +332,12 @@ def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25) -> dict[s
         rows = connection.execute(
             "SELECT history.run_id FROM prompt_execution_history AS history "
             "LEFT JOIN execution_runs AS runs ON runs.run_id=history.run_id "
+            "JOIN engineering_transactions AS transaction_row "
+            "ON transaction_row.run_id=history.run_id AND transaction_row.phase=history.terminal_state "
             "WHERE history.terminal_state IN ('COMPLETE','BLOCKED','FAILED') AND runs.run_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM execution_phase_spans AS spans "
+            "WHERE spans.run_id=history.run_id AND spans.phase_name='TOTAL_EXECUTION' "
+            "AND spans.outcome='COMPLETE' AND spans.started_at IS NOT NULL AND spans.completed_at IS NOT NULL) "
             "ORDER BY history.executed_at,history.run_id LIMIT ?", (limit,)
         ).fetchall()
     finally:

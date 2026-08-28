@@ -9530,6 +9530,44 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 
+  test("treats a detached watcher as a handoff while its execution host is active", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true },
+        inbox_watcher: { healthy: false, state: "not_running", detail: "LaunchAgent is geladen, maar heeft geen actief proces" },
+        dashboard_relay: { healthy: true },
+      } });
+      r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-detached", workspace_state: "ACTIVE", queue_depth: 0 }, {});
+    });
+    const indicator = page.getByTestId("dashboard-health-indicator");
+    await expect(indicator).toHaveAttribute("data-health-state", "active");
+    await indicator.click();
+    const watcher = page.locator("#dashboardHealthChecks li").filter({ hasText: "Inbox-watcher" });
+    await expect(watcher).toHaveAttribute("data-health", "warning");
+    await expect(watcher).toContainText("Uitvoering afgehandeld door actieve execution host");
+    await expect(watcher).not.toContainText("Reden —");
+  });
+
+  test("does not present a delegated execution host as unhealthy in its component card", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.evaluate(() => {
+      r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-delegated-card" }, {});
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true },
+        inbox_watcher: { healthy: false, state: "not_running", detail: "LaunchAgent is geladen, maar heeft geen actief proces" },
+        dashboard_relay: { healthy: true },
+      } });
+    });
+    const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "Engineering Execution Host" });
+    await expect(card).toHaveAttribute("data-health", "delegated");
+    await expect(card).toContainText("Uitvoering afgehandeld door actieve execution host");
+    await expect(card).not.toContainText("Niet gezond");
+  });
+
   test("shows a safe unhealthy component reason and opens its details from the status popout", async ({ page }) => {
     await page.route("**/health", (route) => route.fulfill({ json: { components: {
       dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
