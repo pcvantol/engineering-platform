@@ -539,8 +539,11 @@ without reducing coverage.
 Local `npm run test:engineering-dashboard` uses the same four shards with one
 worker each and holds one host-wide lock for the complete batch. This prevents
 overlapping local validation runs from multiplying temporary dashboard
-servers. In GitHub CI the same command delegates the requested single shard
-unchanged, so the workflow remains the authoritative four-runner execution.
+servers. It has a five-minute batch deadline; on a timeout, failure or spawn
+error it terminates every owned shard process group so temporary dashboard
+servers cannot outlive the command. In GitHub CI the same command delegates
+the requested single shard unchanged, so the workflow remains the authoritative
+four-runner execution.
 
 The suite has an explicit CI-parity contract. GitHub executes clean
 dependencies on Linux Chromium, whereas a local run can use a different
