@@ -280,8 +280,116 @@ class ClientContractTest(unittest.TestCase):
         SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
         self.assertEqual(
             provider.calls,
-            [("git", "switch", "main"), ("git", "pull", "--ff-only")],
+            [
+                ("git", "switch", "main"),
+                ("git", "fetch", "origin", "main"),
+                ("git", "merge", "--ff-only", "origin/main"),
+            ],
         )
+
+    @staticmethod
+    def _git(root: Path, *args: str) -> str:
+        completed = subprocess.run(("git", *args), cwd=root, text=True, capture_output=True, check=False)
+        if completed.returncode:
+            raise AssertionError(completed.stderr or completed.stdout)
+        return completed.stdout.strip()
+
+    def _managed_sync_fixture(self, temporary: str) -> tuple[Path, Path]:
+        root = Path(temporary)
+        origin, seed, checkout = root / "origin.git", root / "seed", root / "checkout"
+        self._git(root, "init", "--bare", str(origin))
+        seed.mkdir()
+        self._git(seed, "init")
+        self._git(seed, "config", "user.email", "tests@example.invalid")
+        self._git(seed, "config", "user.name", "Engineering tests")
+        self._git(seed, "checkout", "-b", "main")
+        (seed / "base.txt").write_text("base\n", encoding="utf-8")
+        self._git(seed, "add", "base.txt")
+        self._git(seed, "commit", "-m", "base")
+        self._git(seed, "remote", "add", "origin", str(origin))
+        self._git(seed, "push", "-u", "origin", "main")
+        self._git(root, "--git-dir", str(origin), "symbolic-ref", "HEAD", "refs/heads/main")
+        self._git(root, "clone", str(origin), str(checkout))
+        self._git(checkout, "config", "user.email", "tests@example.invalid")
+        self._git(checkout, "config", "user.name", "Engineering tests")
+        return seed, checkout
+
+    def test_repository_synchronization_ignores_multiple_merge_targets_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            seed, checkout = self._managed_sync_fixture(temporary)
+            self._git(seed, "checkout", "-b", "other")
+            (seed / "other.txt").write_text("other\n", encoding="utf-8")
+            self._git(seed, "add", "other.txt")
+            self._git(seed, "commit", "-m", "other")
+            self._git(seed, "push", "-u", "origin", "other")
+            self._git(seed, "checkout", "main")
+            (seed / "remote.txt").write_text("remote\n", encoding="utf-8")
+            self._git(seed, "add", "remote.txt")
+            self._git(seed, "commit", "-m", "remote main")
+            self._git(seed, "push", "origin", "main")
+            self._git(checkout, "config", "--add", "branch.main.merge", "refs/heads/other")
+
+            implicit_pull = subprocess.run(
+                ("git", "pull", "--ff-only"), cwd=checkout, text=True, capture_output=True, check=False
+            )
+            self.assertNotEqual(implicit_pull.returncode, 0)
+            self.assertIn("multiple branches", (implicit_pull.stderr + implicit_pull.stdout).lower())
+            self._git(checkout, "update-ref", "-d", "refs/remotes/origin/other")
+
+            client = SubprocessRepositoryClient()
+            client.synchronize_main(checkout)
+            synchronized_head = self._git(checkout, "rev-parse", "HEAD")
+            self.assertEqual(synchronized_head, self._git(seed, "rev-parse", "main"))
+            self.assertNotEqual(
+                subprocess.run(
+                    ("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/other"), cwd=checkout
+                ).returncode,
+                0,
+            )
+            client.synchronize_main(checkout)
+            self.assertEqual(self._git(checkout, "rev-parse", "HEAD"), synchronized_head)
+
+    def test_repository_synchronization_ignores_a_misleading_configured_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            seed, checkout = self._managed_sync_fixture(temporary)
+            self._git(seed, "checkout", "-b", "other")
+            (seed / "other.txt").write_text("other\n", encoding="utf-8")
+            self._git(seed, "add", "other.txt")
+            self._git(seed, "commit", "-m", "other")
+            self._git(seed, "push", "-u", "origin", "other")
+            self._git(seed, "checkout", "main")
+            (seed / "remote.txt").write_text("remote\n", encoding="utf-8")
+            self._git(seed, "add", "remote.txt")
+            self._git(seed, "commit", "-m", "remote main")
+            self._git(seed, "push", "origin", "main")
+            origin_url = self._git(checkout, "remote", "get-url", "origin")
+            self._git(checkout, "remote", "add", "misleading", origin_url)
+            self._git(checkout, "config", "branch.main.remote", "misleading")
+            self._git(checkout, "config", "branch.main.merge", "refs/heads/other")
+
+            SubprocessRepositoryClient().synchronize_main(checkout)
+
+            self.assertEqual(self._git(checkout, "rev-parse", "HEAD"), self._git(seed, "rev-parse", "main"))
+
+    def test_repository_synchronization_fails_closed_when_main_diverges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            seed, checkout = self._managed_sync_fixture(temporary)
+            (seed / "remote.txt").write_text("remote\n", encoding="utf-8")
+            self._git(seed, "add", "remote.txt")
+            self._git(seed, "commit", "-m", "remote main")
+            self._git(seed, "push", "origin", "main")
+            (checkout / "local.txt").write_text("local\n", encoding="utf-8")
+            self._git(checkout, "add", "local.txt")
+            self._git(checkout, "commit", "-m", "local main")
+            local_head = self._git(checkout, "rev-parse", "HEAD")
+
+            with self.assertRaisesRegex(
+                RunnerError,
+                rf"target_branch=main authoritative_ref=origin/main local_sha={local_head} .*fast_forward_state=diverged",
+            ):
+                SubprocessRepositoryClient().synchronize_main(checkout)
+
+            self.assertEqual(self._git(checkout, "rev-parse", "HEAD"), local_head)
 
     def test_repository_main_reference_refresh_does_not_change_the_checkout(self) -> None:
         class Provider:
@@ -333,9 +441,53 @@ class ClientContractTest(unittest.TestCase):
 
         self.assertEqual(
             provider.calls,
-            [("git", "switch", "main"), ("git", "switch", "main"), ("git", "pull", "--ff-only")],
+            [
+                ("git", "switch", "main"),
+                ("git", "switch", "main"),
+                ("git", "fetch", "origin", "main"),
+                ("git", "merge", "--ff-only", "origin/main"),
+            ],
         )
         sleep.assert_called_once_with(0.5)
+
+    def test_repository_synchronization_stops_after_an_authoritative_fetch_failure(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                if args == ("git", "fetch", "origin", "main"):
+                    raise RuntimeError("fatal: origin unavailable")
+                return ""
+
+        provider = Provider()
+        with self.assertRaisesRegex(RunnerError, "origin unavailable"):
+            SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+        self.assertEqual(provider.calls, [("git", "switch", "main"), ("git", "fetch", "origin", "main")])
+
+    def test_repository_synchronization_does_not_fallback_after_fast_forward_failure(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, ...]] = []
+
+            def command(self, _: Path, *args: str) -> str:
+                self.calls.append(args)
+                if args == ("git", "merge", "--ff-only", "origin/main"):
+                    raise RuntimeError("fatal: Not possible to fast-forward")
+                return ""
+
+        provider = Provider()
+        with self.assertRaisesRegex(RunnerError, "fast-forward"):
+            SubprocessRepositoryClient(provider).synchronize_main(Path("/repository"))
+        self.assertEqual(
+            provider.calls,
+            [
+                ("git", "switch", "main"),
+                ("git", "fetch", "origin", "main"),
+                ("git", "merge", "--ff-only", "origin/main"),
+            ],
+        )
 
     @patch("tools.engineering.execution_repository.time.sleep")
     def test_repository_synchronization_does_not_retry_a_git_permission_failure(self, sleep: object) -> None:

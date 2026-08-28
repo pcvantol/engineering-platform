@@ -84,9 +84,75 @@ class SubprocessRepositoryClient:
                     raise
                 time.sleep(GIT_SYNC_LOCK_RETRY_DELAY_SECONDS * attempt)
 
+    def _managed_sync_diagnostics(self, root: Path) -> str:
+        """Return bounded, read-only context for a failed managed synchronization."""
+        execute = getattr(self.provider, "execute", None)
+        if not callable(execute):
+            return (
+                "target_branch=main authoritative_ref=origin/main local_sha=unavailable "
+                "remote_sha=unavailable configured_upstream=unavailable fast_forward_state=unknown"
+            )
+
+        def value(*args: str) -> str:
+            try:
+                completed = execute(root, "git", *args)
+            except (OSError, RuntimeError):
+                return "unavailable"
+            if completed.returncode:
+                return "unavailable"
+            candidate = completed.stdout.strip()
+            return candidate if re.fullmatch(r"[0-9a-f]{40}|[A-Za-z0-9_./@{}-]+", candidate) else "unavailable"
+
+        local_sha = value("rev-parse", "--verify", "main")
+        remote_sha = value("rev-parse", "--verify", "origin/main")
+        upstream = value("rev-parse", "--abbrev-ref", "--symbolic-full-name", "main@{upstream}")
+        state = "unknown"
+        if local_sha != "unavailable" and remote_sha != "unavailable":
+            try:
+                local_is_ancestor = execute(
+                    root, "git", "merge-base", "--is-ancestor", "main", "origin/main"
+                ).returncode == 0
+                remote_is_ancestor = execute(
+                    root, "git", "merge-base", "--is-ancestor", "origin/main", "main"
+                ).returncode == 0
+            except (OSError, RuntimeError):
+                pass
+            else:
+                state = (
+                    "synchronized" if local_is_ancestor and remote_is_ancestor
+                    else "fast_forward_possible" if local_is_ancestor
+                    else "local_ahead" if remote_is_ancestor
+                    else "diverged"
+                )
+        return (
+            "target_branch=main authoritative_ref=origin/main "
+            f"local_sha={local_sha} remote_sha={remote_sha} configured_upstream={upstream} "
+            f"fast_forward_state={state}"
+        )
+
+    @staticmethod
+    def _managed_sync_error_detail(error: RunnerError) -> str:
+        """Keep a Git failure useful without persisting unbounded process output."""
+        return re.sub(r"\s+", " ", str(error)).strip()[:512]
+
     def synchronize_main(self, root: Path) -> None:
         self._synchronize_command(root, "git", "switch", "main")
-        self._synchronize_command(root, "git", "pull", "--ff-only")
+        # Managed synchronization has one authority.  Do not let any local
+        # branch.*.merge, pull.*, or upstream configuration select its source.
+        try:
+            self._synchronize_command(root, "git", "fetch", "origin", "main")
+        except RunnerError as error:
+            raise RunnerError(
+                "MANAGED_MAIN_FETCH_FAILED: operation=git-fetch-origin-main "
+                f"{self._managed_sync_diagnostics(root)}; {self._managed_sync_error_detail(error)}"
+            ) from error
+        try:
+            self._synchronize_command(root, "git", "merge", "--ff-only", "origin/main")
+        except RunnerError as error:
+            raise RunnerError(
+                "MANAGED_MAIN_FAST_FORWARD_FAILED: operation=git-merge-ff-only-origin-main "
+                f"{self._managed_sync_diagnostics(root)}; {self._managed_sync_error_detail(error)}"
+            ) from error
 
     def cleanup_transaction(self, root: Path, branches: tuple[str | None, ...]) -> str:
         self._run(root, "git", "fetch", "--prune"); self.synchronize_main(root)
