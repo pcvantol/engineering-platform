@@ -134,7 +134,15 @@ class CodexCliProvider(LocalProcessProvider):
             if stream is not None:
                 stream.close()
 
-    def invoke(self, root: Path, arguments: tuple[str, ...], *, timeout: float | None = None, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def invoke(
+        self,
+        root: Path,
+        arguments: tuple[str, ...],
+        *,
+        timeout: float | None = None,
+        environment: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
         # Execution remains behind the provider boundary.  The current
@@ -142,13 +150,14 @@ class CodexCliProvider(LocalProcessProvider):
         # do not supply a timeout here; retaining the argument preserves the
         # public provider contract for compatible callers.
         del timeout
-        if environment is None:
+        if environment is None and input_text is None:
             return self.execute(root, command)
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
         return subprocess.run(
-            (self._executable, *command[1:]), cwd=root, env=dict(environment),
-            text=True, capture_output=True, check=False,
+            (self._executable, *command[1:]), cwd=root,
+            env=dict(environment) if environment is not None else None,
+            text=True, input=input_text, capture_output=True, check=False,
         )
 
     def spawn_invocation(

@@ -14,7 +14,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
 from tools.engineering import dashboard
-from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_for_run, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
+from tools.engineering.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
 from tools.engineering.inbox_watcher import WATCHER_VERSION
 from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
@@ -2518,6 +2518,39 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertTrue(_report_analysis_available_for_run(root, "inbox-last"))
             self.assertFalse(_report_analysis_available_for_run(root, "inbox-missing"))
 
+    def test_report_analysis_retry_is_limited_to_temporary_processing_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            analyses = root / ".engineering" / "report-analysis"
+            analyses.mkdir(parents=True)
+            report = root / ".engineering" / "reports" / "terminal.md"
+            report.parent.mkdir(parents=True)
+            report.write_text("# Engineering Report\n", encoding="utf-8")
+            record_prompt_execution(
+                root,
+                run_id="inbox-retryable",
+                terminal_state="COMPLETE",
+                prompt_title="Retryable analysis",
+                executed_at="2026-08-28T12:00:00Z",
+                report=report,
+            )
+            (analyses / "inbox-retryable.md").write_text(
+                "## Analyseverwerking\n- Status: `provider_unavailable`\n",
+                encoding="utf-8",
+            )
+            generated = analyses / "inbox-retryable.md"
+
+            def regenerate(*_args: object) -> Path:
+                generated.write_text("## Analyseverwerking\n- Status: `processed`\n", encoding="utf-8")
+                return generated
+
+            with patch("tools.engineering.dashboard.analyze_terminal_report", side_effect=regenerate) as analyze:
+                self.assertEqual(_retry_report_analysis(root, "inbox-retryable"), generated.read_bytes())
+            analyze.assert_called_once_with(root, "inbox-retryable", report.resolve())
+            self.assertEqual(_report_analysis_processing_status(root, "inbox-retryable"), "processed")
+            with self.assertRaisesRegex(ValueError, "hoeft niet opnieuw"):
+                _retry_report_analysis(root, "inbox-retryable")
+
     def test_prompt_history_marks_only_the_matching_ai_analysis_as_available(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -3608,6 +3641,37 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, expected_status, route)
                 response.read()
+
+    def test_http_report_analysis_retry_is_bound_to_its_controlled_retry_route(self) -> None:
+        with self._dashboard_http_connection() as (_, connection), patch(
+            "tools.engineering.dashboard._retry_report_analysis",
+            return_value=b"## Analyseverwerking\n- Status: `processed`\n",
+        ) as retry:
+            connection.request(
+                "POST",
+                "/api/prompt-history/inbox-retry/analysis-retry",
+                body=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/markdown", response.getheader("Content-Type"))
+            self.assertIn(b"processed", response.read())
+        retry.assert_called_once()
+
+        with self._dashboard_http_connection() as (_, connection), patch(
+            "tools.engineering.dashboard._retry_report_analysis",
+            side_effect=ValueError("Deze AI-analyse hoeft niet opnieuw te worden gegenereerd."),
+        ):
+            connection.request(
+                "POST",
+                "/api/prompt-history/inbox-retry/analysis-retry",
+                body=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409)
+            self.assertIn("hoeft niet opnieuw", json.loads(response.read())["error"])
 
     def test_http_codex_cli_update_routes_only_install_after_post(self) -> None:
         with self._dashboard_http_connection() as (_, connection), patch(

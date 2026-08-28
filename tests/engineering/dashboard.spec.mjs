@@ -1580,6 +1580,8 @@ test.describe("Engineering Status browser smoke", () => {
     const authorize = page.locator("[data-open-pull-request-owner-authorization='940']");
     await expect(authorize).toHaveText(DASHBOARD_MESSAGES.nl["workspace.open_pull_request.authorize_owner"]);
     await expect(authorize).toHaveCSS("border-top-color", "rgb(243, 211, 106)");
+    await expect(authorize).toHaveCSS("min-height", "46px");
+    expect(await authorize.evaluate((element) => getComputedStyle(element, "::before").content)).toBe('"✓"');
     await authorize.click();
     await expect(page.locator("#confirmationModal")).toBeVisible();
     await expect(page.locator("#confirmationModal")).toHaveClass(/dashboard-modal-shell--owner-authorization/);
@@ -8299,7 +8301,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(analysisView).toHaveCSS("color", "rgb(141, 199, 255)");
     await page.route("**/api/prompt-history/**/analysis", (route) => route.fulfill({
       contentType: "text/markdown",
-      body: "# Historische AI-analyse\n\nDit advies hoort bij precies deze uitvoering.",
+      body: "# Historische AI-analyse\n\n## Analyseverwerking\n- Status: `provider_unavailable`\n\nDit advies hoort bij precies deze uitvoering.",
     }));
     await analysisView.click();
     await expect(page.locator("#promptHistoryReportModal")).toBeVisible();
@@ -8308,6 +8310,14 @@ test.describe("Engineering Status browser smoke", () => {
       .toHaveText(DASHBOARD_MESSAGES.nl["table.analysis"]);
     await expect(page.locator("#promptHistoryReportContent")).toContainText("Historische AI-analyse");
     await expect(page.locator("#promptHistoryReportDownload")).toBeVisible();
+    await expect(page.locator("#promptHistoryReportRetry")).toBeVisible();
+    await page.route("**/api/prompt-history/**/analysis-retry", (route) => route.fulfill({
+      contentType: "text/markdown",
+      body: "# Historische AI-analyse\n\n## Analyseverwerking\n- Status: `processed`\n\nOpnieuw gegenereerd advies.",
+    }));
+    await page.locator("#promptHistoryReportRetry").click();
+    await expect(page.locator("#promptHistoryReportContent")).toContainText("Opnieuw gegenereerd advies.");
+    await expect(page.locator("#promptHistoryReportRetry")).toBeHidden();
     await page.locator("#promptHistoryReportClose").click();
     const chat = page.locator("#promptHistoryRows .prompt-history-chat");
     await expect(chat).toHaveCount(1);
@@ -8337,6 +8347,38 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#promptHistoryChatClose").click();
     await expect(page.locator("#promptHistoryChatModal")).not.toBeVisible();
     await expect(page.getByTestId("download-inbox-log")).toHaveCount(1);
+  });
+
+  test("retries only a transient read failure for an immutable terminal report", async ({ page }) => {
+    let requests = 0;
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: "inbox-report-hiccup",
+      status: "COMPLETE",
+      title: "Terminal report with a transient read failure",
+      executed_at: "2026-08-28T11:00:00Z",
+      report_available: true,
+    }] } }));
+    await page.route("**/api/prompt-history/inbox-report-hiccup/report", (route) => {
+      requests += 1;
+      if (requests === 1) {
+        return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"temporary"}' });
+      }
+      return route.fulfill({
+        contentType: "text/markdown",
+        body: "# Historisch rapport\n\nOngewijzigd terminal bewijs.",
+      });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#promptHistory").evaluate((element) => { element.open = true; });
+    await page.locator("#promptHistoryRows .prompt-history-report").click();
+    await expect(page.locator("#promptHistoryReportContent"))
+      .toContainText(DASHBOARD_MESSAGES.nl["history.report_unavailable"]);
+    const retry = page.locator("#promptHistoryReportReload");
+    await expect(retry).toBeVisible();
+    await retry.click();
+    await expect(page.locator("#promptHistoryReportContent")).toContainText("Ongewijzigd terminal bewijs.");
+    await expect(retry).toBeHidden();
+    expect(requests).toBe(2);
   });
 
   test("retries one transiently empty prompt-history projection", async ({ page }) => {
@@ -8611,7 +8653,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#inboxComponentLog .log-level--error").first()).toHaveCSS("color", "rgb(180, 35, 64)");
   });
 
-  test("uses a light inline-code surface in AI answers when light mode is enabled", async ({ page }) => {
+  test("uses monospace without a filled inline-code surface in AI answers", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#themeToggle").click();
     await page.evaluate(() => {
@@ -8620,8 +8662,9 @@ test.describe("Engineering Status browser smoke", () => {
       message.innerHTML = '<div class="chat-message__body"><p><code>git diff --check</code></p></div>';
       document.querySelector("#chatMessages").append(message);
     });
-    await expect(page.locator(".chat-message--assistant code")).toHaveCSS("background-color", "rgb(233, 238, 246)");
-    await expect(page.locator(".chat-message--assistant code")).toHaveCSS("color", "rgb(24, 34, 48)");
+    const code = page.locator(".chat-message--assistant code");
+    await expect(code).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(code).toHaveCSS("font-family", /Unispace|ui-monospace|monospace/);
   });
 
   test("keeps fenced AI-chat code unfilled while retaining a monospace font", async ({ page }) => {

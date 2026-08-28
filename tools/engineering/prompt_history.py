@@ -528,8 +528,8 @@ def prompt_history(
     return records
 
 
-def report_for_prompt_history(root: Path, run_id: object) -> bytes | None:
-    """Return only a report explicitly indexed for the requested terminal run."""
+def report_path_for_prompt_history(root: Path, run_id: object) -> Path | None:
+    """Resolve only the report explicitly indexed for the requested terminal run."""
     safe_run_id = _safe_run_id(run_id)
     if safe_run_id is None:
         return None
@@ -545,6 +545,15 @@ def report_for_prompt_history(root: Path, run_id: object) -> bytes | None:
     path = (root / ".engineering" / "reports" / row[0]).resolve()
     try:
         path.relative_to((root / ".engineering" / "reports").resolve())
-        return path.read_bytes()
+        return path if path.is_file() else None
     except (OSError, ValueError):
+        return None
+
+
+def report_for_prompt_history(root: Path, run_id: object) -> bytes | None:
+    """Return only a report explicitly indexed for the requested terminal run."""
+    path = report_path_for_prompt_history(root, run_id)
+    try:
+        return path.read_bytes() if path is not None else None
+    except OSError:
         return None

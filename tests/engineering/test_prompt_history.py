@@ -11,6 +11,7 @@ from tools.engineering.prompt_history import (
     prompt_history,
     record_terminal_report,
     record_prompt_execution,
+    report_path_for_prompt_history,
     report_for_prompt_history,
 )
 from tools.engineering.storage import open_storage, record_submission
@@ -235,7 +236,12 @@ class PromptHistoryTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(report_for_prompt_history(root, "inbox-abc123"), b"# Engineering Report\n")
+            self.assertEqual(
+                report_path_for_prompt_history(root, "inbox-abc123"),
+                report.resolve(),
+            )
             self.assertIsNone(report_for_prompt_history(root, "../../not-a-run"))
+            self.assertIsNone(report_path_for_prompt_history(root, "../../not-a-run"))
 
     def test_backfills_legacy_report_and_normalizes_legacy_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

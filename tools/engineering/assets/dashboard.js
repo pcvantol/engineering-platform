@@ -6565,6 +6565,13 @@ $("downloadChat")?.addEventListener(
 let promptHistoryReportText = "",
   promptHistoryReportRun = "",
   promptHistoryDocumentKind = "report";
+const retryableReportAnalysisStatuses = new Set([
+  "provider_failed", "provider_unavailable", "invalid_structured_response",
+]);
+function reportAnalysisCanRetry(text) {
+  const status = String(text || "").match(/^- Status: `([a-z_]+)`$/m)?.[1];
+  return retryableReportAnalysisStatuses.has(status);
+}
 function promptHistoryReportFilename() {
   return (
     (promptHistoryDocumentKind === "analysis" ? "ai-analysis-" : "engineering-report-") +
@@ -6600,27 +6607,33 @@ function downloadPromptHistoryReport() {
       : "prompt_history_report_downloaded",
   );
 }
-function openPromptHistoryDocument(runId, kind = "report") {
-  const modal = $("promptHistoryReportModal"),
-    content = $("promptHistoryReportContent");
-  promptHistoryReportRun = String(runId || "");
-  promptHistoryDocumentKind = kind === "analysis" ? "analysis" : "report";
-  promptHistoryReportText = "";
-  $("promptHistoryReportModalTitle").dataset.modalGlyph = promptHistoryDocumentKind;
-  $("promptHistoryReportModalTitle").textContent =
-    promptHistoryDocumentKind === "analysis"
-      ? t("table.analysis")
-      : t("history.execution_report_title");
+function promptHistoryReportReloadButton() {
+  let button = $("promptHistoryReportReload");
+  if (button) return button;
+  button = document.createElement("button");
+  button.className = "dashboard-action dashboard-action--primary report-analysis-retry";
+  button.id = "promptHistoryReportReload";
+  button.type = "button";
+  button.hidden = true;
+  button.textContent = t("history.retry_report_load");
+  button.addEventListener("click", () => { void reloadPromptHistoryReport(); });
+  $("promptHistoryReportDownload").before(button);
+  return button;
+}
+function loadPromptHistoryDocument() {
+  const content = $("promptHistoryReportContent"),
+    reload = promptHistoryReportReloadButton();
+  reload.hidden = true;
+  reload.disabled = true;
   $("promptHistoryReportCopy").hidden = true;
   $("promptHistoryReportDownload").hidden = true;
+  $("promptHistoryReportRetry").hidden = true;
   content.replaceChildren();
   content.textContent = t(
     promptHistoryDocumentKind === "analysis"
       ? "history.analysis_loading"
       : "history.report_loading",
   );
-  if (!modal.open) modal.showModal();
-  resetDashboardModalInitialFocus(modal);
   fetch(
     "/api/prompt-history/" +
       encodeURIComponent(promptHistoryReportRun) +
@@ -6653,6 +6666,8 @@ function openPromptHistoryDocument(runId, kind = "report") {
       renderMarkdownDocument(content, text);
       $("promptHistoryReportCopy").hidden = false;
       $("promptHistoryReportDownload").hidden = false;
+      $("promptHistoryReportRetry").hidden =
+        promptHistoryDocumentKind !== "analysis" || !reportAnalysisCanRetry(text);
     })
     .catch(() => {
       content.textContent = t(
@@ -6660,7 +6675,56 @@ function openPromptHistoryDocument(runId, kind = "report") {
           ? "history.analysis_unavailable"
           : "history.report_unavailable",
       );
+      reload.hidden = promptHistoryDocumentKind !== "report";
+      reload.disabled = false;
     });
+}
+function openPromptHistoryDocument(runId, kind = "report") {
+  const modal = $("promptHistoryReportModal");
+  promptHistoryReportRun = String(runId || "");
+  promptHistoryDocumentKind = kind === "analysis" ? "analysis" : "report";
+  promptHistoryReportText = "";
+  $("promptHistoryReportModalTitle").dataset.modalGlyph = promptHistoryDocumentKind;
+  $("promptHistoryReportModalTitle").textContent =
+    promptHistoryDocumentKind === "analysis"
+      ? t("table.analysis")
+      : t("history.execution_report_title");
+  if (!modal.open) modal.showModal();
+  resetDashboardModalInitialFocus(modal);
+  loadPromptHistoryDocument();
+}
+async function reloadPromptHistoryReport() {
+  if (promptHistoryDocumentKind !== "report" || !promptHistoryReportRun) return;
+  loadPromptHistoryDocument();
+}
+async function retryPromptHistoryAnalysis() {
+  if (promptHistoryDocumentKind !== "analysis" || !promptHistoryReportRun ||
+      !reportAnalysisCanRetry(promptHistoryReportText)) return;
+  const button = $("promptHistoryReportRetry"),
+    content = $("promptHistoryReportContent");
+  button.disabled = true;
+  content.textContent = t("history.analysis_retry_loading");
+  try {
+    const response = await fetch(
+      "/api/prompt-history/" + encodeURIComponent(promptHistoryReportRun) + "/analysis-retry",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      let detail = "";
+      try { detail = JSON.parse(text).error || ""; } catch { /* controlled fallback below */ }
+      throw Error(detail || t("history.analysis_retry_failed"));
+    }
+    promptHistoryReportText = text;
+    renderMarkdownDocument(content, text);
+    button.hidden = !reportAnalysisCanRetry(text);
+    void recordUserAction("prompt_history_analysis_regenerated");
+  } catch (error) {
+    renderMarkdownDocument(content, promptHistoryReportText);
+    showDashboardError(error instanceof Error ? error.message : "", t("history.analysis_retry_failed"));
+  } finally {
+    button.disabled = false;
+  }
 }
 function detailField(label, value, preformatted = false, folder = false) {
   const field = document.createElement("p"),
@@ -7216,6 +7280,9 @@ $("promptHistoryReportDownload").addEventListener(
   "click",
   downloadPromptHistoryReport,
 );
+$("promptHistoryReportRetry").addEventListener("click", () => {
+  void retryPromptHistoryAnalysis();
+});
 function renderPredecessorRetry(x) {
   const blocked = Boolean(x && x.blocking_predecessor_run),
     button = $("predecessorRetry"),

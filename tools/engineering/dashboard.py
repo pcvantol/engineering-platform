@@ -58,7 +58,8 @@ from .codex_chat import (
 )
 from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
-from .prompt_history import prompt_history, report_for_prompt_history
+from .prompt_history import prompt_history, report_for_prompt_history, report_path_for_prompt_history
+from .report_analysis import analyze as analyze_terminal_report
 from .recommendation_handoff import handoff_from_report
 from .storage import (
     EngineeringStorageError,
@@ -95,6 +96,11 @@ WEB_MANIFEST = "operations-console/manifest.webmanifest"
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
 RATE_LIMIT_CACHE_SECONDS = 60
+RETRYABLE_REPORT_ANALYSIS_STATUSES = frozenset({
+    "provider_failed", "provider_unavailable", "invalid_structured_response",
+})
+_REPORT_ANALYSIS_RETRY_LOCK = Lock()
+_REPORT_ANALYSIS_RETRY_RUNS: set[str] = set()
 
 
 class CodexCapacityReserveConflict(ValueError):
@@ -2288,6 +2294,33 @@ def _report_analysis_available_for_run(root: Path, run_id: str | None) -> bool:
     return (root / ".engineering" / "report-analysis" / f"{run_id}.md").is_file()
 
 
+def _report_analysis_processing_status(root: Path, run_id: str | None) -> str | None:
+    """Read the fixed advisory-processing state without exposing provider diagnostics."""
+    analysis = _report_analysis_for_run(root, run_id).decode("utf-8", errors="replace")
+    match = re.search(r"(?m)^- Status: `([a-z_]+)`$", analysis)
+    return match.group(1) if match else None
+
+
+def _retry_report_analysis(root: Path, run_id: object) -> bytes:
+    """Regenerate only a retryable advisory analysis for its exact terminal report."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        raise ValueError("Ongeldige uitvoeringsreferentie voor AI-analyse.")
+    if _report_analysis_processing_status(root, run_id) not in RETRYABLE_REPORT_ANALYSIS_STATUSES:
+        raise ValueError("Deze AI-analyse hoeft niet opnieuw te worden gegenereerd.")
+    report = report_path_for_prompt_history(root, run_id)
+    if report is None:
+        raise ValueError("Engineeringrapport is niet beschikbaar voor deze uitvoering.")
+    with _REPORT_ANALYSIS_RETRY_LOCK:
+        if run_id in _REPORT_ANALYSIS_RETRY_RUNS:
+            raise RuntimeError("AI-analyse wordt al opnieuw gegenereerd.")
+        _REPORT_ANALYSIS_RETRY_RUNS.add(run_id)
+    try:
+        return analyze_terminal_report(root, run_id, report).read_bytes()
+    finally:
+        with _REPORT_ANALYSIS_RETRY_LOCK:
+            _REPORT_ANALYSIS_RETRY_RUNS.discard(run_id)
+
+
 def _current_codex_log(root: Path) -> bytes:
     """Return the diagnostic for the exact run currently shown by the dashboard."""
     try:
@@ -2843,7 +2876,7 @@ def _dashboard_html(
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="dashboardErrorModalRecover" type="button" hidden></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchCleanupResultModal" aria-labelledby="workspaceBranchCleanupResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchCleanupResultTitle" data-i18n="workspace.branch_cleanup_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchCleanupResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchCleanupResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchCleanupResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal" aria-labelledby="workspaceBranchMainResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchMainResultTitle" data-i18n="workspace.branch_main_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchMainResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchMainResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchMainResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-modal-glyph="report" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-modal-glyph="report" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--primary report-analysis-retry" id="promptHistoryReportRetry" type="button" hidden data-i18n="history.retry_analysis">↻</button><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadJson" type="button" hidden>{}</button><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--chat prompt-chat-modal" id="promptHistoryChatModal" aria-labelledby="promptHistoryChatTitle"><section class="dashboard-modal-shell__panel prompt-chat-modal__panel"><header class="dashboard-modal-shell__header prompt-chat-modal__header"><h2 id="promptHistoryChatTitle" data-i18n="section.ai_conversation"></h2><button class="dashboard-modal-shell__close prompt-chat-modal__close" id="promptHistoryChatClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p class="prompt-chat-modal__description" id="promptHistoryChatDescription"></p><section class="codex-chat" id="codexChat"><div class="codex-chat__details"><div class="chat-actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="downloadChat" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy" id="copyChat" type="button" hidden data-i18n-title="chat.copy_title" data-i18n-aria-label="chat.copy_title">⧉</button><button class="dashboard-action dashboard-action--destructive" id="clearChat" type="button" hidden>⌫</button></div><div class="chat-messages" id="chatMessages" aria-live="polite" data-i18n-aria-label="section.ai_conversation"></div><label class="label chat-question-label" for="chatInput" data-i18n="section.new_ai_question"></label><div class="chat-compose"><textarea id="chatInput" class="chat-input" rows="5" maxlength="2000" autocomplete="off" data-sanitize="multiline" data-i18n-placeholder="history.chat_placeholder"></textarea><button class="chat-send" id="chatSend" type="button" data-i18n-aria-label="action.confirm"><span aria-hidden="true">➤</span></button></div><div class="chat-meta"><p class="field"><span class="label" data-i18n="detail.model"></span><span id="chatModel">$CHAT_MODEL</span></p><p class="chat-status" id="chatStatus"></p></div></div></section></section></dialog>
 <button id="loadComponentLogs" type="button" hidden data-i18n="logs.loading"></button>
@@ -2954,6 +2987,20 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 self._send(b'{"error":"Ongeldige herkomst."}', "application/json; charset=utf-8", 403)
                 return
             request_path = urlsplit(self.path).path
+            analysis_retry = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/analysis-retry", request_path)
+            if analysis_retry:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError("Ongeldige aanvraag voor AI-analyse.")
+                    run_id = analysis_retry.group(1)
+                    analysis = _retry_report_analysis(root, run_id)
+                    log_event(logger, logging.INFO, "report_analysis_regenerated", run_id=run_id)
+                except (OSError, RuntimeError, ValueError) as error:
+                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
+                    return
+                self._send(analysis, "text/markdown; charset=utf-8")
+                return
             if request_path == "/api/provider-login/logout":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))

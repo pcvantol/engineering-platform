@@ -213,12 +213,33 @@ After a terminal report is written, the runner may request one separate Codex
 CLI analysis of that exact local report. The analysis is read-only, bounded and
 stored locally per run under `.engineering/report-analysis/<run-id>.md`. It
 distils findings, issues, risks, next steps and advice for the Product
-Architect. Its output is advisory and redacted before persistence.
+Architect. Its output is advisory and redacted before persistence. Every
+analysis also records a bounded **Analyseverwerking** status. If the provider
+is unavailable, fails, or returns an invalid structured response, the matching
+safe reason is shown there; raw provider output and diagnostics are never
+persisted. This makes an empty advisory analysis distinguishable from a
+successful analysis with no findings. Large reports are passed to the managed
+Codex CLI over standard input rather than as a command-line argument. If a
+report exceeds the advisory input budget, its beginning and terminal end are
+provided with an explicit omission marker; the full report remains immutable
+and authoritative.
 
 The private Engineering Status dashboard exposes an **AI analysis** column in
 Prompt History next to the engineering report. View and download actions are
 available only when the analysis file belongs to that exact Run ID; analyses
 from another execution are never selected as a fallback.
+
+For a controlled temporary processing failure (`provider_failed`,
+`provider_unavailable` or `invalid_structured_response`), the analysis dialog
+also offers **Generate analysis again**. It is bound to that same indexed
+terminal report and regenerates only the advisory analysis; it never resumes,
+retries or changes the Engineering execution, checkpoint, branch or pull
+request. A successfully processed analysis is deliberately not retryable.
+
+If a terminal report temporarily cannot be read in its dialog, the dashboard
+offers **Reload report**. That action repeats only the read-only retrieval of
+the indexed immutable report. It never regenerates a report from current state
+or changes any run evidence.
 
 The dashboard exposes that analysis only from the matching Promptgeschiedenis
 row and only when its Run ID matches the selected terminal execution. A failed

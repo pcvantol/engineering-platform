@@ -526,6 +526,10 @@ html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;co
 .chat-message__body pre{background:transparent;border-radius:0;padding:0}
 html[data-theme="light"] .chat-message__body pre{background:transparent;color:inherit}
 
+/* Inline AI terms are distinguished by monospace alone, never a black chip. */
+.chat-message__body code{background:transparent;border-radius:0;padding:0}
+html[data-theme="light"] .chat-message__body code{background:transparent;color:inherit}
+
 /* Run-scoped AI conversation is opened from Prompt History, alongside evidence actions. */
 .prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover,.prompt-history-chat--recorded{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}.prompt-history-chat--recorded{font-weight:800}
 /* The shared modal shell owns the chat frame, header and safe-area sizing.
@@ -1207,3 +1211,26 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
   outline:1px solid var(--house-style)!important;
   outline-offset:0!important;
 }
+
+/* Owner approval and focused check repair are sibling PR actions.  Their
+   dimensions deliberately match so the approval gate does not look secondary. */
+.open-pr-owner-authorization,
+.open-pr-check-repair{
+  align-items:center;
+  display:inline-flex;
+  font:600 13px/1.2 system-ui;
+  min-height:46px;
+  padding:9px 12px;
+}
+.open-pr-owner-authorization::before{
+  content:"✓";
+  font-size:16px;
+  font-weight:800;
+  line-height:1;
+  margin-right:7px;
+}
+
+/* Dashboard actions are inline-flex by default.  Native `hidden` must still
+   win for retry actions after a successful reload or regeneration. */
+#promptHistoryReportReload[hidden],
+#promptHistoryReportRetry[hidden]{display:none!important}
