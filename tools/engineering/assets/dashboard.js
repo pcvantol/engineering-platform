@@ -2353,7 +2353,7 @@ function renderWorkspaceWorktrees(projection) {
         pr.href = analysis.pull_request.url;
         pr.target = "_blank";
         pr.rel = "noreferrer";
-        pr.textContent = t("workspace.worktree_analysis_pr", { number: analysis.pull_request.number, state: String(analysis.pull_request.state || "") });
+        pr.textContent = `${t("workspace.worktree_analysis_pr", { number: analysis.pull_request.number, state: String(analysis.pull_request.state || "") })} ↗`;
         item.append(pr);
       }
     } else if (worktree?.branch !== "main") {
@@ -7658,7 +7658,7 @@ function workspaceBranchCleanupDetails(details) {
         href: detail.pull_request.url,
         rel: "noreferrer",
         target: "_blank",
-        textContent: t("workspace.branch_cleanup_pr_link", { number: detail.pull_request.number }),
+        textContent: `${t("workspace.branch_cleanup_pr_link", { number: detail.pull_request.number })} ↗`,
       }));
     }
     list.append(item);
