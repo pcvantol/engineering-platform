@@ -267,14 +267,16 @@ test.describe("Engineering Status browser smoke", () => {
     }]);
   });
 
-  test("does not leave an empty configuration status container between grouped settings", async ({ page }) => {
+  test("keeps configuration controls visible while hiding an empty status message", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const configuration = page.locator("#configuration");
     await configuration.evaluate((element) => { element.open = true; });
     const statusContainer = configuration.locator(":scope > .configuration-controls");
-    await expect(statusContainer).toBeHidden();
-    await page.locator("#configurationStatus").evaluate((element) => { element.textContent = "Saved locally."; });
     await expect(statusContainer).toBeVisible();
+    await expect(page.locator("#configurationDashboardStreamInterval")).toBeVisible();
+    await expect(page.locator("#configurationStatus")).toBeHidden();
+    await page.locator("#configurationStatus").evaluate((element) => { element.textContent = "Saved locally."; });
+    await expect(page.locator("#configurationStatus")).toBeVisible();
   });
 
   test("places writable log settings in Logs and explains them", async ({ page }) => {
