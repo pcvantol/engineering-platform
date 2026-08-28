@@ -90,6 +90,11 @@ def _pull_request_recorded(value: object) -> bool:
 
 def _display_phase(phase: str, checkpoint: dict[str, object]) -> str:
     """Map internal evidence polling onto its visible lifecycle boundary."""
+    # GitHub plus origin/main evidence has already proven this hand-off was
+    # merged.  The watcher owns the subsequent resume, but the console must
+    # not keep showing an obsolete operator action in that small interval.
+    if phase == "WAIT_FOR_OPERATOR_MERGE" and checkpoint.get("next_action") == "resume_verified_merge":
+        return "FINALIZE_AGENT" if checkpoint.get("transaction_kind") == "IMPLEMENTATION" else "RECONCILE_AGENT"
     # Finalization has its own PR hand-off. Do not project it back onto the
     # implementation merge once that implementation PR is already merged.
     if phase == "WAIT_FOR_OPERATOR_MERGE" and checkpoint.get("transaction_kind") == "FINALIZATION":
@@ -201,13 +206,23 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     # Reaching the pull-request hand-off is not evidence that the pull request
     # was merged. A later finalization step (or a successful terminal state)
     # is the first lifecycle evidence that can make the merge node complete.
+    verified_merge_resume = checkpoint.get("next_action") == "resume_verified_merge"
     implementation_merge_completed = (
         terminal_state == "COMPLETE"
         or "FINALIZE_AGENT" in observed
         or "REPOSITORY_CLEANUP" in observed
+        or (verified_merge_resume and transaction_kind == "IMPLEMENTATION")
     )
-    finalization_merge_completed = terminal_state == "COMPLETE" or "REPOSITORY_CLEANUP" in observed
-    reconciliation_merge_completed = terminal_state == "COMPLETE" or "REPOSITORY_CLEANUP" in observed
+    finalization_merge_completed = (
+        terminal_state == "COMPLETE"
+        or "REPOSITORY_CLEANUP" in observed
+        or (verified_merge_resume and transaction_kind == "FINALIZATION")
+    )
+    reconciliation_merge_completed = (
+        terminal_state == "COMPLETE"
+        or "REPOSITORY_CLEANUP" in observed
+        or (verified_merge_resume and transaction_kind == "RECONCILIATION")
+    )
     # The managed contract permits a no-PR path and a single implementation-PR
     # path. A terminal pre-flight block is not merge evidence. Omit boundaries
     # that have no persisted PR evidence instead of inventing an operator wait.

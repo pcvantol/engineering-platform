@@ -171,6 +171,7 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   invoke_agent: "operational.activity_invoke_agent",
   run_local_repository_validation: "operational.run_local_repository_validation",
   workspace_migration_blocked_by_active_dashboard: "operational.workspace_migration_blocked_by_active_dashboard",
+  create_finalization: "operational.create_finalization",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
   FINALIZATION_REPAIR_AGENT: "lifecycle.step.repair_agent",
   poll_required_checks: "operational.poll_required_checks",
@@ -1976,7 +1977,52 @@ function lifecycleFlow(projection, { historical = false } = {}) {
   section.append(summary);
   return section;
 }
-function renderActiveLifecycle(projection) {
+function activeRunPullRequestEntries(execution) {
+  const repository = String(execution?.target_repository || "").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return [];
+  return [
+    ["implementation", execution?.implementation_pr],
+    ["finalization", execution?.finalization_pr],
+  ].flatMap(([role, value]) => {
+    const number = Number(value);
+    if (!Number.isInteger(number) || number <= 0) return [];
+    return [{
+      role,
+      number,
+      url: `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/pull/${number}`,
+    }];
+  });
+}
+function renderActivePullRequests(execution, lifecycle) {
+  const current = $("currentRun")?.querySelector(".current-run__grid");
+  if (!current) return;
+  current.querySelector("#activeRunPullRequests")?.remove();
+  const entries = activeRunPullRequestEntries(execution);
+  if (!entries.length) return;
+  const labels = {
+    implementation: t("detail.implementation_pull_request"),
+    finalization: t("detail.finalization_pull_request"),
+  };
+  const fields = entries.map((entry) => {
+    const field = detailField(labels[entry.role], "");
+    const link = document.createElement("a");
+    link.className = "prompt-detail-pr-link";
+    link.href = entry.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `#${entry.number} ↗`;
+    link.setAttribute("aria-label", `${labels[entry.role]} #${entry.number}`);
+    field.lastElementChild.replaceChildren(link);
+    return field;
+  });
+  const card = promptDetailCard(
+    t("detail.pull_requests"), fields, false, "active-run-pull-requests",
+  );
+  card.id = "activeRunPullRequests";
+  if (lifecycle?.parentElement === current) lifecycle.after(card);
+  else current.append(card);
+}
+function renderActiveLifecycle(projection, execution = {}) {
   const current = $("currentRun")?.querySelector(".current-run__grid"); if (!current) return;
   const previous = current.querySelector(".execution-lifecycle"),
     previousScroll = previous?.querySelector(".execution-lifecycle__scroll"),
@@ -2009,6 +2055,9 @@ function renderActiveLifecycle(projection) {
     } else if (!sameRun) {
       revealActiveLifecycleStep(lifecycle.querySelector(".execution-lifecycle__scroll"));
     }
+    renderActivePullRequests(execution, lifecycle);
+  } else {
+    renderActivePullRequests(execution, null);
   }
 }
 function statusReconciliationCard(recovery) {
@@ -2137,7 +2186,7 @@ function renderHealthStatus(x, snapshot = {}) {
     : t("detail.execution");
   $("promptStartedField").hidden = precedingExecutionOnly;
   renderExecutionContext(x.execution_context, x);
-  renderActiveLifecycle(x.lifecycle);
+  renderActiveLifecycle(x.lifecycle, x);
   renderOperatorMergeWait(x);
   renderEmergencyRecovery(snapshot.emergency_recovery, x);
   renderCodexUsageLimitBanner(x, snapshot.rate_limits);

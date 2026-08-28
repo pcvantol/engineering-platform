@@ -277,6 +277,34 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["lifecycle"]["current_step"], "FINALIZATION_REPAIR_AGENT")
         self.assertNotIn("merge the pull request", payload["current_action"])
 
+    def test_status_projects_a_verified_merge_continuation_without_an_obsolete_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            (status / "status.json").write_text(json.dumps({
+                "watcher_state": "ENGINEERING_RUN_ACTIVE",
+                "run_id": "inbox-merged",
+                "current_phase": "FINALIZE_AGENT",
+                "current_action": "create_finalization",
+            }), encoding="utf-8")
+            (status / "current.json").write_text(json.dumps({
+                "run_id": "inbox-merged", "phase": "WAIT_FOR_OPERATOR_MERGE", "pull_request": 896,
+            }), encoding="utf-8")
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState(
+                    "inbox-merged", "repo", "prompt.md", "WAIT_FOR_OPERATOR_MERGE",
+                    implementation_pull_request=896, next_action="resume_verified_merge",
+                )
+            )
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(payload["current_phase"], "FINALIZE_AGENT")
+        self.assertEqual(payload["current_action"], "create_finalization")
+        self.assertEqual(payload["lifecycle"]["current_step"], "FINALIZE_AGENT")
+
     def test_status_ignores_a_stale_nonterminal_live_projection_after_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

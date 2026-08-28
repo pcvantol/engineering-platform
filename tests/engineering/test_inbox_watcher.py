@@ -616,12 +616,12 @@ class InboxWatcherTest(unittest.TestCase):
         run_id = "inbox-direct-merge-check"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "direct-check.md"
         source.write_text("# Direct merge check\n", encoding="utf-8")
-        StateStore(self.repo / ".engineering" / "engineering-runs").save(
-            TransactionState(
-                run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
-                phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
-            )
+        waiting = TransactionState(
+            run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
+            phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
         )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(waiting)
+        inbox_watcher._publish_operator_merge_wait(self.repo, waiting)
         open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
         with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = open_pr
@@ -646,6 +646,10 @@ class InboxWatcherTest(unittest.TestCase):
         resumed = StateStore(self.repo / ".engineering" / "engineering-runs").load(run_id)
         self.assertEqual(resumed.next_action, "resume_verified_merge")
         self.assertTrue(inbox_watcher._operator_merge_poll_due(self.repo, run_id))
+        published = json_status(self.repo)
+        self.assertEqual(published["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(published["current_phase"], "FINALIZE_AGENT")
+        self.assertEqual(published["current_action"], "create_finalization")
 
     def test_direct_operator_merge_status_check_fails_closed_when_evidence_is_incomplete(self) -> None:
         run_id = "inbox-merge-evidence"

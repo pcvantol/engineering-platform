@@ -199,13 +199,31 @@ def _is_operator_merge_wait(live: object, lifecycle: object) -> bool:
         return False
     phase = live.get("phase")
     if phase == "WAIT_FOR_OPERATOR_MERGE":
-        return True
+        return lifecycle.get("current_step") in {
+            "WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE", "WAIT_FOR_RECONCILIATION_MERGE",
+        }
     return (
         phase == "WAIT_FOR_TERMINAL_EVIDENCE"
         and lifecycle.get("current_step") in {"WAIT_FOR_OPERATOR_MERGE", "WAIT_FOR_FINALIZATION_MERGE", "WAIT_FOR_RECONCILIATION_MERGE"}
         and isinstance(live.get("pull_request"), int)
         and not isinstance(live.get("pull_request"), bool)
         and live["pull_request"] > 0
+    )
+
+
+def _has_verified_merge_continuation(watcher: object, live: object, lifecycle: object) -> bool:
+    """Return whether a proven merge has already scheduled its visible next step."""
+    return (
+        isinstance(watcher, dict)
+        and isinstance(live, dict)
+        and isinstance(lifecycle, dict)
+        and watcher.get("watcher_state") == "ENGINEERING_RUN_ACTIVE"
+        and watcher.get("run_id") == live.get("run_id")
+        and watcher.get("current_phase") == lifecycle.get("current_step")
+        and watcher.get("current_phase") in {"FINALIZE_AGENT", "RECONCILE_AGENT"}
+        and watcher.get("current_action") in {
+            "create_finalization", "reconcile_rolling_records_on_main",
+        }
     )
 
 
@@ -362,6 +380,16 @@ def status(root: Path) -> bytes:
         ).encode()
     except (ValueError, TypeError):
         live, projection, lifecycle = None, None, None
+    if live and _has_verified_merge_continuation(watcher, live, lifecycle):
+        continuation_projection = json.loads(projection or b"{}")
+        continuation_projection.update(
+            {
+                "watcher_state": watcher["watcher_state"],
+                "current_phase": watcher["current_phase"],
+                "current_action": watcher["current_action"],
+            }
+        )
+        return json.dumps(continuation_projection, separators=(",", ":")).encode()
     if (
         live
         and _is_operator_merge_wait(live, lifecycle)

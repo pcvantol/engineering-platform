@@ -1225,6 +1225,42 @@ def _publish_resumed_merge_transition(
     )
 
 
+def _verified_merge_continuation(state: TransactionState) -> tuple[str, str]:
+    """Return the next visible phase after a merge is proven on ``origin/main``.
+
+    The checkpoint remains at the operator hand-off until the watcher resumes
+    the Execution Host.  This is only a dashboard projection of that already
+    proven continuation; it neither starts an agent nor advances lifecycle
+    authority.
+    """
+    if state.transaction_kind == "IMPLEMENTATION":
+        return "FINALIZE_AGENT", "create_finalization"
+    return "RECONCILE_AGENT", "reconcile_rolling_records_on_main"
+
+
+def _publish_verified_merge_continuation(repo: Path, state: TransactionState) -> None:
+    """Replace the obsolete merge wait as soon as GitHub merge evidence is stored."""
+    try:
+        prior = load_projection(repo, "watcher_status") or {}
+    except EngineeringStorageError:
+        prior = {}
+    phase, action = _verified_merge_continuation(state)
+    status(
+        repo,
+        "ENGINEERING_RUN_ACTIVE",
+        job_id=prior.get("job_id") if isinstance(prior.get("job_id"), str) else None,
+        run_id=state.run_id,
+        queued_jobs=prior.get("queue_depth") if isinstance(prior.get("queue_depth"), int) else 0,
+        queue_items=prior.get("queue_items") if isinstance(prior.get("queue_items"), list) else [],
+        runner_phase=phase,
+        current_action=action,
+        implementation_pr=state.implementation_pull_request,
+        finalization_pr=state.finalization_pull_request,
+        submitted_filename=prior.get("submitted_filename") if isinstance(prior.get("submitted_filename"), str) else None,
+        prompt_title=prior.get("prompt_title") if isinstance(prior.get("prompt_title"), str) else None,
+    )
+
+
 def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "dashboard_operator") -> dict[str, object]:
     """Explicitly stop a durable PR hand-off without claiming a technical failure."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
@@ -1340,9 +1376,9 @@ def check_operator_merge_status(repo: Path, run_id: str) -> dict[str, object]:
         # Persist the continuation request before returning to the browser.
         # The watcher owns the actual resume; no in-memory timer may become a
         # second authority or disappear during a handover.
-        StateStore(repo / ".engineering" / "engineering-runs").save(
-            replace(state, next_action="resume_verified_merge")
-        )
+        resumed = replace(state, next_action="resume_verified_merge")
+        StateStore(repo / ".engineering" / "engineering-runs").save(resumed)
+        _publish_verified_merge_continuation(repo, resumed)
         return {"verified": True, "continuation": "queued", "pull_request": pull_request,
                 "last_successful_github_check_at": check.get("last_successful_github_check_at")}
 
