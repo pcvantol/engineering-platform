@@ -636,6 +636,50 @@ class EngineeringRunner:
         return passed and failed
 
     @staticmethod
+    def _has_failed_validation_evidence(result: AgentResult) -> bool:
+        """Return whether an agent supplied bounded evidence of a failed local check."""
+        if not result.validation_evidence:
+            return False
+        summaries = " ".join(
+            item.get("result", "").casefold()
+            for item in result.validation_evidence
+            if isinstance(item, dict)
+        )
+        return any(token in summaries for token in ("fail", "failed", "timeout", "timed out", "error"))
+
+    @staticmethod
+    def _is_external_agent_block(result: AgentResult) -> bool:
+        """Keep explicit external blocks out of the mutable validation route."""
+        return result.terminal_condition == "external_blocked"
+
+    def _is_recoverable_implementation_validation_failure(
+        self, state: TransactionState, result: AgentResult
+    ) -> bool:
+        """Admit only a verified implementation commit into local validation repair.
+
+        The implementation provider may faithfully return FAILED after it has
+        committed a bounded change and discovered that the broader local suite
+        still fails.  That is a product-validation result, not an external
+        dependency.  It is safe to enter the existing three-attempt local gate
+        only after the host recorded the exact branch/HEAD evidence.
+        """
+        if not (
+            result.terminal_state == "FAILED"
+            and result.branch
+            and result.branch != "main"
+            and result.commit_sha
+            and not result.pull_request
+            and not self._is_external_agent_block(result)
+            and self._has_failed_validation_evidence(result)
+        ):
+            return False
+        return any(
+            item.get("phase") == "EXECUTE_AGENT"
+            and item.get("commit_sha") == result.commit_sha
+            for item in state.commit_evidence
+        )
+
+    @staticmethod
     def _append_verified_commit_evidence(
         state: TransactionState, *, phase: str, commit_sha: str, description: str
     ) -> TransactionState:
@@ -837,6 +881,22 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, "BLOCKED", error.next_action, str(error)), implementation
             if result.terminal_state in {"BLOCKED", "FAILED"}:
+                if (
+                    result.terminal_state == "FAILED"
+                    and not self._is_external_agent_block(result)
+                    and self._has_failed_validation_evidence(result)
+                ):
+                    validation = self._record_local_validation_audit(
+                        validation, result=result, outcome="validation_failed", profile=profile
+                    )
+                    if self._is_environmental_validation_instability(result):
+                        return self._save_terminal(
+                            validation,
+                            "BLOCKED",
+                            "validation_infrastructure_recovery_required",
+                            "Required local validation is unstable: a failed required suite and a passing isolated rerun were recorded without an implementation correction. Preserve this run and create a separate validation-infrastructure recovery item.",
+                        ), implementation
+                    continue
                 validation = self._record_local_validation_audit(validation, result=result, outcome="agent_failed", profile=profile)
                 return self._save_terminal(validation, result.terminal_state, "local_repository_validation_failed", result.diagnostic or "Local repository validation failed."), implementation
             if result.branch and result.branch != branch:
@@ -844,8 +904,11 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 return self._save_terminal(validation, "BLOCKED", "local_validation_scope", "Local validation changed the bounded implementation branch."), implementation
             if result.pull_request:
                 validation = self._record_local_validation_audit(validation, result=result, outcome="validated", profile=profile)
-                return validation, replace(implementation, branch=branch, pull_request=result.pull_request,
-                                           validation_evidence=implementation.validation_evidence + result.validation_evidence)
+                return validation, replace(
+                    result,
+                    branch=branch,
+                    validation_evidence=implementation.validation_evidence + result.validation_evidence,
+                )
             validation = self._record_local_validation_audit(validation, result=result, outcome="validation_failed", profile=profile)
             if self._is_environmental_validation_instability(result):
                 return self._save_terminal(
@@ -1343,7 +1406,10 @@ Mandatory autonomous refactor and quality-control stage:
             )
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
-        if state.transaction_kind == "IMPLEMENTATION" and result.terminal_state not in {"BLOCKED", "FAILED"}:
+        recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
+        if state.transaction_kind == "IMPLEMENTATION" and (
+            result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure
+        ):
             if state.owner_authorized:
                 state, result = self._run_local_repository_validation(state, result)
                 if state.terminal:

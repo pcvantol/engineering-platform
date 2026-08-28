@@ -59,6 +59,15 @@ persisted bounded repair audit: failed checks, the proposed repair, its safe
 summary, commit reference and outcome. Prompt-detail views do not duplicate
 this lifecycle evidence.
 
+The Local repository validation popup owns the equivalent audit before a pull
+request exists. A verified implementation commit that reports a failed local
+suite enters this bounded route even when the implementation agent returned
+`FAILED`; external blocks and unverified evidence do not. The popup, Markdown
+report and JSON export retain the per-attempt failure reason, proposed bounded
+validation action, commit reference and outcome. The route permits at most
+three attempts and then ends fail-closed with
+`local_validation_attempt_limit_reached`.
+
 The execution-details view additionally projects the complete verified
 phase-commit timeline for mutating phases. Each row is timestamped and names
 the phase, verified SHA and short safe description. The timeline is evidence

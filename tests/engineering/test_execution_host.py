@@ -959,6 +959,120 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("iteration 1 of 3", agent.prompts[0])
         self.assertIn("Create one draft implementation pull request only after", agent.prompts[0])
 
+    def test_verified_implementation_validation_failure_enters_local_repair_route(self) -> None:
+        sha = "b" * 40
+        initial = AgentResult(
+            "FAILED",
+            "codex/implementation",
+            diagnostic="The broader local suite failed after the implementation commit.",
+            commit_sha=sha,
+            validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},),
+        )
+        repository = FakeRepository(branch="codex/implementation")
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", "codex/implementation", sha, True)
+        agent = SequencedFakeAgent([
+            AgentResult("WAITING", "codex/implementation", diagnostic="Still failing.", validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},)),
+            AgentResult("COMPLETE", "codex/implementation", 701, diagnostic="Passed.", validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed"},)),
+        ])
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState(
+            "implementation-validation-failure", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+        )
+        verified = runner._record_verified_result_commit(
+            state, initial, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified"
+        )
+
+        self.assertTrue(runner._is_recoverable_implementation_validation_failure(verified, initial))
+        validated, result = runner._run_local_repository_validation(verified, initial)
+
+        self.assertFalse(validated.terminal)
+        self.assertEqual(validated.local_validation_iterations, 2)
+        self.assertEqual([item["outcome"] for item in validated.local_validation_audit], ["validation_failed", "validated"])
+        self.assertEqual(result.pull_request, 701)
+
+    def test_runner_routes_verified_failed_implementation_to_local_validation_before_pr(self) -> None:
+        sha = "d" * 40
+        repository = FakeRepository()
+
+        class CommitThenValidateAgent(SequencedFakeAgent):
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                result = super().invoke(root, prompt)
+                if len(self.prompts) == 1:
+                    repository.evidence = RepositoryEvidence(
+                        "pcvantol/djconnect", "codex/implementation", sha, True
+                    )
+                return result
+
+        agent = CommitThenValidateAgent([
+            AgentResult(
+                "FAILED", "codex/implementation", commit_sha=sha,
+                diagnostic="Broader local suite failed after the implementation commit.",
+                validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},),
+            ),
+            AgentResult(
+                "COMPLETE", "codex/implementation", 701,
+                validation_evidence=({"command": "python -m unittest tests.engineering", "result": "passed"},),
+            ),
+            AgentResult("COMPLETE", "codex/implementation", 701),
+        ])
+        github = FakeGitHub([
+            PullRequestEvidence(701, "OPEN", True, True, head_branch="codex/implementation", base_branch="main"),
+        ])
+
+        state = EngineeringRunner(self.root, self.store, repository, github, agent, lambda _: None).run(
+            self.prompt, run_id="failed-implementation-routes-locally", owner_authorized=True
+        )
+
+        self.assertTrue(state.commit_evidence, state.diagnostic)
+        self.assertEqual(state.phase, "WAIT_FOR_OPERATOR_MERGE", state.diagnostic)
+        self.assertFalse(state.terminal)
+        self.assertEqual(state.local_validation_iterations, 1)
+        self.assertEqual(state.local_validation_audit[0]["outcome"], "validated")
+        self.assertEqual(len(agent.prompts), 3)
+        self.assertIn("Local repository validation gate — iteration 1 of 3", agent.prompts[1])
+
+    def test_unverified_or_external_implementation_failure_never_starts_local_repair(self) -> None:
+        sha = "c" * 40
+        result = AgentResult(
+            "FAILED", "codex/implementation", commit_sha=sha,
+            terminal_condition="external_blocked",
+            validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},),
+        )
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)
+        state = TransactionState(
+            "external-validation-failure", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+        )
+
+        self.assertFalse(runner._is_recoverable_implementation_validation_failure(state, result))
+
+    def test_failed_local_validation_uses_all_three_bounded_attempts(self) -> None:
+        failures = [
+            AgentResult(
+                "FAILED", "codex/implementation", diagnostic="Required local suite failed.",
+                validation_evidence=({"command": "python -m unittest tests.engineering", "result": "failed"},),
+            )
+            for _ in range(3)
+        ]
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), SequencedFakeAgent(failures), lambda _: None
+        )
+        state = TransactionState(
+            "local-validation-limit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT",
+            branch="codex/implementation", owner_authorized=True,
+        )
+
+        blocked, _ = runner._run_local_repository_validation(
+            state, AgentResult("COMPLETE", "codex/implementation")
+        )
+
+        self.assertTrue(blocked.terminal)
+        self.assertEqual(blocked.next_action, "local_validation_attempt_limit_reached")
+        self.assertEqual(blocked.local_validation_iterations, 3)
+        self.assertEqual(len(blocked.local_validation_audit), 3)
+        self.assertEqual({item["outcome"] for item in blocked.local_validation_audit}, {"validation_failed"})
+
     def test_local_repository_validation_separates_proven_environment_instability(self) -> None:
         agent = SequencedFakeAgent([
             AgentResult(
@@ -2246,6 +2360,33 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
         self.assertIn("Codex CLI Installation Path: `/managed/engineering-platform/codex-cli`", body)
+
+    def test_terminal_report_includes_bounded_local_validation_audit(self) -> None:
+        audit = ({
+            "iteration": "1",
+            "observed_at": "2026-08-28T10:00:00+00:00",
+            "failed_checks": "Required local suite",
+            "proposed_action": "Repair the bounded test failure.",
+            "agent_summary": "Repaired the local test fixture.",
+            "commit_sha": "a" * 40,
+            "outcome": "validated",
+        },)
+        state = TransactionState(
+            "local-validation-report",
+            "pcvantol/djconnect",
+            str(self.prompt),
+            "BLOCKED",
+            terminal=True,
+            local_validation_iterations=1,
+            local_validation_audit=audit,
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn("## Local Repository Validation History", body)
+        self.assertIn("### Local validation iteration 1", body)
+        self.assertIn("Required local suite", body)
+        self.assertIn("Repair the bounded test failure.", body)
 
     def test_terminal_report_labels_cumulative_input_without_calling_it_context(self) -> None:
         state = TransactionState("provider-usage-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)

@@ -99,6 +99,19 @@ the third repair, it records the failed check names and stops the execution as
 `BLOCKED` with `repair_attempt_limit_reached`; it does not invoke another
 agent repair. A single provider invocation can still end earlier under its own
 runtime limits, and transient GitHub evidence reads remain separately bounded.
+
+Before an implementation pull request exists, local repository validation has
+its own independent, three-attempt repair budget. If the implementation agent
+returns `FAILED` only after the host has verified a clean transaction branch
+and exact commit, and its bounded validation evidence records a failed local
+suite, the host routes that result into the local validation gate instead of
+classifying it as an external dependency. Each attempt records checkpoint and
+audit evidence. Explicit external blocks, provider/auth failures, missing or
+unverified branch/commit evidence, and non-validation agent failures remain
+fail-closed and never invoke this repair route. A still-failing local suite
+after the third attempt stops as `BLOCKED` with
+`local_validation_attempt_limit_reached`. This local budget is separate from
+the later pull-request required-check repair budget.
 When finalization creates its own pull request, that is a second, distinct
 operator merge handoff: the implementation Merge node remains completed,
 Finalization remains completed, and the console shows a separate active
