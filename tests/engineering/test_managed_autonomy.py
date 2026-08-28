@@ -11,11 +11,29 @@ from tools.engineering.managed_autonomy import (
     record_gate,
     terminal_snapshot,
 )
+from tools.engineering.storage import (
+    record_run_qualification_context,
+    record_validation_control_result,
+    record_validation_profile,
+)
 
 
 class ManagedAutonomyEvidenceTest(unittest.TestCase):
-    def _qualified(self, root: Path) -> dict[str, object]:
+    def _qualified(self, root: Path, *, retry_parent: str | None = None, resume_parent: str | None = None) -> dict[str, object]:
         run = "inbox-managed-proof"
+        record_run_qualification_context(
+            root, run_id=run, submission_id="submission-managed-proof", fresh_submission=retry_parent is None and resume_parent is None,
+            retry_parent_run_id=retry_parent, resume_parent_run_id=resume_parent, recorded_at="2026-08-28T00:00:00+00:00",
+        )
+        record_validation_profile(
+            root, run_id=run, selected_validation_tier="DOCUMENTATION", validation_profile_version="1.0",
+            required_validation_controls=("git_diff_check",), recorded_at="2026-08-28T00:00:00+00:00",
+        )
+        record_validation_control_result(
+            root, run_id=run, validation_id="git_diff_check", category="repository",
+            control_identity="git diff --check", required_for_profile=True, execution_status="EXECUTED",
+            result="PASS", evidence_ref="local", observed_at="2026-08-28T00:00:01+00:00", currentness=1,
+        )
         for action in (
             "IMPLEMENTATION",
             "POST_IMPLEMENTATION_MERGE",
@@ -249,7 +267,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
     def test_retry_parent_prevents_fresh_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            self._qualified(root)
+            self._qualified(root, retry_parent="inbox-parent")
             snapshot = terminal_snapshot(
                 root,
                 run_id="inbox-managed-proof",
@@ -262,7 +280,6 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
                 worktree_state="CLEAN",
                 active_blocker="NONE",
                 recovery_required="NO",
-                retry_parent="inbox-parent",
                 lineage_available=True,
             )
         self.assertEqual(snapshot["fresh_submission"], "NO")
@@ -271,7 +288,7 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
     def test_resume_parent_prevents_fresh_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            self._qualified(root)
+            self._qualified(root, resume_parent="inbox-parent")
             snapshot = terminal_snapshot(
                 root,
                 run_id="inbox-managed-proof",
@@ -284,7 +301,6 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
                 worktree_state="CLEAN",
                 active_blocker="NONE",
                 recovery_required="NO",
-                resume_parent="inbox-parent",
                 lineage_available=True,
             )
         self.assertEqual(snapshot["fresh_submission"], "NO")
@@ -302,6 +318,45 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["fresh_submission"], "UNAVAILABLE")
         self.assertEqual(snapshot["retry_parent"], "UNAVAILABLE")
         self.assertEqual(snapshot["resume_parent"], "UNAVAILABLE")
+
+    def test_original_lineage_cannot_be_overwritten_by_later_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record_run_qualification_context(root, run_id="lineage-finalization", submission_id="submission-one",
+                                             fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None,
+                                             recorded_at="2026-08-28T00:00:00+00:00")
+            record_run_qualification_context(root, run_id="lineage-finalization", submission_id="submission-two",
+                                             fresh_submission=False, retry_parent_run_id="old-run", resume_parent_run_id=None,
+                                             recorded_at="2026-08-28T00:01:00+00:00")
+            snapshot = terminal_snapshot(root, run_id="lineage-finalization", execution_outcome="COMPLETE",
+                                         implementation_pr=None, finalization_pr=None, repository_state="UNAVAILABLE",
+                                         workspace_state="UNAVAILABLE", main_origin_sync="UNAVAILABLE", worktree_state="UNAVAILABLE",
+                                         active_blocker="UNAVAILABLE", recovery_required="UNAVAILABLE")
+        self.assertEqual(snapshot["fresh_submission"], "YES")
+        self.assertEqual(snapshot["submission_id"], "submission-one")
+
+    def test_required_validation_profile_is_fail_closed_and_optional_not_executed_is_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record_validation_profile(root, run_id="validation-contract", selected_validation_tier="FULL",
+                                      validation_profile_version="1.0", required_validation_controls=("suite", "lint"),
+                                      recorded_at="2026-08-28T00:00:00+00:00")
+            record_validation_control_result(root, run_id="validation-contract", validation_id="suite", category="suite",
+                                             control_identity="full suite", required_for_profile=True, execution_status="EXECUTED",
+                                             result="PASS", evidence_ref="local", observed_at="2026-08-28T00:00:01+00:00", currentness=1)
+            missing = terminal_snapshot(root, run_id="validation-contract", execution_outcome="COMPLETE",
+                                       implementation_pr=None, finalization_pr=None, repository_state="UNAVAILABLE",
+                                       workspace_state="UNAVAILABLE", main_origin_sync="UNAVAILABLE", worktree_state="UNAVAILABLE",
+                                       active_blocker="UNAVAILABLE", recovery_required="UNAVAILABLE")
+            self.assertEqual(missing["required_validation_state"], "UNRESOLVED")
+            record_validation_control_result(root, run_id="validation-contract", validation_id="lint", category="lint",
+                                             control_identity="lint", required_for_profile=True, execution_status="EXECUTED",
+                                             result="FAIL", evidence_ref="local", observed_at="2026-08-28T00:00:02+00:00", currentness=1)
+            failed = terminal_snapshot(root, run_id="validation-contract", execution_outcome="COMPLETE",
+                                       implementation_pr=None, finalization_pr=None, repository_state="UNAVAILABLE",
+                                       workspace_state="UNAVAILABLE", main_origin_sync="UNAVAILABLE", worktree_state="UNAVAILABLE",
+                                       active_blocker="UNAVAILABLE", recovery_required="UNAVAILABLE")
+            self.assertEqual(failed["required_validation_state"], "FAIL")
 
     def test_newer_required_check_pass_supersedes_historical_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

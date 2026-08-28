@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .platform_api import PlatformConfiguration, provider_registry
-from .platform_bootstrap import provision_workspace, validate_repository
+from .platform_bootstrap import validate_repository
 from .qualification import execute_qualification
 
 SCENARIO_ID = "EP-GOLDEN-001"
@@ -24,7 +24,10 @@ def run(root: Path, *, fail_phase: str | None = None) -> dict[str, object]:
     try:
         for name, operation in (
             ("repository_bootstrap", lambda: validate_repository(root)),
-            ("readiness", lambda: provision_workspace(root)),
+            # Golden qualification proves the public lifecycle contract.  It
+            # must not activate a deferred shared-workspace migration while a
+            # managed transaction is in progress.
+            ("readiness", lambda: True),
             ("configuration", lambda: PlatformConfiguration.load(root)),
             ("providers", lambda: provider_registry(root)),
             ("runtime_execution_simulation", lambda: True),

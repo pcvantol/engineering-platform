@@ -12,7 +12,13 @@ from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.contracts import AllowedAction, evaluate_action, get_allowed_actions, get_run_context
 from tools.engineering.contracts.models import ContractVersionError, require_compatible_version
 from tools.engineering.managed_autonomy import append_pr_check_observation
-from tools.engineering.storage import open_storage, record_submission
+from tools.engineering.storage import (
+    open_storage,
+    record_run_qualification_context,
+    record_submission,
+    record_validation_control_result,
+    record_validation_profile,
+)
 
 
 class ContractProjectionTests(unittest.TestCase):
@@ -77,6 +83,31 @@ class ContractProjectionTests(unittest.TestCase):
             self.assertEqual(payload["delivery"]["implementation_required_checks_state"], "FAIL")
             self.assertEqual(payload["delivery"]["implementation_merge_gate"], "EXPECTED_OPERATOR_GATE")
             self.assertFalse(any("merge" in item["action_id"] for item in payload["allowed_actions"]))
+
+    def test_projection_uses_explicit_lineage_and_required_validation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = self._state(root)
+            record_run_qualification_context(
+                root, run_id=state.run_id, submission_id="submission-contract", fresh_submission=True,
+                retry_parent_run_id=None, resume_parent_run_id=None, recorded_at="2026-08-28T00:00:00+00:00",
+            )
+            record_validation_profile(
+                root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION", validation_profile_version="1.0",
+                required_validation_controls=("git_diff_check",), recorded_at="2026-08-28T00:00:00+00:00",
+            )
+            record_validation_control_result(
+                root, run_id=state.run_id, validation_id="git_diff_check", category="repository",
+                control_identity="git diff --check", required_for_profile=True, execution_status="EXECUTED",
+                result="PASS", evidence_ref="local", observed_at="2026-08-28T00:00:01+00:00", currentness=1,
+            )
+            payload = get_run_context(root, state.run_id)
+        self.assertTrue(payload["run"]["fresh_submission"])
+        self.assertIsNone(payload["run"]["retry_parent"])
+        self.assertIsNone(payload["run"]["resume_parent"])
+        required = payload["validation"]["required_validation"]
+        self.assertEqual(required["required_validation_state"], "PASS")
+        self.assertEqual(required["required_validation_controls"], ["git_diff_check"])
 
     def test_unknown_and_stale_actions_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

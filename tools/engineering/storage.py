@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 32
+ENGINEERING_STORAGE_SCHEMA_VERSION = 33
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -875,6 +875,49 @@ def _schema_v32(connection: sqlite3.Connection) -> None:
         )
 
 
+def _schema_v33(connection: sqlite3.Connection) -> None:
+    """Persist immutable qualification lineage and resolved validation policy.
+
+    This intentionally adds no historical rows.  A legacy run therefore stays
+    unavailable instead of receiving invented fresh-submission or validation
+    evidence during schema activation.
+    """
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_run_qualification_context ("
+        "run_id TEXT PRIMARY KEY,submission_id TEXT NOT NULL,"
+        "fresh_submission INTEGER NOT NULL CHECK(fresh_submission IN (0,1)),"
+        "retry_parent_run_id TEXT,resume_parent_run_id TEXT,recorded_at TEXT NOT NULL,"
+        "CHECK(NOT (retry_parent_run_id IS NOT NULL AND resume_parent_run_id IS NOT NULL)),"
+        "CHECK((fresh_submission=1 AND retry_parent_run_id IS NULL AND resume_parent_run_id IS NULL) "
+        "OR (fresh_submission=0 AND (retry_parent_run_id IS NOT NULL OR resume_parent_run_id IS NOT NULL)))"
+        ")"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_validation_profiles ("
+        "run_id TEXT PRIMARY KEY,selected_validation_tier TEXT NOT NULL,"
+        "validation_profile_version TEXT NOT NULL,required_validation_controls TEXT NOT NULL,"
+        "recorded_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_validation_control_results ("
+        "id INTEGER PRIMARY KEY,run_id TEXT NOT NULL,validation_id TEXT NOT NULL,"
+        "category TEXT NOT NULL,control_identity TEXT NOT NULL,required_for_profile INTEGER NOT NULL "
+        "CHECK(required_for_profile IN (0,1)),execution_status TEXT NOT NULL,"
+        "result TEXT NOT NULL,evidence_ref TEXT NOT NULL,observed_at TEXT NOT NULL,currentness INTEGER NOT NULL,"
+        "UNIQUE(run_id,validation_id,currentness))"
+    )
+    for table in (
+        "execution_run_qualification_context", "execution_validation_profiles",
+        "execution_validation_control_results",
+    ):
+        for operation in ("UPDATE", "DELETE"):
+            connection.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} "
+                f"BEFORE {operation} ON {table} BEGIN "
+                f"SELECT RAISE(ABORT, '{table} evidence is immutable.'); END"
+            )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -954,6 +997,7 @@ MIGRATIONS: dict[int, Migration] = {
     30: _schema_v30,
     31: _schema_v31,
     32: _schema_v32,
+    33: _schema_v33,
 }
 
 
@@ -1400,17 +1444,118 @@ def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None
 
 
 def load_run_lineage(root: Path, run_id: str) -> dict[str, object] | None:
-    """Load only canonical execution-lineage identifiers for terminal projection."""
+    """Load explicit qualification lineage; legacy rows deliberately remain unavailable."""
     connection = open_storage(root)
     try:
         row = connection.execute(
-            "SELECT retry_of,original_run_id FROM execution_runs WHERE run_id=?", (run_id,)
+            "SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id,recorded_at "
+            "FROM execution_run_qualification_context WHERE run_id=?", (run_id,)
         ).fetchone()
     finally:
         connection.close()
     if row is None:
         return None
-    return {"retry_parent": row[0], "submission_lineage": row[1]}
+    return {
+        "submission_id": row[0], "fresh_submission": bool(row[1]),
+        "retry_parent": row[2], "resume_parent": row[3], "recorded_at": row[4],
+    }
+
+
+def record_run_qualification_context(
+    root: Path, *, run_id: str, submission_id: str, fresh_submission: bool,
+    retry_parent_run_id: str | None, resume_parent_run_id: str | None,
+    recorded_at: str,
+) -> None:
+    """Persist one immutable lineage statement before provider work starts."""
+    if not all(isinstance(value, str) and value for value in (run_id, submission_id, recorded_at)):
+        raise EngineeringStorageError("Qualification lineage identity is invalid.")
+    if retry_parent_run_id is not None and resume_parent_run_id is not None:
+        raise EngineeringStorageError("Qualification lineage cannot have dual parents.")
+    if fresh_submission != (retry_parent_run_id is None and resume_parent_run_id is None):
+        raise EngineeringStorageError("Qualification lineage fresh state is inconsistent.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_run_qualification_context("
+            "run_id,submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id,recorded_at) VALUES(?,?,?,?,?,?)",
+            (run_id, submission_id, int(fresh_submission), retry_parent_run_id, resume_parent_run_id, recorded_at),
+        )
+    finally:
+        connection.close()
+
+
+def record_validation_profile(
+    root: Path, *, run_id: str, selected_validation_tier: str, validation_profile_version: str,
+    required_validation_controls: tuple[str, ...], recorded_at: str,
+) -> None:
+    """Persist the exact mandatory controls before their execution evidence."""
+    if not run_id or not selected_validation_tier or not validation_profile_version or not recorded_at:
+        raise EngineeringStorageError("Validation profile identity is invalid.")
+    if not required_validation_controls or any(not control for control in required_validation_controls):
+        raise EngineeringStorageError("Validation profile controls are invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_validation_profiles(run_id,selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at) VALUES(?,?,?,?,?)",
+            (run_id, selected_validation_tier, validation_profile_version, _encoded_payload({"validation_ids": list(required_validation_controls)}), recorded_at),
+        )
+    finally:
+        connection.close()
+
+
+def record_validation_control_result(
+    root: Path, *, run_id: str, validation_id: str, category: str, control_identity: str,
+    required_for_profile: bool, execution_status: str, result: str, evidence_ref: str,
+    observed_at: str, currentness: int,
+) -> None:
+    """Append one machine-readable validation observation for its resolved profile."""
+    if not all(isinstance(value, str) and value for value in (run_id, validation_id, category, control_identity, execution_status, result, evidence_ref, observed_at)) or currentness < 0:
+        raise EngineeringStorageError("Validation control result is invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_validation_control_results("
+            "run_id,validation_id,category,control_identity,required_for_profile,execution_status,result,evidence_ref,observed_at,currentness) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (run_id, validation_id, category, control_identity, int(required_for_profile), execution_status, result, evidence_ref, observed_at, currentness),
+        )
+    finally:
+        connection.close()
+
+
+def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None:
+    """Return the resolved profile and current control evidence without inference."""
+    connection = open_storage(root)
+    try:
+        profile = connection.execute(
+            "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
+            "FROM execution_validation_profiles WHERE run_id=?", (run_id,)
+        ).fetchone()
+        rows = connection.execute(
+            "SELECT validation_id,category,control_identity,required_for_profile,execution_status,result,evidence_ref,observed_at,currentness "
+            "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
+        ).fetchall()
+    finally:
+        connection.close()
+    if profile is None:
+        return None
+    try:
+        required = json.loads(profile[2]).get("validation_ids", [])
+    except (TypeError, json.JSONDecodeError, AttributeError) as error:
+        raise EngineeringStorageError("Validation profile controls are corrupt.") from error
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise EngineeringStorageError("Validation profile controls are invalid.")
+    controls: dict[str, dict[str, object]] = {}
+    for row in rows:
+        validation_id, category, identity, is_required, status, result, evidence_ref, observed_at, currentness = row
+        current = controls.get(validation_id)
+        if current is None or int(currentness) > int(current["currentness"]):
+            controls[validation_id] = {"validation_id": validation_id, "category": category, "control_identity": identity,
+                "required_for_profile": bool(is_required), "execution_status": status, "result": result,
+                "evidence_ref": evidence_ref, "observed_at": observed_at, "currentness": currentness}
+        elif int(currentness) == int(current["currentness"]) and result != current["result"]:
+            controls[validation_id] = {**current, "result": "UNRESOLVED", "conflict": True}
+    return {"selected_validation_tier": profile[0], "validation_profile_version": profile[1],
+            "required_validation_controls": tuple(required), "recorded_at": profile[3], "controls": controls}
 
 
 def record_artifact(

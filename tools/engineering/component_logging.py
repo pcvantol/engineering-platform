@@ -235,7 +235,19 @@ def component_log_page(
         parameters.extend(normalized_events)
     where = " WHERE " + " AND ".join(clauses)
 
-    connection = open_storage(root)
+    try:
+        connection = open_storage(root)
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        # Schema activation is deliberately deferred during a managed run.
+        # The dashboard remains a read-only consumer, so it must retain its
+        # bounded response contract rather than terminate the HTTP handler.
+        return {
+            "entries": [],
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "events": [],
+        }
     try:
         total = int(connection.execute(
             "SELECT COUNT(*) FROM engineering_component_logs" + where,

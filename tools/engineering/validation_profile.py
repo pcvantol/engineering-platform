@@ -9,12 +9,23 @@ DOCUMENTATION_PREFIXES = ("docs/",)
 DASHBOARD_PREFIXES = ("tools/engineering/assets/",)
 DASHBOARD_FILES = {"tools/engineering/dashboard.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
 RUNTIME_PREFIXES = ("tools/engineering/", "tests/engineering/", ".github/workflows/")
+VALIDATION_PROFILE_VERSION = "1.0"
+REQUIRED_CONTROLS = {
+    "DOCUMENTATION": ("git_diff_check", "documentation_contract"),
+    "DASHBOARD": ("git_diff_check", "engineering_python", "engineering_dashboard"),
+    "RUNTIME": ("git_diff_check", "engineering_python", "projection_dashboard"),
+    "FULL": ("git_diff_check", "repository_suite"),
+}
 
 @dataclass(frozen=True)
 class ValidationProfile:
     tier: str
     paths: tuple[str, ...]
     commands: tuple[str, ...]
+
+    @property
+    def required_controls(self) -> tuple[str, ...]:
+        return REQUIRED_CONTROLS[self.tier]
 
 def classify(paths: list[str] | tuple[str, ...]) -> ValidationProfile:
     items = tuple(sorted({path.strip() for path in paths if path.strip()}))

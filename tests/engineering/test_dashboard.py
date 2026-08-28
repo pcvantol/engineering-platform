@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import shutil
 import sqlite3
 from http.client import HTTPConnection
 from pathlib import Path
@@ -2943,21 +2944,37 @@ class DashboardStatusTest(unittest.TestCase):
 
     @contextmanager
     def _dashboard_http_connection(self):
-        root = Path(__file__).parents[2]
-        server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        # The dashboard landing page reads the current Git and pull-request
-        # state.  On a busy CI runner that legitimate local work can exceed
-        # the short socket timeout, which made this integration check flaky.
-        connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=10)
-        try:
-            yield root, connection
-        finally:
-            connection.close()
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            configuration = root / "tools" / "engineering"
+            configuration.mkdir(parents=True)
+            shutil.copyfile(
+                Path(__file__).parents[2] / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json",
+                configuration / "ENGINEERING_PLATFORM_CONFIG.json",
+            )
+            shutil.copyfile(
+                Path(__file__).parents[2] / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json",
+                configuration / "ENGINEERING_PLATFORM_VERSION.json",
+            )
+            # Keep HTTP tests isolated from the managed checkout's persistent
+            # store: an intentionally deferred production migration must not
+            # cause the suite to activate or mutate that shared database.
+            with open_storage(root):
+                pass
+            server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            # The dashboard landing page reads the current Git and pull-request
+            # state.  On a busy CI runner that legitimate local work can exceed
+            # the short socket timeout, which made this integration check flaky.
+            connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=10)
+            try:
+                yield root, connection
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
     @patch("tools.engineering.dashboard._workspace_open_pull_requests", return_value=[])
     def test_http_dashboard_status_routes(self, _open_pull_requests: object) -> None:

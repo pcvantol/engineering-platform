@@ -57,7 +57,7 @@ from .dependabot_admission import (
     publish_envelope as publish_dependabot_envelope,
     record_enqueued as record_dependabot_enqueued,
 )
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_submission, store_projection
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
 from .dashboard_configuration import get as dashboard_configuration
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
@@ -1827,6 +1827,16 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
                 execution_context=submission.execution_context,
                 forge_governance_handoff=submission.forge_governance_handoff,
                 received_at=eligible_at.isoformat(),
+            )
+            # This is an intake fact, recorded before deterministic admission
+            # and before any provider-backed work.  Later reports must read it
+            # rather than infer freshness from an absent retry event.
+            retry_parent = retry_metadata(content)["retry_of"]
+            record_run_qualification_context(
+                repo, run_id=run_id, submission_id=submission_id,
+                fresh_submission=retry_parent is None,
+                retry_parent_run_id=retry_parent if isinstance(retry_parent, str) else None,
+                resume_parent_run_id=None, recorded_at=eligible_at.isoformat(),
             )
         except EngineeringStorageError as error:
             status(repo, "JOB_FAILED", queued_jobs=len(candidates), queue_items=_queue_items(candidates), diagnostic="De canonieke Execution Host-opslag is niet beschikbaar.")

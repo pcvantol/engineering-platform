@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from .storage import EngineeringStorageError, open_storage
+from .storage import EngineeringStorageError, load_run_lineage, load_validation_context, open_storage
 
 AUTHORITIES = frozenset(
     {
@@ -252,23 +252,38 @@ def terminal_snapshot(
         connection.close()
     validation, conflict = _current(rows)
     pr_checks, pr_check_conflict = _current_pr_checks(pr_rows)
+    try:
+        persisted_lineage = load_run_lineage(root, run_id)
+        validation_context = load_validation_context(root, run_id)
+    except EngineeringStorageError:
+        persisted_lineage = validation_context = None
+    if persisted_lineage is not None:
+        lineage_available = True
+        submission_id = str(persisted_lineage["submission_id"])
+        retry_parent = persisted_lineage["retry_parent"] if isinstance(persisted_lineage["retry_parent"], str) else None
+        resume_parent = persisted_lineage["resume_parent"] if isinstance(persisted_lineage["resume_parent"], str) else None
+        fresh = "YES" if persisted_lineage["fresh_submission"] else "NO"
+    else:
+        fresh = "YES" if lineage_available and retry_parent is None and resume_parent is None else "NO" if lineage_available else "UNAVAILABLE"
     required = {str(row[0]) for row in rows if int(row[2])}
-    required_state = (
-        "PASS"
-        if required
-        and not conflict
-        and all(validation.get(x) in {"PASS", "NOT_APPLICABLE"} for x in required)
-        else "UNAVAILABLE"
-    )
+    required_state = "UNRESOLVED"
+    profile_projection: dict[str, object] = {}
+    if validation_context is not None:
+        required = set(validation_context["required_validation_controls"])
+        controls = validation_context["controls"]
+        results = [controls.get(control, {}).get("result") for control in required]
+        required_state = "FAIL" if any(result == "FAIL" for result in results) else "PASS" if results and all(result == "PASS" for result in results) else "UNRESOLVED"
+        profile_projection = {key: validation_context[key] for key in ("selected_validation_tier", "validation_profile_version", "required_validation_controls")}
+        validation = {**validation, **{key: value.get("result", "UNRESOLVED") for key, value in controls.items()}}
+    elif required:
+        # Historical evidence has no persisted profile: do not promote it.
+        required_state = "UNRESOLVED"
     authorities = [str(row[1]) for row in actions]
     snapshot = {
         "run_id": run_id,
         "terminal_execution_state": execution_outcome,
         "managed_authority_profile": "OPERATOR_OWNED_PR_MERGE",
-        "fresh_submission": (
-            "YES" if lineage_available and retry_parent is None and resume_parent is None
-            else "NO" if lineage_available else "UNAVAILABLE"
-        ),
+        "fresh_submission": fresh,
         "retry_parent": retry_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
         "resume_parent": resume_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
         "submission_id": submission_id or "UNAVAILABLE",
@@ -278,6 +293,7 @@ def terminal_snapshot(
         "actions": [{"action": row[0], "authority": row[1]} for row in actions],
         "validation_current": validation,
         "required_validation_state": required_state,
+        "validation_profile": profile_projection or "UNAVAILABLE",
         "validation_projection_conflict": conflict,
         "pr_checks": pr_checks,
         "pr_check_projection_conflict": pr_check_conflict,

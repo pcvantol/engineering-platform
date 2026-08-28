@@ -72,7 +72,7 @@ from .execution_context import (
     target_repository_authorization as context_target_repository_authorization,
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
-from .validation_profile import ValidationProfile, changed_paths, classify
+from .validation_profile import VALIDATION_PROFILE_VERSION, ValidationProfile, changed_paths, classify
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
@@ -90,7 +90,7 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
-from .storage import EngineeringStorageError, load_readiness_evaluation, record_readiness_evaluation
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_control_result, record_validation_profile
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .execution_timing import ActivePhase
@@ -536,6 +536,12 @@ class EngineeringRunner:
         """Persist only bounded report evidence; it has no lifecycle authority."""
         if not result.validation_evidence:
             return state
+        try:
+            profile_context = load_validation_context(self.root, state.run_id)
+        except EngineeringStorageError:
+            profile_context = None
+        required_controls = set(profile_context["required_validation_controls"]) if profile_context else set()
+        tier = profile_context.get("selected_validation_tier") if profile_context else None
         for item in result.validation_evidence:
             command, summary = item.get("command", ""), item.get("result", "")
             kind = self._validation_kind(command)
@@ -547,6 +553,20 @@ class EngineeringRunner:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
                     required=True, currentness=state.repair_iterations,
+                )
+                validation_id = (
+                    "git_diff_check" if kind == "format_or_diff" else
+                    "documentation_contract" if kind == "documentation_contract" else
+                    "projection_dashboard" if kind == "browser_e2e" and tier == "RUNTIME" else
+                    "engineering_dashboard" if kind == "browser_e2e" else
+                    "repository_suite" if kind == "tests" and tier == "FULL" else
+                    "engineering_python" if kind == "tests" else f"validation_{kind}"
+                )
+                record_validation_control_result(
+                    self.root, run_id=state.run_id, validation_id=validation_id, category="agent",
+                    control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",
+                    result=status, evidence_ref="agent_result", observed_at=datetime.now(timezone.utc).isoformat(),
+                    currentness=state.repair_iterations,
                 )
             except EngineeringStorageError:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
@@ -738,6 +758,8 @@ class EngineeringRunner:
         retains the category, never command text or output.
         """
         normalized = command.casefold()
+        if any(tool in normalized for tool in ("markdown", "link", "documentation", "document-contract")):
+            return "documentation_contract"
         if any(tool in normalized for tool in ("ruff", "flake8", "mypy", "pyright")):
             return "static_analysis"
         if any(tool in normalized for tool in ("bandit", "semgrep", "codeql", "pip-audit", "safety")):
@@ -845,6 +867,18 @@ class EngineeringRunner:
                 profile = classify(changed_paths(self.root, "main"))
             except OSError:
                 profile = classify(())
+            try:
+                record_validation_profile(
+                    self.root, run_id=validation.run_id, selected_validation_tier=profile.tier,
+                    validation_profile_version=VALIDATION_PROFILE_VERSION,
+                    required_validation_controls=profile.required_controls,
+                    recorded_at=datetime.now(timezone.utc).isoformat(),
+                )
+            except EngineeringStorageError:
+                return self._save_terminal(
+                    validation, "BLOCKED", "validation_profile_persistence",
+                    "Required validation profile evidence could not be persisted."
+                ), implementation
             validation = replace(validation, local_validation_iterations=iteration)
             self.store.save(validation)
             write_live_status(self.root, validation, validation.next_action)

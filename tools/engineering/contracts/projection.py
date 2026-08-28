@@ -130,6 +130,65 @@ def _validation_controls(connection: sqlite3.Connection, run_id: str, snapshot: 
             for control, row in sorted(current.items())]
 
 
+def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Read only explicit v33 qualification evidence; never infer legacy facts."""
+    try:
+        lineage = connection.execute(
+            "SELECT submission_id,fresh_submission,retry_parent_run_id,resume_parent_run_id,recorded_at "
+            "FROM execution_run_qualification_context WHERE run_id=?", (run_id,)
+        ).fetchone()
+        profile = connection.execute(
+            "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
+            "FROM execution_validation_profiles WHERE run_id=?", (run_id,)
+        ).fetchone()
+        controls = connection.execute(
+            "SELECT validation_id,category,required_for_profile,execution_status,result,observed_at,currentness "
+            "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None, None
+    lineage_projection = None if lineage is None else {
+        "submission_id": lineage[0], "fresh_submission": bool(lineage[1]),
+        "retry_parent": lineage[2], "resume_parent": lineage[3], "recorded_at": lineage[4],
+    }
+    if profile is None:
+        return lineage_projection, None
+    try:
+        required = json.loads(profile[2]).get("validation_ids", [])
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        return lineage_projection, None
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        return lineage_projection, None
+    current: dict[str, sqlite3.Row] = {}
+    conflicts: set[str] = set()
+    for row in controls:
+        validation_id = str(row[0])
+        existing = current.get(validation_id)
+        if existing is None or int(row[6]) > int(existing[6]):
+            current[validation_id] = row
+        elif int(row[6]) == int(existing[6]) and row[4] != existing[4]:
+            conflicts.add(validation_id)
+    def result_for(validation_id: str) -> object:
+        if validation_id in conflicts:
+            return "UNRESOLVED"
+        row = current.get(validation_id)
+        return row[4] if row is not None else None
+    results = [result_for(validation_id) for validation_id in required]
+    required_state = "FAIL" if any(result == "FAIL" for result in results) else (
+        "PASS" if results and all(result == "PASS" for result in results) else "UNRESOLVED"
+    )
+    return lineage_projection, {
+        "selected_validation_tier": profile[0], "validation_profile_version": profile[1],
+        "required_validation_controls": required, "required_validation_state": required_state,
+        "recorded_at": profile[3],
+        "controls": [
+            {"validation_id": validation_id, "category": row[1], "required_for_profile": bool(row[2]),
+             "execution_status": row[3], "result": result_for(validation_id), "observed_at": row[5]}
+            for validation_id, row in sorted(current.items())
+        ],
+    }
+
+
 def _lease_projection(connection: sqlite3.Connection, run_id: str) -> dict[str, object]:
     try:
         rows = connection.execute(
@@ -210,7 +269,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
             transaction = connection.execute("SELECT payload,phase,updated_at FROM engineering_transactions WHERE run_id=?", (run_id,)).fetchone()
             run = connection.execute("SELECT execution_mode,producer_id,producer_type,execution_started_at,execution_finished_at,execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)).fetchone()
             submission = connection.execute("SELECT s.submission_id,s.producer_id,s.producer_type,s.prompt_metadata,s.received_at FROM execution_submissions AS s JOIN execution_submission_links AS l ON l.submission_id=s.submission_id WHERE l.run_id=?", (run_id,)).fetchone()
-            lineage = connection.execute("SELECT retry_of,original_run_id FROM execution_runs WHERE run_id=?", (run_id,)).fetchone()
+            qualification_lineage, qualification_validation = _qualification_evidence(connection, run_id)
             checks = _current_checks(connection, run_id)
             validation_controls = _validation_controls(connection, run_id, "pending")
             workspace = _lease_projection(connection, run_id)
@@ -218,7 +277,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
         finally:
             connection.close()
     except (EngineeringStorageError, sqlite3.Error):
-        transaction = run = submission = lineage = None
+        transaction = run = submission = qualification_lineage = qualification_validation = None
         checks = {}
         validation_controls = []
         workspace = {"workspace_state": UNAVAILABLE, "workspace_occupied": UNAVAILABLE, "active_owner_run_id": UNAVAILABLE,
@@ -244,8 +303,10 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
         "run_id": run_id, "evidence_version": snapshot, "projection_authority": PROJECTION_AUTHORITY,
         "run": {"execution_mode": _value(run[0] if run else checkpoint.get("execution_mode")), "terminal": _value(terminal),
                 "current_execution_state": _value(phase), "current_phase": _value(phase),
-                "fresh_submission_state": "AVAILABLE" if submission else UNAVAILABLE,
-                "retry_parent": _value(lineage[0] if lineage else None), "resume_parent": UNAVAILABLE,
+                "fresh_submission_state": "AVAILABLE" if qualification_lineage else UNAVAILABLE,
+                "fresh_submission": qualification_lineage["fresh_submission"] if qualification_lineage else UNAVAILABLE,
+                "retry_parent": qualification_lineage["retry_parent"] if qualification_lineage else UNAVAILABLE,
+                "resume_parent": qualification_lineage["resume_parent"] if qualification_lineage else UNAVAILABLE,
                 "producer": {"id": _value(submission[1] if submission else (run[1] if run else None)), "type": _value(submission[2] if submission else (run[2] if run else None))},
                 "execution_host": UNAVAILABLE, "lease_state": UNAVAILABLE, "recovery_required": False,
                 "active_blocking_predecessor": UNAVAILABLE},
@@ -264,7 +325,8 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
                      "finalization_merge_state": _value(finalization.get("merge_state")), "finalization_merge_commit": _value(checkpoint.get("finalization_merge_commit") or finalization.get("merge_commit")),
                      "finalization_required_checks_state": _value(finalization.get("required_checks_state")), "finalization_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_FINALIZATION_MERGE" else UNAVAILABLE,
                      "run_delivery_commit": _value(checkpoint.get("implementation_head_sha") or checkpoint.get("last_verified_sha")), "current_repository_head": _value(checkpoint.get("last_verified_sha")), "delivery_commit_head_relationship": UNAVAILABLE},
-        "validation": {"engineering_platform_qualification": UNAVAILABLE, "controls": validation_controls},
+        "validation": {"engineering_platform_qualification": UNAVAILABLE, "controls": validation_controls,
+                       "required_validation": qualification_validation or UNAVAILABLE},
         "repository": {"repository_identity": _value(checkpoint.get("repository")), "expected_branch": "main", "current_branch": _value(checkpoint.get("branch")), "worktree_state": UNAVAILABLE, "main_origin_relationship": UNAVAILABLE, "repository_state": UNAVAILABLE, "delivery_commit_relationship": UNAVAILABLE, "last_verified_at": _value(observed_at)},
         "workspace": workspace,
         "timing": {"run_wall_time": _value(run[5] if run else None), "provider_execution_time": _value(checkpoint.get("agent_execution_seconds")), "reviewer_time": UNAVAILABLE, "validation_time": UNAVAILABLE, "external_wait_time": UNAVAILABLE, "ci_wait_time": UNAVAILABLE, "merge_gate_wait_time": _value(checkpoint.get("waiting_for_merge_since")), "finalization_time": UNAVAILABLE, "reconciliation_time": UNAVAILABLE, "last_activity_at": _value(observed_at)},

@@ -557,7 +557,7 @@ def _qualification_projection(
     validation = "recorded" if state.validation_evidence else "not recorded"
     return (
         f"- Execution Status: `{state.phase}`",
-        f"- Qualification Status: `{qualification_status or 'not recorded'}`",
+        f"- Platform Qualification Status: `{qualification_status or 'not recorded'}`",
         f"- Runtime Status: `{'reported' if runtime_provider != 'unavailable' else 'not reported'}`",
         f"- Validation Status: `{validation}`",
         "- Governance Status: see the Forge Governance Handoff projection above.",
