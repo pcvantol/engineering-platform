@@ -1113,6 +1113,16 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
    the same titlebar flow as Options, so dashboard cards can never cover it. */
 .dashboard-health__tooltip{display:none}
 .dashboard-health.dashboard-health--open + .dashboard-health__tooltip{display:block}
+.dashboard-health__tooltip .dashboard-health__check{align-items:start}
+.dashboard-health__tooltip .dashboard-health__check--component{cursor:pointer}
+.dashboard-health__tooltip .dashboard-health__check--component:focus-visible{outline:1px solid var(--house-style);outline-offset:2px}
+.dashboard-health__tooltip .dashboard-health__value{font-weight:600;text-align:right}
+.dashboard-health__tooltip .dashboard-health__check[data-health="good"] .dashboard-health__value{color:#69e3ae}
+.dashboard-health__tooltip .dashboard-health__check[data-health="warning"] .dashboard-health__value{color:#ffd768}
+.dashboard-health__tooltip .dashboard-health__check[data-health="bad"] .dashboard-health__value{color:#ff9cab}
+.dashboard-health__tooltip .dashboard-health__check[data-health="unknown"] .dashboard-health__value{color:#c6d1df}
+.dashboard-health__tooltip .dashboard-health__reason{color:#cbd7e5;font-size:12px;grid-column:1 / -1;line-height:1.3;overflow-wrap:anywhere}
+html[data-theme="light"] .dashboard-health__tooltip .dashboard-health__reason{color:#415168}
 @media (min-width:1241px){
   .dashboard-titlebar__actions>.dashboard-health__tooltip{left:0;right:auto;top:calc(100% + 8px)}
 }

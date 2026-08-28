@@ -355,6 +355,7 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
       : null,
     dashboardHealthy = components?.dashboard?.healthy === true,
     watcherHealthy = components?.inbox_watcher?.healthy === true,
+    relayHealthy = components?.dashboard_relay?.healthy === true,
     queueDepth = Math.max(0, Number(current?.queue_depth) || 0),
     watcherState = String(current?.watcher_state || ""),
     workspaceState = String(current?.workspace_state || ""),
@@ -363,15 +364,30 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     active = isActiveRun(current || {}),
     blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
     failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
-      (components && (!dashboardHealthy || !watcherHealthy));
+      (components && (!dashboardHealthy || !watcherHealthy || !relayHealthy));
   let state = "unknown";
   if (failed) state = "error";
   else if (blocked || queueDepth > 0) state = "blocked";
   else if (active) state = "active";
-  else if (dashboardHealthy && watcherHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
+  else if (dashboardHealthy && watcherHealthy && relayHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
+  const componentCheck = (name, componentKey, healthy) => {
+    const component = components?.[componentKey];
+    const unavailable = components ? "not_running" : "unknown";
+    const reason = !healthy && components
+      ? String(component?.detail || component?.state || "").trim()
+      : "";
+    return [
+      name,
+      healthy ? "running" : unavailable,
+      healthy ? "good" : components ? "bad" : "unknown",
+      {},
+      { component: components ? componentKey : null, reason },
+    ];
+  };
   const checks = [
-    ["dashboard", dashboardHealthy ? "running" : components ? "not_running" : "unknown", dashboardHealthy ? "good" : components ? "bad" : "unknown"],
-    ["watcher", watcherHealthy ? "running" : components ? "not_running" : "unknown", watcherHealthy ? "good" : components ? "bad" : "unknown"],
+    componentCheck("dashboard", "dashboard", dashboardHealthy),
+    componentCheck("watcher", "inbox_watcher", watcherHealthy),
+    componentCheck("relay", "dashboard_relay", relayHealthy),
     ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
     ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
     ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
@@ -388,12 +404,35 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
   accessibleLabel.textContent = t("dashboard.health.title") + ": " + title;
   tooltipTitle.textContent = t("dashboard.health.title") + " · " + title;
   checks.replaceChildren();
-  for (const [name, value, tone, values = {}] of presentation.checks) {
+  for (const [name, value, tone, values = {}, metadata = {}] of presentation.checks) {
     const item = document.createElement("li"), label = document.createElement("span"), result = document.createElement("span");
     item.dataset.health = tone;
+    item.className = "dashboard-health__check";
     label.textContent = t("dashboard.health." + name);
     result.textContent = t("dashboard.health." + value, values, translate(value));
+    result.className = "dashboard-health__value";
     item.append(label, result);
+    if (metadata.reason) {
+      const reason = document.createElement("span");
+      reason.className = "dashboard-health__reason";
+      reason.textContent = t("dashboard.health.reason", { reason: metadata.reason });
+      item.append(reason);
+    }
+    if (metadata.component) {
+      item.classList.add("dashboard-health__check--component");
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      item.setAttribute(
+        "aria-label",
+        t("component.more_information", { component: label.textContent }),
+      );
+      item.addEventListener("click", () => showComponentDetails(metadata.component));
+      item.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        showComponentDetails(metadata.component);
+      });
+    }
     checks.append(item);
   }
 }
@@ -2063,6 +2102,7 @@ function renderHealthStatus(x, snapshot = {}) {
     indicator = $("indicator"),
     components = snapshot.component_versions || {},
     blockedPredecessor = Boolean(x.blocking_predecessor_run);
+  const precedingExecutionOnly = blockedPredecessor && !active && !visibleStaleLifecycle;
   // A terminal current.json/status projection is historical evidence, not an
   // active prompt.  The watcher owns the operational view; history owns the
   // completed, failed or blocked execution.
@@ -2079,6 +2119,13 @@ function renderHealthStatus(x, snapshot = {}) {
   );
   $("predecessorAction").textContent =
     x.predecessor_recovery_action || t("format.not_available");
+  $("currentRunTitle").textContent = precedingExecutionOnly
+    ? t("recovery.blocked_predecessor_title")
+    : t("section.active_prompt");
+  $("executionIdentityTitle").textContent = precedingExecutionOnly
+    ? t("recovery.preceding_execution")
+    : t("detail.execution");
+  $("promptStartedField").hidden = precedingExecutionOnly;
   renderExecutionContext(x.execution_context, x);
   renderActiveLifecycle(x.lifecycle);
   renderOperatorMergeWait(x);
@@ -2123,11 +2170,15 @@ function renderHealthStatus(x, snapshot = {}) {
   // Keep the canonical status renderer backward compatible while they refresh.
   renderPreflightPresentation(snapshot);
   renderTechnicalDiagnosis(x, snapshot);
-  promptStarted(snapshot.prompt_started);
+  if (!precedingExecutionOnly) promptStarted(snapshot.prompt_started);
   renderEstimate(x, latestDurationEstimate);
   processMetrics(active, snapshot.process_metrics);
-  $("currentPrompt").textContent = x.prompt_title || t("format.not_available");
-  $("currentFile").textContent = x.submitted_filename || t("format.not_available");
+  $("currentPrompt").textContent = precedingExecutionOnly
+    ? (x.blocking_predecessor_title || x.blocking_predecessor_filename || t("format.not_available"))
+    : (x.prompt_title || t("format.not_available"));
+  $("currentFile").textContent = precedingExecutionOnly
+    ? (x.blocking_predecessor_filename || t("format.not_available"))
+    : (x.submitted_filename || t("format.not_available"));
   if (!active || x.run_id !== currentLogRun)
     $("currentDiagnostic").hidden = true;
   if (active)
@@ -2138,7 +2189,9 @@ function renderHealthStatus(x, snapshot = {}) {
       false,
       "currentDiagnostic",
     );
-  $("runId").textContent = x.run_id || t("value.none");
+  $("runId").textContent = precedingExecutionOnly
+    ? x.blocking_predecessor_run
+    : (x.run_id || t("value.none"));
   renderInboxBlocker(x);
   queueItems(x.queue_items, x.queue_depth);
   $("repositoryState").textContent = translate(x.repository_state || "UNKNOWN");
@@ -5313,7 +5366,7 @@ function applyDashboardLocale() {
     ["#platformVersionLabel", "footer.platform_version"],
     ["#confirmationModalCancel", "action.cancel"],
     ["#confirmationModalConfirm", "action.confirm"],
-    ["#predecessorRetry", "action.resume_queue"],
+    ["#predecessorRetry", "recovery.action"],
     ["#queueItems > summary > strong", "section.inbox_queue"],
     ["#promptHistory > summary > strong", "section.prompt_history"],
     ["#currentRun > summary .label", "section.active_prompt"],
@@ -7161,6 +7214,7 @@ function renderPredecessorRetry(x) {
     status = $("predecessorRetryStatus");
   button.hidden = !blocked;
   button.disabled = isActiveRun(x || {});
+  button.textContent = t("recovery.action");
   if (!blocked) status.textContent = "";
 }
 function submitPredecessorRetry() {
@@ -7169,17 +7223,17 @@ function submitPredecessorRetry() {
     run = latestStatus?.blocking_predecessor_run;
   if (!run || button.disabled) return;
   confirmDashboardAction(
-    t("queue_recovery.title"),
-    t("queue_recovery.details"),
-    t("action.resume_queue"),
+    t("recovery.title"),
+    t("recovery.details"),
+    t("recovery.action"),
   ).then((confirmed) => {
     if (!confirmed) return;
     button.disabled = true;
-    status.textContent = t("queue_recovery.preparing");
-    fetch("/api/queue-recovery", {
+    status.textContent = t("recovery.preparing");
+    fetch("/api/execution-retry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ run_id: run }),
     })
       .then(async (response) => ({
         ok: response.ok,
@@ -7188,14 +7242,14 @@ function submitPredecessorRetry() {
       .then((result) => {
         if (!result.ok)
           throw Error(
-            result.body.error || t("queue_recovery.failed"),
+            result.body.error || t("recovery.failed"),
           );
         status.textContent =
-          t("queue_recovery.ready");
+          t("recovery.ready");
       })
       .catch((error) => {
         status.textContent =
-          error.message || t("queue_recovery.failed");
+          error.message || t("recovery.failed");
       })
       .finally(() => {
         button.disabled = false;

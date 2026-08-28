@@ -3749,11 +3749,11 @@ test.describe("Engineering Status browser smoke", () => {
       json: { status: { watcher_state: "WATCHER_IDLE", queue_depth: 0 } },
     }));
     const expectations = [
-      ["en", "Language", "Refresh automatically", "AI analysis", "Passed", "Execution", "Resume Queue", "Active execution", "Execution queue", "New assignments wait for execution in order of creation date.", "EP Operations", "Loading data…", "Diagnostics", "Engineering Platform version", "Automatic refresh is off"],
-      ["nl", "Taal", "Automatisch vernieuwen", "AI-analyse", "Geslaagd", "Uitvoering", "Wachtrij hervatten", "Lopende uitvoering", "Wachtrij voor uitvoeringen", "Nieuwe opdrachten wachten op uitvoering in volgorde van aanmaakdatum.", "EP Operations", "Gegevens laden…", "Diagnose", "Engineering Platform-versie", "Automatisch vernieuwen is uit"],
-      ["de", "Sprache", "Automatisch aktualisieren", "KI-Analyse", "Erfolgreich", "Ausführung", "Warteschlange fortsetzen", "Laufende Ausführung", "Ausführungswarteschlange", "Neue Aufträge warten in der Reihenfolge ihres Erstellungsdatums auf die Ausführung.", "EP Operations", "Daten werden geladen…", "Diagnose", "Engineering-Plattformversion", "Automatische Aktualisierung ist aus"],
-      ["fr", "Langue", "Actualiser automatiquement", "Analyse IA", "Réussi", "Exécution", "Reprendre la file", "Exécution en cours", "File d’exécution", "Les nouvelles tâches attendent leur exécution dans l’ordre de leur création.", "EP Operations", "Chargement des données…", "Diagnostic", "Version d’Engineering Platform", "Actualisation automatique désactivée"],
-      ["es", "Idioma", "Actualizar automáticamente", "Análisis de IA", "Superado", "Ejecución", "Reanudar cola", "Ejecución en curso", "Cola de ejecuciones", "Las nuevas tareas esperan ejecución por orden de fecha de creación.", "EP Operations", "Cargando datos…", "Diagnóstico", "Versión de Engineering Platform", "Actualización automática desactivada"],
+      ["en", "Language", "Refresh automatically", "AI analysis", "Passed", "Execution", "Recover blocked execution", "Active execution", "Execution queue", "New assignments wait for execution in order of creation date.", "EP Operations", "Loading data…", "Diagnostics", "Engineering Platform version", "Automatic refresh is off"],
+      ["nl", "Taal", "Automatisch vernieuwen", "AI-analyse", "Geslaagd", "Uitvoering", "Herstel geblokkeerde uitvoering", "Lopende uitvoering", "Wachtrij voor uitvoeringen", "Nieuwe opdrachten wachten op uitvoering in volgorde van aanmaakdatum.", "EP Operations", "Gegevens laden…", "Diagnose", "Engineering Platform-versie", "Automatisch vernieuwen is uit"],
+      ["de", "Sprache", "Automatisch aktualisieren", "KI-Analyse", "Erfolgreich", "Ausführung", "Blockierte Ausführung wiederherstellen", "Laufende Ausführung", "Ausführungswarteschlange", "Neue Aufträge warten in der Reihenfolge ihres Erstellungsdatums auf die Ausführung.", "EP Operations", "Daten werden geladen…", "Diagnose", "Engineering-Plattformversion", "Automatische Aktualisierung ist aus"],
+      ["fr", "Langue", "Actualiser automatiquement", "Analyse IA", "Réussi", "Exécution", "Rétablir l’exécution bloquée", "Exécution en cours", "File d’exécution", "Les nouvelles tâches attendent leur exécution dans l’ordre de leur création.", "EP Operations", "Chargement des données…", "Diagnostic", "Version d’Engineering Platform", "Actualisation automatique désactivée"],
+      ["es", "Idioma", "Actualizar automáticamente", "Análisis de IA", "Superado", "Ejecución", "Recuperar ejecución bloqueada", "Ejecución en curso", "Cola de ejecuciones", "Las nuevas tareas esperan ejecución por orden de fecha de creación.", "EP Operations", "Cargando datos…", "Diagnóstico", "Versión de Engineering Platform", "Actualización automática desactivada"],
     ];
 
     for (const [language, localeLabel, refreshLabel, analysisLabel, passLabel, detailTitle, queueAction, activePrompt, queueTitle, queueDescription, dashboardTitle, splashLoading, diagnosticsTitle, platformVersionLabel, refreshOffLabel] of expectations) {
@@ -6582,7 +6582,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#predecessorGate")).toBeVisible();
     await expect(page.locator("#predecessorGate")).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(page.locator("#predecessorGate")).toHaveCSS("border-right-color", "rgb(240, 182, 106)");
+    await expect(page.locator("#currentRunTitle")).toHaveText(
+      DASHBOARD_MESSAGES.nl["recovery.blocked_predecessor_title"],
+    );
+    await expect(page.locator("#executionIdentityTitle")).toHaveText(
+      DASHBOARD_MESSAGES.nl["recovery.preceding_execution"],
+    );
+    await expect(page.locator("#runId")).toHaveText("blocked-run");
+    await expect(page.locator("#promptStartedField")).toBeHidden();
     await expect(page.locator("#predecessorRun")).toHaveText("blocked-run");
+    await expect(page.locator("#predecessorRetry")).toHaveText(
+      DASHBOARD_MESSAGES.nl["recovery.action"],
+    );
     await expect(page.locator("#currentRun .execution-lifecycle")).toHaveAttribute("data-run-id", "blocked-run");
     await expect(page.locator("#currentRun .execution-lifecycle__item--blocked")).toHaveCount(1);
   });
@@ -9304,6 +9315,7 @@ test.describe("Engineering Status browser smoke", () => {
     await indicator.click();
     await expect(indicator).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Inbox-watcher");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Dashboard-relay");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Geen uitvoering actief");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Werkruimte gereed");
 
@@ -9313,6 +9325,44 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(indicator).toHaveAttribute("data-health-state", "blocked");
     await page.evaluate(() => r({ watcher_state: "HOST_PREFLIGHT_FAILED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
     await expect(indicator).toHaveAttribute("data-health-state", "error");
+  });
+
+  test("shows a safe unhealthy component reason and opens its details from the status popout", async ({ page }) => {
+    await page.route("**/health", (route) => route.fulfill({ json: { components: {
+      dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
+      inbox_watcher: {
+        healthy: false,
+        state: "not_running",
+        detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
+      },
+      dashboard_relay: { healthy: true, detail: "LaunchAgent is geladen" },
+    } } }));
+    await page.route("**/api/components/inbox_watcher/details", (route) => route.fulfill({ json: {
+      component: "inbox_watcher", healthy: false, state: "not_running",
+      detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
+        inbox_watcher: {
+          healthy: false,
+          state: "not_running",
+          detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
+        },
+        dashboard_relay: { healthy: true, detail: "LaunchAgent is geladen" },
+      } });
+      r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
+    });
+    await page.getByTestId("dashboard-health-indicator").click();
+    const watcher = page.locator("#dashboardHealthChecks li").filter({ hasText: "Inbox-watcher" });
+    await expect(watcher).toContainText("Niet actief");
+    await expect(watcher).toContainText("Reden — Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32");
+    await watcher.click();
+    await expect(page.locator("#componentModal")).toBeVisible();
+    await expect(page.locator("#componentModalContent")).toContainText("Schema-activatie vereist");
   });
 
   test("keeps the titlebar health tooltip inside a narrow viewport", async ({ page }) => {

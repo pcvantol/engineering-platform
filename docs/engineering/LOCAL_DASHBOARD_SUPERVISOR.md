@@ -260,11 +260,15 @@ preferences; they never alter an Engineering run or its evidence.
 
 The title-bar platform-status dot is a separate, read-only disclosure rather
 than a hover-only hint. A click exposes the live Dashboard, Inbox-watcher,
-execution, queue, watcher and workspace checks. On desktop its popout is
-anchored directly below the dot; on compact widths it opens in the title-bar
-flow before the Options panel, so it cannot fall outside the viewport or behind
-the dashboard content. The dot colour is derived from the same current status
-snapshot as those rows, never from a stale diagnostic projection.
+dashboard relay, execution, queue, watcher and workspace checks. An unhealthy
+component row includes its bounded, safe health reason and opens the matching
+component-details dialog on click or with Enter/Space; it never exposes raw
+logs, commands, credentials or other sensitive process output. On desktop its
+popout is anchored directly below the dot; on compact widths it opens in the
+title-bar flow before the Options panel, so it cannot fall outside the viewport
+or behind the dashboard content. The dot colour is derived from the same
+current status snapshot as those rows, never from a stale diagnostic
+projection.
 
 On iPhone, the theme, section-expansion and automatic-refresh switches are
 separate direct-touch controls. Each control has `touch-action: manipulation`
@@ -326,10 +330,13 @@ page behind a modal as inert; chat, report and detail copy actions therefore
 remain available without changing the evidence data.
 
 The **Actieve prompt** category represents only a live, non-terminal
-execution. Terminal evidence belongs in **Promptgeschiedenis**. When an Inbox
-predecessor blocks later queued work, the category remains available for that
-queue-recovery context and shows the predecessor recovery action and retry
-control.
+execution. Terminal evidence belongs in **Promptgeschiedenis**. When a
+terminal Inbox predecessor blocks progress, the dashboard instead labels the
+card **Geblokkeerde voorafgaande uitvoering**, shows that predecessor's Run ID
+and recovery evidence, and hides active-only fields such as the start time.
+Its confirmed **Herstel geblokkeerde uitvoering** action repeats the normal
+retry preflight and creates a new retry through Inbox; it does not alter the
+failed execution or its evidence.
 
 For a live Managed run that started from a verified clean `main` baseline, the
 category may expose **Noodstop en terugdraaien**. It is an explicitly

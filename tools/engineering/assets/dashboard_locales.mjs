@@ -36,6 +36,8 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.unknown": "Checking platform status",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox watcher",
+    "dashboard.health.relay": "Dashboard relay",
+    "dashboard.health.reason": "Reason — {reason}",
     "dashboard.health.execution": "Execution",
     "dashboard.health.queue": "Inbox queue",
     "dashboard.health.watcher_state": "Watcher status",
@@ -648,6 +650,8 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.unknown": "Platformstatus wordt gecontroleerd",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox-watcher",
+    "dashboard.health.relay": "Dashboard-relay",
+    "dashboard.health.reason": "Reden — {reason}",
     "dashboard.health.execution": "Uitvoering",
     "dashboard.health.queue": "Inbox-queue",
     "dashboard.health.watcher_state": "Watcherstatus",
@@ -1260,6 +1264,8 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.unknown": "Plattformstatus wird geprüft",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox-Wächter",
+    "dashboard.health.relay": "Dashboard-Relay",
+    "dashboard.health.reason": "Grund — {reason}",
     "dashboard.health.execution": "Ausführung",
     "dashboard.health.queue": "Inbox-Warteschlange",
     "dashboard.health.watcher_state": "Watcher-Status",
@@ -1807,6 +1813,8 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.unknown": "Vérification de l’état de la plateforme",
     "dashboard.health.dashboard": "Tableau de bord",
     "dashboard.health.watcher": "Surveillant de l’Inbox",
+    "dashboard.health.relay": "Relais du tableau de bord",
+    "dashboard.health.reason": "Raison — {reason}",
     "dashboard.health.execution": "Exécution",
     "dashboard.health.queue": "File Inbox",
     "dashboard.health.watcher_state": "État du surveillant",
@@ -2354,6 +2362,8 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.unknown": "Comprobando el estado de la plataforma",
     "dashboard.health.dashboard": "Panel",
     "dashboard.health.watcher": "Vigilante de Inbox",
+    "dashboard.health.relay": "Relé del panel",
+    "dashboard.health.reason": "Motivo — {reason}",
     "dashboard.health.execution": "Ejecución",
     "dashboard.health.queue": "Cola de Inbox",
     "dashboard.health.watcher_state": "Estado del vigilante",
@@ -3629,3 +3639,8 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"workspace.open_local_folder":"Open {path}
 Object.assign(DASHBOARD_MESSAGES.de, {"workspace.open_local_folder":"{path} im Finder öffnen","workspace.open_containing_folder":"Den Ordner mit {path} im Finder öffnen","workspace.open_local_folder_failed":"Der lokale Ordner konnte nicht geöffnet werden."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"workspace.open_local_folder":"Ouvrir {path} dans le Finder","workspace.open_containing_folder":"Ouvrir le dossier contenant {path} dans le Finder","workspace.open_local_folder_failed":"Le dossier local n’a pas pu être ouvert."});
 Object.assign(DASHBOARD_MESSAGES.es, {"workspace.open_local_folder":"Abrir {path} en Finder","workspace.open_containing_folder":"Abrir la carpeta que contiene {path} en Finder","workspace.open_local_folder_failed":"No se pudo abrir la carpeta local."});
+Object.assign(DASHBOARD_MESSAGES.en, {"recovery.blocked_predecessor_title":"Blocked preceding execution","recovery.preceding_execution":"Preceding execution","recovery.title":"Recover blocked execution","recovery.details":"Retry this terminal execution through the normal Inbox route? Engineering Platform performs the current preflight again before it creates a replacement. The failed execution and its evidence remain unchanged.","recovery.action":"Recover blocked execution","recovery.preparing":"Checking recovery preflight…","recovery.ready":"Recovery is queued; the Inbox watcher will claim the replacement execution.","recovery.failed":"The blocked execution could not be recovered safely."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"recovery.blocked_predecessor_title":"Geblokkeerde voorafgaande uitvoering","recovery.preceding_execution":"Voorafgaande uitvoering","recovery.title":"Herstel geblokkeerde uitvoering","recovery.details":"Deze terminale uitvoering via de normale Inbox-route opnieuw proberen? Engineering Platform voert eerst de actuele preflight opnieuw uit voordat een vervangende uitvoering wordt aangemaakt. De mislukte uitvoering en de evidence blijven ongewijzigd.","recovery.action":"Herstel geblokkeerde uitvoering","recovery.preparing":"Herstelpreflight wordt gecontroleerd…","recovery.ready":"Herstel staat in de wachtrij; de Inbox-watcher claimt de vervangende uitvoering.","recovery.failed":"De geblokkeerde uitvoering kon niet veilig worden hersteld."});
+Object.assign(DASHBOARD_MESSAGES.de, {"recovery.blocked_predecessor_title":"Blockierte vorherige Ausführung","recovery.preceding_execution":"Vorherige Ausführung","recovery.title":"Blockierte Ausführung wiederherstellen","recovery.details":"Diese terminale Ausführung über die normale Inbox-Route erneut versuchen? Engineering Platform führt die aktuelle Vorprüfung erneut aus, bevor eine Ersatzausführung erstellt wird. Die fehlgeschlagene Ausführung und ihre Nachweise bleiben unverändert.","recovery.action":"Blockierte Ausführung wiederherstellen","recovery.preparing":"Wiederherstellungs-Vorprüfung wird geprüft…","recovery.ready":"Die Wiederherstellung ist eingeplant; der Inbox-Watcher übernimmt die Ersatzausführung.","recovery.failed":"Die blockierte Ausführung konnte nicht sicher wiederhergestellt werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"recovery.blocked_predecessor_title":"Exécution précédente bloquée","recovery.preceding_execution":"Exécution précédente","recovery.title":"Rétablir l’exécution bloquée","recovery.details":"Réessayer cette exécution terminale via le flux Inbox normal ? Engineering Platform exécute à nouveau le précontrôle actuel avant de créer une exécution de remplacement. L’exécution échouée et ses preuves restent inchangées.","recovery.action":"Rétablir l’exécution bloquée","recovery.preparing":"Vérification préalable de la récupération…","recovery.ready":"La récupération est en file d’attente ; le watcher Inbox prendra en charge l’exécution de remplacement.","recovery.failed":"L’exécution bloquée n’a pas pu être rétablie en toute sécurité."});
+Object.assign(DASHBOARD_MESSAGES.es, {"recovery.blocked_predecessor_title":"Ejecución anterior bloqueada","recovery.preceding_execution":"Ejecución anterior","recovery.title":"Recuperar ejecución bloqueada","recovery.details":"¿Reintentar esta ejecución terminal mediante la ruta normal de Inbox? Engineering Platform vuelve a realizar la comprobación previa actual antes de crear una ejecución de sustitución. La ejecución fallida y sus evidencias no cambian.","recovery.action":"Recuperar ejecución bloqueada","recovery.preparing":"Comprobando la verificación previa de recuperación…","recovery.ready":"La recuperación está en cola; el watcher de Inbox reclamará la ejecución de sustitución.","recovery.failed":"No se pudo recuperar la ejecución bloqueada de forma segura."});
