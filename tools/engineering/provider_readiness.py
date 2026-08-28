@@ -25,13 +25,15 @@ def _classify(result: subprocess.CompletedProcess[str] | None) -> str:
 
 
 def _repository_classify(result: subprocess.CompletedProcess[str] | None) -> str:
-    """Treat denied repository access as an explicit GitHub-session repair."""
+    """Separate denied repository access from temporary GitHub API failures."""
     if result is None:
         return "CHECK_FAILED"
     if result.returncode == 0:
         return "READY"
     detail = f"{result.stdout}\n{result.stderr}".casefold()
-    if any(word in detail for word in ("network", "timed out", "timeout", "resolve host", "connection")):
+    if any(word in detail for word in (
+        "network", "timed out", "timeout", "resolve host", "connection", "rate limit", "api",
+    )):
         return "CHECK_FAILED"
     return "AUTH_REQUIRED"
 
@@ -59,7 +61,12 @@ def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, st
     github_state = _classify(github_result)
     if github_state == "READY":
         try:
-            repository_result = LocalProcessProvider().execute(root, ("gh", "repo", "view", "--json", "nameWithOwner"))
+            # `gh repo view --json` uses GitHub's GraphQL quota. Readiness only
+            # needs a cheap repository-access proof, so use the REST endpoint
+            # and avoid turning an exhausted GraphQL quota into a login repair.
+            repository_result = LocalProcessProvider().execute(
+                root, ("gh", "api", "repos/{owner}/{repo}", "--jq", ".full_name")
+            )
         except OSError:
             repository_result = None
         github_state = _repository_classify(repository_result)

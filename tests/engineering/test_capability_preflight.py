@@ -89,10 +89,46 @@ class CapabilityPreflightTest(unittest.TestCase):
             codex.return_value.command.return_value = completed(("codex",), 0, "", "")
             process.return_value.execute.side_effect = [
                 completed(("gh", "auth"), 0, "", ""),
-                completed(("gh", "repo"), 1, "", "repository access denied"),
+                completed(("gh", "api"), 1, "", "repository access denied"),
             ]
             status = provider_readiness.status(self.root)
         self.assertEqual(status["github"]["state"], "AUTH_REQUIRED")
+
+    def test_github_readiness_uses_rest_repository_access_after_authentication(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with patch("tools.engineering.provider_readiness.shutil.which", return_value="/usr/local/bin/gh"), patch(
+            "tools.engineering.provider_readiness.CodexCliProvider"
+        ) as codex, patch("tools.engineering.provider_readiness.LocalProcessProvider") as process:
+            codex.return_value.status.return_value.qualified = True
+            codex.return_value.command.return_value = completed(("codex",), 0, "", "")
+            process.return_value.execute.side_effect = [
+                completed(("gh", "auth"), 0, "", ""),
+                completed(("gh", "api"), 0, "pcvantol/djconnect\n", ""),
+            ]
+
+            status = provider_readiness.status(self.root)
+
+        self.assertEqual(status["github"]["state"], "READY")
+        self.assertEqual(
+            process.return_value.execute.call_args_list[1].args[1],
+            ("gh", "api", "repos/{owner}/{repo}", "--jq", ".full_name"),
+        )
+
+    def test_github_repository_rate_limit_is_not_presented_as_reauthentication(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with patch("tools.engineering.provider_readiness.shutil.which", return_value="/usr/local/bin/gh"), patch(
+            "tools.engineering.provider_readiness.CodexCliProvider"
+        ) as codex, patch("tools.engineering.provider_readiness.LocalProcessProvider") as process:
+            codex.return_value.status.return_value.qualified = True
+            codex.return_value.command.return_value = completed(("codex",), 0, "", "")
+            process.return_value.execute.side_effect = [
+                completed(("gh", "auth"), 0, "", ""),
+                completed(("gh", "api"), 1, "", "API rate limit exceeded"),
+            ]
+
+            status = provider_readiness.status(self.root)
+
+        self.assertEqual(status["github"]["state"], "CHECK_FAILED")
 
     def test_codex_not_logged_in_is_an_explicit_authentication_repair(self) -> None:
         completed = __import__("subprocess").CompletedProcess
