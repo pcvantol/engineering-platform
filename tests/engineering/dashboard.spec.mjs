@@ -8351,6 +8351,48 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.getByTestId("download-inbox-log")).toHaveCount(1);
   });
 
+  test("shows saved conversations loading and submitted questions immediately", async ({ page }) => {
+    let releaseHistory;
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: "retained-chat",
+      status: "COMPLETE",
+      title: "Bewaard gesprek",
+      executed_at: "2026-08-28T12:00:00Z",
+      chat_message_count: 1,
+    }] } }));
+    await page.route("**/api/prompt-history/retained-chat/chat", async (route) => {
+      await new Promise((resolve) => { releaseHistory = resolve; });
+      await route.fulfill({ json: { messages: [{ role: "assistant", text: "Eerder antwoord" }] } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await dispatchDashboardPointerClick(page.locator("#promptHistoryRows .prompt-history-chat"));
+
+    await expect(page.locator("#chatStatus")).toHaveText(DASHBOARD_MESSAGES.nl["history.chat_loading"]);
+    await expect(page.locator("#chatMessages")).toBeEmpty();
+    releaseHistory();
+    await expect(page.locator("#chatMessages")).toContainText("Eerder antwoord");
+
+    let releaseAnswer;
+    await page.route("**/api/codex-chat", async (route) => {
+      await new Promise((resolve) => { releaseAnswer = resolve; });
+      await route.fulfill({ json: {
+        model: "Codex CLI",
+        messages: [
+          { role: "assistant", text: "Eerder antwoord" },
+          { role: "user", text: "Mijn nieuwe vraag" },
+          { role: "assistant", text: "Nieuw antwoord" },
+        ],
+      } });
+    });
+    await page.locator("#chatInput").fill("Mijn nieuwe vraag");
+    await dispatchDashboardPointerClick(page.locator("#chatSend"));
+
+    await expect(page.locator("#chatMessages")).toContainText("Mijn nieuwe vraag");
+    await expect(page.locator("#chatStatus")).toHaveText(DASHBOARD_MESSAGES.nl["chat.thinking"]);
+    releaseAnswer();
+    await expect(page.locator("#chatMessages")).toContainText("Nieuw antwoord");
+  });
+
   test("retries only a transient read failure for an immutable terminal report", async ({ page }) => {
     let requests = 0;
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{

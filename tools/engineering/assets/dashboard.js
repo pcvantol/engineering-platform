@@ -1191,6 +1191,13 @@ function askCodex() {
   $("chatSend").disabled = true;
   $("chatStatus").textContent = t("chat.thinking");
   input.value = "";
+  // Show the submitted question immediately. The persisted conversation remains
+  // authoritative and replaces this optimistic projection once the reply is
+  // returned by the server.
+  chatHistory = [...chatHistory, { role: "user", text: message }]
+    .slice(-CHAT_HISTORY_LIMIT);
+  chatMessage("user", message);
+  updateChatActions();
   fetch("/api/codex-chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1230,7 +1237,7 @@ function openPromptHistoryChat(entry) {
   chatHistory = [];
   $("promptHistoryChatTitle").textContent = t("history.execution_chat_title");
   $("promptHistoryChatDescription").textContent = t("history.chat_description");
-  $("chatStatus").textContent = t("chat.thinking");
+  $("chatStatus").textContent = t("history.chat_loading");
   $("chatSend").disabled = true;
   renderChatHistory();
   updateChatActions();
