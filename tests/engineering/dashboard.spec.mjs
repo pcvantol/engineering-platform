@@ -7157,7 +7157,18 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("copies only the visible filtered component-log entries", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/logs/inbox", (route) => route.fulfill({ body: "" }));
+    await page.route("**/api/logs/dashboard", (route) => route.fulfill({ body: "" }));
+    // Let the dashboard's initial asynchronous log projection settle before
+    // installing the filtered fixture. Otherwise it can replace that fixture
+    // while the copy assertion is waiting for the clipboard.
+    const initialLogsLoaded = Promise.all([
+      page.waitForResponse("**/api/logs/inbox?*"),
+      page.waitForResponse("**/api/logs/dashboard?*"),
+    ]);
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await initialLogsLoaded;
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
       window.__copiedVisibleLog = "";
@@ -8326,13 +8337,18 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(chat).toHaveText("⋯");
     await expect(chat).toHaveCSS("border-top-color", "rgb(208, 164, 255)");
     await expect(chat).toHaveCSS("color", "rgb(208, 164, 255)");
+    // Register the history route before opening the chat and await it before
+    // submitting. The asynchronous initial history read otherwise races the
+    // send control under a parallel shard batch.
+    const chatHistoryLoaded = page.waitForResponse("**/api/prompt-history/**/chat");
+    await page.route("**/api/prompt-history/**/chat", (route) => route.fulfill({ json: { messages: [] } }));
     await dispatchDashboardPointerClick(chat);
+    await chatHistoryLoaded;
     await expect(page.locator("#promptHistoryChatModal")).toBeVisible();
     await expect(page.locator("#promptHistoryChatModal")).not.toBeFocused();
     await expect(page.locator("#promptHistoryChatTitle"))
       .toHaveText(DASHBOARD_MESSAGES.nl["history.execution_chat_title"]);
     let submittedRun;
-    await page.route("**/api/prompt-history/**/chat", (route) => route.fulfill({ json: { messages: [] } }));
     await page.route("**/api/codex-chat", async (route) => {
       submittedRun = route.request().postDataJSON().run_id;
       await route.fulfill({ json: { answer: "Dit advies hoort bij de geselecteerde prompt.", model: "Codex CLI", messages: [{ role: "user", text: "Wat is de volgende stap?" }, { role: "assistant", text: "Dit advies hoort bij de geselecteerde prompt." }] } });

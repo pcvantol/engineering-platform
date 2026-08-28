@@ -536,6 +536,12 @@ shards in parallel. All `browser-dashboard` shard checks are required for a
 non-documentation Engineering Platform change; sharding reduces elapsed time
 without reducing coverage.
 
+Local `npm run test:engineering-dashboard` uses the same four shards with one
+worker each and holds one host-wide lock for the complete batch. This prevents
+overlapping local validation runs from multiplying temporary dashboard
+servers. In GitHub CI the same command delegates the requested single shard
+unchanged, so the workflow remains the authoritative four-runner execution.
+
 The suite has an explicit CI-parity contract. GitHub executes clean
 dependencies on Linux Chromium, whereas a local run can use a different
 browser engine build, operating system, timing and nested-scroll behaviour.
