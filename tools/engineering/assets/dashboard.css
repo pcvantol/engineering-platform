@@ -510,7 +510,7 @@ label:has(> :is(input,select,textarea)):not(.dashboard-locale):not(.auto-refresh
 .reset-log-filters:hover:not(:disabled){background:#f0b66a;color:#201812}
 html[data-theme="light"] .reset-log-filters{background:var(--dashboard-log-control-surface-light);border-color:#c17a1f;color:#7a4912}
 html[data-theme="light"] .reset-log-filters:hover:not(:disabled){background:#f0b66a;color:#201812}
-.log-date-control__field{display:block;position:relative}.log-date-control__field input{padding-right:58px}.log-date-control__clear{align-items:center;background:transparent;border:0;border-radius:50%;color:#c8c4cc;cursor:pointer;display:flex;font:21px/1 system-ui;height:24px;justify-content:center;margin:0;min-height:24px;min-width:24px;padding:0;position:absolute;right:32px;top:50%;transform:translateY(-50%);width:24px}.log-date-control__clear[hidden]{display:none}.log-date-control__clear:hover{background:#f0b66a;color:#201812}.log-date-control__clear:focus-visible{outline-offset:1px}html[data-theme="light"] .log-date-control__clear{color:#58677b}html[data-theme="light"] .log-date-control__clear:hover{background:#f0b66a;color:#201812}
+.log-date-control__field{display:block;min-inline-size:0;position:relative}.log-date-control__field input{padding-right:58px}.log-date-control__clear{align-items:center;background:transparent;border:0;border-radius:50%;color:#c8c4cc;cursor:pointer;display:flex;font:21px/1 system-ui;height:24px;justify-content:center;margin:0;min-height:24px;min-width:24px;padding:0;position:absolute;right:32px;top:50%;transform:translateY(-50%);width:24px}.log-date-control__clear[hidden]{display:none}.log-date-control__clear:hover{background:#f0b66a;color:#201812}.log-date-control__clear:focus-visible{outline-offset:1px}html[data-theme="light"] .log-date-control__clear{color:#58677b}html[data-theme="light"] .log-date-control__clear:hover{background:#f0b66a;color:#201812}
 
 /* Terminal-state meaning must survive the broad light-table text color. */
 html[data-theme="light"] #promptHistoryRows .prompt-history-status--complete{color:#14865b!important}html[data-theme="light"] #promptHistoryRows .prompt-history-status--blocked{color:#a65a00!important}html[data-theme="light"] #promptHistoryRows .prompt-history-status--failed{color:#b42340!important}
@@ -522,8 +522,12 @@ html[data-theme="light"] .log-level--error{color:#b42340!important}html[data-the
 /* Advisory chat keeps code readable on a light response surface. */
 html[data-theme="light"] .chat-message__body :is(code,pre){background:#e9eef6;color:#182230}
 
+/* Fenced advice is distinguished by monospace alone; it is not a nested card. */
+.chat-message__body pre{background:transparent;border-radius:0;padding:0}
+html[data-theme="light"] .chat-message__body pre{background:transparent;color:inherit}
+
 /* Run-scoped AI conversation is opened from Prompt History, alongside evidence actions. */
-.prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}
+.prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover,.prompt-history-chat--recorded{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}.prompt-history-chat--recorded{font-weight:800}
 /* The shared modal shell owns the chat frame, header and safe-area sizing.
    Conversation-specific rules begin at the chat surface inside that frame. */
 .prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:var(--modal-surface);border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}html[data-theme="light"] .prompt-chat-modal #codexChat{background:var(--modal-surface)}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
@@ -716,6 +720,7 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
 .dashboard-modal-shell--confirmation{--modal-default-accent:var(--house-style);--modal-panel-max-width:30rem}
 .dashboard-modal-shell--evidence{--modal-default-accent:#8dc7ff;--category-color:var(--modal-accent)}
 .configuration-controls{display:grid;gap:12px;margin:16px 0}.configuration-controls h2{font-size:16px;margin:0}.configuration-controls label{align-items:center;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.configuration-controls .label{align-items:center;display:flex;gap:6px;margin:0}.configuration-field-status{color:#54d6a0;font-size:12px;grid-column:2;justify-self:end;min-height:1em}.configuration-field-status:not(.configuration-status--saved){color:#ff9fb0}.configuration-controls label:has(input[type="checkbox"]){display:flex;grid-template-columns:none}.configuration-controls select{max-width:14rem}#configuration>.configuration-controls:has(#configurationStatus:empty){display:none}.configuration-inbox-field{align-items:center;display:grid;gap:4px 8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.configuration-inbox-field>.label,.configuration-inbox-location{grid-column:1}.configuration-inbox-location{color:var(--dashboard-modal-muted);font:12px ui-monospace,monospace;overflow-wrap:anywhere}.configuration-inbox-open{align-self:center;background:#25243a;border:1px solid #818cf8;border-radius:8px;color:#ececff;font:400 13px system-ui;grid-column:2;grid-row:1 / span 2;justify-self:stretch;padding:9px 12px}.configuration-inbox-open::before{content:"⌖";font:16px/1 system-ui;margin-right:7px;vertical-align:-1px}.configuration-inbox-open:hover:not(:disabled){background:#818cf8;color:#171729}.configuration-inbox-open:disabled{cursor:not-allowed;opacity:.55}.configuration-inbox-unavailable{color:var(--dashboard-modal-muted);font-size:12px;grid-column:1 / -1;margin:4px 0 0}.configuration-inbox-modal .dashboard-modal-shell__panel{overflow:hidden}.configuration-inbox-modal__field{display:grid;gap:8px;margin:18px 0}.configuration-inbox-modal__field label{color:var(--modal-secondary-accent);font-size:13px;font-weight:700}.configuration-inbox-modal__field input{box-sizing:border-box;min-width:0;width:100%}.configuration-inbox-modal__browse{justify-self:start}.configuration-inbox-modal__browse::before{content:"⌖";font:16px/1 system-ui;margin-right:7px;vertical-align:-1px}.configuration-inbox-modal pre{overflow-wrap:anywhere;white-space:pre-wrap}html[data-theme="light"] .configuration-inbox-open{background:#f1f2ff;border-color:#6366c9;color:#3b3d82}html[data-theme="light"] .configuration-inbox-open:hover:not(:disabled){background:#c9cdfd;color:#171729}
+.configuration-card{margin-bottom:0}
 .inbox-queue>.configuration-inbox-field,.inbox-queue>.queue-project-settings{border-top:1px solid color-mix(in srgb,var(--category-color) 40%,transparent);margin-top:16px;padding-top:16px}.inbox-queue>.queue-project-settings{margin-bottom:0}
 .configuration-status--saved{color:#54d6a0!important}
 .capacity-reserve-configuration,.telemetry-retention,.log-settings,.platform-settings,.configuration-provider-readiness-settings{border-top:1px solid color-mix(in srgb,var(--category-color) 40%,transparent);margin-top:16px;padding-top:16px}
@@ -750,11 +755,12 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
   #componentLogControls>label[hidden]{display:none}
   #componentLogControls>label:has(#logEventFilter){grid-column:auto;width:100%}
   #componentLogControls #logEventFilter{box-sizing:border-box;max-width:100%;min-width:0;width:100%}
-  #componentLogControls>label:has(:is(#logSpecificDate,#logDateFrom,#logDateTo)){grid-column:auto}
+  #componentLogControls>label:has(:is(#logSpecificDate,#logDateFrom,#logDateTo)){grid-column:auto;max-inline-size:100%;min-inline-size:0;overflow:clip}
   /* Safari can include native date-picker affordances outside a 100% control.
-     Keep these fields inside their label's content box without making the
-     normal filter controls visually narrower. */
-  #componentLogControls :is(#logSpecificDate,#logDateFrom,#logDateTo){box-sizing:border-box;inline-size:calc(100% - 2px);max-inline-size:calc(100% - 2px);min-inline-size:0;min-width:0}
+     Keep the wrapper, input and clear action inside their label's content box
+     without making the normal filter controls visually narrower. */
+  #componentLogControls .log-date-control__field{box-sizing:border-box;display:block;inline-size:100%;max-inline-size:100%;min-inline-size:0;min-width:0}
+  #componentLogControls :is(#logSpecificDate,#logDateFrom,#logDateTo){box-sizing:border-box;inline-size:100%;max-inline-size:100%;min-inline-size:0;min-width:0;width:100%}
   #componentLogControls .reset-log-filters{justify-self:start;margin-left:0}
 }
 @media (max-width:900px){
@@ -956,6 +962,8 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#0a6b9d}
 /* A glyph is visual control language, not body copy. Keep all icon-only
    actions and disclosure markers at one deliberate, legible weight. */
 :is(.category-icon,.page-refresh>span,.dashboard-action,.component-info,.prompt-history-report,.prompt-history-analysis,.prompt-history-details,.prompt-history-chat,.dashboard-modal-shell__close,.report-view-modal__close,.chat-send>span){font-weight:700}:is(.technical-details,.codex-chat,.telemetry,.platform-health,#currentRun,.inbox-queue,.prompt-history)>summary::before,:is(.copy.copy--glyph,.download.download--glyph,.component-modal__restart,.rate-limit-reset,.predecessor-retry,.execution-dismiss,.operator-merge-wait__actions :is(.dashboard-action--primary,.dashboard-action--destructive),#operatorMergeWaitModal :is(.dashboard-modal-shell__action--primary,.dashboard-modal-shell__action--destructive),.component-modal h2,.confirmation-modal h2,.report-view-modal__title,.prompt-chat-modal__header h2)::before{font-weight:700}
+/* A stored run-scoped conversation gets a filled, heavier history glyph. */
+.prompt-history-chat--recorded{font-weight:800}
 /* Categories are navigation surfaces, not selected inputs. Their disclosure
    state is already communicated by the open/closed glyph and header surface. */
 :is(.workspace-card,.inbox-queue,.prompt-history,#currentRun,#rateLimits,.platform-health,.telemetry,#componentLogs,#codexChat,#engineering-dashboard-content>.technical-details:not(#componentLogs))>summary:is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}

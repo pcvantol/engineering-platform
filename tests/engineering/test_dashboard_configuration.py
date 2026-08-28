@@ -24,6 +24,7 @@ class DashboardConfigurationTest(unittest.TestCase):
             for key, value in (
                 ("inbox_scan_interval_seconds", 30),
                 ("open_pr_check_interval_seconds", 60),
+                ("dashboard_stream_interval_seconds", 10),
                 ("platform_health_refresh_seconds", 60),
                 ("component_details_refresh_seconds", 15),
                 ("provider_readiness_refresh_seconds", 600),
@@ -38,6 +39,14 @@ class DashboardConfigurationTest(unittest.TestCase):
             self.assertEqual(update(root, "provider_readiness_refresh_seconds", 60)["value"], 60)
             with self.assertRaises(ValueError):
                 update(root, "provider_readiness_refresh_seconds", 15)
+
+    def test_dashboard_stream_interval_defaults_to_one_second_and_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(get(root)["dashboard_stream_interval_seconds"], 1)
+            self.assertEqual(update(root, "dashboard_stream_interval_seconds", 10)["value"], 10)
+            with self.assertRaises(ValueError):
+                update(root, "dashboard_stream_interval_seconds", 11)
 
     def test_codex_capacity_reserve_is_disabled_by_default_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

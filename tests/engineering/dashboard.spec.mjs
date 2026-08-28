@@ -239,6 +239,34 @@ test.describe("Engineering Status browser smoke", () => {
     })).toBe(true);
   });
 
+  test("persists the bounded serverpush interval from Configuration", async ({ page }) => {
+    const writes = [];
+    await page.route("**/api/configuration", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ json: {
+          log_retention_days: 30, telemetry_retention_days: 90, log_level: "INFO", inbox_scan_interval_seconds: 15,
+          open_pr_check_interval_seconds: 30, dashboard_stream_interval_seconds: 1,
+          platform_health_refresh_seconds: 15, component_details_refresh_seconds: 5,
+          provider_readiness_refresh_seconds: 300, codex_capacity_reserve_percent: 0,
+        } });
+        return;
+      }
+      writes.push(JSON.parse(route.request().postData() || "{}"));
+      await route.fulfill({ json: { key: "dashboard_stream_interval_seconds", previous: 1, value: 10 } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    const select = page.locator("#configurationDashboardStreamInterval");
+    await expect(select).toHaveValue("1");
+    await expect(select.locator("option")).toHaveText(["1 seconde", "2 seconden", "3 seconden", "4 seconden", "5 seconden", "6 seconden", "7 seconden", "8 seconden", "9 seconden", "10 seconden"]);
+    const picker = page.locator("#configurationDashboardStreamInterval + .dashboard-select-picker");
+    await openDashboardPicker(picker);
+    await chooseDashboardPickerOption(picker, "10");
+    await expect.poll(() => writes).toEqual([{
+      key: "dashboard_stream_interval_seconds", value: 10, previous: 1,
+    }]);
+  });
+
   test("does not leave an empty configuration status container between grouped settings", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const configuration = page.locator("#configuration");
@@ -922,7 +950,7 @@ test.describe("Engineering Status browser smoke", () => {
     await openDashboardPicker(picker);
     await chooseDashboardPickerOption(picker, "DEBUG");
     expect(await page.evaluate(() => window.__dashboardSelectFocusOptions)).toEqual([]);
-    await expect(page.locator("#configuration .configuration-field")).toHaveCount(6);
+    await expect(page.locator("#configuration .configuration-field")).toHaveCount(5);
   });
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
@@ -989,6 +1017,13 @@ test.describe("Engineering Status browser smoke", () => {
     expect(bounds.right).toBeLessThanOrEqual(bounds.cardRight);
   });
 
+  test("does not add a second bottom gap after the configuration card", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await expect(page.locator("#configuration")).toHaveCSS("margin-bottom", "0px");
+  });
+
   test("stacks mobile log filters and reveals only the selected date controls", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -1012,6 +1047,21 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#logSpecificDateControl")).toBeVisible();
     await expect(page.locator("#logDateFromControl")).toBeHidden();
     await expect(page.locator("#logDateToControl")).toBeHidden();
+    const specificDateBounds = await page.locator("#logSpecificDate").evaluate((input) => {
+      const label = input.closest("label").getBoundingClientRect();
+      const wrapper = input.closest(".log-date-control__field").getBoundingClientRect();
+      const field = input.getBoundingClientRect();
+      const clear = input.closest(".log-date-control__field").querySelector("button").getBoundingClientRect();
+      return {
+        clearRight: Math.round(clear.right),
+        fieldRight: Math.round(field.right),
+        labelRight: Math.round(label.right),
+        wrapperRight: Math.round(wrapper.right),
+      };
+    });
+    expect(specificDateBounds.wrapperRight).toBeLessThanOrEqual(specificDateBounds.labelRight);
+    expect(specificDateBounds.fieldRight).toBeLessThanOrEqual(specificDateBounds.labelRight);
+    expect(specificDateBounds.clearRight).toBeLessThanOrEqual(specificDateBounds.labelRight);
 
     await page.locator("#logTimePreset").selectOption("range");
     await expect(page.locator("#logSpecificDateControl")).toBeHidden();
@@ -1020,9 +1070,18 @@ test.describe("Engineering Status browser smoke", () => {
     const dateBounds = await page.locator("#logDateFrom, #logDateTo").evaluateAll((controls) => controls.map((input) => {
       const field = input.closest("label").getBoundingClientRect();
       const bounds = input.getBoundingClientRect();
-      return { left: Math.round(bounds.left), right: Math.round(bounds.right), fieldLeft: Math.round(field.left), fieldRight: Math.round(field.right) };
+      const wrapper = input.closest(".log-date-control__field").getBoundingClientRect();
+      const clear = input.closest(".log-date-control__field").querySelector("button").getBoundingClientRect();
+      return {
+        clearRight: Math.round(clear.right),
+        fieldLeft: Math.round(field.left),
+        fieldRight: Math.round(field.right),
+        left: Math.round(bounds.left),
+        right: Math.round(bounds.right),
+        wrapperRight: Math.round(wrapper.right),
+      };
     }));
-    expect(dateBounds.every((item) => item.left >= item.fieldLeft && item.right <= item.fieldRight)).toBe(true);
+    expect(dateBounds.every((item) => item.left >= item.fieldLeft && item.right <= item.fieldRight && item.wrapperRight <= item.fieldRight && item.clearRight <= item.fieldRight)).toBe(true);
 
     for (const preset of ["", "today", "yesterday"]) {
       await page.locator("#logTimePreset").selectOption(preset);
@@ -3714,7 +3773,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#currentTime")).toHaveCount(0);
     await expect(page.locator(".footer #lastRefresh")).toContainText(
-      "Laatst bijgewerkt:",
+      "Laatste live-statussignaal:",
     );
     await expect(page.locator(".footer #updateMode")).toContainText(
       "Serverpush:",
@@ -3739,7 +3798,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await selectDashboardLocale(page, "de");
     await expect(page.locator("html")).toHaveAttribute("lang", "de");
-    await expect(page.locator(".footer #lastRefresh")).toContainText("Zuletzt aktualisiert:");
+    await expect(page.locator(".footer #lastRefresh")).toContainText("Letztes Live-Statussignal:");
     await expect(page.locator("#dashboardLocale option:checked")).toHaveText("Deutsch");
   });
 
@@ -6284,6 +6343,7 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "healthy-run",
     }, {}));
     await expect(diagnosis).toBeVisible();
+    await expect(diagnosis).not.toHaveAttribute("open", "");
     await expect(page.locator("#technicalHealthySummary")).toHaveText("Hostcontrole geslaagd");
     await expect(page.locator("#technicalDiagnosisDetails")).toBeHidden();
 
@@ -6293,6 +6353,7 @@ test.describe("Engineering Status browser smoke", () => {
       diagnostic: "Host preflight failed",
     }, { host_preflight: { outcome: "FAILED" } }));
     await expect(diagnosis).toBeVisible();
+    await expect(diagnosis).toHaveAttribute("open", "");
     await expect(page.locator("#technicalHealthySummary")).toBeHidden();
     await expect(page.locator("#technicalDiagnosisDetails")).toBeVisible();
     await expect(page.locator("#technicalDetailsDescription")).toContainText("herstelbewijs");
@@ -8259,9 +8320,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryChatTitle"))
       .toHaveText(DASHBOARD_MESSAGES.nl["history.execution_chat_title"]);
     let submittedRun;
+    await page.route("**/api/prompt-history/**/chat", (route) => route.fulfill({ json: { messages: [] } }));
     await page.route("**/api/codex-chat", async (route) => {
       submittedRun = route.request().postDataJSON().run_id;
-      await route.fulfill({ json: { answer: "Dit advies hoort bij de geselecteerde prompt.", model: "Codex CLI" } });
+      await route.fulfill({ json: { answer: "Dit advies hoort bij de geselecteerde prompt.", model: "Codex CLI", messages: [{ role: "user", text: "Wat is de volgende stap?" }, { role: "assistant", text: "Dit advies hoort bij de geselecteerde prompt." }] } });
     });
     await page.locator("#chatInput").fill("Wat is de volgende stap?");
     const chatSubmittedResponse = page.waitForResponse((response) => (
@@ -8560,6 +8622,33 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await expect(page.locator(".chat-message--assistant code")).toHaveCSS("background-color", "rgb(233, 238, 246)");
     await expect(page.locator(".chat-message--assistant code")).toHaveCSS("color", "rgb(24, 34, 48)");
+  });
+
+  test("keeps fenced AI-chat code unfilled while retaining a monospace font", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      const message = document.createElement("article");
+      message.className = "chat-message chat-message--assistant";
+      message.innerHTML = '<div class="chat-message__body"><pre>herstel veilig</pre></div>';
+      document.querySelector("#chatMessages").append(message);
+    });
+    const code = page.locator(".chat-message--assistant pre");
+    await expect(code).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(code).toHaveCSS("font-family", /Unispace|ui-monospace|monospace/);
+  });
+
+  test("keeps fenced AI-chat code unfilled in light mode as well", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#themeToggle").click();
+    await page.evaluate(() => {
+      const message = document.createElement("article");
+      message.className = "chat-message chat-message--assistant";
+      message.innerHTML = '<div class="chat-message__body"><pre>herstel veilig</pre></div>';
+      document.querySelector("#chatMessages").append(message);
+    });
+    const code = page.locator(".chat-message--assistant pre");
+    await expect(code).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(code).toHaveCSS("font-family", /Unispace|ui-monospace|monospace/);
   });
 
   test("opens and closes all visible dashboard categories with the title-bar switch", async ({ page }) => {
@@ -8950,7 +9039,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(settings).toHaveCount(1);
     await expect(settings).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(settings.locator("#configurationReadonlySettingsTitle")).toHaveText("Vaste platforminstellingen");
-    await expect(settings.locator(".configuration-field")).toHaveCount(6);
+    await expect(settings.locator(".configuration-field")).toHaveCount(5);
   });
 
   test("scans stale local branches before confirming their cleanup", async ({ page }) => {
@@ -9153,13 +9242,20 @@ test.describe("Engineering Status browser smoke", () => {
     expect(nativeDialogs).toEqual([]);
   });
 
-  test("clears only the browser-local AI conversation through the in-app modal", async ({ page }) => {
+  test("clears only the persistent run-scoped AI conversation through the in-app modal", async ({ page }) => {
     // Avoid the production empty-history retry detaching the chat action.
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: {
       runs: [{ run_id: "inbox-fixture", status: "COMPLETE", title: "Fixture" }],
     } }));
+    let messages = [];
+    await page.route("**/api/prompt-history/**/chat", (route) => route.fulfill({ json: { messages } }));
+    await page.route("**/api/codex-chat/clear", (route) => {
+      messages = [];
+      return route.fulfill({ json: { cleared: true } });
+    });
     await page.route("**/api/codex-chat", async (route) => {
-      await route.fulfill({ contentType: "application/json", body: '{"answer":"De uitvoering is gereed.","model":"Codex CLI"}' });
+      messages = [{ role: "user", text: "Wat is de status?" }, { role: "assistant", text: "De uitvoering is gereed." }];
+      await route.fulfill({ json: { answer: "De uitvoering is gereed.", model: "Codex CLI", messages } });
     });
     const historyLoaded = page.waitForResponse("**/api/prompt-history");
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -9184,7 +9280,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#clearChat")).toBeVisible();
     await page.locator("#clearChat").click();
     const modal = page.locator("#confirmationModal");
-    await expect(modal).toContainText("Dit wist alleen de lokale chatweergave.");
+    await expect(modal).toContainText("Dit wist permanent alleen dit geredigeerde gesprek.");
     await page.locator("#confirmationModalCancel").click();
     await expect(page.locator("#chatMessages")).toContainText("Wat is de status?");
 
@@ -9194,7 +9290,25 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#clearChat")).toBeHidden();
     await expect(page.locator("#downloadChat")).toBeHidden();
     await expect(page.locator("#copyChat")).toBeHidden();
-    await expect.poll(() => page.evaluate(() => sessionStorage.getItem("djconnect-engineering-chat-history"))).toBeNull();
+  });
+
+  test("emphasizes the AI chat action for a prompt with a persistent conversation", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => {
+      promptHistoryEntries = [{
+        run_id: "inbox-chat-history",
+        status: "COMPLETE",
+        title: "Chatgeschiedenis",
+        executed_at: "2026-08-04T12:00:00Z",
+        chat_message_count: 1,
+      }];
+      renderPromptHistory();
+    });
+    const chat = page.locator("#promptHistoryRows .prompt-history-chat");
+    await expect(chat).toHaveClass(/prompt-history-chat--recorded/);
+    await expect(chat).toHaveCSS("background-color", "rgb(208, 164, 255)");
+    await expect(chat).toHaveCSS("border-top-color", "rgb(208, 164, 255)");
   });
 
   test("refreshes status and prompt history immediately after dismissing an execution", async ({ page }) => {
@@ -9321,6 +9435,8 @@ test.describe("Engineering Status browser smoke", () => {
 
     await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
     await expect(indicator).toHaveAttribute("data-health-state", "active");
+    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", workspace_state: "ACTIVE", queue_depth: 0 }, {}));
+    await expect(page.locator("#dashboardHealthChecks li").filter({ hasText: "Werkruimte" })).toHaveAttribute("data-health", "good");
     await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE", current_phase: "BLOCKED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
     await expect(indicator).toHaveAttribute("data-health-state", "blocked");
     await page.evaluate(() => r({ watcher_state: "HOST_PREFLIGHT_FAILED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));

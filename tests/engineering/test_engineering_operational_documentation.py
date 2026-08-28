@@ -44,7 +44,7 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("Promptgeschiedenis** is the sole entry point", dashboard)
         self.assertIn("near-fullscreen, read-only detail dialog", dashboard)
         self.assertIn("adjacent AI-chat glyph", dashboard)
-        self.assertIn("browser-session history is isolated per Run ID", dashboard)
+        self.assertIn("private, run-scoped transcript", dashboard)
         self.assertIn("top-level, collapsible operational category immediately after **Technische\ndetails**", dashboard)
         self.assertIn("Playwright covers them with\nreal touch input one at a time", dashboard)
         self.assertIn("## Git workspace lock status", dashboard)

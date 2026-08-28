@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import re
 from pathlib import Path
@@ -386,6 +386,7 @@ def prompt_history(
 ) -> list[dict[str, object]]:
     """Return bounded, newest-first projections safe for the private dashboard."""
     bounded_limit = min(max(limit, 1), 1_000)
+    chat_cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     connection = open_storage(root)
     try:
         rows = connection.execute(
@@ -432,7 +433,9 @@ def prompt_history(
                 submission.execution_context_snapshot, submission.forge_governance_handoff_version,
                 submission.forge_governance_handoff_snapshot, dismissal.terminal_state,
                 dismissal.handling_state, dismissal.dismissed_at, dismissal.dismissed_by,
-                emergency.cancelled_at
+                emergency.cancelled_at,
+                (SELECT COUNT(*) FROM execution_chat_messages AS chat
+                 WHERE chat.run_id = history.run_id AND chat.created_at >= ?)
             FROM prompt_execution_history AS history
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
             LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
@@ -442,7 +445,7 @@ def prompt_history(
             ORDER BY history.executed_at DESC, history.run_id DESC
             LIMIT ?
             """,
-            (bounded_limit,),
+            (chat_cutoff, bounded_limit),
         ).fetchall()
     finally:
         connection.close()
@@ -483,6 +486,7 @@ def prompt_history(
             "dismissed_at": row[32],
             "dismissed_by": row[33],
             "emergency_cancelled_at": row[34],
+            "chat_message_count": row[35],
         }
         for row in rows
     ]

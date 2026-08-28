@@ -13,12 +13,34 @@ from tools.engineering.prompt_history import (
     record_prompt_execution,
     report_for_prompt_history,
 )
-from tools.engineering.storage import record_submission
+from tools.engineering.storage import open_storage, record_submission
 from tools.engineering.execution_timing import record_phase
 from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
 
 
 class PromptHistoryTest(unittest.TestCase):
+    def test_projects_only_retained_chat_messages_into_prompt_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root,
+                run_id="inbox-chat-count",
+                terminal_state="COMPLETE",
+                prompt_title="Chat count",
+                executed_at="2026-08-15T12:00:00Z",
+            )
+            with open_storage(root) as connection:
+                connection.executemany(
+                    "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        ("inbox-chat-count", "user", "recent", None, "2026-08-15T12:00:00+00:00"),
+                        ("inbox-chat-count", "assistant", "expired", None, "2000-01-01T00:00:00+00:00"),
+                    ),
+                )
+
+            self.assertEqual(prompt_history(root)[0]["chat_message_count"], 1)
+
     def test_projects_total_execution_duration_from_host_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -201,6 +223,7 @@ class PromptHistoryTest(unittest.TestCase):
                         "handling_state": "OPEN",
                         "dismissed_at": None,
                         "dismissed_by": None,
+                        "chat_message_count": 0,
                         "retry_child_run_id": None,
                         "retry_status": None,
                         "queued_retry_child": False,

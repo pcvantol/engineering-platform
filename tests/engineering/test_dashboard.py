@@ -20,12 +20,95 @@ from tools.engineering.platform_version import EngineeringPlatformManifest
 from tools.engineering.prompt_history import record_prompt_execution
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
+from tools.engineering.providers import ProviderStatus
 from tools.engineering.dashboard_configuration import inbox_root, update_inbox_root
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire
 
 
 class DashboardStatusTest(unittest.TestCase):
+    def test_rate_limit_capacity_ignores_malformed_windows_and_uses_the_lowest_remaining_value(self) -> None:
+        self.assertIsNone(dashboard._remaining_rate_limit_capacity({"windows": "unknown"}))
+        self.assertEqual(
+            dashboard._remaining_rate_limit_capacity(
+                {"windows": [None, {"used_percent": True}, {"used_percent": 120}, {"used_percent": 35}]}
+            ),
+            0.0,
+        )
+
+    def test_managed_codex_installation_path_never_accepts_another_executable(self) -> None:
+        with patch("tools.engineering.dashboard.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex")):
+            self.assertIsNone(_codex_cli_installation_path(None))
+            self.assertEqual(
+                _codex_cli_installation_path("/managed/codex/bin/codex"), "/managed/codex"
+            )
+            self.assertIsNone(_codex_cli_installation_path("/usr/local/bin/codex"))
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    @patch("tools.engineering.dashboard.GitProvider")
+    def test_pull_request_metrics_are_bound_to_the_verified_repository(
+        self, git_provider: object, github_provider: object
+    ) -> None:
+        git_provider.return_value.execute.return_value = __import__("subprocess").CompletedProcess(
+            ("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""
+        )
+        github_provider.return_value.github.return_value = json.dumps(
+            {
+                "number": 981,
+                "commits": [{"oid": "one"}, {"oid": "two"}],
+                "changedFiles": 3,
+                "statusCheckRollup": [
+                    {"__typename": "CheckRun", "name": "tests"},
+                    {"__typename": "StatusContext", "name": "legacy"},
+                    {"__typename": "CheckRun", "name": ""},
+                ],
+            }
+        )
+
+        self.assertEqual(
+            dashboard._pull_request_github_metrics(Path("/repository"), "pcvantol/djconnect", 981),
+            {"commit_count": 2, "changed_file_count": 3, "check_count": 1},
+        )
+
+        github_provider.return_value.github.return_value = "not-json"
+        self.assertEqual(
+            dashboard._pull_request_github_metrics(Path("/repository"), "pcvantol/djconnect", 981),
+            {},
+        )
+        github_provider.return_value.github.return_value = json.dumps({"number": 123})
+        self.assertEqual(
+            dashboard._pull_request_github_metrics(Path("/repository"), "pcvantol/djconnect", 981),
+            {},
+        )
+
+    def test_terminal_diagnostic_rejects_an_invalid_run_identifier(self) -> None:
+        self.assertIsNone(dashboard._terminal_run_diagnostic(Path("/repository"), "../outside"))
+
+    def test_inbox_item_detection_is_conservative_when_the_directory_cannot_be_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = Path(temporary)
+            self.assertFalse(dashboard._inbox_has_items(inbox))
+            (inbox / "prompt.md").write_text("work", encoding="utf-8")
+            self.assertTrue(dashboard._inbox_has_items(inbox))
+        with patch("pathlib.Path.iterdir", side_effect=OSError("unavailable")):
+            self.assertTrue(dashboard._inbox_has_items(Path("/unavailable")))
+
+    @patch("tools.engineering.dashboard.GitHubProvider")
+    def test_github_rate_limit_status_handles_malformed_and_exhausted_responses(
+        self, github_provider: object
+    ) -> None:
+        github_provider.return_value.github.return_value = json.dumps({"resources": "invalid"})
+        self.assertEqual(dashboard._github_rate_limit_status(), {"limited": False})
+        github_provider.return_value.github.return_value = json.dumps(
+            {"resources": {"core": {"remaining": 0, "reset": 42}, "graphql": {"remaining": 2}}}
+        )
+        self.assertEqual(
+            dashboard._github_rate_limit_status(),
+            {"limited": True, "reset_at": 42},
+        )
+        github_provider.return_value.github.side_effect = RuntimeError("rate limit exceeded")
+        self.assertEqual(dashboard._github_rate_limit_status(), {"limited": True})
+
     def test_canonical_checkpoint_rejects_an_invalid_run_identifier(self) -> None:
         self.assertEqual(dashboard._canonical_checkpoint(Path("/repository"), "../outside"), {})
 
@@ -65,10 +148,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="configurationLogLevel"', page)
         self.assertNotIn('id="configurationAuditLogging"', page)
         self.assertNotIn('configuration.audit_logging', page)
-        self.assertEqual(page.count('class="configuration-info"'), 7)
-        self.assertEqual(page.count("data-i18n-title=\"configuration."), 7)
+        self.assertEqual(page.count('class="configuration-info"'), 6)
+        self.assertEqual(page.count("data-i18n-title=\"configuration."), 6)
         for control in (
             "configurationInboxScanInterval", "configurationOpenPrInterval",
+            "configurationDashboardStreamInterval",
             "configurationPlatformHealthInterval", "configurationComponentDetailsInterval",
         ):
             self.assertIn(f'id="{control}"', page)
@@ -77,7 +161,7 @@ class DashboardStatusTest(unittest.TestCase):
             ("configuration.operator_merge_interval", "configuration.seconds_60"),
             ("configuration.required_checks_interval", "configuration.seconds_15"),
             ("configuration.open_pr_interval", "configuration.seconds_30"),
-            ("configuration.dashboard_stream_interval", "configuration.second_1"),
+            ("configuration.dashboard_stream_interval", None),
             ("configuration.platform_health_interval", "configuration.seconds_15"),
             ("configuration.component_details_interval", "configuration.seconds_5"),
             ("configuration.lease_heartbeat_interval", "configuration.seconds_15"),
@@ -85,7 +169,8 @@ class DashboardStatusTest(unittest.TestCase):
             ("configuration.github_retry_backoff", "configuration.github_retry_backoff_value"),
         ):
             self.assertIn(f'data-i18n="{key}"', page)
-            self.assertIn(f'data-i18n="{value}"', page)
+            if value is not None:
+                self.assertIn(f'data-i18n="{value}"', page)
         self.assertNotIn('id="dashboardLocale"', page[page.index('id="configuration"'):])
         self.assertNotIn('id="autoRefresh"', page[page.index('id="configuration"'):])
         self.assertLess(
@@ -426,6 +511,62 @@ class DashboardStatusTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(OSError, "De herstart is niet gelukt"):
                 dashboard._restart_component("dashboard")
+
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    def test_launch_agent_health_rejects_a_loaded_agent_without_a_process(self, launchd: object) -> None:
+        launchd.return_value.runtime_status.return_value = ProviderStatus(
+            "launchd", "configured", False, "LaunchAgent is loaded but has no active process"
+        )
+        self.assertEqual(
+            dashboard._launch_agent_health("com.example.watcher"),
+            {
+                "healthy": False,
+                "state": "not_running",
+                "detail": "LaunchAgent is geladen, maar heeft geen actief proces",
+            },
+        )
+
+    @patch("tools.engineering.dashboard.LaunchdProvider")
+    def test_launch_agent_health_reports_a_real_process_and_unavailable_launchctl(self, launchd: object) -> None:
+        launchd.return_value.runtime_status.return_value = ProviderStatus(
+            "launchd", "configured", True, "LaunchAgent has an active process"
+        )
+        self.assertEqual(
+            dashboard._launch_agent_health("com.example.watcher"),
+            {"healthy": True, "state": "running", "detail": "LaunchAgent-proces is actief"},
+        )
+
+        launchd.return_value.runtime_status.return_value = ProviderStatus(
+            "launchd", "unavailable", False, "launchctl unavailable"
+        )
+        self.assertEqual(
+            dashboard._launch_agent_health("com.example.watcher"),
+            {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
+        )
+
+    @patch("tools.engineering.dashboard.storage_activation_required", return_value=True)
+    @patch("tools.engineering.dashboard._launch_agent_health")
+    def test_inbox_watcher_health_exposes_storage_activation_as_its_safe_reason(
+        self, launch_agent_health: object, _: object
+    ) -> None:
+        launch_agent_health.return_value = {
+            "healthy": False,
+            "state": "not_running",
+            "detail": "LaunchAgent is geladen, maar heeft geen actief proces",
+        }
+        health = dashboard._inbox_watcher_health(Path("/repository"))
+        self.assertFalse(health["healthy"])
+        self.assertEqual(health["reason_code"], "storage_activation_required")
+        self.assertIn("opslagactivatie", str(health["detail"]))
+
+    @patch("tools.engineering.dashboard.storage_activation_required", return_value=False)
+    @patch("tools.engineering.dashboard._launch_agent_health")
+    def test_inbox_watcher_health_preserves_the_live_process_projection(
+        self, launch_agent_health: object, _: object
+    ) -> None:
+        expected = {"healthy": True, "state": "running", "detail": "LaunchAgent-proces is actief"}
+        launch_agent_health.return_value = expected
+        self.assertIs(dashboard._inbox_watcher_health(Path("/repository")), expected)
 
     @patch("tools.engineering.dashboard.LaunchdProvider")
     @patch("tools.engineering.dashboard.GitProvider")
@@ -3963,21 +4104,33 @@ class DashboardStatusTest(unittest.TestCase):
         with self._dashboard_http_connection() as (_, connection):
             with (
                 patch("tools.engineering.dashboard.codex_chat_response", return_value="Veilig advies."),
+                patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Wat nu?"}, {"role": "assistant", "text": "Veilig advies."}]),
                 patch("tools.engineering.dashboard.log_event") as chat_log_event,
             ):
-                connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?", "history": []}), headers={"Content-Type": "application/json"})
+                connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?"}), headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra"})
+                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra", "messages": [{"role": "user", "text": "Wat nu?"}, {"role": "assistant", "text": "Veilig advies."}]})
                 chat_log_event.assert_any_call(ANY, logging.INFO, "ai_chat_message_sent", diagnostic="[REDACTED]")
             connection.request("POST", "/api/codex-chat", body="{}", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
-            connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?", "history": []}), headers={"Content-Type": "application/json", "Origin": "https://example.invalid"})
+            connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?"}), headers={"Content-Type": "application/json", "Origin": "https://example.invalid"})
             response = connection.getresponse()
             self.assertEqual(response.status, 403)
             response.read()
+            with patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Bewaard"}]):
+                connection.request("GET", "/api/prompt-history/inbox-chat/chat")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read()), {"messages": [{"role": "user", "text": "Bewaard"}]})
+            with patch("tools.engineering.dashboard.clear_codex_chat_history") as clear:
+                connection.request("POST", "/api/codex-chat/clear", body='{"run_id":"inbox-chat"}', headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read()), {"cleared": True})
+                clear.assert_called_once()
 
     @patch(
         "tools.engineering.dashboard.build_relay",

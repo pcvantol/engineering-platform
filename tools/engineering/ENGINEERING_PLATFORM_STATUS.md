@@ -86,7 +86,7 @@ changes execution semantics.
 - Dashboard presentation is provider-neutral while preserving explicit
   per-run provenance (for example, `AI-provider: Codex CLI`). It offers
   server-pushed status, category-coded evidence cards, client-side structured
-  log filtering/sorting and browser-session-local read-only advice history.
+  log filtering/sorting and private run-scoped, redacted advice transcripts.
 - **Operationeel overzicht** exposes a bounded Git workspace-lock signal. A
   stale-lock recovery is available only after a five-minute age threshold and
   an ownership check for the exact index-lock file; uncertain ownership is

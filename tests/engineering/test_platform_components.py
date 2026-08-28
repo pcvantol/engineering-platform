@@ -114,6 +114,26 @@ class ProviderContractTest(unittest.TestCase):
         provider.uninstall(plist)
         self.assertEqual(run.call_count, 3)
 
+    @patch("tools.engineering.providers.subprocess.run")
+    @patch("tools.engineering.providers.shutil.which", return_value="/bin/launchctl")
+    def test_launchd_runtime_status_requires_an_active_process(self, _: object, run: object) -> None:
+        run.return_value = __import__("subprocess").CompletedProcess(
+            ("launchctl", "print"),
+            0,
+            "state = spawn scheduled\nactive count = 0\nlast exit code = 1\n",
+            "",
+        )
+        stopped = LaunchdProvider().runtime_status("com.example.watcher")
+        self.assertFalse(stopped.qualified)
+        self.assertIn("no active process", stopped.detail)
+
+        run.return_value = __import__("subprocess").CompletedProcess(
+            ("launchctl", "print"), 0, "state = running\nactive count = 1\npid = 42\n", ""
+        )
+        running = LaunchdProvider().runtime_status("com.example.watcher")
+        self.assertTrue(running.qualified)
+        self.assertIn("active", running.detail)
+
     @patch("tools.engineering.providers.TailscaleProvider.status")
     @patch("tools.engineering.providers.LaunchdProvider.status")
     @patch("tools.engineering.providers.GitHubProvider.status")

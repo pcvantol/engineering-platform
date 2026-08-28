@@ -236,6 +236,9 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute(
                     "DELETE FROM engineering_schema_migrations WHERE version=33"
                 )
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version=34"
+                )
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
@@ -380,6 +383,19 @@ class EngineeringStorageTest(unittest.TestCase):
                         connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
                         ENGINEERING_STORAGE_SCHEMA_VERSION + 1,
                     )
+
+    def test_storage_activation_requirement_probe_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with open_storage(root):
+                pass
+            from tools.engineering import storage
+
+            self.assertFalse(storage.storage_activation_required(root))
+            with patch.object(
+                storage, "ENGINEERING_STORAGE_SCHEMA_VERSION", ENGINEERING_STORAGE_SCHEMA_VERSION + 1
+            ):
+                self.assertTrue(storage.storage_activation_required(root))
 
     def test_controlled_activation_refuses_active_execution_or_component(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

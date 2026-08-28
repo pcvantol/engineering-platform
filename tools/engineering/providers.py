@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Mapping, Protocol, Sequence
@@ -206,6 +207,38 @@ class LaunchdProvider:
         if not executable:
             return False
         return subprocess.run((executable, "print", f"gui/{__import__('os').getuid()}/{label}"), text=True, capture_output=True, check=False).returncode == 0
+
+    def runtime_status(self, label: str) -> ProviderStatus:
+        """Return whether one owned LaunchAgent has a live service process.
+
+        ``launchctl print`` succeeding only proves that a job remains loaded.
+        A KeepAlive job can be loaded while repeatedly exiting, so reporting it
+        as healthy would project a stale "active" status to the dashboard.
+        """
+        executable = shutil.which("launchctl")
+        if not executable:
+            return ProviderStatus("launchd", "configured", False, "launchctl unavailable")
+        completed = subprocess.run(
+            (executable, "print", f"gui/{os.getuid()}/{label}"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            return ProviderStatus("launchd", "configured", False, "LaunchAgent is not loaded")
+        output = completed.stdout
+        active_count = re.search(r"(?m)^\s*active count\s*=\s*(\d+)", output)
+        has_active_process = (
+            active_count is not None and int(active_count.group(1)) > 0
+        ) or re.search(r"(?m)^\s*pid\s*=\s*[1-9]\d*", output) is not None
+        if has_active_process:
+            return ProviderStatus("launchd", "configured", True, "LaunchAgent process is active")
+        return ProviderStatus(
+            "launchd",
+            "configured",
+            False,
+            "LaunchAgent is loaded but has no active process",
+        )
 
     def restart(self, label: str) -> None:
         executable = shutil.which("launchctl")

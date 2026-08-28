@@ -362,6 +362,7 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     phase = String(current?.current_phase || "").toUpperCase(),
     watcherStateUpper = watcherState.toUpperCase(),
     active = isActiveRun(current || {}),
+    workspaceActive = active && workspaceState === "ACTIVE",
     blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
     failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
       (components && (!dashboardHealthy || !watcherHealthy || !relayHealthy));
@@ -373,8 +374,11 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
   const componentCheck = (name, componentKey, healthy) => {
     const component = components?.[componentKey];
     const unavailable = components ? "not_running" : "unknown";
+    const reasonCode = !healthy && components && typeof component?.reason_code === "string"
+      ? component.reason_code
+      : "";
     const reason = !healthy && components
-      ? String(component?.detail || component?.state || "").trim()
+      ? (reasonCode ? t("component.reason." + reasonCode) : String(component?.detail || component?.state || "").trim())
       : "";
     return [
       name,
@@ -391,7 +395,7 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
     ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
     ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
-    ["workspace", workspaceState || "unknown", workspaceState === "WORKSPACE_READY" ? "good" : workspaceState ? "bad" : "unknown"],
+    ["workspace", workspaceState || "unknown", workspaceState === "WORKSPACE_READY" || workspaceActive ? "good" : workspaceState ? "bad" : "unknown"],
   ];
   return { state, checks };
 }
@@ -1143,33 +1147,20 @@ function loadComponentLogs() {
   // page from the full retained SQLite history.
   refreshComponentLogs({}, true);
 }
-const CHAT_HISTORY_KEY = "djconnect-engineering-chat-history",
-  CHAT_HISTORY_LIMIT = 20;
+const CHAT_HISTORY_LIMIT = 20;
 let chatContextRun = "";
-function chatHistoryStorageKey(run = chatContextRun) {
-  return CHAT_HISTORY_KEY + ":" + String(run || "none");
-}
-function loadChatHistory(run) {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(chatHistoryStorageKey(run)) || "[]");
-    return Array.isArray(saved)
-      ? saved
-          .filter(
-            (entry) =>
-              entry &&
-              ["user", "assistant"].includes(entry.role) &&
-              typeof entry.text === "string",
-          )
-          .slice(-CHAT_HISTORY_LIMIT)
-      : [];
-  } catch {
-    return [];
-  }
-}
 let chatHistory = [];
-function persistChatHistory() {
-  if (chatContextRun)
-    sessionStorage.setItem(chatHistoryStorageKey(), JSON.stringify(chatHistory));
+function updateChatHistoryCount(count) {
+  promptHistoryEntries = promptHistoryEntries.map((entry) =>
+    entry.run_id === chatContextRun ? { ...entry, chat_message_count: count } : entry,
+  );
+  renderPromptHistory();
+}
+function normaliseChatMessages(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => entry && ["user", "assistant"].includes(entry.role) && typeof entry.text === "string")
+        .slice(-CHAT_HISTORY_LIMIT)
+    : [];
 }
 function renderLegacyChatMessage(role, text) {
   let item = document.createElement("article"),
@@ -1199,17 +1190,12 @@ function askCodex() {
   if (!message || !chatContextRun || $("chatSend").disabled) return;
   $("chatSend").disabled = true;
   $("chatStatus").textContent = t("chat.thinking");
-  chatHistory.push({ role: "user", text: message });
-  chatHistory = chatHistory.slice(-CHAT_HISTORY_LIMIT);
-  persistChatHistory();
-  chatMessage("user", message);
   input.value = "";
   fetch("/api/codex-chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       message: message,
-      history: chatHistory.slice(0, -1).slice(-6),
       run_id: chatContextRun,
     }),
   })
@@ -1220,13 +1206,11 @@ function askCodex() {
     .then((result) => {
       if (!result.ok)
         throw Error(t("chat.unavailable"));
-      let answer = result.body.answer;
       $("chatModel").textContent =
         result.body.model || $("chatModel").textContent;
-      chatHistory.push({ role: "assistant", text: answer });
-      chatHistory = chatHistory.slice(-CHAT_HISTORY_LIMIT);
-      persistChatHistory();
-      chatMessage("assistant", answer);
+      chatHistory = normaliseChatMessages(result.body.messages);
+      renderChatHistory();
+      updateChatHistoryCount(chatHistory.length);
       $("chatStatus").textContent = "";
     })
     .catch(() => {
@@ -1243,15 +1227,27 @@ function closePromptHistoryChat() {
 function openPromptHistoryChat(entry) {
   if (!entry?.run_id) return;
   chatContextRun = String(entry.run_id);
-  chatHistory = loadChatHistory(chatContextRun);
+  chatHistory = [];
   $("promptHistoryChatTitle").textContent = t("history.execution_chat_title");
   $("promptHistoryChatDescription").textContent = t("history.chat_description");
-  $("chatStatus").textContent = "";
+  $("chatStatus").textContent = t("chat.thinking");
+  $("chatSend").disabled = true;
   renderChatHistory();
   updateChatActions();
   const modal = $("promptHistoryChatModal");
   if (!modal.open) modal.showModal();
   resetDashboardModalInitialFocus(modal);
+  fetch("/api/prompt-history/" + encodeURIComponent(chatContextRun) + "/chat", { cache: "no-store" })
+    .then(async (response) => ({ ok: response.ok, body: await response.json() }))
+    .then((result) => {
+      if (!result.ok) throw Error("chat unavailable");
+      chatHistory = normaliseChatMessages(result.body.messages);
+      renderChatHistory();
+      updateChatActions();
+      $("chatStatus").textContent = "";
+    })
+    .catch(() => { $("chatStatus").textContent = t("chat.unavailable"); })
+    .finally(() => { $("chatSend").disabled = false; });
 }
 function fallbackCopy(value) {
   const area = document.createElement("textarea");
@@ -1385,7 +1381,10 @@ function renderTechnicalDiagnosis(status = {}, snapshot = {}) {
   summary.hidden = !(active && !needsAttention);
   summary.textContent = active && !needsAttention ? t("technical.host_check_passed") : "";
   description.textContent = t(needsAttention ? "description.technical_details_attention" : "description.technical_details");
-  section.open = !section.hidden;
+  // A healthy active run exposes the compact host-check summary, but should
+  // not repeatedly expand the operator's page on every snapshot refresh.
+  // Attention evidence remains deliberately prominent and opens this section.
+  section.open = needsAttention;
 }
 function executionContextValue(value) {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
@@ -5117,6 +5116,8 @@ function renderPromptHistory() {
       if (entry.run_id) {
         const button = document.createElement("button");
         button.className = "prompt-history-chat";
+        if (Number(entry.chat_message_count) > 0)
+          button.classList.add("prompt-history-chat--recorded");
         button.type = "button";
         button.title = t("history.open_chat", { title: title.textContent });
         button.setAttribute("aria-label", button.title);
@@ -5473,6 +5474,7 @@ const configurationFields = Object.freeze({
   configurationLogLevel: ["log_level", String],
   configurationInboxScanInterval: ["inbox_scan_interval_seconds", Number],
   configurationOpenPrInterval: ["open_pr_check_interval_seconds", Number],
+  configurationDashboardStreamInterval: ["dashboard_stream_interval_seconds", Number],
   configurationProviderReadinessInterval: ["provider_readiness_refresh_seconds", Number],
   configurationCodexCapacityReserve: ["codex_capacity_reserve_percent", Number],
   configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
@@ -5602,6 +5604,7 @@ function addConfigurationControlInfo() {
     ["configurationLogLevel", "configuration.log_level_help"],
     ["configurationInboxScanInterval", "configuration.inbox_scan_interval_help"],
     ["configurationOpenPrInterval", "configuration.open_pr_interval_help"],
+    ["configurationDashboardStreamInterval", "configuration.dashboard_stream_interval_help"],
     ["configurationProviderReadinessInterval", "configuration.provider_readiness_interval_help"],
     ["configurationCodexCapacityReserve", "configuration.codex_capacity_reserve_help"],
     ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
@@ -5963,6 +5966,11 @@ function localizeConfigurationOptions() {
   });
   document.querySelectorAll("#configurationProviderReadinessInterval option").forEach((option) => {
     option.textContent = t(option.dataset.i18n);
+  });
+  document.querySelectorAll("#configurationDashboardStreamInterval option").forEach((option) => {
+    option.textContent = option.value === "1"
+      ? t("configuration.second_1")
+      : t("configuration.seconds_value", { value: option.value });
   });
   syncCodexCapacityReserveOptions();
   dashboardSelectPickers.forEach((_, select) => syncDashboardSelectPicker(select));
@@ -7821,10 +7829,21 @@ $("clearChat").addEventListener("click", () =>
     { destructive: true },
   ).then((confirmed) => {
     if (!confirmed) return;
-    chatHistory = [];
-    if (chatContextRun) sessionStorage.removeItem(chatHistoryStorageKey());
-    renderChatHistory();
-    updateChatActions();
+    if (!chatContextRun) return;
+    $("clearChat").disabled = true;
+    fetch("/api/codex-chat/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: chatContextRun }),
+    })
+      .then((response) => {
+        if (!response.ok) throw Error("clear failed");
+        chatHistory = [];
+        renderChatHistory();
+        updateChatHistoryCount(0);
+      })
+      .catch(() => { $("chatStatus").textContent = t("chat.unavailable"); })
+      .finally(() => { $("clearChat").disabled = false; updateChatActions(); });
   }),
 );
 const updateChatDownloadWithClear = updateChatDownloadAvailability;

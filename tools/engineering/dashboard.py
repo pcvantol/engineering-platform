@@ -49,7 +49,13 @@ from .component_logging import (
 from .component_lock import DuplicateComponentInstanceError, single_instance
 from .agent_state import is_valid_commit_evidence_record, redact_diagnostic
 from .pr_check_repair import PullRequestCheckRepairError, admit as admit_pr_check_repair, attempted as pr_check_repair_attempted, check_summary as pr_check_repair_check_summary, mark_dispatch_failed as mark_pr_check_repair_dispatch_failed, repair_state as pr_check_repair_state
-from .codex_chat import CodexChatError, chat_model, respond as codex_chat_response
+from .codex_chat import (
+    CodexChatError,
+    chat_model,
+    clear_history as clear_codex_chat_history,
+    history as codex_chat_history,
+    respond as codex_chat_response,
+)
 from .codex_capacity import read_remaining_percent
 from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
 from .prompt_history import prompt_history, report_for_prompt_history
@@ -60,6 +66,7 @@ from .storage import (
     load_projection,
     open_storage,
     record_ai_capacity_bi_hourly,
+    storage_activation_required,
 )
 from .provider_usage import provider_usage_summary
 from .execution_lifecycle import projection as lifecycle_projection
@@ -986,12 +993,25 @@ def _component_log_versions(root: Path) -> dict[str, str]:
 
 
 def _launch_agent_health(label: str) -> dict[str, str | bool]:
-    """Inspect one owned LaunchAgent without changing its state."""
-    if not LaunchdProvider().status().qualified:
+    """Inspect one owned LaunchAgent process without changing its state."""
+    state = LaunchdProvider().runtime_status(label)
+    if state.qualified:
+        return {"healthy": True, "state": "running", "detail": "LaunchAgent-proces is actief"}
+    if state.detail == "launchctl unavailable":
         return {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"}
-    if not LaunchdProvider().inspect(label):
-        return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is niet geladen"}
-    return {"healthy": True, "state": "running", "detail": "LaunchAgent is geladen"}
+    return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is geladen, maar heeft geen actief proces" if state.detail.endswith("no active process") else "LaunchAgent is niet geladen"}
+
+
+def _inbox_watcher_health(root: Path) -> dict[str, str | bool]:
+    """Add a safe startup reason when the watcher is not actually live."""
+    health = _launch_agent_health(WATCHER_LABEL)
+    if bool(health["healthy"]) or not storage_activation_required(root):
+        return health
+    return {
+        **health,
+        "detail": "Gecontroleerde opslagactivatie vereist voordat de Inbox-watcher kan starten.",
+        "reason_code": "storage_activation_required",
+    }
 
 
 def _platform_health(root: Path) -> dict[str, object]:
@@ -1005,7 +1025,7 @@ def _platform_health(root: Path) -> dict[str, object]:
             "uptime_seconds": max(0, round(time.monotonic() - DASHBOARD_STARTED_AT)),
         },
         "inbox_watcher": {
-            **_launch_agent_health(WATCHER_LABEL),
+            **_inbox_watcher_health(root),
             "version": WATCHER_VERSION,
             "uptime_seconds": _component_uptime_seconds("inbox_watcher"),
         },
@@ -2835,7 +2855,7 @@ def _dashboard_html(
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
 <details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><section class="workspace-database-section" aria-labelledby="workspaceDatabaseHeading"><h2 id="workspaceDatabaseHeading" data-i18n="workspace.database"></h2><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database_location" data-i18n="workspace.database_location"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p></section><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
-<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.dashboard_stream_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.dashboard_stream_interval_help" data-i18n-aria-label="configuration.dashboard_stream_interval_help">i</span></span><span data-i18n="configuration.second_1"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
@@ -3609,6 +3629,25 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     "application/json; charset=utf-8",
                 )
                 return
+            if request_path == "/api/codex-chat/clear":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 256:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    if not isinstance(payload, dict) or set(payload) != {"run_id"}:
+                        raise ValueError
+                    clear_codex_chat_history(root, payload["run_id"])
+                except CodexChatError as error:
+                    content = json.dumps({"error": str(error)}, ensure_ascii=False).encode()
+                    self._send(content, "application/json; charset=utf-8", 404)
+                    return
+                except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                    self._send(b'{"error":"Ongeldig chatverzoek."}', "application/json; charset=utf-8", 400)
+                    return
+                log_event(logger, logging.INFO, "ai_chat_history_cleared", run_id=payload["run_id"])
+                self._send(b'{"cleared":true}', "application/json; charset=utf-8")
+                return
             if request_path != "/api/codex-chat":
                 self.send_error(404)
                 return
@@ -3617,14 +3656,11 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 if not 0 < length <= 16_000:
                     raise ValueError
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict) or set(payload) not in (
-                    {"message", "history"},
-                    {"message", "history", "run_id"},
-                ):
+                if not isinstance(payload, dict) or set(payload) not in ({"message"}, {"message", "run_id"}):
                     raise ValueError
                 status = json.loads(_status(root))
                 answer = codex_chat_response(
-                    root, status, payload["message"], payload["history"], payload.get("run_id")
+                    root, status, payload["message"], payload.get("run_id")
                 )
             except CodexChatError as error:
                 content = json.dumps({"error": str(error)}, ensure_ascii=False).encode()
@@ -3635,7 +3671,10 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return
             log_event(logger, logging.INFO, "ai_chat_message_sent", diagnostic="[REDACTED]")
             self._send(
-                json.dumps({"answer": answer, "model": chat_model()}, ensure_ascii=False).encode(),
+                json.dumps(
+                    {"answer": answer, "model": chat_model(), "messages": codex_chat_history(root, payload.get("run_id") or status.get("last_executed_run"))},
+                    ensure_ascii=False,
+                ).encode(),
                 "application/json; charset=utf-8",
             )
 
@@ -3671,6 +3710,14 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 return self._send(content, content_type)
             if request.path == "/api/prompt-history":
                 return self._send(_prompt_history(root), "application/json; charset=utf-8")
+            if request.path.startswith("/api/prompt-history/") and request.path.endswith("/chat"):
+                run_id = request.path.removeprefix("/api/prompt-history/").removesuffix("/chat").strip("/")
+                try:
+                    messages = codex_chat_history(root, run_id)
+                except CodexChatError as error:
+                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 404)
+                    return
+                return self._send(json.dumps({"messages": messages}, ensure_ascii=False).encode(), "application/json; charset=utf-8")
             if request.path == "/api/engineering-database/download":
                 snapshot = _engineering_database_snapshot(root)
                 if snapshot is None:
@@ -3799,18 +3846,24 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 try:
-                    self.wfile.write(b"retry: 1000\n\n")
+                    stream_interval = int(dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+                    self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
                     previous: bytes | None = None
-                    for second in range(300):
+                    for iteration in range(300):
                         snapshot = _sse_snapshot(root)
                         if snapshot != previous:
                             self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
                             self.wfile.flush()
                             previous = snapshot
-                        elif second and second % 15 == 0:
+                        elif iteration and iteration % 15 == 0:
                             self.wfile.write(b": keepalive\n\n")
                             self.wfile.flush()
-                        time.sleep(1)
+                        interval = int(dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+                        if interval != stream_interval:
+                            self.wfile.write(f"retry: {interval * 1000}\n\n".encode())
+                            self.wfile.flush()
+                            stream_interval = interval
+                        time.sleep(stream_interval)
                 except (BrokenPipeError, ConnectionResetError):
                     log_event(logger, logging.DEBUG, "sse_client_disconnected")
                 return

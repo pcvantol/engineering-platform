@@ -7,16 +7,19 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
 
 from .prompt_history import prompt_history
+from .agent_state import redact_diagnostic
 from .providers import GitProvider
 from .providers import CodexCliProvider
+from .storage import open_storage
 
 
 MAX_MESSAGE_CHARACTERS = 2_000
-MAX_HISTORY_ITEMS = 6
+MAX_HISTORY_ITEMS = 20
 MAX_CONTEXT_CHARACTERS = 24_000
 MAX_RESPONSE_CHARACTERS = 6_000
 CHAT_TIMEOUT_SECONDS = 75
@@ -24,6 +27,7 @@ CHAT_MODEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_CHAT_MODEL"
 DEFAULT_CHAT_MODEL = "gpt-5.6-terra"
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,80}")
 _chat_lock = Lock()
+CHAT_RETENTION_DAYS = 90
 
 
 class CodexChatError(ValueError):
@@ -64,18 +68,70 @@ def _repository_summary(root: Path) -> str:
     return observed.stdout[:2_000] if observed.returncode == 0 else "Niet beschikbaar."
 
 
-def _history(value: object) -> list[dict[str, str]]:
-    if not isinstance(value, list) or len(value) > MAX_HISTORY_ITEMS:
-        raise CodexChatError("De gespreksgeschiedenis is ongeldig of te lang.")
-    result: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict) or set(item) != {"role", "text"}:
-            raise CodexChatError("De gespreksgeschiedenis is ongeldig.")
-        role, text = item.get("role"), item.get("text")
-        if role not in {"user", "assistant"} or not isinstance(text, str) or not text.strip():
-            raise CodexChatError("De gespreksgeschiedenis is ongeldig.")
-        result.append({"role": role, "text": text[:MAX_MESSAGE_CHARACTERS]})
-    return result
+def _safe_run_id(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", value):
+        raise CodexChatError("Deze uitgevoerde prompt is niet beschikbaar als chatcontext.")
+    return value
+
+
+def _cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=CHAT_RETENTION_DAYS)).isoformat()
+
+
+def _stored_history(root: Path, run_id: str) -> list[dict[str, str]]:
+    connection = open_storage(root)
+    try:
+        rows = connection.execute(
+            "SELECT role,content FROM execution_chat_messages "
+            "WHERE run_id=? AND created_at>=? ORDER BY id ASC LIMIT ?",
+            (run_id, _cutoff(), MAX_HISTORY_ITEMS),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [{"role": row[0], "text": row[1]} for row in rows]
+
+
+def history(root: Path, run_id: object) -> list[dict[str, str]]:
+    """Return the retained, redacted transcript for one terminal run."""
+    selected_run = _safe_run_id(run_id)
+    if not any(entry.get("run_id") == selected_run for entry in prompt_history(root)):
+        raise CodexChatError("Deze uitgevoerde prompt is niet beschikbaar als chatcontext.")
+    return _stored_history(root, selected_run)
+
+
+def clear_history(root: Path, run_id: object) -> None:
+    """Explicitly remove one advisory transcript without affecting run evidence."""
+    selected_run = _safe_run_id(run_id)
+    if not any(entry.get("run_id") == selected_run for entry in prompt_history(root)):
+        raise CodexChatError("Deze uitgevoerde prompt is niet beschikbaar als chatcontext.")
+    connection = open_storage(root)
+    try:
+        connection.execute("DELETE FROM execution_chat_messages WHERE run_id=?", (selected_run,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _append(root: Path, run_id: str, role: str, text: str, *, model: str | None = None) -> None:
+    limit = MAX_RESPONSE_CHARACTERS if role == "assistant" else MAX_MESSAGE_CHARACTERS
+    content = redact_diagnostic(text.strip(), limit=limit)
+    if not content:
+        raise CodexChatError("Het chatbericht bevat geen bewaarbare tekst.")
+    connection = open_storage(root)
+    try:
+        connection.execute("DELETE FROM execution_chat_messages WHERE created_at<?", (_cutoff(),))
+        connection.execute(
+            "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) VALUES(?,?,?,?,?)",
+            (run_id, role, content, model, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.execute(
+            "DELETE FROM execution_chat_messages WHERE id IN ("
+            "SELECT id FROM execution_chat_messages WHERE run_id=? ORDER BY id DESC LIMIT -1 OFFSET ?)",
+            (run_id, MAX_HISTORY_ITEMS),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _final_message(output: str) -> str:
@@ -99,10 +155,9 @@ def respond(
     root: Path,
     status: dict[str, object],
     message: object,
-    history: object,
     run_id: object = None,
 ) -> str:
-    """Answer from one bounded terminal-run context, without persistent state."""
+    """Answer from one bounded terminal-run context and retain redacted evidence."""
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARACTERS:
         raise CodexChatError("Stel een vraag van maximaal 2.000 tekens.")
     selected_run = run_id if isinstance(run_id, str) else status.get("last_executed_run")
@@ -117,7 +172,7 @@ def respond(
         )
         if selected_entry is None:
             raise CodexChatError("Deze uitgevoerde prompt is niet beschikbaar als chatcontext.")
-    previous = _history(history)
+    previous = _stored_history(root, selected_run)
     context = {
         "repository": _repository_summary(root),
         "last_run": selected_run,
@@ -166,4 +221,6 @@ CONTEXTPAKKET:
     answer = _final_message(completed.stdout)
     if completed.returncode or not answer:
         raise CodexChatError("Codex Gesprek kon deze vraag niet beantwoorden.")
+    _append(root, selected_run, "user", message)
+    _append(root, selected_run, "assistant", answer, model=chat_model())
     return answer
