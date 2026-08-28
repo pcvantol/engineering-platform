@@ -113,6 +113,27 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(ready["pid"], os.getpid())
         self.assertIsInstance(ready["started_at"], str)
 
+    def test_periodic_database_maintenance_logs_only_actual_or_deferred_work(self) -> None:
+        logger = logging.getLogger("test-periodic-database-maintenance")
+        with patch(
+            "tools.engineering.inbox_watcher.run_periodic_database_maintenance",
+            return_value={"state": "COMPACTED"},
+        ), patch("tools.engineering.inbox_watcher.log_event") as log_event:
+            inbox_watcher._run_periodic_database_maintenance(self.repo, logger)
+        log_event.assert_called_once_with(
+            logger,
+            logging.INFO,
+            "periodic_database_maintenance_completed",
+            diagnostic="tasks=PRAGMA optimize,VACUUM",
+        )
+
+        with patch(
+            "tools.engineering.inbox_watcher.run_periodic_database_maintenance",
+            return_value={"state": "SKIPPED_ACTIVE_RUN"},
+        ), patch("tools.engineering.inbox_watcher.log_event") as log_event:
+            inbox_watcher._run_periodic_database_maintenance(self.repo, logger)
+        log_event.assert_not_called()
+
     def test_preflight_failure_keeps_the_specific_bounded_runner_reason(self) -> None:
         completed = subprocess.CompletedProcess(("engineering-execution-host",), 2, "BLOCKED: working tree is not clean\n", "")
 

@@ -96,6 +96,32 @@ class DashboardStateTest(unittest.TestCase):
         )
         self.assertEqual(payload["lifecycle"]["live_activity"], "Inspect the configuration boundary")
 
+    def test_status_keeps_only_a_successful_review_as_historical_active_run_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            completed_reviewers = [
+                {"reviewer": "validation", "capability": "engineering", "status": "completed"},
+            ]
+            (status / "status.json").write_text(json.dumps({}), encoding="utf-8")
+            (status / "current.json").write_text(
+                json.dumps({
+                    "run_id": "run-review-history",
+                    "phase": "FINALIZE_AGENT",
+                    "reviewer_agents": completed_reviewers,
+                }),
+                encoding="utf-8",
+            )
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                TransactionState("run-review-history", "repo", "prompt.md", "FINALIZE_AGENT")
+            )
+            acquire(root, "run-review-history", identity="test-host", instance_id="test-instance")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["reviewer_agents"], completed_reviewers)
+
     def test_status_projects_only_the_persisted_execution_context_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

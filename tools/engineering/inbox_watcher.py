@@ -60,6 +60,7 @@ from .dependabot_admission import (
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
 from .dashboard_configuration import get as dashboard_configuration
+from .database_maintenance import run_periodic_database_maintenance
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
 from .status_reconciliation import is_stale_rolling_status_block
@@ -83,6 +84,21 @@ LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
 WATCHER_READY_PROJECTION = "inbox_watcher_ready"
+
+
+def _run_periodic_database_maintenance(repo: Path, logger: logging.Logger) -> None:
+    """Run the bounded idle-only compaction pass without affecting execution."""
+    outcome = run_periodic_database_maintenance(repo)
+    state = outcome.get("state")
+    if state == "COMPACTED":
+        log_event(
+            logger,
+            logging.INFO,
+            "periodic_database_maintenance_completed",
+            diagnostic="tasks=PRAGMA optimize,VACUUM",
+        )
+    elif state == "DEFERRED":
+        log_event(logger, logging.WARNING, "database_maintenance_deferred")
 
 
 def _source_revision(repo: Path) -> str | None:
@@ -2355,6 +2371,7 @@ def main(argv: list[str] | None = None) -> int:
                                         diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                                     )
                                     log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
+                            _run_periodic_database_maintenance(repo, logger)
                             current_revision = _source_revision(repo)
                             if started_revision and current_revision and current_revision != started_revision:
                                 log_event(

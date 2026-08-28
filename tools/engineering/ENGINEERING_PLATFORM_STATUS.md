@@ -71,6 +71,18 @@ changes execution semantics.
 - Watcher and dashboard application logs are structured, bounded, rotated and
   redacted before persistence. The dashboard automatically refreshes a bounded
   log tail only when its server-pushed revision changes.
+- The Inbox watcher performs a fixed, read-only-advertised hourly SQLite
+  maintenance check. It executes `PRAGMA optimize` and `VACUUM` only when the
+  canonical database has neither a live execution lease nor a non-terminal
+  transaction. A busy, unavailable or uncertain state is safely skipped or
+  deferred; the pass never deletes, prunes or rewrites execution evidence. A
+  completed pass emits one structured
+  `periodic_database_maintenance_completed` component event with its task list;
+  safe skips stay silent to avoid log noise.
+- During an active run, a fully successful specialist review remains visible
+  as compact historical evidence after the review phase. Partial, failed or
+  running reviewer projections remain phase-scoped and are never presented as
+  current reviewer work in implementation, finalization or reconciliation.
 - Terminal runs are indexed in local SQLite prompt history with their status,
   title, completed timestamp, available commit and delivered-report reference.
   Each terminal record also retains a bounded execution-metadata snapshot:

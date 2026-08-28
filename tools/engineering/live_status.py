@@ -16,6 +16,16 @@ from .providers import GitProvider
 _REVIEWER_PROJECTION_PHASE = "CAPABILITY_REVIEW"
 
 
+def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
+    """Return immutable review evidence only after every reviewer succeeded."""
+    if not isinstance(value, list):
+        return []
+    reviewers = [item for item in value if isinstance(item, dict)]
+    if not reviewers or len(reviewers) != len(value):
+        return []
+    return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
+
+
 def write_live_status(
     root: Path,
     state: TransactionState,
@@ -60,12 +70,19 @@ def write_live_status(
         raise
     reviewer_projection_active = state.phase == _REVIEWER_PROJECTION_PHASE
     if previous.get("run_id") == state.run_id:
+        stored_reviewers = previous.get("reviewer_agents")
         if (
             reviewer_projection_active
             and reviewer_agents is None
-            and isinstance(previous.get("reviewer_agents"), list)
+            and isinstance(stored_reviewers, list)
         ):
-            previous_reviewers = [item for item in previous["reviewer_agents"] if isinstance(item, dict)]
+            previous_reviewers = [item for item in stored_reviewers if isinstance(item, dict)]
+        elif not reviewer_projection_active:
+            # Once the review is wholly successful, retain its compact,
+            # completed result as historical evidence for this live run. A
+            # partial, failed or malformed projection is never carried into a
+            # later lifecycle phase.
+            previous_reviewers = _successful_reviewer_agents(stored_reviewers)
         if runtime_metadata is None and isinstance(previous.get("runtime_metadata"), dict):
             previous_runtime = {
                 key: value[:120]
@@ -131,14 +148,13 @@ def write_live_status(
         "target_repository": checkout.name if state.execution_mode == "GENESIS" else state.repository,
         "checkout_path": str(checkout),
         "active_branch": observed_branch or state.branch or "unavailable",
-        # Specialist reviewers are live, phase-scoped progress only. They are
-        # immutable report evidence after the review, not active-run state;
-        # retaining this list into finalization or reconciliation falsely
-        # projects completed reviewers as still running.
+        # Reviewer progress is phase-scoped, while a fully successful review
+        # remains compact historical evidence during the rest of this active
+        # run. The dashboard renders that retained list as completed, never as
+        # live work.
         "reviewer_agents": (
             reviewer_agents if reviewer_projection_active and reviewer_agents is not None
-            else previous_reviewers if reviewer_projection_active
-            else []
+            else previous_reviewers
         ),
         "runtime_metadata": safe_runtime,
         "workspace_progress": safe_progress,

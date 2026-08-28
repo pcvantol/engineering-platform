@@ -770,13 +770,13 @@ function reviewerPresentationState(status = {}) {
   return "active";
 }
 function activeReviewerAgents(items, executionStatus = {}) {
-  // Reviewer progress has meaning only while the specialist review itself is
-  // active.  Treat a stale projection from a previous phase as unavailable,
-  // rather than presenting historical reviewers as live work.
-  const agents = (
-    String(executionStatus?.current_phase || "").toUpperCase() === "CAPABILITY_REVIEW"
-    && Array.isArray(items)
-  ) ? items : [];
+  const reviewActive = String(executionStatus?.current_phase || "").toUpperCase() === "CAPABILITY_REVIEW";
+  // A later phase may retain only a fully successful review as compact
+  // historical evidence. Running, failed or incomplete projections stay
+  // phase-scoped so they can never look like live reviewer work.
+  const completedReview = Array.isArray(items) && items.length > 0
+    && items.every((agent) => String(agent?.status || "").toLowerCase() === "completed");
+  const agents = (reviewActive || completedReview) && Array.isArray(items) ? items : [];
   let card = $("activeReviewerAgents");
   if (!card) {
     card = document.createElement("section");
@@ -3576,6 +3576,14 @@ function renderPlatformHealth(payload) {
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
     name.textContent = healthComponentLabel(key);
+    if (["dashboard", "inbox_watcher", "dashboard_relay"].includes(key)) {
+      const linkIcon = document.createElement("span");
+      linkIcon.className = "platform-health__component-link-icon";
+      linkIcon.dataset.testid = "component-details-link-icon";
+      linkIcon.setAttribute("aria-hidden", "true");
+      linkIcon.textContent = "↗";
+      name.append(linkIcon);
+    }
     detail.className = "platform-health__component-detail";
     detail.textContent =
       (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
@@ -4016,7 +4024,7 @@ function executionTelemetry(rows) {
   }
   updateExecutionTelemetrySortHeaders();
 }
-let telemetryDetailTrigger = null;
+let telemetryDetailTrigger = null, telemetryDetailPayload = null, telemetryDetailDate = null, telemetryDetailRequestId = 0;
 function telemetryMs(value) { return typeof value === "number" && value >= 0 ? telemetryDuration(value / 1000) : t("format.unavailable"); }
 function telemetryPercent(value) {
   const percent = Number(value);
@@ -4082,6 +4090,83 @@ function telemetryDetailSortableTable(columns, rows, initialSort, appendRow) {
   head.append(headRow); table.append(head, body); renderRows();
   return table;
 }
+function setTelemetryDetailDownloads(payload, date) {
+  telemetryDetailPayload = payload && typeof payload === "object" ? payload : null;
+  telemetryDetailDate = telemetryDetailPayload && typeof date === "string" ? date : null;
+  for (const [button, label] of [
+    [$("telemetryDetailDownloadMarkdown"), "telemetry.download_detail_markdown"],
+    [$("telemetryDetailDownloadJson"), "telemetry.download_detail_json"],
+  ]) {
+    const available = Boolean(telemetryDetailPayload && telemetryDetailDate);
+    button.hidden = !available;
+    button.disabled = !available;
+    button.title = t(label, { date: telemetryDate(date) });
+    button.setAttribute("aria-label", t(label, { date: telemetryDate(date) }));
+  }
+}
+function telemetryMarkdownCell(value) {
+  return String(value ?? t("format.unavailable")).replaceAll("|", "\\|").replaceAll(/[\r\n]+/g, " ").trim();
+}
+function telemetryMarkdownTable(headings, rows) {
+  return [
+    `| ${headings.map(telemetryMarkdownCell).join(" | ")} |`,
+    `| ${headings.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(telemetryMarkdownCell).join(" | ")} |`),
+  ].join("\n");
+}
+function telemetryDetailMarkdown(detail, date) {
+  const summary = detail?.summary || {}, phases = Array.isArray(detail?.phases) ? detail.phases : [];
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [], bottlenecks = detail?.bottlenecks || {};
+  const summaryRows = [
+    [t("telemetry.executions"), summary.executions ?? 0], [t("telemetry.complete"), summary.completed ?? 0],
+    [t("telemetry.blocked"), summary.blocked ?? 0], [t("telemetry.failed"), summary.failed ?? 0],
+    [t("telemetry.average_total"), telemetryMs(summary.total_wall_time?.average_ms)],
+    [t("telemetry.median_total"), telemetryMs(summary.total_wall_time?.median_ms)],
+    [t("telemetry.active_processing"), telemetryMs(summary.active_processing_time?.average_ms)],
+    [t("telemetry.average_wait"), telemetryMs(summary.queue_wait?.average_ms)],
+    [t("telemetry.provider"), telemetryMs(summary.provider_execution?.average_ms)],
+    [t("telemetry.validation"), telemetryMs(summary.validation?.average_ms)],
+    [t("telemetry.external_wait"), telemetryMs(summary.external_wait?.average_ms)],
+    [t("telemetry.overhead"), telemetryMs(summary.overhead?.average_ms)],
+  ];
+  const phaseRows = phases.map((phase) => [telemetryLabel(phase.phase), telemetryMs(phase.average_ms), telemetryMs(phase.median_ms), telemetryMs(phase.total_ms), telemetryPercent(phase.share_percent), phase.runs]);
+  const runRows = runs.map((run) => [
+    run.run_id, run.started_at ? locale.dateTime(new Date(run.started_at)) : t("format.unavailable"), run.status,
+    telemetryMs(run.total_duration_ms), telemetryRunMetric(run.queue_wait_ms, run.phase_telemetry), telemetryRunMetric(run.provider_duration_ms, run.phase_telemetry),
+    telemetryRunMetric(run.validation_duration_ms, run.phase_telemetry), telemetryRunMetric(run.external_wait_ms, run.phase_telemetry),
+    run.largest_phase ? telemetryLabel(run.largest_phase) : telemetryRunMetric(null, run.phase_telemetry), run.producer_type,
+    run.repository, run.model,
+  ]);
+  const bottleneckLines = [
+    `${t("telemetry.longest_average_phase")}: ${bottlenecks.longest_average_phase ? telemetryLabel(bottlenecks.longest_average_phase.phase) : t("format.unavailable")}`,
+    `${t("telemetry.largest_accumulated_phase")}: ${bottlenecks.largest_accumulated_phase ? telemetryLabel(bottlenecks.largest_accumulated_phase.phase) : t("format.unavailable")}`,
+    ...(Array.isArray(bottlenecks.top_time_consumers) ? bottlenecks.top_time_consumers.map((item) => `${telemetryLabel(item.phase)} — ${telemetryPercent(item.share_percent)}`) : []),
+  ];
+  return [
+    `# ${t("telemetry.detail_title", { date: telemetryDate(date) })}`, "", t("telemetry.detail_description"), "",
+    `## ${t("telemetry.summary")}`, "", telemetryMarkdownTable([t("table.details"), t("history.markdown_value")], summaryRows), "",
+    `## ${t("telemetry.phase_timing")}`, "", phaseRows.length ? telemetryMarkdownTable([t("telemetry.phase"), t("telemetry.average"), t("telemetry.median"), t("telemetry.accumulated"), t("telemetry.share"), t("telemetry.runs")], phaseRows) : t("telemetry.not_recorded"), "",
+    `## ${t("telemetry.bottlenecks")}`, "", ...bottleneckLines.map((line) => `- ${line}`), "",
+    `## ${t("telemetry.runs")}`, "", runRows.length ? telemetryMarkdownTable([t("telemetry.run_id"), t("telemetry.start_time"), t("telemetry.status"), t("telemetry.average_total"), t("telemetry.average_wait"), t("telemetry.provider"), t("telemetry.validation"), t("telemetry.external_wait"), t("telemetry.largest_phase"), t("telemetry.producer_type"), t("telemetry.target_repository"), t("telemetry.model")], runRows) : t("format.unavailable"), "",
+  ].join("\n");
+}
+function downloadTelemetryDetail(format) {
+  if (!telemetryDetailPayload || !telemetryDetailDate) return;
+  const markdown = format === "markdown";
+  const content = markdown
+    ? telemetryDetailMarkdown(telemetryDetailPayload, telemetryDetailDate)
+    : JSON.stringify(telemetryDetailPayload, null, 2) + "\n";
+  const url = URL.createObjectURL(new Blob([content], { type: markdown ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `execution-telemetry-${telemetryDetailDate}.${markdown ? "md" : "json"}`;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  void recordUserAction(markdown ? "telemetry_detail_markdown_downloaded" : "telemetry_detail_json_downloaded");
+}
 function closeTelemetryDetail() { const modal = $("telemetryDetailModal"); if (modal.open) modal.close(); }
 function telemetryDetailTableScroll(table, label) {
   const scroll = document.createElement("div");
@@ -4093,16 +4178,22 @@ function telemetryDetailTableScroll(table, label) {
 }
 function openTelemetryDetail(date, trigger) {
   if (!date) return;
+  const requestId = ++telemetryDetailRequestId;
   telemetryDetailTrigger = trigger || document.activeElement;
   const modal = $("telemetryDetailModal"), content = $("telemetryDetailContent");
   $("telemetryDetailTitle").textContent = t("telemetry.detail_title", { date: telemetryDate(date) });
   $("telemetryDetailDescription").textContent = t("telemetry.detail_description");
+  setTelemetryDetailDownloads(null, date);
   content.textContent = t("format.loading");
   if (!modal.open) modal.showModal(); resetDashboardModalInitialFocus(modal);
   fetch("/api/telemetry/" + encodeURIComponent(date), { cache: "no-store" })
     .then((response) => response.ok ? response.json() : Promise.reject())
-    .then((detail) => renderTelemetryDetail(detail, content))
-    .catch(() => { content.textContent = t("telemetry.details_unavailable"); });
+    .then((detail) => {
+      if (requestId !== telemetryDetailRequestId) return;
+      setTelemetryDetailDownloads(detail, date);
+      renderTelemetryDetail(detail, content);
+    })
+    .catch(() => { if (requestId === telemetryDetailRequestId) content.textContent = t("telemetry.details_unavailable"); });
 }
 function renderTelemetryDetail(detail, content) {
   content.replaceChildren(); const summary = detail?.summary || {};
@@ -4177,7 +4268,9 @@ function renderTelemetryDetail(detail, content) {
   runSection.append(telemetryDetailTableScroll(runTable, t("telemetry.runs"))); content.append(runSection);
 }
 $("telemetryDetailClose").addEventListener("click", closeTelemetryDetail);
-$("telemetryDetailModal").addEventListener("close", () => { telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; });
+$("telemetryDetailDownloadMarkdown").addEventListener("click", () => downloadTelemetryDetail("markdown"));
+$("telemetryDetailDownloadJson").addEventListener("click", () => downloadTelemetryDetail("json"));
+$("telemetryDetailModal").addEventListener("close", () => { telemetryDetailRequestId += 1; telemetryDetailTrigger?.focus?.(); telemetryDetailTrigger = null; setTelemetryDetailDownloads(null, null); });
 const renderTelemetryInOrder = executionTelemetry;
 executionTelemetry = (rows) => {
   renderTelemetryInOrder(rows);

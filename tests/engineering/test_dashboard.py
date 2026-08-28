@@ -148,8 +148,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="configurationLogLevel"', page)
         self.assertNotIn('id="configurationAuditLogging"', page)
         self.assertNotIn('configuration.audit_logging', page)
-        self.assertEqual(page.count('class="configuration-info"'), 6)
-        self.assertEqual(page.count("data-i18n-title=\"configuration."), 6)
+        self.assertEqual(page.count('class="configuration-info"'), 7)
+        self.assertEqual(page.count("data-i18n-title=\"configuration."), 7)
         for control in (
             "configurationInboxScanInterval", "configurationOpenPrInterval",
             "configurationDashboardStreamInterval",
@@ -157,6 +157,7 @@ class DashboardStatusTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{control}"', page)
         for key, value in (
+            ("configuration.database_maintenance_interval", "configuration.hour_1"),
             ("configuration.inbox_scan_interval", "configuration.seconds_15"),
             ("configuration.operator_merge_interval", "configuration.seconds_60"),
             ("configuration.required_checks_interval", "configuration.seconds_15"),
@@ -3520,6 +3521,8 @@ class DashboardStatusTest(unittest.TestCase):
             ("/api/execution-merge-status-check", {"run_id": "run-1"}, 202),
             ("/api/queue-defer", {"filename": "queued.md"}, 202),
             ("/api/audit/user-action", {"action": "chat_downloaded"}, 200),
+            ("/api/audit/user-action", {"action": "telemetry_detail_markdown_downloaded"}, 200),
+            ("/api/audit/user-action", {"action": "telemetry_detail_json_downloaded"}, 200),
         )
         with ExitStack() as patches:
             patches.enter_context(patch("tools.engineering.dashboard.log_event"))

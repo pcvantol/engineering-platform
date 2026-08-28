@@ -1411,7 +1411,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(killpg.call_args.args, (4321, signal.SIGTERM))
         self.assertFalse(process.terminated)
 
-    def test_live_status_projects_reviewers_only_during_capability_review(self) -> None:
+    def test_live_status_retains_only_completed_reviewers_after_capability_review(self) -> None:
         state = TransactionState(
             "genesis-context",
             "pcvantol/djconnect",
@@ -1441,6 +1441,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         write_live_status(self.root, finalization, "create_finalization", reviewers)
         cleared = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
         self.assertEqual(cleared["reviewer_agents"], [])
+        completed = [{"reviewer": "validation", "capability": "engineering", "status": "completed"}]
+        write_live_status(self.root, state, "review completed", completed)
+        write_live_status(self.root, finalization, "create_finalization")
+        historical = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
+        self.assertEqual(historical["reviewer_agents"], completed)
 
     def test_live_action_name_is_filesystem_only_and_clears_when_terminal(self) -> None:
         state = TransactionState("live-action", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")

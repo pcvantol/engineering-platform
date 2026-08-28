@@ -952,7 +952,7 @@ test.describe("Engineering Status browser smoke", () => {
     await openDashboardPicker(picker);
     await chooseDashboardPickerOption(picker, "DEBUG");
     expect(await page.evaluate(() => window.__dashboardSelectFocusOptions)).toEqual([]);
-    await expect(page.locator("#configuration .configuration-field")).toHaveCount(5);
+    await expect(page.locator("#configuration .configuration-field")).toHaveCount(6);
   });
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
@@ -1944,7 +1944,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↓", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄",
+      "", "⧉", "↓", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A
@@ -4181,6 +4181,47 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("exports one loaded telemetry day as Markdown and JSON", async ({ page }) => {
+    const detail = {
+      summary: {
+        executions: 1, completed: 1, blocked: 0, failed: 0,
+        total_wall_time: { average_ms: 60000, median_ms: 60000 },
+        active_processing_time: { average_ms: 50000 }, queue_wait: { average_ms: 5000 },
+      },
+      phases: [{ phase: "VALIDATION", average_ms: 12000, median_ms: 12000, total_ms: 12000, share_percent: 20, runs: 1 }],
+      bottlenecks: { longest_average_phase: { phase: "VALIDATION" }, largest_accumulated_phase: { phase: "VALIDATION" }, top_time_consumers: [{ phase: "VALIDATION", share_percent: 20 }] },
+      runs: [{ run_id: "inbox-day-export", started_at: "2026-08-24T12:00:00Z", status: "COMPLETE", total_duration_ms: 60000, queue_wait_ms: 5000, provider_duration_ms: 12000, validation_duration_ms: 12000, external_wait_ms: 0, largest_phase: "VALIDATION", producer_type: "HUMAN", repository: "pcvantol/djconnect", model: "gpt-5.6", phase_telemetry: "RECORDED" }],
+    };
+    await page.route("**/api/telemetry/2026-08-24", (route) => route.fulfill({ json: detail }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => window.executionTelemetry([{
+      date: "2026-08-24", prompt_count: 1, average_total_execution_seconds: 60,
+      average_queue_wait_seconds: 5, complete_count: 1, blocked_count: 0, failed_count: 0,
+    }]));
+    await page.locator("#executionTelemetry").evaluate((element) => { element.open = true; });
+    // The row action itself is covered here; use the dashboard's pointer-like
+    // helper so an unrelated startup overlay cannot intercept the test click.
+    await dispatchDashboardPointerClick(page.locator("#executionTelemetryRows .telemetry-row"));
+    const markdown = page.locator("#telemetryDetailDownloadMarkdown");
+    const json = page.locator("#telemetryDetailDownloadJson");
+    await expect(markdown).toHaveAttribute("aria-label", "Telemetrie van 24-08-2026 als Markdown downloaden");
+    await expect(json).toHaveAttribute("aria-label", "Telemetrie van 24-08-2026 als JSON downloaden");
+    const markdownDownload = page.waitForEvent("download");
+    await markdown.click();
+    const downloadedMarkdown = await markdownDownload;
+    expect(downloadedMarkdown.suggestedFilename()).toBe("execution-telemetry-2026-08-24.md");
+    const markdownContent = readFileSync(await downloadedMarkdown.path(), "utf8");
+    expect(markdownContent).toContain("# Uitvoeringstelemetrie — 24-08-2026");
+    expect(markdownContent).toContain("## Samenvatting");
+    expect(markdownContent).toContain("inbox-day-export");
+    const jsonDownload = page.waitForEvent("download");
+    await json.click();
+    const downloadedJson = await jsonDownload;
+    expect(downloadedJson.suggestedFilename()).toBe("execution-telemetry-2026-08-24.json");
+    expect(JSON.parse(readFileSync(await downloadedJson.path(), "utf8"))).toEqual(detail);
+  });
+
   test("gives every table a coloured first column and sorts telemetry columns", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/telemetry*", (route) => route.abort());
@@ -6149,6 +6190,21 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(info).toHaveCSS("color", "rgb(163, 230, 53)");
   });
 
+  test("marks the three clickable platform components with a link icon", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const rendered = await page.evaluate(() => {
+      renderPlatformHealth({ components: {
+        dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
+        inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen" },
+        dashboard_relay: { healthy: true, detail: "Relay is verbonden" },
+        execution_host: { healthy: true, detail: "Host is actief" },
+      }});
+      return [...document.querySelectorAll(".platform-health__component-name")]
+        .map((name) => Boolean(name.querySelector("[data-testid='component-details-link-icon']")));
+    });
+    expect(rendered).toEqual([true, true, true, false]);
+  });
+
   test("keeps iPhone platform component cards on opaque, flat surfaces", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -6405,7 +6461,7 @@ test.describe("Engineering Status browser smoke", () => {
     );
   });
 
-  test("hides stale reviewer projections outside capability review", async ({ page }) => {
+  test("keeps a completed specialist review visible as historical run evidence", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
       json: { status: { watcher_state: "WATCHER_IDLE" } },
@@ -6414,17 +6470,31 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await statusLoaded;
     await page.locator("#autoRefresh").uncheck();
-    const reviewerAgents = [
+    const runningReviewers = [
       { reviewer: "validation", capability: "engineering", status: "running" },
       { reviewer: "documentation", capability: "engineering", status: "running" },
     ];
+    const completedReviewers = runningReviewers.map((reviewer) => ({ ...reviewer, status: "completed" }));
     for (const current_phase of ["FINALIZE_AGENT", "RECONCILE_AGENT"]) {
       await page.evaluate(({ current_phase, reviewer_agents }) => r({
         watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase,
         run_id: "reviewer-paused-run", reviewer_agents,
-      }, {}), { current_phase, reviewer_agents: reviewerAgents });
+      }, {}), { current_phase, reviewer_agents: runningReviewers });
       await expect(page.locator("#activeReviewerAgents")).toBeHidden();
       await expect(page.locator(".reviewer-agent")).toHaveCount(0);
+
+      const completedProjection = await page.evaluate(({ current_phase, reviewer_agents }) => {
+        r({
+        watcher_state: "ENGINEERING_RUN_ACTIVE", current_phase,
+        run_id: "reviewer-completed-run", reviewer_agents,
+        }, {});
+        return {
+          hidden: document.querySelector("#activeReviewerAgents")?.hidden,
+          reviewers: document.querySelectorAll(".reviewer-agent").length,
+          completed: document.querySelectorAll(".reviewer-agent__status--completed").length,
+        };
+      }, { current_phase, reviewer_agents: completedReviewers });
+      expect(completedProjection).toEqual({ hidden: false, reviewers: 2, completed: 2 });
     }
   });
 
@@ -9153,7 +9223,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(settings).toHaveCount(1);
     await expect(settings).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
     await expect(settings.locator("#configurationReadonlySettingsTitle")).toHaveText("Vaste platforminstellingen");
-    await expect(settings.locator(".configuration-field")).toHaveCount(5);
+    await expect(settings.locator(".configuration-field")).toHaveCount(6);
   });
 
   test("scans stale local branches before confirming their cleanup", async ({ page }) => {

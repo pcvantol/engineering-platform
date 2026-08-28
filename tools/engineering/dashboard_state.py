@@ -29,6 +29,16 @@ RunJsonReader = Callable[[Path, str | None], bytes]
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
 
 
+def _successful_reviewer_agents(value: object) -> list[dict[str, object]]:
+    """Expose only a wholly successful review beyond its live phase."""
+    if not isinstance(value, list):
+        return []
+    reviewers = [item for item in value if isinstance(item, dict)]
+    if not reviewers or len(reviewers) != len(value):
+        return []
+    return reviewers if all(item.get("status") == "completed" for item in reviewers) else []
+
+
 def _active_runner_checkpoint(root: Path) -> tuple[dict[str, object], dict[str, object]] | None:
     """Return a current checkpoint only while its recorded runner group exists.
 
@@ -358,12 +368,13 @@ def status(root: Path) -> bytes:
                 "target_repository": live.get("target_repository"),
                 "checkout_path": live.get("checkout_path"),
                 "active_branch": live.get("active_branch"),
-                # A persisted live projection from an older runner can still
-                # contain reviewers after the review phase. Never let that
-                # stale advisory data escape the read-only dashboard boundary.
+                # Only a wholly successful specialist review survives its
+                # live phase as historical evidence for this active run. A
+                # partial, failed or stale reviewer projection remains hidden.
                 "reviewer_agents": (
                     live.get("reviewer_agents", [])
-                    if live.get("phase") == "CAPABILITY_REVIEW" else []
+                    if live.get("phase") == "CAPABILITY_REVIEW"
+                    else _successful_reviewer_agents(live.get("reviewer_agents"))
                 ),
                 "runtime_metadata": live.get("runtime_metadata", {}),
                 "workspace_progress": live.get("workspace_progress"),
