@@ -1313,6 +1313,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
         run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"))  # type: ignore[attr-defined]
 
     @patch.object(EngineeringRunner, "_run_required_validation_command")
+    def test_validation_only_executor_persists_every_required_control_result(self, run: object) -> None:
+        run.side_effect = (0, 7, None)  # type: ignore[attr-defined]
+        run_id = "all-required-control-results"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
+            validation_profile_version="1.0",
+            required_validation_controls=("git_diff_check", "engineering_python", "dashboard_browser"),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        runner._execute_required_validation_controls(
+            TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+        )
+        context = load_validation_context(self.root, run_id)
+        self.assertEqual(
+            tuple(context["controls"][control]["result"] for control in context["required_validation_controls"]),
+            ("PASS", "FAIL", "UNAVAILABLE"),
+        )
+        connection = open_storage(self.root)
+        try:
+            rows = connection.execute(
+                "SELECT validation_id,execution_status,result,evidence_ref FROM execution_validation_control_results WHERE run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(rows, [
+            ("git_diff_check", "EXECUTED", "PASS", "command_terminal"),
+            ("engineering_python", "EXECUTED", "FAIL", "command_terminal"),
+            ("dashboard_browser", "EXECUTED", "UNAVAILABLE", "command_terminal"),
+        ])
+
+    @patch.object(EngineeringRunner, "_run_required_validation_command", return_value=0)
+    def test_validation_only_report_projects_each_persisted_required_control(self, _: object) -> None:
+        run_id = "persisted-profile-report-projection"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
+            validation_profile_version="1.0",
+            required_validation_controls=("git_diff_check", "engineering_python", "dashboard_browser"),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        runner._execute_required_validation_controls(
+            TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+        )
+        body = generate_terminal_report(
+            self.root, TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        ).read_text(encoding="utf-8")
+        for validation_id in ("git_diff_check", "engineering_python", "dashboard_browser"):
+            self.assertIn(f"Required control {validation_id}: `PASS` — `PERSISTED_PROFILE`", body)
+            self.assertIn(f"Validation ID: `{validation_id}`", body)
+        self.assertEqual(body.count("Execution inclusion: `AVAILABLE`."), 3)
+
+    @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_all_required_pass_is_pass_and_failure_states_remain_authoritative(self, run: object) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
         cases = (
@@ -3095,7 +3149,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         )
         state = TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
-        self.assertIn("Dashboard/browser tests: `UNAVAILABLE` — `LOCAL`", body)
+        self.assertIn("Required control dashboard_browser: `UNAVAILABLE` — `PERSISTED_PROFILE`", body)
         self.assertIn("Execution status: `EXECUTED`.", body)
         self.assertIn("Execution inclusion: `AVAILABLE`.", body)
 

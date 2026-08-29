@@ -680,9 +680,18 @@ class EngineeringRunner:
                 else:
                     os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = previous_run_id
             try:
+                completed_at = datetime.now(timezone.utc).isoformat()
                 record_validation_command_terminal(
                     self.root, run_id=validation.run_id, command_id=command_id,
-                    completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
+                    completed_at=completed_at, exit_code=exit_code,
+                )
+                result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
+                record_validation_control_result(
+                    self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
+                    category=launcher.category, control_identity=launcher.control_identity,
+                    required_for_profile=True, execution_status="EXECUTED", result=result,
+                    evidence_ref="command_terminal", observed_at=completed_at,
+                    currentness=validation.repair_iterations,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")

@@ -472,8 +472,28 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
     except EngineeringStorageError:
         validation_context = None
     stored_controls = validation_context.get("controls", {}) if isinstance(validation_context, dict) else {}
+    required_controls = validation_context.get("required_validation_controls", ()) if isinstance(validation_context, dict) else ()
+    bindings = validation_context.get("control_bindings", ()) if isinstance(validation_context, dict) else ()
+    binding_by_id = {
+        binding.get("validation_id"): binding
+        for binding in bindings
+        if isinstance(binding, dict) and isinstance(binding.get("validation_id"), str)
+    }
     lines = ["## Validation Control Results", "- Engineering Platform Qualification is reported separately from these individual controls."]
-    for control_id, name, category, source, markers in _VALIDATION_CONTROLS:
+    if isinstance(required_controls, tuple) and required_controls:
+        controls = tuple(
+            (
+                control_id,
+                f"Required control {control_id}",
+                str(binding_by_id.get(control_id, {}).get("category") or "Unspecified").title(),
+                "PERSISTED_PROFILE",
+                (),
+            )
+            for control_id in required_controls
+        )
+    else:
+        controls = _VALIDATION_CONTROLS
+    for control_id, name, category, source, markers in controls:
         stored = stored_controls.get(control_id) if isinstance(stored_controls, dict) else None
         # The terminal Evidence Bundle is appended last and therefore wins over
         # historical checkpoint entries for the current projection.
@@ -492,7 +512,7 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             # The persisted control binding is authoritative.  Re-parsing a
             # provider's shell transport here can disagree with the command
             # receipt that produced this control.
-            included = "AVAILABLE" if control_id == "dashboard_browser" and execution_status == "EXECUTED" else "UNAVAILABLE"
+            included = "AVAILABLE" if execution_status == "EXECUTED" else "UNAVAILABLE"
         elif match is None:
             result, reference = "NOT_EXECUTED", "not recorded"
             execution_status, included = "NOT_EXECUTED", "UNAVAILABLE"
@@ -505,14 +525,14 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             )
             reference = match["command"]
             execution_status = "EXECUTED"
-            included = "AVAILABLE" if control_id == "dashboard_browser" and is_canonical_dashboard_command(reference) else "UNAVAILABLE"
+            included = "AVAILABLE" if execution_status == "EXECUTED" else "UNAVAILABLE"
         lines.extend((
             f"- {name}: `{result}` — `{source}`",
             f"  - Validation ID: `{control_id}`; Category: `{category}`; Check: `{reference}`.",
             f"  - Execution status: `{execution_status}`.",
             "  - Start/End/Duration: bounded by the canonical validation span when recorded.",
-            f"  - Evidence Reference: `{stored.get('evidence_ref', 'UNAVAILABLE')}`." if control_id == "dashboard_browser" and isinstance(stored, dict) else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
-            f"  - Execution inclusion: `{included}`." if control_id == "dashboard_browser" else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
+            f"  - Evidence Reference: `{stored.get('evidence_ref', 'UNAVAILABLE')}`." if isinstance(stored, dict) else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
+            f"  - Execution inclusion: `{included}`.",
         ))
         if control_id == "dashboard_browser" and isinstance(stored, dict):
             shard_evidence = load_dashboard_evidence(root, state.run_id)
