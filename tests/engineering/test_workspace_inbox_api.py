@@ -29,6 +29,15 @@ class WorkspaceInboxApiTest(unittest.TestCase):
             "prompt": {"text": "Execution Mode: Managed\n\nValidate this bounded request.", "metadata": {"source": "forge"}},
         })
 
+    def _human_validation_only_envelope(self) -> str:
+        return json.dumps({
+            "contract": {"name": ENVELOPE_CONTRACT_NAME, "version": ENVELOPE_CONTRACT_VERSION},
+            "submission": {"id": "operator-validation-only-001"},
+            "producer": {"id": "operator", "type": "HUMAN"},
+            "prompt": {"text": "Validate the selected controls."},
+            "execution_context": {"context_version": "1.0", "action_intent": "VALIDATION_ONLY"},
+        })
+
     def test_valid_forge_envelope_is_atomically_published_to_the_physical_inbox(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._root(directory)
@@ -53,6 +62,25 @@ class WorkspaceInboxApiTest(unittest.TestCase):
     def test_rejects_non_forge_and_invalid_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._root(directory)
-            with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "complete Forge producer envelope") as error:
+            with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "complete trusted producer envelope") as error:
                 publish(root, "plain text is not a Forge envelope")
-            self.assertEqual(error.exception.code, "forge_envelope_required")
+            self.assertEqual(error.exception.code, "producer_envelope_required")
+
+    def test_human_validation_only_context_is_persisted_before_inbox_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._root(directory)
+            transport = root / "transport"
+            (transport / "Inbox").mkdir(parents=True)
+            with patch.dict(os.environ, {"DJCONNECT_ENGINEERING_INBOX": str(transport)}, clear=False):
+                receipt = publish(root, self._human_validation_only_envelope())
+            self.assertTrue(receipt.filename.startswith("producer-operator-validation-only-001-"))
+            connection = open_storage(root)
+            try:
+                row = connection.execute(
+                    "SELECT producer_type,execution_context_snapshot FROM execution_submissions WHERE submission_id=?",
+                    (receipt.submission_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+        self.assertEqual(row[0], "HUMAN")
+        self.assertEqual(json.loads(row[1])["action_intent"], "VALIDATION_ONLY")

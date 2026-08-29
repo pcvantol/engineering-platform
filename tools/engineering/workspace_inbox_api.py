@@ -1,4 +1,4 @@
-"""Bounded Forge/Workspace API for publishing one canonical Inbox envelope."""
+"""Bounded trusted-producer API for publishing one canonical Inbox envelope."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class WorkspaceInboxReceipt:
 
 
 def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
-    """Validate and atomically publish a Forge envelope into the configured Inbox.
+    """Validate and atomically publish a trusted producer envelope into the Inbox.
 
     This is deliberately a local API, not a new execution path: the normal
     Inbox watcher remains the sole claimant and lifecycle owner.
@@ -39,11 +39,15 @@ def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
         submission = parse_producer_submission(envelope)
     except ProducerSubmissionError as error:
         raise WorkspaceInboxSubmissionError(
-            "invalid_forge_envelope", "Forge submission does not contain a valid producer envelope."
+            "invalid_producer_envelope", "Producer submission does not contain a valid producer envelope."
         ) from error
-    if submission.is_legacy or submission.producer.producer_type != "FORGE" or not submission.submission_id:
+    if (
+        submission.is_legacy
+        or submission.producer.producer_type not in {"FORGE", "HUMAN"}
+        or not submission.submission_id
+    ):
         raise WorkspaceInboxSubmissionError(
-            "forge_envelope_required", "This API accepts only a complete Forge producer envelope."
+            "producer_envelope_required", "This API accepts only a complete trusted producer envelope."
         )
     transport = execution_host_configuration(root).resolve_runtime_prompt_transport()
     inbox = transport.inbox
@@ -75,7 +79,7 @@ def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
         raise WorkspaceInboxSubmissionError(
             "submission_audit_unavailable", "Inbox submission audit evidence could not be stored safely."
         ) from error
-    filename = f"forge-{submission.submission_id}-{uuid.uuid4().hex[:12]}.json"
+    filename = f"producer-{submission.submission_id}-{uuid.uuid4().hex[:12]}.json"
     target = inbox / filename
     partial = inbox / f".{filename}.partial"
     try:
