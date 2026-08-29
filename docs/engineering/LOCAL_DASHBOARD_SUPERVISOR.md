@@ -270,6 +270,11 @@ or behind the dashboard content. The dot colour is derived from the same
 current status snapshot as those rows, never from a stale diagnostic
 projection.
 
+The clickable Dashboard, Inbox-watcher and dashboard-relay rows carry a small
+`↗` cue after their label. The non-clickable execution, queue, watcher and
+workspace checks intentionally have no cue, so the popout distinguishes a
+details action from read-only status at a glance.
+
 During a live execution, the workspace state `ACTIVE` is expected and is
 presented as healthy in the title-bar status disclosure. It does not mask a
 workspace problem: `ACTIVE` is healthy there only while the current snapshot

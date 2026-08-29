@@ -8,9 +8,9 @@ from pathlib import Path
 import sqlite3
 
 from .storage import EngineeringStorageError, open_storage
+from .dashboard_configuration import get as dashboard_configuration
 
 
-DATABASE_MAINTENANCE_INTERVAL_SECONDS = 60 * 60
 _LAST_ATTEMPT_KEY = "database_maintenance.last_attempt_at"
 _TERMINAL_PHASES = ("COMPLETE", "BLOCKED", "FAILED")
 
@@ -65,7 +65,7 @@ def _has_active_run(connection: sqlite3.Connection, moment: datetime) -> bool:
 def run_periodic_database_maintenance(
     root: Path, *, now: datetime | None = None,
 ) -> dict[str, object]:
-    """Compact the local database at most hourly, only at a safe idle boundary.
+    """Compact the local database at its configured safe idle interval.
 
     A new execution host must first acquire its SQLite lease.  The maintenance
     pass checks that canonical ownership boundary immediately before compacting;
@@ -78,9 +78,10 @@ def run_periodic_database_maintenance(
     except EngineeringStorageError:
         return {"state": "UNAVAILABLE"}
     try:
+        interval_seconds = int(dashboard_configuration(root)["database_maintenance_interval_seconds"])
         previous = _last_attempt(connection)
-        if previous is not None and moment - previous < timedelta(seconds=DATABASE_MAINTENANCE_INTERVAL_SECONDS):
-            return {"state": "NOT_DUE", "next_due_at": (previous + timedelta(seconds=DATABASE_MAINTENANCE_INTERVAL_SECONDS)).isoformat()}
+        if previous is not None and moment - previous < timedelta(seconds=interval_seconds):
+            return {"state": "NOT_DUE", "next_due_at": (previous + timedelta(seconds=interval_seconds)).isoformat()}
         if _has_active_run(connection, moment):
             _record_attempt(connection, moment)
             return {"state": "SKIPPED_ACTIVE_RUN"}

@@ -25,6 +25,11 @@ BACKUP_COUNT = 3
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
+LOG_LEVELS_AT_OR_ABOVE = {
+    "INFO": ("INFO", "WARNING", "ERROR"),
+    "WARNING": ("WARNING", "ERROR"),
+    "ERROR": ("ERROR",),
+}
 LIFECYCLE_CONTEXT_KEYS = frozenset(
     {
         "application_version",
@@ -225,9 +230,13 @@ def component_log_page(
         escaped = normalized_search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'")
         parameters.append(f"%{escaped}%")
-    if normalized_level:
-        clauses.append("json_extract(payload, '$.level')=?")
-        parameters.append(normalized_level)
+    # The dashboard's level picker is a minimum-severity filter. DEBUG is
+    # deliberately unbounded so it includes every retained record, including
+    # a future or legacy level the dashboard does not yet classify.
+    if normalized_level in LOG_LEVELS_AT_OR_ABOVE:
+        levels = LOG_LEVELS_AT_OR_ABOVE[normalized_level]
+        clauses.append("json_extract(payload, '$.level') IN (" + ",".join("?" for _ in levels) + ")")
+        parameters.extend(levels)
     event_option_clauses = list(clauses)
     event_option_parameters = list(parameters)
     if normalized_events:

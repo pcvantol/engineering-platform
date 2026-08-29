@@ -6,11 +6,27 @@ import tempfile
 import unittest
 
 from tools.engineering.database_maintenance import run_periodic_database_maintenance
+from tools.engineering.dashboard_configuration import update as update_dashboard_configuration
 from tools.engineering.execution_lease import acquire, host_identity, host_instance_id, release
 from tools.engineering.storage import open_storage
 
 
 class DatabaseMaintenanceTest(unittest.TestCase):
+    def test_uses_the_configured_idle_maintenance_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+            update_dashboard_configuration(root, "database_maintenance_interval_seconds", 60)
+            self.assertEqual(run_periodic_database_maintenance(root, now=timestamp)["state"], "COMPACTED")
+            self.assertEqual(
+                run_periodic_database_maintenance(root, now=timestamp + timedelta(seconds=59))["state"],
+                "NOT_DUE",
+            )
+            self.assertEqual(
+                run_periodic_database_maintenance(root, now=timestamp + timedelta(seconds=60))["state"],
+                "COMPACTED",
+            )
+
     def test_compacts_at_most_once_per_hour_without_deleting_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

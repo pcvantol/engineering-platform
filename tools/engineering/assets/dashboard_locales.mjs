@@ -273,7 +273,7 @@ export const DASHBOARD_MESSAGES = {
     "filter.debug": "Debug",
     "filter.error": "Error",
     "filter.info": "Information",
-    "filter.level": "Level",
+    "filter.level": "Minimum level",
     "filter.search": "Search",
     "filter.search_placeholder": "Search all fields",
     "filter.warning": "Warning",
@@ -896,7 +896,7 @@ export const DASHBOARD_MESSAGES = {
     "filter.debug": "Debug",
     "filter.error": "Fout",
     "filter.info": "Informatie",
-    "filter.level": "Niveau",
+    "filter.level": "Niveau vanaf",
     "filter.search": "Zoeken",
     "filter.search_placeholder": "Zoek in alle velden",
     "filter.warning": "Waarschuwing",
@@ -1519,7 +1519,7 @@ export const DASHBOARD_MESSAGES = {
     "filter.debug": "Debug",
     "filter.error": "Fehler",
     "filter.info": "Information",
-    "filter.level": "Stufe",
+    "filter.level": "Ab Stufe",
     "filter.search": "Suchen",
     "filter.search_placeholder": "Alle Felder durchsuchen",
     "filter.warning": "Warnung",
@@ -2076,7 +2076,7 @@ export const DASHBOARD_MESSAGES = {
     "filter.debug": "Débogage",
     "filter.error": "Erreur",
     "filter.info": "Information",
-    "filter.level": "Niveau",
+    "filter.level": "Niveau minimum",
     "filter.search": "Rechercher",
     "filter.search_placeholder": "Rechercher dans tous les champs",
     "filter.warning": "Avertissement",
@@ -2633,7 +2633,7 @@ export const DASHBOARD_MESSAGES = {
     "filter.debug": "Depurar",
     "filter.error": "Error",
     "filter.info": "Información",
-    "filter.level": "Nivel",
+    "filter.level": "Nivel mínimo",
     "filter.search": "Buscar",
     "filter.search_placeholder": "Buscar en todos los campos",
     "filter.warning": "Advertencia",
@@ -3557,11 +3557,17 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.readonly_platform_settings"
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.readonly_platform_settings":"Feste Plattformeinstellungen"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.readonly_platform_settings":"Paramètres fixes de la plateforme"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.readonly_platform_settings":"Ajustes fijos de la plataforma"});
-Object.assign(DASHBOARD_MESSAGES.en, {"configuration.database_maintenance_interval":"Database maintenance","configuration.database_maintenance_interval_help":"The Inbox watcher optimizes and compacts the local Engineering database every hour only when no execution is active. It never removes engineering evidence.","configuration.hour_1":"1 hour"});
-Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.database_maintenance_interval":"Databaseonderhoud","configuration.database_maintenance_interval_help":"De Inbox-watcher optimaliseert en compacteert de lokale Engineering-database elk uur, uitsluitend als geen uitvoering actief is. Engineeringbewijs wordt nooit verwijderd.","configuration.hour_1":"1 uur"});
-Object.assign(DASHBOARD_MESSAGES.de, {"configuration.database_maintenance_interval":"Datenbankwartung","configuration.database_maintenance_interval_help":"Der Inbox-Watcher optimiert und komprimiert die lokale Engineering-Datenbank stündlich nur, wenn keine Ausführung aktiv ist. Engineering-Nachweise werden nie entfernt.","configuration.hour_1":"1 Stunde"});
-Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.database_maintenance_interval":"Maintenance de la base de données","configuration.database_maintenance_interval_help":"Le watcher de la boîte de réception optimise et compacte la base Engineering locale chaque heure uniquement lorsqu’aucune exécution n’est active. Les preuves Engineering ne sont jamais supprimées.","configuration.hour_1":"1 heure"});
-Object.assign(DASHBOARD_MESSAGES.es, {"configuration.database_maintenance_interval":"Mantenimiento de la base de datos","configuration.database_maintenance_interval_help":"El watcher de la bandeja de entrada optimiza y compacta la base de datos local de Engineering cada hora solo cuando no hay una ejecución activa. Nunca elimina evidencias de Engineering.","configuration.hour_1":"1 hora"});
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.database_maintenance_interval":"Database maintenance","configuration.database_maintenance_interval_help":"How often the Inbox watcher optimizes and compacts the local Engineering database when no execution is active. It never removes engineering evidence.","configuration.hour_1":"1 hour","configuration.day_1":"1 day","configuration.week_1":"1 week"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.database_maintenance_interval":"Databaseonderhoud","configuration.database_maintenance_interval_help":"Hoe vaak de Inbox-watcher de lokale Engineering-database optimaliseert en compacteert als geen uitvoering actief is. Engineeringbewijs wordt nooit verwijderd.","configuration.hour_1":"1 uur","configuration.day_1":"1 dag","configuration.week_1":"1 week"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.database_maintenance_interval":"Datenbankwartung","configuration.database_maintenance_interval_help":"Wie oft der Inbox-Watcher die lokale Engineering-Datenbank optimiert und komprimiert, wenn keine Ausführung aktiv ist. Engineering-Nachweise werden nie entfernt.","configuration.hour_1":"1 Stunde","configuration.day_1":"1 Tag","configuration.week_1":"1 Woche"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.database_maintenance_interval":"Maintenance de la base de données","configuration.database_maintenance_interval_help":"À quelle fréquence le watcher de la boîte de réception optimise et compacte la base Engineering locale lorsqu’aucune exécution n’est active. Les preuves Engineering ne sont jamais supprimées.","configuration.hour_1":"1 heure","configuration.day_1":"1 jour","configuration.week_1":"1 semaine"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.database_maintenance_interval":"Mantenimiento de la base de datos","configuration.database_maintenance_interval_help":"Con qué frecuencia el vigilante de la bandeja de entrada optimiza y compacta la base de datos local de Engineering cuando no hay una ejecución activa. Nunca elimina evidencias de Engineering.","configuration.hour_1":"1 hora","configuration.day_1":"1 día","configuration.week_1":"1 semana"});
+
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.dashboard_settings":"Dashboard settings"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.dashboard_settings":"Dashboardinstellingen"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.dashboard_settings":"Dashboard-Einstellungen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.dashboard_settings":"Paramètres du tableau de bord"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.dashboard_settings":"Ajustes del panel"});
 
 Object.assign(DASHBOARD_MESSAGES.en, {"configuration.codex_capacity_reserve":"Codex capacity reserve for new work","configuration.codex_capacity_reserve_help":"EP does not claim new Inbox work below this remaining Codex capacity. An execution that is already running may finish.","configuration.capacity_reserve_none":"No reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.codex_capacity_reserve":"Codex-capaciteitsreserve voor nieuw werk","configuration.codex_capacity_reserve_help":"EP claimt geen nieuw Inbox-werk onder deze resterende Codex-capaciteit. Een al lopende uitvoering mag afronden.","configuration.capacity_reserve_none":"Geen reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});

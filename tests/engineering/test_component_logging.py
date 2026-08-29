@@ -176,3 +176,22 @@ class ComponentLoggingTest(unittest.TestCase):
                 "diagnostic": "needle from yesterday",
                 "line": 1,
             }])
+
+    def test_component_log_page_treats_level_as_a_minimum_severity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with component_logging.open_storage(root) as connection:
+                for index, level in enumerate(("DEBUG", "INFO", "WARNING", "ERROR"), start=1):
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        ("inbox", json.dumps({"level": level, "event": level.lower()}), f"2026-08-29T07:00:0{index}+00:00"),
+                    )
+
+            for minimum, expected in {
+                "DEBUG": ["DEBUG", "INFO", "WARNING", "ERROR"],
+                "INFO": ["INFO", "WARNING", "ERROR"],
+                "WARNING": ["WARNING", "ERROR"],
+                "ERROR": ["ERROR"],
+            }.items():
+                page = component_logging.component_log_page(root, "inbox", level=minimum, direction="asc")
+                self.assertEqual([entry["level"] for entry in page["entries"]], expected)

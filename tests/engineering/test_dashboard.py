@@ -157,7 +157,6 @@ class DashboardStatusTest(unittest.TestCase):
         ):
             self.assertIn(f'id="{control}"', page)
         for key, value in (
-            ("configuration.database_maintenance_interval", "configuration.hour_1"),
             ("configuration.inbox_scan_interval", "configuration.seconds_15"),
             ("configuration.operator_merge_interval", "configuration.seconds_60"),
             ("configuration.required_checks_interval", "configuration.seconds_15"),
@@ -172,6 +171,10 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(f'data-i18n="{key}"', page)
             if value is not None:
                 self.assertIn(f'data-i18n="{value}"', page)
+        self.assertIn('id="configurationDatabaseMaintenanceInterval"', page)
+        self.assertIn('data-i18n="configuration.minute_1"', page)
+        self.assertIn('data-i18n="configuration.day_1"', page)
+        self.assertIn('data-i18n="configuration.week_1"', page)
         self.assertNotIn('id="dashboardLocale"', page[page.index('id="configuration"'):])
         self.assertNotIn('id="autoRefresh"', page[page.index('id="configuration"'):])
         self.assertLess(
@@ -437,7 +440,7 @@ class DashboardStatusTest(unittest.TestCase):
             "configuration.inbox_location_input", "configuration.inbox_location_browse", "configuration.inbox_location_requirement",
             "configuration.inbox_location_save", "configuration.inbox_location_confirm",
             "configuration.inbox_location_saved", "configuration.inbox_location_failed",
-            "configuration.safe_settings", "configuration.log_retention", "configuration.log_level", "configuration.retention_confirm",
+            "configuration.safe_settings", "configuration.dashboard_settings", "configuration.log_retention", "configuration.log_level", "configuration.retention_confirm",
             "configuration.telemetry_retention", "configuration.telemetry_retention_help", "configuration.telemetry_retention_confirm",
             "configuration.days",
             "configuration.saved", "configuration.save_failed", "configuration.load_failed",

@@ -195,6 +195,7 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 .configuration-readonly-settings{border:1px solid var(--house-style);border-radius:10px;margin:16px 0;padding:12px}.configuration-readonly-settings h2{color:var(--house-style);font-size:14px;margin:0 0 10px}.configuration-readonly-settings .field{margin:0 0 10px}.configuration-readonly-settings .field:last-child{margin-bottom:0}
 .configuration-host-components{border:1px solid var(--house-style);border-radius:10px;margin:16px 0;padding:12px}.configuration-host-components h2{color:var(--house-style);font-size:14px;margin:0 0 10px}.configuration-host-components .field{margin:0 0 10px}.configuration-host-components .field:last-child{margin-bottom:0}
 .platform-health__component-link-icon{display:inline-block;font-size:.86em;font-weight:800;margin-left:.32em;text-decoration:none;vertical-align:.06em}
+.dashboard-health__check-link-icon{display:inline-block;font-size:.86em;font-weight:800;margin-left:.32em;text-decoration:none;vertical-align:.06em}
 /* Product controls share the house style rather than individual category colours. */
 .theme-toggle[aria-checked="true"]::before,.section-state-toggle[aria-checked="true"]::before,.auto-refresh-toggle input:checked{background:var(--house-style)}.theme-toggle:focus-visible,.section-state-toggle:focus-visible{outline-color:var(--house-style);box-shadow:0 0 0 5px var(--house-style-focus)}.rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}.rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}html[data-theme="light"] .rate-limit-reset{background:var(--house-style-surface);border-color:var(--house-style);color:var(--house-style-contrast)}html[data-theme="light"] .rate-limit-reset:hover:not(:disabled){background:color-mix(in srgb,var(--house-style-surface) 78%,var(--house-style))}
 /* Component cards use symmetric vertical padding; the info action belongs at the card centre. */
@@ -226,10 +227,8 @@ html[data-theme="light"] .predecessor-retry{background:#fff8ef;border-color:#d68
 #rateLimitReset,#codexCliUpdate{--button-fill:#51d88a;background:#1f5b42;border-color:#51d88a;color:#effff5}
 
 /* Advisory-chat controls. */
-.chat-actions{align-items:center;display:flex;gap:8px;justify-content:flex-end;margin:0 0 18px;min-height:44px;padding-top:12px}
-.chat-actions .dashboard-action{position:static}
-.chat-actions .dashboard-action[hidden]{display:none}
 .codex-chat__details>.chat-messages{margin-top:0}
+.prompt-chat-modal__actions .dashboard-action[hidden]{display:none}
 
 /* The title bar covers scrolling content. Rounded corners leave small gaps at
    the sticky edges, through which the active content can show. */
@@ -535,7 +534,7 @@ html[data-theme="light"] .chat-message__body code{background:transparent;color:i
 .prompt-history-chat{align-items:center;background:transparent;border:1px solid #d0a4ff;border-radius:50%;color:#d0a4ff;display:inline-flex;font:16px/1 system-ui;justify-content:center;min-height:32px;min-width:32px;padding:0}.prompt-history-chat:hover,.prompt-history-chat--recorded{background:#d0a4ff;border-color:#d0a4ff;color:#17151a}.prompt-history-chat--recorded{font-weight:800}
 /* The shared modal shell owns the chat frame, header and safe-area sizing.
    Conversation-specific rules begin at the chat surface inside that frame. */
-.prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:var(--modal-surface);border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}html[data-theme="light"] .prompt-chat-modal #codexChat{background:var(--modal-surface)}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
+.prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:var(--modal-surface);border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}html[data-theme="light"] .prompt-chat-modal #codexChat{background:var(--modal-surface)}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:minmax(0,1fr) auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
 .prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
@@ -544,7 +543,7 @@ html[data-theme="light"] .chat-message__body code{background:transparent;color:i
 /* Keep the fixed close control above long detail content on every viewport. */
 
 /* The modal footer remains visible even after a visitor enlarges the question box. */
-.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{border-top:0;box-sizing:border-box;grid-template-rows:auto minmax(0,1fr) auto auto auto;margin-top:0;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-question-label{margin-bottom:6px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-meta{align-items:end;display:flex;gap:16px;justify-content:space-between;min-height:2.5rem}.prompt-chat-modal .chat-meta .chat-status{margin:0 0 2px;min-height:1.25em;overflow-wrap:anywhere;text-align:right}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
+.prompt-chat-modal #codexChat{display:grid;grid-template-rows:minmax(0,1fr);min-height:0}.prompt-chat-modal .chat-input{height:clamp(88px,14dvh,128px);max-height:128px;min-height:88px}.prompt-chat-modal #codexChat .codex-chat__details{border-top:0;box-sizing:border-box;grid-template-rows:minmax(0,1fr) auto auto auto;margin-top:0;min-height:0;padding:0 6px 10px}.prompt-chat-modal .chat-question-label{margin-bottom:6px}.prompt-chat-modal .chat-compose{min-height:0}.prompt-chat-modal .chat-meta{align-items:end;display:flex;gap:16px;justify-content:space-between;min-height:2.5rem}.prompt-chat-modal .chat-meta .chat-status{margin:0 0 2px;min-height:1.25em;overflow-wrap:anywhere;text-align:right}.prompt-chat-modal #codexChat .field{margin:6px 0 0;padding-bottom:2px}
 .prompt-chat-modal .chat-meta{align-items:start}.prompt-chat-modal .chat-meta .chat-status{align-self:start;margin:6px 0 0}
 /* iOS Safari zooms the document when a control uses text below 16px. Keep
    every editable dashboard control at that threshold in every renderer. */
@@ -710,7 +709,6 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
     max-width:calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px);
     width:min(680px,calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
   }
-  .prompt-chat-modal .chat-actions{gap:6px;margin-bottom:10px;min-height:34px}
   .prompt-chat-modal .chat-compose{align-items:center;display:flex;gap:8px}
   .prompt-chat-modal .chat-compose .chat-input{flex:1;height:44px;max-height:44px;min-height:44px;padding:10px 12px;resize:none}
   .prompt-chat-modal .chat-compose .chat-send{flex:none;height:44px;min-height:44px;position:static;width:44px}
@@ -1086,8 +1084,8 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
 /* Keep every export action on the same modest arrow glyph. The visible text in
    older controls is intentionally suppressed so historic markup cannot drift. */
 .dashboard-action--download{font-size:0!important}.dashboard-action--download::before{content:"↓";display:block;font:18px/1 system-ui}
-#promptHistoryDetailDownloadJson{font:14px/1 ui-monospace,SFMono-Regular,Menlo,monospace!important}
-#promptHistoryDetailDownloadJson::before{content:none;display:none}
+#promptHistoryDetailDownloadJson,#telemetryDetailDownloadJson{font:14px/1 ui-monospace,SFMono-Regular,Menlo,monospace!important}
+#promptHistoryDetailDownloadJson::before,#telemetryDetailDownloadJson::before{content:none;display:none}
 .dashboard-sticky-header:has(#codexProviderReadinessBanner:not([hidden])),.dashboard-sticky-header:has(#githubProviderReadinessBanner:not([hidden])){padding-bottom:7px}.dashboard-status-banner--provider-readiness{align-items:center;background:#5b1d27;border-bottom:1px solid #ff6b7d;color:#ffe9ed}.dashboard-status-banner--provider-readiness strong{color:#ff99a7}.dashboard-status-banner--provider-auth_required{background:#5b4316;color:#fff4d6;border-color:#f4c34f}.dashboard-status-banner--provider-auth_required strong{color:#ffd768}.provider-readiness-banner__action{align-items:center;background:#7a2230;border:1px solid #ff91a1;border-radius:8px;color:#fff0f2;cursor:pointer;display:inline-flex;flex:none;font:400 13px/1 system-ui;justify-content:center;margin-left:auto;min-height:30px;padding:0 10px}.provider-readiness-banner__action[hidden]{display:none}.provider-readiness-banner__action:hover:not(:disabled){background:#a92b40;border-color:#ffc0c9;color:#fff}.provider-readiness-banner__action:focus-visible{box-shadow:0 0 0 4px #ff91a188;outline:2px solid #ff91a1;outline-offset:2px}.provider-readiness-banner__action:disabled{cursor:wait;opacity:.65}html[data-theme="light"] .dashboard-status-banner--provider-readiness{background:#ffe8eb;color:#7d1726}html[data-theme="light"] .dashboard-status-banner--provider-readiness strong{color:#a51e3d}@media (max-width:620px){.provider-readiness-banner__action{align-self:flex-end;margin-top:-2px}}
 .provider-readiness-banner__action[hidden]{display:none}
 

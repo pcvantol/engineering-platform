@@ -435,6 +435,12 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
         "aria-label",
         t("component.more_information", { component: label.textContent }),
       );
+      const linkIcon = document.createElement("span");
+      linkIcon.className = "dashboard-health__check-link-icon";
+      linkIcon.dataset.testid = "dashboard-health-component-link-icon";
+      linkIcon.setAttribute("aria-hidden", "true");
+      linkIcon.textContent = "↗";
+      label.append(linkIcon);
       item.addEventListener("click", () => showComponentDetails(metadata.component));
       item.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -1058,6 +1064,12 @@ function logTimestampText(value) {
   if (!Number.isFinite(parsed)) return value ? String(value) : "—";
   return locale.logDateTime(new Date(parsed));
 }
+const LOG_LEVEL_SEVERITY = Object.freeze({ DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3 });
+function logMeetsMinimumLevel(entry, minimum) {
+  if (!minimum || minimum === "DEBUG") return true;
+  const level = String(entry?.level || "").toUpperCase();
+  return (LOG_LEVEL_SEVERITY[level] ?? -1) >= LOG_LEVEL_SEVERITY[minimum];
+}
 function localDayStart(value = new Date()) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
 }
@@ -1154,6 +1166,7 @@ function loadComponentLogs() {
 }
 const CHAT_HISTORY_LIMIT = 20;
 let chatContextRun = "";
+let chatContextEntry = null;
 let chatHistory = [];
 function updateChatHistoryCount(count) {
   promptHistoryEntries = promptHistoryEntries.map((entry) =>
@@ -1239,6 +1252,7 @@ function closePromptHistoryChat() {
 function openPromptHistoryChat(entry) {
   if (!entry?.run_id) return;
   chatContextRun = String(entry.run_id);
+  chatContextEntry = { ...entry, run_id: chatContextRun };
   chatHistory = [];
   $("promptHistoryChatTitle").textContent = t("history.execution_chat_title");
   $("promptHistoryChatDescription").textContent = t("history.chat_description");
@@ -4434,7 +4448,7 @@ function filteredComponentLogEntries(component) {
     ),
     state = independentLogSortStates[component];
   return componentLogEntries[component]
-    .filter((entry) => !level || entry.level === level)
+    .filter((entry) => logMeetsMinimumLevel(entry, level))
     .filter((entry) => !events.size || events.has(String(entry.event || "")))
     .filter(entryMatchesLogTimeRange)
     .filter(
@@ -5634,6 +5648,7 @@ const configurationFields = Object.freeze({
   configurationCodexCapacityReserve: ["codex_capacity_reserve_percent", Number],
   configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
   configurationComponentDetailsInterval: ["component_details_refresh_seconds", Number],
+  configurationDatabaseMaintenanceInterval: ["database_maintenance_interval_seconds", Number],
 });
 const dashboardSelectPickers = new Map();
 function syncDashboardSelectPicker(select) {
@@ -5764,6 +5779,7 @@ function addConfigurationControlInfo() {
     ["configurationCodexCapacityReserve", "configuration.codex_capacity_reserve_help"],
     ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
     ["configurationComponentDetailsInterval", "configuration.component_details_interval_help"],
+    ["configurationDatabaseMaintenanceInterval", "configuration.database_maintenance_interval_help"],
   ]) {
     const control = $(id), label = control?.closest("label"), text = label?.querySelector(":scope > span");
     if (!text) continue;
@@ -6032,39 +6048,36 @@ function moveMachineScopedWorkspaceDetails() {
   // fields. Provider readiness owns a nested configuration group of its own.
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
   if (!configuration || !controls) return;
+  const databaseSection = configuration.querySelector(".workspace-database-section") || $("workspaceDatabaseField")?.closest(".workspace-database-section");
+  if (!databaseSection) return;
+  configuration.insertBefore(databaseSection, controls);
   MACHINE_SCOPED_WORKSPACE_FIELD_IDS.forEach((id) => {
     const field = $(id);
-    if (field) configuration.insertBefore(field, controls);
+    if (field) databaseSection.insertBefore(field, $("workspaceDatabaseField"));
   });
-  const databaseSection = configuration.querySelector(".workspace-database-section") || $("workspaceDatabaseField")?.closest(".workspace-database-section");
-  if (databaseSection) configuration.insertBefore(databaseSection, controls);
 }
 function groupHostComponentConfiguration() {
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
-  const diskSpace = $("workspaceFreeDiskSpace"), componentDetails = $("configurationComponentDetailsInterval")?.closest("label");
-  if (!configuration || !controls || !diskSpace || !componentDetails) return;
+  const componentDetails = $("configurationComponentDetailsInterval")?.closest("label"), dashboardStatus = $("configurationDashboardStreamInterval")?.closest("label"), status = $("configurationStatus");
+  if (!configuration || !controls || !componentDetails || !dashboardStatus || !status) return;
   let section = $("configurationHostComponents");
   if (!section) {
     section = document.createElement("section");
     section.id = "configurationHostComponents";
     section.className = "configuration-host-components";
     const title = document.createElement("h2");
-    title.dataset.i18n = "section.platform_components";
+    title.dataset.i18n = "configuration.dashboard_settings";
     section.append(title);
     configuration.insertBefore(section, controls);
   }
-  section.querySelector("h2").textContent = t("section.platform_components");
+  section.querySelector("h2").textContent = t("configuration.dashboard_settings");
   let hostControls = section.querySelector(":scope > .configuration-controls");
   if (!hostControls) {
     hostControls = document.createElement("div");
     hostControls.className = "configuration-controls";
     section.append(hostControls);
   }
-  // Keep the disk reading directly above the host-detail picker on every
-  // refresh. `append()` would move it below an existing control group on the
-  // second dashboard projection.
-  section.insertBefore(diskSpace, hostControls);
-  hostControls.append(componentDetails);
+  hostControls.append(componentDetails, dashboardStatus, status);
 }
 function ensureProviderReadinessConfigurationControl() {
   if ($("configurationProviderReadinessInterval")) return;
@@ -6547,6 +6560,21 @@ new MutationObserver((records) => {
 updateAllSectionsToggle();
 updateIndependentLogSortHeaders();
 function chatHistoryMarkdown() {
+  const context = chatContextEntry || {};
+  const metadata = chatContextRun
+    ? [
+      "## " + t("detail.execution"),
+      "",
+      "**" + t("table.prompt_title").toLocaleUpperCase(dashboardLocale) + "**",
+      String(context.title || chatContextRun),
+      "",
+      "**" + t("detail.run_id").toLocaleUpperCase(dashboardLocale) + "**",
+      chatContextRun,
+      "",
+      "**" + t("table.executed_at").toLocaleUpperCase(dashboardLocale) + "**",
+      formatTimestamp(context.executed_at),
+    ].join("\n")
+    : "";
   const entries = chatHistory
     .map(
       (entry) =>
@@ -6558,7 +6586,7 @@ function chatHistoryMarkdown() {
     .filter(Boolean);
   return [
     "# " + t("chat.download_title"),
-    "",
+    metadata,
     t("chat.download_model", { model: $("chatModel").textContent.trim() }),
     "",
     ...entries,
