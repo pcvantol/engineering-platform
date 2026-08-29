@@ -28,6 +28,7 @@ from .storage import EngineeringStorageError, load_readiness_evaluation, load_su
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 from .validation_identity import is_canonical_dashboard_command
+from .execution_executor import load_validation_failure_diagnostic
 from .dashboard_browser_validation import load_dashboard_evidence
 
 
@@ -534,6 +535,21 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             f"  - Evidence Reference: `{stored.get('evidence_ref', 'UNAVAILABLE')}`." if isinstance(stored, dict) else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
             f"  - Execution inclusion: `{included}`.",
         ))
+        if isinstance(stored, dict) and result != "PASS":
+            diagnostic_reference = str(stored.get("diagnostic_evidence_ref") or "UNAVAILABLE")
+            diagnostic = load_validation_failure_diagnostic(root, diagnostic_reference)
+            lines.append(f"  - Failure Diagnostic Evidence: `{diagnostic_reference}`.")
+            if isinstance(diagnostic, dict):
+                identities = diagnostic.get("failing_test_identities")
+                identity_text = ", ".join(f"`{identity}`" for identity in identities) if isinstance(identities, list) and identities else "`UNAVAILABLE`"
+                lines.extend((
+                    f"  - Failing Test Identities: {identity_text}.",
+                    f"  - Failure Diagnostic Capture: `{diagnostic.get('capture_status', 'UNAVAILABLE')}`; Redaction: `{diagnostic.get('redaction_applied', False)}`; Truncation: `stdout={diagnostic.get('stdout_truncated', False)}, stderr={diagnostic.get('stderr_truncated', False)}`.",
+                ))
+                summary = redact_diagnostic(
+                    str(diagnostic.get("stderr_tail") or diagnostic.get("stdout_tail") or "(empty)"), limit=600
+                )
+                lines.append(f"  - Bounded Failure Summary: `{summary}`.")
         if control_id == "dashboard_browser" and isinstance(stored, dict):
             shard_evidence = load_dashboard_evidence(root, state.run_id)
             if str(stored.get("evidence_ref", "")).startswith("artifact:") and shard_evidence is not None:

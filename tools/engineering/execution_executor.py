@@ -1,11 +1,30 @@
 """Codex execution evidence helpers, isolated from lifecycle coordination."""
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import re
+import signal
+import subprocess
 import tempfile
+import time
+from threading import Event, Thread
+from typing import Callable, Mapping
 
+from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
+from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
+from .evidence_projection import ToolProxyEnvironment
+from .execution_context import additional_workspace_write_roots
+from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
+from .execution_models import AgentResult
+from .platform_version import detected_codex_cli_version
+from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
+from .providers import CodexCliProvider
+from .reviewer_evidence import ReviewerEvidence
+from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .agent_state import redact_diagnostic
 
 
@@ -15,6 +34,11 @@ _CODEX_USAGE_LIMIT = re.compile(
     re.IGNORECASE,
 )
 _QUALITY_EVIDENCE_ACTIVITIES = frozenset({"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"})
+MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS = 8_000
+_VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
+_UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
+_UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
+_UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
 
 
 def codex_failure_disposition(
@@ -122,32 +146,113 @@ def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write("# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=3_000) + "\n")
-            handle.flush(); os.fsync(handle.fileno())
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
     return path
 
 
-# Provider-backed engineering executor.
-import json
-import signal
-import subprocess
-import time
-from dataclasses import replace
-from threading import Event, Thread
-from typing import Callable, Mapping
+def _bounded_redacted_validation_tail(value: str | None, *, limit: int = _VALIDATION_STREAM_LIMIT) -> tuple[str | None, bool, bool]:
+    if not isinstance(value, str):
+        return None, False, False
+    tail = value[-limit:]
+    # Apply the repository's existing redactor line-by-line so traceback
+    # boundaries remain useful while its secret policy remains authoritative.
+    rendered = "\n".join(redact_diagnostic(line, limit=limit) for line in tail.replace("\x00", " ").splitlines())
+    if len(rendered) > limit:
+        rendered = rendered[-limit:]
+    return rendered, len(value) > limit, rendered != tail
 
-from .capability_review import ReviewerResult, ReviewerSelection, reviewer_prompt
-from .reviewer_evidence import ReviewerEvidence
-from .codex_observability import codex_final_message as _codex_final_message, extract_codex_runtime_metadata, extract_codex_usage
-from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
-from .execution_context import additional_workspace_write_roots
-from .execution_models import AgentResult
-from .platform_version import detected_codex_cli_version
-from .providers import CodexCliProvider
-from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
-from .evidence_projection import ToolProxyEnvironment
+
+def validation_failure_artifact_id(command_id: str) -> str:
+    return f"validation-failure-diagnostic-{command_id}"
+
+
+def persist_validation_failure_diagnostic(
+    root: Path, *, run_id: str, command_id: str, validation_id: str,
+    control_identity: str, exit_code: int | None, stdout: str | None,
+    stderr: str | None, capture_available: bool, captured_at: str | None = None,
+) -> str:
+    """Persist bounded, redacted, supplementary output for any failed control."""
+    # Extract stable unittest identifiers/counts before the generic redactor
+    # treats ``name=value`` failure summaries as environment assignments. Raw
+    # output remains in process memory only and is never persisted wholesale.
+    raw_combined = "\n".join(value for value in (stdout, stderr) if isinstance(value, str))
+    identities = list(dict.fromkeys(_UNITTEST_FAILURE.findall(raw_combined)))[:20]
+    details = _UNITTEST_COUNTS.search(raw_combined)
+    counts = {match.group("name"): int(match.group("count")) for match in _UNITTEST_COUNT.finditer(details.group("details"))} if details else {}
+    stdout_tail, stdout_truncated, stdout_redacted = _bounded_redacted_validation_tail(stdout)
+    stderr_tail, stderr_truncated, stderr_redacted = _bounded_redacted_validation_tail(stderr)
+    capture_is_available = capture_available and stdout_tail is not None and stderr_tail is not None
+    created_at = captured_at or datetime.now(timezone.utc).isoformat()
+    artifact_id = validation_failure_artifact_id(command_id)
+    payload = {
+        "schema": "deterministic-validation-failure-diagnostic-v1",
+        "validation_id": validation_id, "command_id": command_id,
+        "control_identity": control_identity, "authoritative_exit_code": exit_code,
+        "captured_at": created_at,
+        "capture_status": "AVAILABLE" if capture_is_available else "UNAVAILABLE",
+        "stdout_tail": stdout_tail, "stderr_tail": stderr_tail,
+        "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated,
+        "retained_output_characters": sum(len(value or "") for value in (stdout_tail, stderr_tail)),
+        "maximum_retained_output_characters": MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS,
+        "truncation_strategy": "tail_per_stream",
+        "redaction_applied": stdout_redacted or stderr_redacted,
+        "redaction_policy": "agent_state.redact_diagnostic/v1",
+        "failing_test_identities": identities,
+        "failure_count": counts.get("failures"), "error_count": counts.get("errors"),
+    }
+    directory = root / ".engineering" / "artifacts" / "validation-failure-diagnostics"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / f"{artifact_id}.json"
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{artifact_id}.", suffix=".tmp", dir=directory)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    try:
+        record_artifact(
+            root, path, artifact_id=artifact_id,
+            artifact_type="VALIDATION_FAILURE_DIAGNOSTIC",
+            content_type="application/json", created_at=created_at, run_id=run_id,
+        )
+    except EngineeringStorageError:
+        path.unlink(missing_ok=True)
+        raise
+    return f"artifact:{artifact_id}"
+
+
+def load_validation_failure_diagnostic(root: Path, artifact_reference: str) -> dict[str, object] | None:
+    """Read a bound diagnostic only after its immutable artifact verifies."""
+    if not artifact_reference.startswith("artifact:"):
+        return None
+    artifact_id = artifact_reference.removeprefix("artifact:")
+    if not verify_artifact_integrity(root, artifact_id):
+        return None
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT storage_location,artifact_type FROM execution_artifact_records WHERE artifact_id=?",
+            (artifact_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if not row or row[1] != "VALIDATION_FAILURE_DIAGNOSTIC":
+        return None
+    try:
+        payload = json.loads(((root / ".engineering") / row[0]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
 
 _format_cli_failure = format_cli_failure
 

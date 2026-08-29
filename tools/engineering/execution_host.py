@@ -84,6 +84,7 @@ from .execution_executor import (
 )
 from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
+from .execution_executor import persist_validation_failure_diagnostic
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
@@ -673,14 +674,26 @@ class EngineeringRunner:
             previous_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
             os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = validation.run_id
             try:
-                exit_code = self._run_required_validation_command(launcher.command)
+                command_outcome = self._run_required_validation_command(launcher.command)
             finally:
                 if previous_run_id is None:
                     os.environ.pop("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID", None)
                 else:
                     os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = previous_run_id
+            # Compatibility with direct host tests that intentionally stub the
+            # old scalar boundary; production always supplies a structured
+            # deterministic outcome with captured subprocess output.
+            if isinstance(command_outcome, int) or command_outcome is None:
+                exit_code = command_outcome
+                diagnostic_stdout = diagnostic_stderr = None
+                diagnostic_capture_available = False
+            else:
+                exit_code = command_outcome.exit_code
+                diagnostic_stdout = command_outcome.stdout
+                diagnostic_stderr = command_outcome.stderr
+                diagnostic_capture_available = command_outcome.diagnostic_capture_available
+            completed_at = datetime.now(timezone.utc).isoformat()
             try:
-                completed_at = datetime.now(timezone.utc).isoformat()
                 record_validation_command_terminal(
                     self.root, run_id=validation.run_id, command_id=command_id,
                     completed_at=completed_at, exit_code=exit_code,
@@ -696,10 +709,24 @@ class EngineeringRunner:
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
                 return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control terminal evidence could not be persisted.")
+            if exit_code != 0:
+                try:
+                    persist_validation_failure_diagnostic(
+                        self.root, run_id=validation.run_id, command_id=command_id,
+                        validation_id=launcher.validation_id,
+                        control_identity=launcher.control_identity, exit_code=exit_code,
+                        stdout=diagnostic_stdout, stderr=diagnostic_stderr,
+                        capture_available=diagnostic_capture_available,
+                        captured_at=completed_at,
+                    )
+                except (EngineeringStorageError, OSError):
+                    # Diagnostics are supplementary.  A capture failure must
+                    # never erase or weaken the authoritative terminal exit.
+                    LOGGER.warning("Required validation diagnostic capture unavailable for %s", command_id)
             complete_phase(self.root, span, outcome="COMPLETE" if exit_code == 0 else "FAILED")
         return validation
 
-    def _run_required_validation_command(self, command: tuple[str, ...]) -> int | None:
+    def _run_required_validation_command(self, command: tuple[str, ...]):
         """Run one deterministic control, preserving unavailable terminals."""
         return self.validation_executor.run(self.root, command)
 

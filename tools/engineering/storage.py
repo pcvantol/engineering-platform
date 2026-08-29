@@ -1655,13 +1655,20 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
             "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
         ).fetchall()
         command_rows = connection.execute(
-            "SELECT inv.validation_id,inv.category,inv.control_identity,inv.required_for_profile,"
+            "SELECT inv.validation_id,inv.command_id,inv.category,inv.control_identity,inv.required_for_profile,"
             "inv.started_at,inv.currentness,term.completed_at,term.duration_ms,term.exit_code,term.result,term.evidence_ref "
             "FROM execution_validation_command_invocations inv "
             "LEFT JOIN execution_validation_command_terminals term "
             "ON term.run_id=inv.run_id AND term.command_id=inv.command_id "
             "WHERE inv.run_id=? ORDER BY inv.started_at", (run_id,)
         ).fetchall()
+        diagnostic_artifacts = {
+            row[0] for row in connection.execute(
+                "SELECT artifact_id FROM execution_artifact_records "
+                "WHERE run_id=? AND artifact_type='VALIDATION_FAILURE_DIAGNOSTIC' AND projection_status='AVAILABLE'",
+                (run_id,),
+            ).fetchall()
+        }
     finally:
         connection.close()
     if profile is None:
@@ -1689,13 +1696,15 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
         elif int(currentness) == int(current["currentness"]) and result != current["result"]:
             controls[validation_id] = {**current, "result": "UNRESOLVED", "conflict": True}
     for row in command_rows:
-        validation_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result, terminal_ref = row
+        validation_id, command_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result, terminal_ref = row
+        diagnostic_artifact_id = f"validation-failure-diagnostic-{command_id}"
         controls[validation_id] = {
             "validation_id": validation_id, "category": category, "control_identity": identity,
             "required_for_profile": bool(is_required), "execution_status": "EXECUTED",
             "result": result or "UNAVAILABLE", "evidence_ref": terminal_ref if completed_at else "command_invocation",
             "observed_at": completed_at or started_at, "currentness": currentness,
             "started_at": started_at, "ended_at": completed_at, "duration_ms": duration_ms, "exit_code": exit_code,
+            "diagnostic_evidence_ref": f"artifact:{diagnostic_artifact_id}" if diagnostic_artifact_id in diagnostic_artifacts else "UNAVAILABLE",
         }
     return {"selected_validation_tier": profile[0], "validation_profile_version": profile[1],
             "profile_reference": payload.get("profile_reference", "UNAVAILABLE"),

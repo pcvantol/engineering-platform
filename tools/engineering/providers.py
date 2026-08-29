@@ -62,11 +62,32 @@ class DeterministicValidationExecutor:
     def __init__(self, process: ProcessProvider | None = None) -> None:
         self.process = process or LocalProcessProvider()
 
-    def run(self, root: Path, command: tuple[str, ...]) -> int | None:
+    def run(self, root: Path, command: tuple[str, ...]) -> "DeterministicValidationResult":
         try:
-            return self.process.execute(root, command).returncode
+            completed = self.process.execute(root, command)
+            stdout = completed.stdout
+            stderr = completed.stderr
+            return DeterministicValidationResult(
+                exit_code=completed.returncode,
+                stdout=stdout if isinstance(stdout, str) else None,
+                stderr=stderr if isinstance(stderr, str) else None,
+                diagnostic_capture_available=isinstance(stdout, str) and isinstance(stderr, str),
+            )
         except OSError:
-            return None
+            return DeterministicValidationResult(
+                exit_code=None, stdout=None, stderr=None,
+                diagnostic_capture_available=False,
+            )
+
+
+@dataclass(frozen=True)
+class DeterministicValidationResult:
+    """One deterministic command outcome, including non-authoritative output."""
+
+    exit_code: int | None
+    stdout: str | None
+    stderr: str | None
+    diagnostic_capture_available: bool
 
 
 class RepositoryProvider(Protocol):

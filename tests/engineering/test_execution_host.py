@@ -15,6 +15,8 @@ from tools.engineering.storage import (
     ENGINEERING_STORAGE_SCHEMA_VERSION,
     load_projection,
     load_validation_context,
+    record_validation_command_invocation,
+    record_validation_command_terminal,
     record_validation_control_result,
     record_validation_profile,
 )
@@ -67,8 +69,14 @@ from tools.engineering.capability_review import (
 from tools.engineering.reviewer_evidence import ReviewerEvidence
 from tools.engineering.investigation_ledger import InvocationInvestigationLedger
 from tools.engineering.qualification import SCENARIOS, dashboard, execute_qualification, latest_qualification
-from tools.engineering.providers import CodexCliProvider
-from tools.engineering.execution_executor import workspace_change_summary
+from tools.engineering.providers import CodexCliProvider, DeterministicValidationExecutor, DeterministicValidationResult
+from tools.engineering.execution_executor import (
+    MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS,
+    load_validation_failure_diagnostic,
+    persist_validation_failure_diagnostic,
+    validation_failure_artifact_id,
+    workspace_change_summary,
+)
 from tools.engineering.execution_lease import history as lease_history, liveness as lease_liveness
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
@@ -3578,3 +3586,154 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(report["qualification"], "FAIL")
         self.assertEqual(report["failures"], 1)
         self.assertLess(report["coverage_percent"], 100.0)
+
+
+class ValidationFailureDiagnosticTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.run_id = "validation-diagnostic-run"
+        timestamp = "2026-08-29T00:00:00+00:00"
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (self.run_id, "2026-08-29", timestamp, timestamp, timestamp, 0, 0, "BLOCKED", "MANAGED", "test", "pcvantol/djconnect", "test"),
+            )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_failure_diagnostic_is_bounded_redacted_and_bound_to_command(self) -> None:
+        output = "x" * 5_000 + "\nFAIL: test_retry (tests.engineering.test_retry.TestRetry.test_retry)\nAssertionError: Bearer private-token\nFAILED (failures=1)\n"
+        reference = persist_validation_failure_diagnostic(
+            self.root, run_id=self.run_id, command_id="command-1", validation_id="suite",
+            control_identity="python3 -m unittest discover", exit_code=1,
+            stdout="", stderr=output, capture_available=True,
+        )
+        payload = load_validation_failure_diagnostic(self.root, reference)
+        self.assertEqual(reference, "artifact:" + validation_failure_artifact_id("command-1"))
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["validation_id"], "suite")
+        self.assertEqual(payload["command_id"], "command-1")
+        self.assertEqual(payload["failing_test_identities"], ["tests.engineering.test_retry.TestRetry.test_retry"])
+        self.assertTrue(payload["stderr_truncated"])
+        self.assertLessEqual(payload["retained_output_characters"], MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS)
+        self.assertNotIn("private-token", payload["stderr_tail"])
+        self.assertIn("AssertionError", payload["stderr_tail"])
+        record_validation_profile(
+            self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
+            required_validation_controls=("suite",), recorded_at="2026-08-29T00:00:00+00:00",
+            control_bindings=({"validation_id": "suite", "required": True, "category": "test", "control_identity": "python3 -m unittest discover", "command": ["python3"]},),
+        )
+        record_validation_command_invocation(
+            self.root, run_id=self.run_id, validation_id="suite", command_id="command-1", category="test",
+            control_identity="python3 -m unittest discover", required_for_profile=True,
+            started_at="2026-08-29T00:00:00+00:00", currentness=0,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=self.run_id, command_id="command-1", completed_at="2026-08-29T00:00:01+00:00", exit_code=1,
+        )
+        report = generate_terminal_report(
+            self.root, TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True),
+            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"),
+        ).read_text(encoding="utf-8")
+        self.assertIn("Failure Diagnostic Evidence: `" + reference + "`.", report)
+        self.assertIn("tests.engineering.test_retry.TestRetry.test_retry", report)
+
+    def test_failure_diagnostic_extracts_multiple_unittest_identities(self) -> None:
+        reference = persist_validation_failure_diagnostic(
+            self.root, run_id=self.run_id, command_id="command-2", validation_id="suite",
+            control_identity="python", exit_code=1, stdout="", stderr=(
+                "ERROR: test_a (pkg.TestA.test_a)\nFAIL: test_b (pkg.TestB.test_b)\nFAILED (failures=1, errors=1)"
+            ), capture_available=True,
+        )
+        payload = load_validation_failure_diagnostic(self.root, reference)
+        self.assertEqual(payload["failing_test_identities"], ["pkg.TestA.test_a", "pkg.TestB.test_b"])
+        self.assertEqual(payload["failure_count"], 1)
+        self.assertEqual(payload["error_count"], 1)
+
+    def test_generic_executor_keeps_success_output_ephemeral_and_failure_authoritative(self) -> None:
+        class Process:
+            def __init__(self, completed: subprocess.CompletedProcess[str]) -> None:
+                self.completed = completed
+
+            def execute(self, root: Path, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+                return self.completed
+
+        success = DeterministicValidationExecutor(Process(subprocess.CompletedProcess(("check",), 0, "ok", ""))).run(self.root, ("check",))
+        self.assertEqual(success.exit_code, 0)
+        self.assertTrue(success.diagnostic_capture_available)
+        self.assertFalse((self.root / ".engineering" / "artifacts").exists())
+        record_validation_profile(
+            self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
+            required_validation_controls=("arbitrary_control",), recorded_at="2026-08-29T00:00:00+00:00",
+            control_bindings=({"validation_id": "arbitrary_control", "required": True, "category": "lint", "control_identity": "arbitrary check", "command": ["arbitrary"]},),
+        )
+        runner = EngineeringRunner(self.root, StateStore(self.root / ".engineering" / "state.json"), None, None, None, lambda _: None)
+        runner._run_required_validation_command = lambda _: DeterministicValidationResult(  # type: ignore[method-assign]
+            exit_code=7, stdout="", stderr="permission denied", diagnostic_capture_available=True,
+        )
+        runner._execute_required_validation_controls(
+            TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+        )
+        control = load_validation_context(self.root, self.run_id)["controls"]["arbitrary_control"]
+        self.assertEqual(control["result"], "FAIL")
+        self.assertTrue(str(control["diagnostic_evidence_ref"]).startswith("artifact:validation-failure-diagnostic-required-control-"))
+        payload = load_validation_failure_diagnostic(self.root, control["diagnostic_evidence_ref"])
+        self.assertEqual(payload["capture_status"], "AVAILABLE")
+        self.assertEqual(payload["failing_test_identities"], [])
+
+    def test_unavailable_capture_preserves_terminal_unavailable_and_projects_report(self) -> None:
+        command_id = "command-3"
+        reference = persist_validation_failure_diagnostic(
+            self.root, run_id=self.run_id, command_id=command_id, validation_id="suite",
+            control_identity="generic deterministic command", exit_code=None, stdout=None, stderr=None,
+            capture_available=False,
+        )
+        record_validation_profile(
+            self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
+            required_validation_controls=("suite",), recorded_at="2026-08-29T00:00:00+00:00",
+            control_bindings=({"validation_id": "suite", "required": True, "category": "test", "control_identity": "generic deterministic command", "command": ["generic"]},),
+        )
+        record_validation_command_invocation(
+            self.root, run_id=self.run_id, validation_id="suite", command_id=command_id, category="test",
+            control_identity="generic deterministic command", required_for_profile=True,
+            started_at="2026-08-29T00:00:00+00:00", currentness=0,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=self.run_id, command_id=command_id, completed_at="2026-08-29T00:00:01+00:00", exit_code=None,
+        )
+        control = load_validation_context(self.root, self.run_id)["controls"]["suite"]
+        self.assertEqual(control["result"], "UNAVAILABLE")
+        self.assertEqual(control["diagnostic_evidence_ref"], reference)
+        report = generate_terminal_report(
+            self.root, TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True),
+            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"),
+        ).read_text(encoding="utf-8")
+        self.assertIn("Failure Diagnostic Evidence: `" + reference + "`.", report)
+        self.assertIn("Failure Diagnostic Capture: `UNAVAILABLE`", report)
+
+    def test_unavailable_diagnostic_capture_does_not_downgrade_a_nonzero_fail(self) -> None:
+        command_id = "command-4"
+        reference = persist_validation_failure_diagnostic(
+            self.root, run_id=self.run_id, command_id=command_id, validation_id="suite",
+            control_identity="generic deterministic command", exit_code=1, stdout=None, stderr=None,
+            capture_available=False,
+        )
+        record_validation_profile(
+            self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
+            required_validation_controls=("suite",), recorded_at="2026-08-29T00:00:00+00:00",
+            control_bindings=({"validation_id": "suite", "required": True, "category": "test", "control_identity": "generic deterministic command", "command": ["generic"]},),
+        )
+        record_validation_command_invocation(
+            self.root, run_id=self.run_id, validation_id="suite", command_id=command_id, category="test",
+            control_identity="generic deterministic command", required_for_profile=True,
+            started_at="2026-08-29T00:00:00+00:00", currentness=0,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=self.run_id, command_id=command_id, completed_at="2026-08-29T00:00:01+00:00", exit_code=1,
+        )
+        control = load_validation_context(self.root, self.run_id)["controls"]["suite"]
+        self.assertEqual(control["result"], "FAIL")
+        self.assertEqual(control["diagnostic_evidence_ref"], reference)
