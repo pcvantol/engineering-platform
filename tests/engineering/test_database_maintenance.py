@@ -65,7 +65,7 @@ class DatabaseMaintenanceTest(unittest.TestCase):
             finally:
                 release(root, lease)
 
-    def test_skips_compaction_for_an_unresolved_transaction_without_a_lease(self) -> None:
+    def test_compacts_despite_a_stale_unresolved_transaction_without_a_lease(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with open_storage(root) as connection:
@@ -74,9 +74,9 @@ class DatabaseMaintenanceTest(unittest.TestCase):
                     ("inbox-recovery-required", "{}", "EXECUTE_AGENT", "2026-08-28T18:00:00+00:00"),
                 )
 
-            self.assertEqual(run_periodic_database_maintenance(root)["state"], "SKIPPED_ACTIVE_RUN")
+            self.assertEqual(run_periodic_database_maintenance(root)["state"], "COMPACTED")
 
-    def test_safe_skip_is_throttled_before_the_next_hourly_attempt(self) -> None:
+    def test_safe_lease_skip_is_throttled_before_the_next_hourly_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             timestamp = datetime.now(timezone.utc).replace(microsecond=0)
@@ -85,21 +85,22 @@ class DatabaseMaintenanceTest(unittest.TestCase):
                     "INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
                     ("inbox-finishing", "{}", "FINALIZE", timestamp.isoformat()),
                 )
-
-            self.assertEqual(
-                run_periodic_database_maintenance(root, now=timestamp)["state"],
-                "SKIPPED_ACTIVE_RUN",
+            lease = acquire(
+                root, "inbox-finishing", identity=host_identity(), instance_id=host_instance_id(), process_id=1,
             )
-            with open_storage(root) as connection:
-                connection.execute(
-                    "UPDATE engineering_transactions SET phase='COMPLETE' WHERE run_id='inbox-finishing'"
+            try:
+                self.assertEqual(
+                    run_periodic_database_maintenance(root, now=timestamp)["state"],
+                    "SKIPPED_ACTIVE_RUN",
                 )
-
-            self.assertEqual(
-                run_periodic_database_maintenance(root, now=timestamp + timedelta(minutes=59))["state"],
-                "NOT_DUE",
-            )
-            self.assertEqual(
-                run_periodic_database_maintenance(root, now=timestamp + timedelta(hours=1))["state"],
-                "COMPACTED",
-            )
+                release(root, lease)
+                self.assertEqual(
+                    run_periodic_database_maintenance(root, now=timestamp + timedelta(minutes=59))["state"],
+                    "NOT_DUE",
+                )
+                self.assertEqual(
+                    run_periodic_database_maintenance(root, now=timestamp + timedelta(hours=1))["state"],
+                    "COMPACTED",
+                )
+            finally:
+                release(root, lease)

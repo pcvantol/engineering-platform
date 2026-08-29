@@ -12,9 +12,6 @@ from .dashboard_configuration import get as dashboard_configuration
 
 
 _LAST_ATTEMPT_KEY = "database_maintenance.last_attempt_at"
-_TERMINAL_PHASES = ("COMPLETE", "BLOCKED", "FAILED")
-
-
 def _timestamp(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -45,21 +42,14 @@ def _record_attempt(connection: sqlite3.Connection, moment: datetime) -> None:
     )
 
 
-def _has_active_run(connection: sqlite3.Connection, moment: datetime) -> bool:
-    """Fail closed for both a live lease and an unresolved transaction."""
+def _has_active_execution_lease(connection: sqlite3.Connection, moment: datetime) -> bool:
+    """Use the canonical live lease as the maintenance exclusion boundary."""
     lease = connection.execute(
         "SELECT 1 FROM execution_run_leases "
         "WHERE lease_state='ACTIVE' AND expires_at>=? LIMIT 1",
         (moment.isoformat(),),
     ).fetchone()
-    if lease is not None:
-        return True
-    placeholders = ",".join("?" for _ in _TERMINAL_PHASES)
-    transaction = connection.execute(
-        f"SELECT 1 FROM engineering_transactions WHERE phase NOT IN ({placeholders}) LIMIT 1",
-        _TERMINAL_PHASES,
-    ).fetchone()
-    return transaction is not None
+    return lease is not None
 
 
 def run_periodic_database_maintenance(
@@ -82,7 +72,7 @@ def run_periodic_database_maintenance(
         previous = _last_attempt(connection)
         if previous is not None and moment - previous < timedelta(seconds=interval_seconds):
             return {"state": "NOT_DUE", "next_due_at": (previous + timedelta(seconds=interval_seconds)).isoformat()}
-        if _has_active_run(connection, moment):
+        if _has_active_execution_lease(connection, moment):
             _record_attempt(connection, moment)
             return {"state": "SKIPPED_ACTIVE_RUN"}
         # Do not wait behind an interactive dashboard read long enough to

@@ -97,6 +97,13 @@ def _run_periodic_database_maintenance(repo: Path, logger: logging.Logger) -> No
             "periodic_database_maintenance_completed",
             diagnostic="tasks=PRAGMA optimize,VACUUM",
         )
+    elif state == "SKIPPED_ACTIVE_RUN":
+        log_event(
+            logger,
+            logging.INFO,
+            "database_maintenance_skipped_active_run",
+            diagnostic="reason=active_execution_lease",
+        )
     elif state == "DEFERRED":
         log_event(logger, logging.WARNING, "database_maintenance_deferred")
 
