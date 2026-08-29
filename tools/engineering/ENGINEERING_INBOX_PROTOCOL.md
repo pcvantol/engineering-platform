@@ -35,10 +35,10 @@ never changes admission, scheduling, preflight, lifecycle or execution.
 ### Forge/Workspace submission API
 
 `tools.engineering.workspace_inbox_api.publish(root, envelope)` is the bounded
-local API for Forge and trusted Workspace callers. It accepts only a complete
-`djconnect.producer_submission` v1 envelope whose Producer Type is `FORGE`;
-plain-text prompts, incomplete envelopes and every other producer type fail
-closed. It first records the immutable producer submission evidence in local
+local API for trusted Forge and Human callers. It accepts only a complete
+`djconnect.producer_submission` v1 envelope whose Producer Type is `FORGE` or
+`HUMAN`; plain-text prompts, incomplete envelopes and every other producer type
+fail closed. It first records the immutable producer submission evidence in local
 Engineering storage, then writes the original UTF-8 envelope through a private
 temporary file and atomic rename into the configured physical Inbox.
 
@@ -49,6 +49,31 @@ validation, Finalization, reconciliation or operator merge decisions. It does
 not create a network listener or accept arbitrary browser uploads; a future
 authenticated remote ingress must call this same bounded API after its own
 authentication and request-size validation.
+
+### Structured Human submission
+
+`python3 -m tools.engineering.workspace_inbox_api` is the supported local
+operator-facing route for a structured Human submission. It requires an
+explicit `--producer-id` and explicit `--action-intent` value. The producer ID
+is normalized to `human:<operator-identity>` and is never `legacy`. It emits
+the existing v1 envelope, sets the existing prompt-level `Execution Mode:
+Managed` contract, persists the producer-owned Execution Context, and then
+uses this same bounded API. It does not infer action intent from prompt prose.
+
+For example:
+
+```sh
+python3 -m tools.engineering.workspace_inbox_api \
+  --prompt-file /path/to/objective.md \
+  --producer-id operator-peter \
+  --action-intent VALIDATION_ONLY
+```
+
+`MUTATING_DELIVERY` is equally explicit. The iPhone Shortcut may submit this
+same JSON envelope directly to the iCloud Inbox; it must not save only the
+prompt text when an explicit action intent is required. Plain-text files remain
+the compatibility path and always retain `HUMAN` / `legacy`, no supplied
+Execution Context, and the safe `MUTATING_DELIVERY` default.
 
 ### Dependabot admission
 

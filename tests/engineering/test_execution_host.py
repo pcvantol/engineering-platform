@@ -72,6 +72,7 @@ from tools.engineering.execution_executor import workspace_change_summary
 from tools.engineering.execution_lease import history as lease_history, liveness as lease_liveness
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
+from tools.engineering.storage import open_storage
 
 
 class FakeRepository:
@@ -1239,6 +1240,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Permission denied", state.diagnostic or "")
         self.assertEqual(repository.synchronize_calls, [self.root])
         self.assertEqual(agent.prompts, [])
+
+    def test_unexpected_managed_branch_blocks_before_provider_dispatch(self) -> None:
+        repository = FakeRepository(branch="codex/unexpected-feature")
+        agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
+
+        state = EngineeringRunner(
+            self.root, self.store, repository, FakeGitHub([]), agent, lambda _: None
+        ).run(self.prompt, run_id="managed-branch-blocked")
+
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "managed_target_baseline")
+        self.assertIn("expected clean main", state.diagnostic or "")
+        self.assertEqual(repository.synchronize_calls, [self.root])
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(agent.reviewer_evidence, [])
+        with open_storage(self.root) as connection:
+            invocations = connection.execute(
+                "SELECT COUNT(*) FROM provider_invocations WHERE run_id=?", (state.run_id,)
+            ).fetchone()[0]
+        self.assertEqual(invocations, 0)
+        self.assertFalse(any(span["phase_name"] == "PROVIDER_EXECUTION" for span in phase_spans(self.root, state.run_id)))
 
     def test_execute_agent_phase_is_published_before_agent_invocation(self) -> None:
         agent = LiveStatusFakeAgent(AgentResult("COMPLETE"))

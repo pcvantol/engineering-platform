@@ -1294,8 +1294,6 @@ Mandatory autonomous refactor and quality-control stage:
                     return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence could not be persisted.")
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
-        if context.execution_mode == "MANAGED":
-            self._managed_action(state, "IMPLEMENTATION" if state.action_intent == "MUTATING_DELIVERY" else "VALIDATION_ONLY")
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
         self._total_phase = start_or_resume_phase(
@@ -1405,6 +1403,17 @@ Mandatory autonomous refactor and quality-control stage:
                     "repository_synchronization",
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
+            # The watcher checked the target before claim. Re-check the exact
+            # checkout after the host-owned synchronization while the run lease
+            # is held: an operator/worktree race must never reach reviewers,
+            # providers, or validation on a feature branch.
+            if not (evidence.clean and evidence.branch == "main" and evidence.main_contains_head):
+                return self._save_terminal(
+                    state,
+                    "BLOCKED",
+                    "managed_target_baseline",
+                    "Managed target baseline verification failed: expected clean main synchronized with origin/main.",
+                )
         admission_phase = start_phase(self.root, state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
         state, admission_error = self._confirm_deterministic_admission(state)
         complete_phase(
@@ -1414,6 +1423,8 @@ Mandatory autonomous refactor and quality-control stage:
         )
         if admission_error is not None:
             return self._save_terminal(state, "BLOCKED", "deterministic_admission", admission_error)
+        if context.execution_mode == "MANAGED":
+            self._managed_action(state, "IMPLEMENTATION" if state.action_intent == "MUTATING_DELIVERY" else "VALIDATION_ONLY")
         self._provider_dispatch_telemetry = {
             "provider_dispatch_before_admission": 0,
             "admission_completed": 1,

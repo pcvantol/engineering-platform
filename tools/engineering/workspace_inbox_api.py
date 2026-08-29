@@ -5,11 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import argparse
+import json
 import os
+import sys
 import uuid
 
 from .platform_api import execution_host_configuration
-from .producer import ProducerSubmissionError, parse_producer_submission
+from .producer import (
+    ENVELOPE_CONTRACT_NAME,
+    ENVELOPE_CONTRACT_VERSION,
+    ProducerSubmissionError,
+    _value,
+    parse_producer_submission,
+)
 from .storage import EngineeringStorageError, record_submission
 
 
@@ -21,12 +30,67 @@ class WorkspaceInboxSubmissionError(ValueError):
         super().__init__(message)
 
 
+HUMAN_ACTION_INTENTS = frozenset({"MUTATING_DELIVERY", "VALIDATION_ONLY"})
+HUMAN_PRODUCER_ID_PREFIX = "human:"
+HUMAN_EXECUTION_CONTEXT_VERSION = "1.0"
+
+
 @dataclass(frozen=True)
 class WorkspaceInboxReceipt:
     submission_id: str
     filename: str
     inbox: Path
     received_at: str
+
+
+def canonical_human_producer_id(identity: str) -> str:
+    """Return the canonical non-legacy ``human:<identity>`` producer ID."""
+    normalized = _value(identity)
+    if normalized is None or normalized == "legacy":
+        raise WorkspaceInboxSubmissionError("invalid_human_producer", "Human producer identity is invalid.")
+    producer_id = normalized if normalized.startswith(HUMAN_PRODUCER_ID_PREFIX) else f"{HUMAN_PRODUCER_ID_PREFIX}{normalized}"
+    if _value(producer_id) is None or producer_id == "legacy":
+        raise WorkspaceInboxSubmissionError("invalid_human_producer", "Human producer identity is invalid.")
+    return producer_id
+
+
+def build_human_envelope(
+    *, prompt: str, producer_identity: str, action_intent: str, submission_id: str | None = None,
+) -> dict[str, object]:
+    """Build one explicit Managed HUMAN envelope using the existing v1 contract."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise WorkspaceInboxSubmissionError("invalid_human_prompt", "Human submission prompt is required.")
+    if action_intent not in HUMAN_ACTION_INTENTS:
+        raise WorkspaceInboxSubmissionError("invalid_human_action_intent", "Human submission action intent is invalid.")
+    identifier = submission_id or f"human-{uuid.uuid4().hex}"
+    if _value(identifier) is None:
+        raise WorkspaceInboxSubmissionError("invalid_human_submission", "Human submission identity is invalid.")
+    stripped = prompt.lstrip()
+    if stripped.casefold().startswith("execution mode:"):
+        if stripped.splitlines()[0].strip().casefold() != "execution mode: managed":
+            raise WorkspaceInboxSubmissionError("invalid_human_execution_mode", "Structured Human submissions require Execution Mode: Managed.")
+        objective = prompt
+    else:
+        # Execution mode remains the existing prompt-level Execution Host
+        # contract. It is explicit here, never inferred from objective prose.
+        objective = f"Execution Mode: Managed\n\n{prompt}"
+    envelope: dict[str, object] = {
+        "contract": {"name": ENVELOPE_CONTRACT_NAME, "version": ENVELOPE_CONTRACT_VERSION},
+        "submission": {"id": identifier},
+        "producer": {"id": canonical_human_producer_id(producer_identity), "type": "HUMAN"},
+        "prompt": {"text": objective},
+        "execution_context": {
+            "context_version": HUMAN_EXECUTION_CONTEXT_VERSION,
+            "action_intent": action_intent,
+        },
+    }
+    try:
+        parsed = parse_producer_submission(json.dumps(envelope, sort_keys=True))
+    except ProducerSubmissionError as error:
+        raise WorkspaceInboxSubmissionError("invalid_human_envelope", "Human submission envelope is invalid.") from error
+    if parsed.producer.producer_type != "HUMAN" or parsed.producer.producer_id == "legacy":
+        raise WorkspaceInboxSubmissionError("invalid_human_producer", "Human submission producer provenance is invalid.")
+    return envelope
 
 
 def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
@@ -92,3 +156,48 @@ def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
             "inbox_publication_failed", "Forge submission could not be published atomically to the Inbox."
         ) from error
     return WorkspaceInboxReceipt(submission.submission_id, filename, inbox, received_at)
+
+
+def submit_human(
+    root: Path,
+    *, prompt: str, producer_identity: str, action_intent: str, submission_id: str | None = None,
+) -> WorkspaceInboxReceipt:
+    """Persist then publish the exact structured Human envelope through ``publish``."""
+    envelope = build_human_envelope(
+        prompt=prompt,
+        producer_identity=producer_identity,
+        action_intent=action_intent,
+        submission_id=submission_id,
+    )
+    return publish(root, json.dumps(envelope, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Offer the bounded operator-facing structured HUMAN ingress."""
+    parser = argparse.ArgumentParser(description="Submit a structured HUMAN Engineering Inbox envelope.")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--prompt-file", type=Path, required=True)
+    parser.add_argument("--producer-id", required=True)
+    parser.add_argument("--action-intent", required=True, choices=sorted(HUMAN_ACTION_INTENTS))
+    parser.add_argument("--submission-id")
+    arguments = parser.parse_args(argv)
+    try:
+        receipt = submit_human(
+            arguments.root,
+            prompt=arguments.prompt_file.read_text(encoding="utf-8"),
+            producer_identity=arguments.producer_id,
+            action_intent=arguments.action_intent,
+            submission_id=arguments.submission_id,
+        )
+    except (OSError, WorkspaceInboxSubmissionError) as error:
+        print(f"Human submission refused: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps({
+        "submission_id": receipt.submission_id, "filename": receipt.filename,
+        "inbox": str(receipt.inbox), "received_at": receipt.received_at,
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
