@@ -19,6 +19,20 @@ submission and producer identity through the linked submission record plus:
 Dual parentage is rejected. Existing historical runs receive no synthetic
 record and therefore remain `UNAVAILABLE`/`EVIDENCE_INSUFFICIENT`.
 
+## Provider-dispatch admission
+
+Provider-backed work has one fail-closed boundary:
+
+`SUBMISSION_PERSISTED → LINEAGE_PERSISTED → DETERMINISTIC_ADMISSION → provider dispatch`
+
+For a watcher-spawned Managed run, the Execution Host must read the immutable
+admission decision for its exact run ID and find `PASS` before it can select
+or invoke reviewers, implementation, validation, quality, repair,
+finalization, or reconciliation providers. Missing, incomplete, unavailable,
+failed, blocked, or inconsistent admission evidence terminates the run before
+provider dispatch. The checkpoint records the completed decision and source;
+provider invocation telemetry records that dispatch followed admission.
+
 ## Required validation
 
 The local validation gate persists the selected tier, profile version, and

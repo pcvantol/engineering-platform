@@ -138,6 +138,9 @@ class TransactionState:
     auth_recovery_phase: str | None = None
     auth_recovery_next_action: str | None = None
     auth_recovery_providers: tuple[str, ...] = ()
+    admission_decision: str = "NOT_STARTED"
+    admission_completed_at: str | None = None
+    admission_evidence_source: str | None = None
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -167,6 +170,9 @@ class TransactionState:
             "auth_recovery_phase": None,
             "auth_recovery_next_action": None,
             "auth_recovery_providers": (),
+            "admission_decision": "NOT_STARTED",
+            "admission_completed_at": None,
+            "admission_evidence_source": None,
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
@@ -204,6 +210,14 @@ class TransactionState:
             raise StateError("checkpoint diagnostic is invalid or unsafe")
         if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
+        if state.admission_decision not in {"NOT_STARTED", "PASS", "FAIL", "BLOCKED", "UNAVAILABLE"}:
+            raise StateError("checkpoint admission decision is invalid")
+        if state.admission_decision == "PASS" and not isinstance(state.admission_completed_at, str):
+            raise StateError("passed admission requires a completion timestamp")
+        if state.admission_completed_at is not None and not isinstance(state.admission_completed_at, str):
+            raise StateError("checkpoint admission completion timestamp is invalid")
+        if state.admission_evidence_source is not None and state.admission_evidence_source not in {"WATCHER", "RUNNER"}:
+            raise StateError("checkpoint admission evidence source is invalid")
         if state.genesis_repository_path is not None and (not isinstance(state.genesis_repository_path, str) or not Path(state.genesis_repository_path).is_absolute()):
             raise StateError("genesis repository path is invalid")
         if state.genesis_commit_sha is not None and (not isinstance(state.genesis_commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", state.genesis_commit_sha)):

@@ -90,7 +90,7 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
@@ -396,6 +396,57 @@ class EngineeringRunner:
         self.finalization = FinalizationCoordinator()
         self._total_phase: ActivePhase | None = None
         self._provider_context_telemetry: dict[str, int] = {}
+        self._provider_dispatch_telemetry: dict[str, int] = {}
+        self._dispatch_guard_enforced = False
+
+    def _confirm_deterministic_admission(self, state: TransactionState) -> tuple[TransactionState, str | None]:
+        """Confirm the persisted provider-free decision at the dispatch boundary.
+
+        Managed runs spawned by the Inbox watcher carry the storage schema it
+        admitted.  Those runs must have an immutable watcher decision of PASS.
+        Direct callers retain their provider-free host readiness path, but the
+        resulting PASS is still checkpointed before any provider can run.
+        """
+        if state.admission_decision == "PASS" and state.admission_completed_at:
+            return state, None
+        source = "RUNNER"
+        if state.execution_mode == "MANAGED" and os.environ.get("DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"):
+            try:
+                admission = load_admission_decision(self.root, state.run_id)
+            except EngineeringStorageError:
+                admission = None
+            if (
+                admission is None
+                or admission.get("run_id") != state.run_id
+                or not isinstance(admission.get("submission_id"), str)
+                or not admission["submission_id"]
+                or admission.get("decision") != "PASS"
+                or admission.get("execution_mode") != "MANAGED"
+            ):
+                blocked = replace(
+                    state,
+                    admission_decision="BLOCKED",
+                    admission_completed_at=datetime.now(timezone.utc).isoformat(),
+                    admission_evidence_source="WATCHER",
+                )
+                self.store.save(blocked)
+                return blocked, "Provider dispatch refused: deterministic admission is not a persisted PASS."
+            source = "WATCHER"
+        admitted = replace(
+            state,
+            admission_decision="PASS",
+            admission_completed_at=datetime.now(timezone.utc).isoformat(),
+            admission_evidence_source=source,
+        )
+        self.store.save(admitted)
+        return admitted, None
+
+    def _require_provider_dispatch_admission(self, state: TransactionState) -> None:
+        """Fail closed for every Codex-backed path, including reviewers."""
+        if self._dispatch_guard_enforced and (
+            state.admission_decision != "PASS" or not state.admission_completed_at
+        ):
+            raise RunnerError("provider invocation refused: deterministic admission is not completed with PASS")
 
     def _heartbeat(self) -> None:
         if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
@@ -499,8 +550,11 @@ class EngineeringRunner:
             usage = {}
         metadata = observed_metadata if observed_metadata is not None else getattr(self.agent, "last_runtime_metadata", None)
         churn = observed_churn if observed_churn is not None else getattr(self.agent, "last_churn", None)
-        if observed_churn is None:
-            churn = {**(churn if isinstance(churn, dict) else {}), **self._provider_context_telemetry}
+        churn = {
+            **(churn if isinstance(churn, dict) else {}),
+            **self._provider_context_telemetry,
+            **self._provider_dispatch_telemetry,
+        }
         duration = observed_duration if observed_duration is not None else getattr(self.agent, "last_execution_seconds", None)
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
@@ -798,6 +852,7 @@ class EngineeringRunner:
         decision = provider_need_for_phase(state.phase)
         if not decision.required:
             raise RunnerError(f"provider invocation refused: {decision.reason}")
+        self._require_provider_dispatch_admission(state)
         self._provider_context_telemetry = {
             "context_projected_bytes": len(prompt.encode("utf-8")),
             "context_budget_version": 1,
@@ -1135,6 +1190,9 @@ Mandatory autonomous refactor and quality-control stage:
         owner_authorized: bool = False,
         transaction_kind: str = "IMPLEMENTATION",
     ) -> TransactionState:
+        # Private helpers remain directly testable, while every public runner
+        # invocation enforces the admission boundary before provider dispatch.
+        self._dispatch_guard_enforced = True
         objective = prompt_path.read_text(encoding="utf-8")
         state = self.store.load(run_id) if resume else None
         if resume and state is not None and dismissal_for_run(self.root, state.run_id):
@@ -1360,6 +1418,19 @@ Mandatory autonomous refactor and quality-control stage:
                     "repository_synchronization",
                     f"Repository synchronization failed: {redact_diagnostic(str(error))}",
                 )
+        admission_phase = start_phase(self.root, state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
+        state, admission_error = self._confirm_deterministic_admission(state)
+        complete_phase(
+            self.root,
+            admission_phase,
+            outcome="COMPLETE" if admission_error is None else "FAILED",
+        )
+        if admission_error is not None:
+            return self._save_terminal(state, "BLOCKED", "deterministic_admission", admission_error)
+        self._provider_dispatch_telemetry = {
+            "provider_dispatch_before_admission": 0,
+            "admission_completed": 1,
+        }
         state = replace(state, phase="CAPABILITY_REVIEW", next_action="capability_review")
         self.store.save(state)
         capability_review = start_phase(self.root, state.run_id, "CAPABILITY_REVIEW")
@@ -1398,6 +1469,7 @@ Mandatory autonomous refactor and quality-control stage:
             ),
             self.reviewer_runtime,
         )
+        self._require_provider_dispatch_admission(state)
         results = run_reviews(
             self.root,
             selections,

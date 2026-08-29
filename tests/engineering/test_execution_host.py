@@ -1001,6 +1001,65 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.quality_evidence, quality_evidence)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
+    def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
+        agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        with patch.dict(os.environ, {
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+        }, clear=False), patch(
+            "tools.engineering.execution_host.load_admission_decision", return_value=None
+        ):
+            state = runner.run(self.prompt, run_id="missing-watcher-admission")
+
+        self.assertEqual(state.phase, "BLOCKED")
+        self.assertEqual(state.next_action, "deterministic_admission")
+        self.assertEqual(state.admission_decision, "BLOCKED")
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(agent.reviewer_evidence, [])
+        self.assertFalse(any(span["phase_name"] == "PROVIDER_EXECUTION" for span in phase_spans(self.root, state.run_id)))
+
+    def test_watcher_pass_admission_precedes_reviewer_dispatch_and_is_checkpointed(self) -> None:
+        agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        admission = {
+            "run_id": "passed-watcher-admission",
+            "submission_id": "submission-1",
+            "execution_mode": "MANAGED",
+            "decision": "PASS",
+            "failed_gate_ids": [],
+            "gates": [],
+            "observed_at": "2026-08-29T07:00:00+00:00",
+        }
+        with patch.dict(os.environ, {
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+        }, clear=False), patch(
+            "tools.engineering.execution_host.load_admission_decision", return_value=admission
+        ):
+            state = runner.run(self.prompt, run_id="passed-watcher-admission")
+
+        self.assertEqual(state.admission_decision, "PASS")
+        self.assertEqual(state.admission_evidence_source, "WATCHER")
+        self.assertTrue(state.admission_completed_at)
+        self.assertTrue(agent.reviewer_evidence)
+        phase_names = [span["phase_name"] for span in phase_spans(self.root, state.run_id)]
+        self.assertLess(phase_names.index("DETERMINISTIC_ADMISSION"), phase_names.index("CAPABILITY_REVIEW"))
+
+    def test_all_non_pass_admission_states_refuse_direct_provider_invocation(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        runner._dispatch_guard_enforced = True
+        for decision in ("NOT_STARTED", "FAIL", "BLOCKED", "UNAVAILABLE"):
+            with self.subTest(decision=decision):
+                state = TransactionState(
+                    f"admission-{decision.casefold()}", "pcvantol/djconnect", str(self.prompt),
+                    "EXECUTE_AGENT", admission_decision=decision,
+                )
+                with self.assertRaisesRegex(RunnerError, "deterministic admission"):
+                    runner._invoke_agent_with_timing(state, "objective")
+        self.assertEqual(agent.prompts, [])
+
     def test_reviewer_recommendations_do_not_enter_the_primary_prompt(self) -> None:
         self.prompt.write_text("# validation regression objective\n", encoding="utf-8")
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
@@ -2079,6 +2138,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "resume-repair-lease", "pcvantol/djconnect", str(self.prompt),
             "WAIT_FOR_OPERATOR_MERGE", branch="codex/resume-repair", pull_request=12,
             owner_authorized=True, transaction_kind="FINALIZATION",
+            admission_decision="PASS", admission_completed_at="2026-08-17T07:00:00+00:00",
+            admission_evidence_source="RUNNER",
         )
         self.store.save(state)
         agent = LeaseAwareDeadlineAgent(state.run_id)
