@@ -52,7 +52,10 @@ def _terminate_process_groups(processes: list[tuple[str, Path, subprocess.Popen[
     for _, _, process in processes:
         try:
             os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except (PermissionError, ProcessLookupError):
+            # A shard can already have exited and its process-group identity
+            # may no longer be signalable on macOS. Cleanup is best-effort;
+            # it must not replace the authoritative shard exit result.
             pass
     active = [process for _, _, process in processes if process.poll() is None]
     for process in active:
@@ -61,7 +64,7 @@ def _terminate_process_groups(processes: list[tuple[str, Path, subprocess.Popen[
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (PermissionError, ProcessLookupError):
                 pass
             try:
                 process.wait(timeout=PROCESS_TERMINATION_TIMEOUT_SECONDS)

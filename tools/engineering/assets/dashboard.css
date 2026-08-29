@@ -192,6 +192,7 @@ html[data-theme="light"] .report-view-modal__panel{background:#f7fbff;color:#182
 .technical-repository-label{align-items:center;display:flex;gap:6px}
 .technical-diagnosis-summary{color:var(--dashboard-modal-ink);font-weight:600;margin:12px 0 0}
 .workspace-database-section{border:1px solid var(--house-style);border-radius:10px;margin:16px 0;padding:12px}.workspace-database-section h2{color:var(--house-style);font-size:14px;margin:0 0 10px}.workspace-database-section .field{margin:0 0 10px}.workspace-database-section .field:last-child{margin-bottom:0}
+.workspace-database-maintenance-field{align-items:center;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) minmax(9rem,14rem)}.workspace-database-maintenance-field .dashboard-select-picker{justify-self:stretch;max-width:14rem;width:100%}.workspace-database-maintenance-field select{max-width:14rem}
 .configuration-readonly-settings{border:1px solid var(--house-style);border-radius:10px;margin:16px 0;padding:12px}.configuration-readonly-settings h2{color:var(--house-style);font-size:14px;margin:0 0 10px}.configuration-readonly-settings .field{margin:0 0 10px}.configuration-readonly-settings .field:last-child{margin-bottom:0}
 .configuration-host-components{border:1px solid var(--house-style);border-radius:10px;margin:16px 0;padding:12px}.configuration-host-components h2{color:var(--house-style);font-size:14px;margin:0 0 10px}.configuration-host-components .field{margin:0 0 10px}.configuration-host-components .field:last-child{margin-bottom:0}
 .platform-health__component-link-icon{display:inline-block;font-size:.86em;font-weight:800;margin-left:.32em;text-decoration:none;vertical-align:.06em}
@@ -733,6 +734,7 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
      direct-touch screens. This prevents the controls from squeezing into—or
      visually overlapping—the label column. */
   .configuration-controls label{grid-template-columns:minmax(0,1fr)}
+  .workspace-database-maintenance-field{grid-template-columns:minmax(0,1fr)}
   .configuration-inbox-field{grid-template-columns:minmax(0,1fr)}
   .configuration-inbox-open{grid-column:1;grid-row:auto;justify-self:stretch;width:100%}
   .configuration-provider-status__row{grid-template-columns:auto minmax(0,1fr) auto}.configuration-provider-status__logout{grid-column:2 / -1;justify-self:start}
@@ -740,6 +742,7 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
      picker.  Full-width controls make the configuration scan poorly and used
      to leave the listbox visually detached from its trigger. */
   .configuration-controls .dashboard-select-picker{justify-self:start;max-width:14rem;width:min(100%,14rem)}
+  .workspace-database-maintenance-field .dashboard-select-picker{justify-self:start;width:min(100%,14rem)}
   .configuration-controls .dashboard-select-picker:has(.dashboard-locale__button[aria-expanded="true"]){z-index:30}
   .configuration-controls .dashboard-locale__button{
     -webkit-backdrop-filter:none!important;

@@ -6166,6 +6166,11 @@ function localizeConfigurationOptions() {
   groupHostComponentConfiguration();
   moveProjectScopedConfiguration();
   CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
+  // Every original control has now been placed in its scoped section. Remove
+  // the empty source grid: its vertical margins otherwise remain between the
+  // dashboard settings and fixed platform settings cards.
+  const residualControls = $("configuration")?.querySelector(":scope > .configuration-controls");
+  if (residualControls && !residualControls.childElementCount) residualControls.remove();
   addConfigurationControlInfo();
   renderConfigurationInboxLocation();
   providerLoginStatusBlock();

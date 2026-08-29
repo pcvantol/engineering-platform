@@ -125,6 +125,15 @@ class DashboardBrowserValidationTest(unittest.TestCase):
             ],
         )
 
+    def test_cleanup_does_not_mask_a_shard_result_when_macos_rejects_group_signal(self) -> None:
+        process = MagicMock(pid=100)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with patch("tools.engineering.dashboard_browser_validation.os.killpg", side_effect=PermissionError):
+            dashboard_browser_validation._terminate_process_groups([("1/4", Path("result.log"), process)])
+
+        process.wait.assert_called_once_with(timeout=dashboard_browser_validation.PROCESS_TERMINATION_TIMEOUT_SECONDS)
+
     def test_local_invocation_refuses_uncoordinated_playwright_arguments(self) -> None:
         with patch.dict("tools.engineering.dashboard_browser_validation.os.environ", {}, clear=True):
             with self.assertRaisesRegex(SystemExit, "coordinated four-shard"):

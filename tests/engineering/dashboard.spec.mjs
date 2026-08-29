@@ -232,6 +232,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(section.locator("#workspaceFreeDiskSpace")).toHaveCount(0);
     await expect(section.locator("#configurationComponentDetailsInterval")).toHaveCount(1);
     await expect(section.locator("#configurationDashboardStreamInterval")).toHaveCount(1);
+    await expect(configuration.locator(":scope > .configuration-controls")).toHaveCount(0);
     await expect(section).toHaveCSS("border-top-style", "solid");
     expect(await section.evaluate((element) => {
       const details = element.querySelector("#configurationComponentDetailsInterval")?.closest("label");
@@ -287,9 +288,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const section = page.locator(".workspace-database-section");
     const select = section.locator("#configurationDatabaseMaintenanceInterval");
+    const field = section.locator(".workspace-database-maintenance-field");
     await expect(select).toHaveValue("3600");
+    await expect(field).toHaveCount(1);
     await expect(select.locator("option")).toHaveText(["1 minuut", "1 uur", "1 dag", "1 week"]);
     const picker = select.locator("+ .dashboard-select-picker");
+    await expect(picker).toHaveCSS("max-width", "224px");
     await openDashboardPicker(picker);
     await chooseDashboardPickerOption(picker, "86400");
     await expect.poll(() => writes).toEqual([{
