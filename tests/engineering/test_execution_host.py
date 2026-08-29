@@ -11,7 +11,13 @@ import unittest
 from unittest.mock import call, patch
 
 from tools.engineering.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic
-from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, load_projection
+from tools.engineering.storage import (
+    ENGINEERING_STORAGE_SCHEMA_VERSION,
+    load_projection,
+    load_validation_context,
+    record_validation_control_result,
+    record_validation_profile,
+)
 from tools.engineering.execution_errors import CodexHandoffTimeout
 from tools.engineering.execution_host import (
     AgentResult,
@@ -1045,8 +1051,60 @@ class LocalAgentRunnerTest(unittest.TestCase):
         spans = phase_spans(self.root, state.run_id)
         validation = next(span for span in spans if span["phase_name"] == "VALIDATION")
         self.assertEqual(validation["outcome"], "COMPLETE")
-        self.assertEqual(validation["metadata"], {"validation_kind": "tests"})
+        self.assertEqual(validation["metadata"], {
+            "validation_kind": "tests",
+            "validation_id": "validation_tests",
+            "command_id": "command-1",
+        })
         self.assertIsNotNone(validation["parent_phase_id"])
+
+    def test_browser_validation_invocation_persists_its_canonical_identity_at_start(self) -> None:
+        class BrowserCommandAgent(CommandTimingFakeAgent):
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                if callable(self.command_callback):
+                    self.command_callback("started", "dashboard-command", "npm run test:engineering-dashboard")
+                    self.command_callback("completed", "dashboard-command", "")
+                return FakeAgent.invoke(self, root, prompt)
+
+        agent = BrowserCommandAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("dashboard-boundary-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        runner._invoke_agent_with_timing(state, "objective")
+
+        validation = next(span for span in phase_spans(self.root, state.run_id) if span["phase_name"] == "VALIDATION")
+        self.assertEqual(validation["metadata"], {
+            "validation_kind": "browser_e2e",
+            "validation_id": "dashboard_browser",
+            "command_id": "dashboard-command",
+        })
+        self.assertEqual(validation["outcome"], "COMPLETE")
+
+    def test_browser_validation_result_uses_the_canonical_dashboard_control(self) -> None:
+        state = TransactionState("dashboard-control-run", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION")
+        record_validation_profile(
+            self.root, run_id=state.run_id, selected_validation_tier="DASHBOARD",
+            validation_profile_version="1.0", required_validation_controls=("dashboard_browser",),
+            recorded_at="2026-08-28T00:00:00+00:00",
+        )
+        result = AgentResult(
+            "WAITING",
+            validation_evidence=({"command": "npm run test:engineering-dashboard", "result": "completed; detailed counts unavailable"},),
+        )
+        EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)._record_validation_evidence(state, result)
+
+        context = load_validation_context(self.root, state.run_id)
+        self.assertIsNotNone(context)
+        self.assertEqual(context["controls"]["dashboard_browser"], {
+            "validation_id": "dashboard_browser",
+            "category": "agent",
+            "control_identity": "npm run test:engineering-dashboard",
+            "required_for_profile": True,
+            "execution_status": "EXECUTED",
+            "result": "UNAVAILABLE",
+            "evidence_ref": "agent_result",
+            "observed_at": context["controls"]["dashboard_browser"]["observed_at"],
+            "currentness": 0,
+        })
 
     def test_managed_synchronization_blocks_before_agent_when_host_cannot_sync(self) -> None:
         repository = FakeRepository()
@@ -2752,6 +2810,24 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Semgrep: `NOT_APPLICABLE` — `GITHUB_CI`", body)
         self.assertIn("Transaction Baseline Availability:", body)
         self.assertIn("Execution Duration (legacy): Provider Execution Time.", body)
+
+    def test_complete_report_keeps_an_executed_dashboard_control_out_of_not_executed(self) -> None:
+        run_id = "dashboard-execution-evidence"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0",
+            required_validation_controls=("dashboard_browser",), recorded_at="2026-08-28T00:00:00+00:00",
+        )
+        record_validation_control_result(
+            self.root, run_id=run_id, validation_id="dashboard_browser", category="agent",
+            control_identity="npm run test:engineering-dashboard", required_for_profile=True,
+            execution_status="EXECUTED", result="UNAVAILABLE", evidence_ref="agent_result",
+            observed_at="2026-08-28T00:00:01+00:00", currentness=0,
+        )
+        state = TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+        self.assertIn("Dashboard/browser tests: `UNAVAILABLE` — `LOCAL`", body)
+        self.assertIn("Execution status: `EXECUTED`.", body)
+        self.assertIn("Execution inclusion: `AVAILABLE`.", body)
 
     def test_engineering_evidence_2_report_is_self_validating_and_traceable(self) -> None:
         self.prompt.write_text(

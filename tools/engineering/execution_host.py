@@ -548,7 +548,13 @@ class EngineeringRunner:
             if kind is None:
                 continue
             normalized = summary.casefold()
-            status = "FAIL" if any(token in normalized for token in ("fail", "error", "blocked")) else "PASS"
+            status = (
+                "NOT_APPLICABLE" if "not applicable" in normalized else
+                "UNAVAILABLE" if any(token in normalized for token in ("unavailable", "not recorded")) else
+                "FAIL" if any(token in normalized for token in ("fail", "error", "blocked", "timeout", "timed out")) else
+                "PASS" if any(token in normalized for token in ("pass", "passed", "succeed")) else
+                "UNAVAILABLE"
+            )
             try:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
@@ -557,8 +563,7 @@ class EngineeringRunner:
                 validation_id = (
                     "git_diff_check" if kind == "format_or_diff" else
                     "documentation_contract" if kind == "documentation_contract" else
-                    "projection_dashboard" if kind == "browser_e2e" and tier == "RUNTIME" else
-                    "engineering_dashboard" if kind == "browser_e2e" else
+                    "dashboard_browser" if kind == "browser_e2e" else
                     "repository_suite" if kind == "tests" and tier == "FULL" else
                     "engineering_python" if kind == "tests" else f"validation_{kind}"
                 )
@@ -766,7 +771,7 @@ class EngineeringRunner:
             return "security"
         if "git diff --check" in normalized or "prettier" in normalized or "black --check" in normalized:
             return "format_or_diff"
-        if any(tool in normalized for tool in ("playwright", "selenium", "cypress", "e2e")):
+        if any(tool in normalized for tool in ("npm run test:engineering-dashboard", "playwright", "selenium", "cypress", "e2e")):
             return "browser_e2e"
         if any(tool in normalized for tool in ("pytest", "unittest", "tox", "nox")):
             return "tests"
@@ -803,7 +808,14 @@ class EngineeringRunner:
                         "VALIDATION",
                         parent_phase_id=provider.phase_id if provider else None,
                         attempt=provider_attempt,
-                        metadata={"validation_kind": kind},
+                        # This persisted span is the invocation receipt.  The
+                        # result remains separate and is recorded only after
+                        # the agent returns explicit validation evidence.
+                        metadata={
+                            "validation_kind": kind,
+                            "validation_id": "dashboard_browser" if kind == "browser_e2e" else f"validation_{kind}",
+                            "command_id": command_id,
+                        },
                     )
             elif event == "completed":
                 active = validation_spans.pop(command_id, None)

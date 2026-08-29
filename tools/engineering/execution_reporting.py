@@ -24,7 +24,7 @@ from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run, load_run_lineage
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run, load_run_lineage, load_validation_context
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 
@@ -442,16 +442,28 @@ _VALIDATION_CONTROLS = (
 )
 
 
-def _validation_control_projection(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
+def _validation_control_projection(root: Path, state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
     """Render every required control without promoting absent evidence to PASS."""
     records = tuple(state.validation_evidence) + ({"command": "git diff --check", "result": bundle.diff_check},)
+    try:
+        validation_context = load_validation_context(root, state.run_id)
+    except EngineeringStorageError:
+        validation_context = None
+    stored_controls = validation_context.get("controls", {}) if isinstance(validation_context, dict) else {}
     lines = ["## Validation Control Results", "- Engineering Platform Qualification is reported separately from these individual controls."]
     for control_id, name, category, source, markers in _VALIDATION_CONTROLS:
+        stored = stored_controls.get(control_id) if isinstance(stored_controls, dict) else None
         # The terminal Evidence Bundle is appended last and therefore wins over
         # historical checkpoint entries for the current projection.
         match = next((record for record in reversed(records) if any(marker in record["command"].casefold() for marker in markers)), None)
-        if match is None:
+        if isinstance(stored, dict):
+            result = str(stored.get("result") or "UNAVAILABLE")
+            reference = str(stored.get("control_identity") or "not recorded")
+            execution_status = str(stored.get("execution_status") or "UNAVAILABLE")
+            included = "AVAILABLE" if control_id == "dashboard_browser" and "npm run test:engineering-dashboard" in reference else "UNAVAILABLE"
+        elif match is None:
             result, reference = "NOT_EXECUTED", "not recorded"
+            execution_status, included = "NOT_EXECUTED", "UNAVAILABLE"
         else:
             raw = match["result"].casefold()
             result = (
@@ -460,12 +472,14 @@ def _validation_control_projection(state: TransactionState, bundle: TerminalEvid
                 "FAIL" if any(value in raw for value in ("fail", "error", "blocked")) else "PASS"
             )
             reference = match["command"]
+            execution_status = "EXECUTED"
+            included = "AVAILABLE" if control_id == "dashboard_browser" and "npm run test:engineering-dashboard" in reference.casefold() else "UNAVAILABLE"
         lines.extend((
             f"- {name}: `{result}` — `{source}`",
             f"  - Validation ID: `{control_id}`; Category: `{category}`; Check: `{reference}`.",
-            "  - Start/End/Duration: not separately recorded by the checkpoint." if match is None else
+            f"  - Execution status: `{execution_status}`.",
             "  - Start/End/Duration: bounded by the canonical validation span when recorded.",
-            "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
+            f"  - Execution inclusion: `{included}`." if control_id == "dashboard_browser" else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
         ))
     lines.extend((
         f"- Transaction Baseline Availability: `{bundle.transaction_baseline}` (repository evidence; not a validation control).",
@@ -1358,7 +1372,7 @@ def generate_terminal_report(
             "```",
             "",
             evidence_bundle,
-            *_validation_control_projection(state, bundle),
+            *_validation_control_projection(root, state, bundle),
             "",
             _reconciliation_evidence(objective, state, bundle),
             "## Validation",

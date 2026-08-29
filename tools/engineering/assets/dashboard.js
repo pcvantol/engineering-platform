@@ -3280,10 +3280,10 @@ function normalizedComponentLogEntries(records) {
 }
 function refreshComponentLogs(versions = {}, force = false) {
   const version = JSON.stringify(versions);
-  if (!force && componentLogsLoaded && version === componentLogVersion) return;
+  if (!force && componentLogsLoaded && version === componentLogVersion) return Promise.resolve();
   componentLogVersion = version;
   const requestId = ++componentLogRequestId;
-  Promise.all([
+  return Promise.all([
     fetch(componentLogRequestUrl("inbox")).then((response) => response.ok ? response.json() : Promise.reject(Error("inbox logs unavailable"))),
     fetch(componentLogRequestUrl("dashboard")).then((response) => response.ok ? response.json() : Promise.reject(Error("dashboard logs unavailable"))),
   ])

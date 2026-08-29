@@ -12,8 +12,8 @@ RUNTIME_PREFIXES = ("tools/engineering/", "tests/engineering/", ".github/workflo
 VALIDATION_PROFILE_VERSION = "1.0"
 REQUIRED_CONTROLS = {
     "DOCUMENTATION": ("git_diff_check", "documentation_contract"),
-    "DASHBOARD": ("git_diff_check", "engineering_python", "engineering_dashboard"),
-    "RUNTIME": ("git_diff_check", "engineering_python", "projection_dashboard"),
+    "DASHBOARD": ("git_diff_check", "engineering_python", "dashboard_browser"),
+    "RUNTIME": ("git_diff_check", "engineering_python", "dashboard_browser"),
     "FULL": ("git_diff_check", "repository_suite"),
 }
 
