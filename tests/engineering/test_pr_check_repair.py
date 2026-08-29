@@ -75,7 +75,7 @@ class PullRequestCheckRepairTest(unittest.TestCase):
             (worktree / "package-lock.json").write_text("{}", encoding="utf-8")
             (worktree / "playwright.config.mjs").write_text("export default {};", encoding="utf-8")
             (worktree / "node_modules" / "@playwright" / "test").mkdir(parents=True)
-            with patch("tools.engineering.pr_check_repair.subprocess.run", return_value=completed(("npm", "ci"), 0, "", "")) as run:
+            with patch("tools.engineering.worktree_tooling.subprocess.run", return_value=completed(("npm", "ci"), 0, "", "")) as run:
                 pr_check_repair._prepare_worktree_tooling(worktree)
             run.assert_called_once_with(("npm", "ci"), cwd=worktree, check=False, capture_output=True, text=True)
 

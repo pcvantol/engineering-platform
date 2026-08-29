@@ -15,9 +15,9 @@ import os
 from pathlib import Path
 import re
 import tempfile
-import subprocess  # nosec B404 - fixed local npm bootstrap for an isolated worktree
 
 from .dashboard_configuration import get as dashboard_configuration
+from .worktree_tooling import WorktreeToolingError, prepare as prepare_worktree_tooling
 from .codex_capacity import read_remaining_percent
 from .provider_readiness import failures as provider_readiness_failures
 from .providers import CodexCliProvider, GitHubProvider, GitProvider
@@ -201,10 +201,9 @@ def _prepare_worktree_tooling(worktree: Path) -> None:
     When this repository declares the browser suite, ``npm ci`` is therefore a
     required local preparation step, not a best-effort validation fallback.
     """
-    if not (worktree / "package-lock.json").is_file() or not (worktree / "playwright.config.mjs").is_file():
-        return
-    completed = subprocess.run(("npm", "ci"), cwd=worktree, check=False, capture_output=True, text=True)
-    if completed.returncode or not (worktree / "node_modules" / "@playwright" / "test").is_dir():
+    try:
+        prepare_worktree_tooling(worktree)
+    except WorktreeToolingError:
         raise PullRequestCheckRepairError("pr_check_repair_worktree_tooling_unavailable")
 
 

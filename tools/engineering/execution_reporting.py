@@ -471,7 +471,10 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             result = str(stored.get("result") or "UNAVAILABLE")
             reference = str(stored.get("control_identity") or "not recorded")
             execution_status = str(stored.get("execution_status") or "UNAVAILABLE")
-            included = "AVAILABLE" if control_id == "dashboard_browser" and is_canonical_dashboard_command(reference) else "UNAVAILABLE"
+            # The persisted control binding is authoritative.  Re-parsing a
+            # provider's shell transport here can disagree with the command
+            # receipt that produced this control.
+            included = "AVAILABLE" if control_id == "dashboard_browser" and execution_status == "EXECUTED" else "UNAVAILABLE"
         elif match is None:
             result, reference = "NOT_EXECUTED", "not recorded"
             execution_status, included = "NOT_EXECUTED", "UNAVAILABLE"

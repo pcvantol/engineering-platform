@@ -1143,6 +1143,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         cases = (
             ("npm run test:engineering-dashboard", "dashboard_browser"),
             ("npm run test:engineering-dashboard -- --reporter=dot", "dashboard_browser"),
+            ("/bin/zsh -lc 'npm run test:engineering-dashboard'", "dashboard_browser"),
             ("python3 -m unittest tests.engineering.test_dashboard_browser_validation", "validation_tests"),
             ("pgrep -f 'playwright dashboard_browser_validation'", "validation_browser_e2e"),
             ("echo npm run test:engineering-dashboard", "validation_browser_e2e"),
