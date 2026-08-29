@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import json
 
 from .component_lock import single_instance
 
@@ -18,6 +19,7 @@ PLAYWRIGHT_COMMAND = ("npx", "playwright", "test", "tests/engineering/dashboard.
 LOCK_COMPONENT = "dashboard-browser-validation"
 LOCAL_BATCH_TIMEOUT_SECONDS = 300
 PROCESS_TERMINATION_TIMEOUT_SECONDS = 5
+EVIDENCE_RUN_ID_ENV = "DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"
 
 
 def _common_git_directory(root: Path) -> Path:
@@ -36,7 +38,58 @@ def _common_git_directory(root: Path) -> Path:
 
 
 def _command(*arguments: str) -> tuple[str, ...]:
-    return (*PLAYWRIGHT_COMMAND, *arguments)
+    return (*PLAYWRIGHT_COMMAND, "--workers=1", *arguments)
+
+
+def dashboard_evidence_path(root: Path, run_id: str) -> Path:
+    """Return the ignored, run-scoped shard evidence payload location."""
+    return root / ".engineering" / "validation" / "dashboard-browser" / f"{run_id}.json"
+
+
+def _write_evidence(root: Path, results: list[tuple[str, str, int | None]], *, cleanup: str) -> None:
+    """Write bounded structured shard facts only when the host supplied a run id."""
+    run_id = os.environ.get(EVIDENCE_RUN_ID_ENV)
+    if not run_id:
+        return
+    if not run_id.replace("-", "").isalnum():
+        return
+    path = dashboard_evidence_path(root, run_id)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "expected_shard_count": len(SHARDS),
+        "actual_shard_count": len(results),
+        "workers_per_shard": 1,
+        "shards": [
+            {"shard": shard, "exit_code": result, "result": "PASS" if result == 0 else "FAIL" if result is not None else "UNAVAILABLE"}
+            for shard, _, result in results
+        ],
+        "cleanup": cleanup,
+    }
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def load_dashboard_evidence(root: Path, run_id: str) -> dict[str, object] | None:
+    """Load only a complete, fixed-topology dashboard shard payload."""
+    try:
+        payload = json.loads(dashboard_evidence_path(root, run_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    shards = payload.get("shards")
+    if (
+        payload.get("expected_shard_count") != len(SHARDS)
+        or payload.get("actual_shard_count") != len(SHARDS)
+        or payload.get("workers_per_shard") != 1
+        or not isinstance(shards, list)
+        or len(shards) != len(SHARDS)
+        or tuple(item.get("shard") for item in shards if isinstance(item, dict)) != SHARDS
+    ):
+        return None
+    return payload
 
 
 def _run_ci(root: Path, arguments: tuple[str, ...]) -> int:
@@ -127,6 +180,7 @@ def _run_local_shards(root: Path) -> int:
                 if not cleaned_up and (timed_out or failed or any(process.poll() is None for _, _, process in processes)):
                     _terminate_process_groups(processes)
             results = _read_results(processes)
+    _write_evidence(root, results, cleanup="ATTEMPTED" if (timed_out or failed) else "NOT_REQUIRED")
     for shard, output, _ in results:
         print(f"\n=== Dashboard browser shard {shard} ===")
         print(output, end="" if output.endswith("\n") else "\n")

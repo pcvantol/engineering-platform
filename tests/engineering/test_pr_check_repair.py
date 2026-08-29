@@ -68,6 +68,17 @@ class PullRequestCheckRepairTest(unittest.TestCase):
             self.assertEqual(pr_check_repair.repair_state(root, 973, "a" * 40), "SUBMITTED")
             self.assertEqual(pr_check_repair.repair_state(root, 973, "b" * 40), "SUBMITTED")
 
+    def test_new_playwright_worktree_installs_locked_node_tooling(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with tempfile.TemporaryDirectory() as directory:
+            worktree = Path(directory)
+            (worktree / "package-lock.json").write_text("{}", encoding="utf-8")
+            (worktree / "playwright.config.mjs").write_text("export default {};", encoding="utf-8")
+            (worktree / "node_modules" / "@playwright" / "test").mkdir(parents=True)
+            with patch("tools.engineering.pr_check_repair.subprocess.run", return_value=completed(("npm", "ci"), 0, "", "")) as run:
+                pr_check_repair._prepare_worktree_tooling(worktree)
+            run.assert_called_once_with(("npm", "ci"), cwd=worktree, check=False, capture_output=True, text=True)
+
 
 if __name__ == "__main__":
     unittest.main()

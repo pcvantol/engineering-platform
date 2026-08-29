@@ -63,6 +63,10 @@ Every terminal report includes these derived sections:
   LOCAL, GITHUB_CI or EXTERNAL source. Qualification remains separate from
   individual controls; `git diff --check` remains independent of transaction
   baseline availability.
+  The canonical dashboard control derives inclusion and terminal result only
+  from its persisted command invocation/terminal lineage. Its run-scoped
+  artifact records the fixed four-shard, one-worker topology and every shard
+  result when available; cleanup evidence remains separate from that result.
 - **Execution Statistics** — execution count, evidence-backed engineering
   actions, Forge mission count, repair iterations, provider execution time and
   validation time status.

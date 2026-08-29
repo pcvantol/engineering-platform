@@ -18,7 +18,7 @@ class DashboardBrowserValidationTest(unittest.TestCase):
 
         self.assertEqual(
             run.call_args.args[0],
-            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "--shard=2/4"),
+            ("npx", "playwright", "test", "tests/engineering/dashboard.spec.mjs", "--workers=1", "--shard=2/4"),
         )
 
     def test_local_batch_starts_four_one_worker_ci_shards(self) -> None:
@@ -138,3 +138,28 @@ class DashboardBrowserValidationTest(unittest.TestCase):
         with patch.dict("tools.engineering.dashboard_browser_validation.os.environ", {}, clear=True):
             with self.assertRaisesRegex(SystemExit, "coordinated four-shard"):
                 dashboard_browser_validation.main(("--workers=9",))
+
+    def test_run_scoped_evidence_preserves_complete_four_shard_topology(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            "tools.engineering.dashboard_browser_validation.os.environ",
+            {dashboard_browser_validation.EVIDENCE_RUN_ID_ENV: "run-evidence-1"}, clear=True,
+        ):
+            root = Path(temporary)
+            dashboard_browser_validation._write_evidence(
+                root, [("1/4", "", 0), ("2/4", "", 0), ("3/4", "", 0), ("4/4", "", 0)], cleanup="NOT_REQUIRED",
+            )
+            evidence = dashboard_browser_validation.load_dashboard_evidence(root, "run-evidence-1")
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence["expected_shard_count"], 4)
+        self.assertEqual(evidence["actual_shard_count"], 4)
+        self.assertEqual(evidence["workers_per_shard"], 1)
+        self.assertEqual([item["result"] for item in evidence["shards"]], ["PASS"] * 4)
+
+    def test_incomplete_shard_evidence_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            "tools.engineering.dashboard_browser_validation.os.environ",
+            {dashboard_browser_validation.EVIDENCE_RUN_ID_ENV: "run-evidence-2"}, clear=True,
+        ):
+            root = Path(temporary)
+            dashboard_browser_validation._write_evidence(root, [("1/4", "", 0)], cleanup="ATTEMPTED")
+            self.assertIsNone(dashboard_browser_validation.load_dashboard_evidence(root, "run-evidence-2"))

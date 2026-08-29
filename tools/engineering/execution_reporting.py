@@ -28,6 +28,7 @@ from .storage import EngineeringStorageError, load_readiness_evaluation, load_su
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 from .validation_identity import is_canonical_dashboard_command
+from .dashboard_browser_validation import load_dashboard_evidence
 
 
 class ReportingCoordinator:
@@ -412,22 +413,24 @@ def _requirement_traceability(objective: str, state: TransactionState, bundle: T
 
 
 def _validation_traceability(state: TransactionState, bundle: TerminalEvidenceBundle) -> tuple[str, ...]:
-    records = list(state.validation_evidence)
-    records.append({"command": "git diff --check", "result": bundle.diff_check})
-    records.append({"command": "Transaction Baseline", "result": bundle.transaction_baseline})
-    records.append({"command": "Documentation validation", "result": "report documentation is rendered from the canonical reporting contract"})
-    regression_files = tuple(path for path in bundle.changed_files if path.startswith("tests/"))
-    return tuple(
+    # Command summaries returned by an agent are advisory only.  The canonical
+    # control section below projects the persisted invocation/terminal lineage;
+    # repeating an independently inferred inclusion state here caused Proof v5's
+    # AVAILABLE/UNAVAILABLE contradiction.
+    return (
+        "- Executed Validation Command: `Documentation validation`",
+        "  - Result: report documentation is rendered from the canonical reporting contract",
+    ) + tuple(
         line
-        for record in records
+        for record in state.validation_evidence
+        if not is_canonical_dashboard_command(record["command"])
         for line in (
             f"- Executed Validation Command: `{record['command']}`",
-            "  - Validated Test/Control: UNAVAILABLE unless the canonical command identifies it.",
-            f"  - Regression Evidence File(s): {', '.join(f'`{path}`' for path in regression_files) or 'NONE'} (changed files are not execution proof).",
-            f"  - Delivery File(s): {', '.join(f'`{path}`' for path in bundle.changed_files) or 'NONE'}.",
             f"  - Result: {record['result']}",
-            "  - Execution inclusion: UNAVAILABLE without canonical suite membership evidence.",
         )
+    ) + (
+        "- Individual validation inclusion and results are projected only from persisted Validation Control Results.",
+        f"- Transaction Baseline Availability: `{bundle.transaction_baseline}` (repository evidence; not a validation control).",
     )
 
 
@@ -487,8 +490,20 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             f"  - Validation ID: `{control_id}`; Category: `{category}`; Check: `{reference}`.",
             f"  - Execution status: `{execution_status}`.",
             "  - Start/End/Duration: bounded by the canonical validation span when recorded.",
+            f"  - Evidence Reference: `{stored.get('evidence_ref', 'UNAVAILABLE')}`." if control_id == "dashboard_browser" and isinstance(stored, dict) else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
             f"  - Execution inclusion: `{included}`." if control_id == "dashboard_browser" else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
         ))
+        if control_id == "dashboard_browser" and isinstance(stored, dict):
+            shard_evidence = load_dashboard_evidence(root, state.run_id)
+            if str(stored.get("evidence_ref", "")).startswith("artifact:") and shard_evidence is not None:
+                shard_results = ", ".join(
+                    f"{item['shard']}={item['result']}" for item in shard_evidence["shards"]
+                )
+                lines.extend((
+                    f"  - Shard Topology: `{shard_evidence['actual_shard_count']}/{shard_evidence['expected_shard_count']}` shards; `{shard_evidence['workers_per_shard']}` worker per shard.",
+                    f"  - Shard Results: `{shard_results}`.",
+                    f"  - Cleanup Evidence: `{shard_evidence['cleanup']}` (separate from the canonical terminal result).",
+                ))
     lines.extend((
         f"- Transaction Baseline Availability: `{bundle.transaction_baseline}` (repository evidence; not a validation control).",
         "- Qualification and individual-control results are intentionally independent.",

@@ -1590,9 +1590,10 @@ def record_validation_command_invocation(
 
 def record_validation_command_terminal(
     root: Path, *, run_id: str, command_id: str, completed_at: str, exit_code: int | None,
+    evidence_ref: str = "command_terminal",
 ) -> None:
     """Close a previously recorded command with its observed terminal outcome."""
-    if not all(isinstance(value, str) and value for value in (run_id, command_id, completed_at)):
+    if not all(isinstance(value, str) and value for value in (run_id, command_id, completed_at, evidence_ref)):
         raise EngineeringStorageError("Validation command terminal evidence is invalid.")
     if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
         raise EngineeringStorageError("Validation command exit code is invalid.")
@@ -1612,7 +1613,7 @@ def record_validation_command_terminal(
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_command_terminals("
             "run_id,command_id,completed_at,duration_ms,exit_code,result,evidence_ref) VALUES(?,?,?,?,?,?,?)",
-            (run_id, command_id, completed_at, duration_ms, exit_code, result, "command_terminal"),
+            (run_id, command_id, completed_at, duration_ms, exit_code, result, evidence_ref),
         )
     finally:
         connection.close()
@@ -1632,7 +1633,7 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
         ).fetchall()
         command_rows = connection.execute(
             "SELECT inv.validation_id,inv.category,inv.control_identity,inv.required_for_profile,"
-            "inv.started_at,inv.currentness,term.completed_at,term.duration_ms,term.exit_code,term.result "
+            "inv.started_at,inv.currentness,term.completed_at,term.duration_ms,term.exit_code,term.result,term.evidence_ref "
             "FROM execution_validation_command_invocations inv "
             "LEFT JOIN execution_validation_command_terminals term "
             "ON term.run_id=inv.run_id AND term.command_id=inv.command_id "
@@ -1659,11 +1660,11 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
         elif int(currentness) == int(current["currentness"]) and result != current["result"]:
             controls[validation_id] = {**current, "result": "UNRESOLVED", "conflict": True}
     for row in command_rows:
-        validation_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result = row
+        validation_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result, terminal_ref = row
         controls[validation_id] = {
             "validation_id": validation_id, "category": category, "control_identity": identity,
             "required_for_profile": bool(is_required), "execution_status": "EXECUTED",
-            "result": result or "UNAVAILABLE", "evidence_ref": "command_terminal" if completed_at else "command_invocation",
+            "result": result or "UNAVAILABLE", "evidence_ref": terminal_ref if completed_at else "command_invocation",
             "observed_at": completed_at or started_at, "currentness": currentness,
             "started_at": started_at, "ended_at": completed_at, "duration_ms": duration_ms, "exit_code": exit_code,
         }

@@ -145,6 +145,13 @@ def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tupl
             "SELECT validation_id,category,required_for_profile,execution_status,result,observed_at,currentness "
             "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
         ).fetchall()
+        commands = connection.execute(
+            "SELECT inv.validation_id,inv.category,inv.required_for_profile,'EXECUTED',"
+            "COALESCE(term.result,'UNAVAILABLE'),COALESCE(term.completed_at,inv.started_at),inv.currentness "
+            "FROM execution_validation_command_invocations inv LEFT JOIN execution_validation_command_terminals term "
+            "ON term.run_id=inv.run_id AND term.command_id=inv.command_id WHERE inv.run_id=? ORDER BY inv.started_at",
+            (run_id,),
+        ).fetchall()
     except sqlite3.OperationalError:
         return None, None
     lineage_projection = None if lineage is None else {
@@ -161,7 +168,7 @@ def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tupl
         return lineage_projection, None
     current: dict[str, sqlite3.Row] = {}
     conflicts: set[str] = set()
-    for row in controls:
+    for row in (*controls, *commands):
         validation_id = str(row[0])
         existing = current.get(validation_id)
         if existing is None or int(row[6]) > int(existing[6]):

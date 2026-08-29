@@ -14,8 +14,8 @@ import json
 import os
 from pathlib import Path
 import re
-import sys
 import tempfile
+import subprocess  # nosec B404 - fixed local npm bootstrap for an isolated worktree
 
 from .dashboard_configuration import get as dashboard_configuration
 from .codex_capacity import read_remaining_percent
@@ -194,6 +194,20 @@ def _command(root: Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
+def _prepare_worktree_tooling(worktree: Path) -> None:
+    """Install locked Playwright tooling before an EP-created worktree is used.
+
+    A linked worktree does not share ``node_modules`` with its source checkout.
+    When this repository declares the browser suite, ``npm ci`` is therefore a
+    required local preparation step, not a best-effort validation fallback.
+    """
+    if not (worktree / "package-lock.json").is_file() or not (worktree / "playwright.config.mjs").is_file():
+        return
+    completed = subprocess.run(("npm", "ci"), cwd=worktree, check=False, capture_output=True, text=True)
+    if completed.returncode or not (worktree / "node_modules" / "@playwright" / "test").is_dir():
+        raise PullRequestCheckRepairError("pr_check_repair_worktree_tooling_unavailable")
+
+
 def run(root: Path, number: int, sha: str) -> None:
     """Execute the already-admitted repair in an isolated, disposable worktree."""
     state = _read_state(root, number, sha)
@@ -216,6 +230,7 @@ def run(root: Path, number: int, sha: str) -> None:
     try:
         _command(root, "fetch", "origin", branch)
         _command(root, "worktree", "add", "--detach", str(worktree), sha)
+        _prepare_worktree_tooling(worktree)
         prompt = (
             f"Repair only the failed GitHub checks for pull request #{number}.\n"
             f"Current head SHA: {sha}. Failed checks: {', '.join(str(item) for item in state['failed_checks'])}.\n"

@@ -82,7 +82,8 @@ from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
@@ -845,9 +846,23 @@ class EngineeringRunner:
             elif event == "completed":
                 if command_id in validation_commands:
                     try:
+                        validation_id, _ = validation_commands[command_id]
+                        evidence_ref = "command_terminal"
+                        if validation_id == "dashboard_browser":
+                            evidence = load_dashboard_evidence(self.root, state.run_id)
+                            evidence_path = dashboard_evidence_path(self.root, state.run_id)
+                            if evidence is not None and evidence_path.is_file():
+                                artifact_id = f"dashboard-browser:{state.run_id}:{command_id}"
+                                record_artifact(
+                                    self.root, evidence_path, artifact_id=artifact_id,
+                                    artifact_type="DASHBOARD_BROWSER_SHARD_RESULTS", content_type="application/json",
+                                    created_at=datetime.now(timezone.utc).isoformat(), run_id=state.run_id,
+                                )
+                                evidence_ref = f"artifact:{artifact_id}"
                         record_validation_command_terminal(
                             self.root, run_id=state.run_id, command_id=command_id,
                             completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
+                            evidence_ref=evidence_ref,
                         )
                     except EngineeringStorageError:
                         LOGGER.warning("Validation command terminal evidence is unavailable for run %s", state.run_id)
@@ -867,6 +882,8 @@ class EngineeringRunner:
             set_handoff_deadline(
                 lambda: time.monotonic() - deadline_started >= REPAIR_AGENT_MAX_SECONDS
             )
+        prior_validation_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
+        os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
@@ -878,6 +895,10 @@ class EngineeringRunner:
                 complete_phase(self.root, parent, outcome="FAILED")
             raise
         finally:
+            if prior_validation_run_id is None:
+                os.environ.pop("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID", None)
+            else:
+                os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = prior_validation_run_id
             if callable(command_callback):
                 command_callback(None)
             if repair and callable(set_handoff_deadline):
