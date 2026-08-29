@@ -1098,6 +1098,14 @@ def generate_terminal_report(
         objective = Path(state.prompt_path).read_text(encoding="utf-8").strip()
     except OSError:
         pass
+    # The submitted prompt is immutable input, not execution evidence.  Keep
+    # using it internally for traceability, but never splice its arbitrary
+    # multi-line content into the report header where requested outcomes can
+    # visually resemble the terminal result.
+    objective_header = (
+        "Submitted runtime prompt retained at the supplied prompt path; "
+        "non-authoritative input."
+    )
     producer, submission = _persisted_producer_submission(root, state, objective)
     raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
     handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
@@ -1276,7 +1284,8 @@ def generate_terminal_report(
             f"- Historical Liveness Event: `{'STALE detected and reconciled' if terminal_reconciled and liveness.get('state') == 'STALE' else liveness.get('state', 'UNAVAILABLE')}`",
             f"- Recovery Required: `{'NO' if terminal_reconciled else 'YES' if liveness.get('reconciliation_outcome') == 'RECOVERABLE' else 'NO'}`",
             f"- Recovery action: {recovery}",
-            f"- Objective: {objective}",
+            f"- Objective: {objective_header}",
+            f"- Submitted Prompt Characters: `{len(objective)}`",
             "",
             "## Producer",
             "Forge owns Producer Contract semantics. Engineering Platform consumes this metadata for auditability only.",

@@ -286,10 +286,16 @@ def _schema_v7(connection: sqlite3.Connection) -> None:
             match = re.search(rf"^- {re.escape(label)}: `([^`\n]{{1,120}})`$", text, re.MULTILINE)
             value = match.group(1).strip() if match else ""
             values[key] = value if value and value.casefold() not in {"not reported", "unavailable"} else None
-        objective = re.search(
-            r"^- Objective: (.*?)(?=\n\n## Execution Target Identity)", text, re.MULTILINE | re.DOTALL
-        )
-        prompt_characters = len(objective.group(1)) if objective else None
+        prompt_size = re.search(r"^- Submitted Prompt Characters: `(\d+)`$", text, re.MULTILINE)
+        if prompt_size is not None:
+            prompt_characters = int(prompt_size.group(1))
+        else:
+            # Compatibility for immutable reports written before submitted
+            # prompt text was removed from the report header.
+            objective = re.search(
+                r"^- Objective: (.*?)(?=\n\n## )", text, re.MULTILINE | re.DOTALL
+            )
+            prompt_characters = len(objective.group(1)) if objective else None
         connection.execute(
             """
             UPDATE execution_runs SET prompt_characters=?, runtime_provider=?, runtime_model=?,

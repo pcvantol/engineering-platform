@@ -25,8 +25,23 @@ from tools.engineering.workspace_inbox_api import build_human_envelope
 from tools.engineering.telemetry import wait_for_pending_telemetry
 
 
+_INHERITED_RUNNER_ENVIRONMENT = (
+    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA",
+    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT",
+    "DJCONNECT_ENGINEERING_VALIDATION_RUN_ID",
+    inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT,
+    inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT,
+)
+
+
 class InboxWatcherTest(unittest.TestCase):
     def setUp(self) -> None:
+        # A real detached watcher passes these values to its child process.
+        # Each test instead owns a new repository and explicitly creates any
+        # lifecycle identity it needs.
+        self.inherited_runner_environment = {
+            key: os.environ.pop(key, None) for key in _INHERITED_RUNNER_ENVIRONMENT
+        }
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "cloud"
         self.repo = Path(self.temp.name) / "repo"
@@ -89,6 +104,11 @@ class InboxWatcherTest(unittest.TestCase):
         self.runtime_environment.stop()
         wait_for_pending_telemetry()
         self.temp.cleanup()
+        for key, value in self.inherited_runner_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_status_reconciliation_starts_a_reconciliation_transaction(self) -> None:
         prompt = self.repo / "reconciliation.md"

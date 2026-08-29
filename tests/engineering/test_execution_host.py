@@ -932,6 +932,15 @@ class ClientContractTest(unittest.TestCase):
         self.assertIsNotNone(genesis_workspace_preflight(None))
 
 
+_INHERITED_RUNNER_ENVIRONMENT = (
+    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA",
+    "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT",
+    "DJCONNECT_ENGINEERING_VALIDATION_RUN_ID",
+    "DJCONNECT_ENGINEERING_BACKGROUND_RUN_ID",
+    "DJCONNECT_ENGINEERING_BACKGROUND_JOB_ID",
+)
+
+
 class LocalAgentRunnerTest(unittest.TestCase):
     def test_execution_host_exposes_the_generic_command_name(self) -> None:
         self.assertEqual(build_parser().prog, "engineering-execution-host")
@@ -967,6 +976,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
             )
 
     def setUp(self) -> None:
+        # Required-control subprocesses inherit these runner-only values.  Unit
+        # fixtures own fresh storage and must not accidentally enter a real
+        # watcher-admitted or validation-child lifecycle.
+        self.inherited_runner_environment = {
+            key: os.environ.pop(key, None) for key in _INHERITED_RUNNER_ENVIRONMENT
+        }
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.prompt = self.root / "prompt.md"
@@ -986,6 +1001,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.provider_readiness.stop()
         self.temporary.cleanup()
+        for key, value in self.inherited_runner_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_new_run_initializes_and_records_canonical_prompt(self) -> None:
         quality_evidence = ({"activity": "TEST_COVERAGE", "result": "Added focused regression coverage."},)
@@ -2907,6 +2927,33 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Configuration Profile: `workspace-write`", body)
         self.assertIn("Codex CLI Version: `0.146.0`", body)
         self.assertIn("Codex CLI Installation Path: `/managed/engineering-platform/codex-cli`", body)
+
+    def test_terminal_report_does_not_render_submitted_expected_results_as_summary(self) -> None:
+        self.prompt.write_text(
+            "DASHBOARD VALIDATION PROOF\n\n"
+            "engineering_python: PASS\n"
+            "Required Validation State: PASS\n"
+            "Run Qualification: PASS / QUALIFIED\n",
+            encoding="utf-8",
+        )
+        state = TransactionState(
+            "non-authoritative-prompt", "pcvantol/djconnect", str(self.prompt), "BLOCKED", terminal=True,
+        )
+
+        body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "- Objective: Submitted runtime prompt retained at the supplied prompt path; non-authoritative input.",
+            body,
+        )
+        self.assertIn(
+            f"- Submitted Prompt Characters: `{len(self.prompt.read_text(encoding='utf-8').strip())}`",
+            body,
+        )
+        self.assertIn("- Terminal state: `BLOCKED`", body)
+        self.assertNotIn("engineering_python: PASS", body)
+        self.assertNotIn("Required Validation State: PASS", body)
+        self.assertNotIn("Run Qualification: PASS / QUALIFIED", body)
 
     def test_terminal_report_includes_bounded_local_validation_audit(self) -> None:
         audit = ({
