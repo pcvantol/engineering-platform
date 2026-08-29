@@ -41,7 +41,7 @@ effect.
 ## Versioned schema
 
 The storage contract is independently versioned as **Engineering Storage
-schema `34`**. The required version is declared as `storage_schema` in
+schema `35`**. The required version is declared as `storage_schema` in
 `tools/engineering/ENGINEERING_PLATFORM_VERSION.json` and is validated by the
 runner compatibility contract.
 
@@ -91,7 +91,7 @@ store rather than migrating it. Thus a managed prompt cannot bypass this
 boundary merely by importing newer source without its admission environment.
 
 Schema `33` adds immutable qualification lineage and resolved validation
-policy. Schema `34` adds redacted advisory AI-chat transcripts. They are keyed to a
+policy. Schema `34` adds redacted advisory AI-chat transcripts. Schema `35` adds immutable command-invocation and terminal-evidence records for validation controls. They are keyed to a
 terminal Run ID, retain at most 20 messages for 90 days and are excluded from
 generic details, Markdown and JSON exports. Messages are insert-only; expired
 messages are pruned before a new message is retained and a per-run clear is

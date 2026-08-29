@@ -90,7 +90,7 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
 from .execution_reporting import ReportingCoordinator
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .execution_timing import ActivePhase
@@ -797,11 +797,25 @@ class EngineeringRunner:
             attempt=provider_attempt, metadata=provider_metadata,
         )
         validation_spans: dict[str, ActivePhase | None] = {}
+        validation_commands: dict[str, tuple[str, str]] = {}
 
-        def command_boundary(event: str, command_id: str, command: str) -> None:
+        def command_boundary(event: str, command_id: str, command: str, exit_code: int | None = None) -> None:
             if event == "started":
                 kind = self._validation_kind(command)
                 if kind is not None:
+                    validation_id = "dashboard_browser" if kind == "browser_e2e" else f"validation_{kind}"
+                    try:
+                        profile = load_validation_context(self.root, state.run_id)
+                        required = validation_id in set(profile["required_validation_controls"]) if profile else False
+                        started_at = datetime.now(timezone.utc).isoformat()
+                        record_validation_command_invocation(
+                            self.root, run_id=state.run_id, validation_id=validation_id, command_id=command_id,
+                            category="agent", control_identity=command[:160], required_for_profile=required,
+                            started_at=started_at, currentness=state.repair_iterations,
+                        )
+                        validation_commands[command_id] = (validation_id, started_at)
+                    except EngineeringStorageError:
+                        LOGGER.warning("Validation command start evidence is unavailable for run %s", state.run_id)
                     validation_spans[command_id] = start_phase(
                         self.root,
                         state.run_id,
@@ -813,11 +827,19 @@ class EngineeringRunner:
                         # the agent returns explicit validation evidence.
                         metadata={
                             "validation_kind": kind,
-                            "validation_id": "dashboard_browser" if kind == "browser_e2e" else f"validation_{kind}",
+                            "validation_id": validation_id,
                             "command_id": command_id,
                         },
                     )
             elif event == "completed":
+                if command_id in validation_commands:
+                    try:
+                        record_validation_command_terminal(
+                            self.root, run_id=state.run_id, command_id=command_id,
+                            completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
+                        )
+                    except EngineeringStorageError:
+                        LOGGER.warning("Validation command terminal evidence is unavailable for run %s", state.run_id)
                 active = validation_spans.pop(command_id, None)
                 complete_phase(self.root, active)
 

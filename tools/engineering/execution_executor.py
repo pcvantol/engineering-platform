@@ -79,7 +79,7 @@ def project_codex_live_action_name(event: object) -> str | None:
     return title
 
 
-def project_codex_command_event(event: object) -> tuple[str, str, str] | None:
+def project_codex_command_event(event: object) -> tuple[str, str, str, int | None] | None:
     """Expose direct command boundaries without retaining command content.
 
     Codex JSONL identifies command-execution items by a stable item id.  The
@@ -96,11 +96,12 @@ def project_codex_command_event(event: object) -> tuple[str, str, str] | None:
     if not isinstance(item_id, str) or not item_id:
         return None
     if event["type"] == "item.completed":
-        return ("completed", item_id, "")
+        exit_code = item.get("exit_code")
+        return ("completed", item_id, "", exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None)
     command = item.get("command")
     if not isinstance(command, str):
         return None
-    return ("started", item_id, command)
+    return ("started", item_id, command, None)
 
 
 def redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
@@ -178,7 +179,7 @@ class CodexCliClient:
         self._transient_action_callback: Callable[[str], None] | None = None
         self._process_callback: Callable[[dict[str, int] | None], None] | None = None
         self._runtime_metadata_callback: Callable[[dict[str, str]], None] | None = None
-        self._command_callback: Callable[[str, str, str], None] | None = None
+        self._command_callback: Callable[..., None] | None = None
         self._workspace_progress_callback: Callable[[dict[str, int]], None] | None = None
         self._handoff_deadline_callback: Callable[[], bool] | None = None
 
@@ -208,7 +209,7 @@ class CodexCliClient:
         """Publish only explicitly reported runtime settings during a live run."""
         self._runtime_metadata_callback = callback
 
-    def set_command_callback(self, callback: Callable[[str, str, str], None] | None) -> None:
+    def set_command_callback(self, callback: Callable[..., None] | None) -> None:
         """Set a direct JSONL command-boundary sink for execution telemetry."""
         self._command_callback = callback
 

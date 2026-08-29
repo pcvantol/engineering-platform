@@ -1079,6 +1079,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
         })
         self.assertEqual(validation["outcome"], "COMPLETE")
 
+    def test_browser_command_terminal_evidence_preserves_invocation_on_pass_and_failure(self) -> None:
+        class BrowserCommandAgent(CommandTimingFakeAgent):
+            def __init__(self, exit_code: int | None) -> None:
+                super().__init__(AgentResult("COMPLETE"))
+                self.exit_code = exit_code
+            def invoke(self, root: Path, prompt: str) -> AgentResult:
+                if callable(self.command_callback):
+                    self.command_callback("started", "dashboard-command", "npm run test:engineering-dashboard")
+                    self.command_callback("completed", "dashboard-command", "", self.exit_code)
+                return FakeAgent.invoke(self, root, prompt)
+
+        for label, exit_code, expected in (("pass", 0, "PASS"), ("fail", 23, "FAIL"), ("unavailable", None, "UNAVAILABLE")):
+            with self.subTest(label=label):
+                run_id = f"dashboard-terminal-{label}"
+                record_validation_profile(self.root, run_id=run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0", required_validation_controls=("dashboard_browser",), recorded_at="2026-08-29T00:00:00+00:00")
+                runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), BrowserCommandAgent(exit_code), lambda _: None)
+                runner._invoke_agent_with_timing(TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT"), "objective")
+                control = load_validation_context(self.root, run_id)["controls"]["dashboard_browser"]
+                self.assertEqual(control["execution_status"], "EXECUTED")
+                self.assertEqual(control["result"], expected)
+                self.assertEqual(control["exit_code"], exit_code)
+                self.assertEqual(control["control_identity"], "npm run test:engineering-dashboard")
+
     def test_browser_validation_result_uses_the_canonical_dashboard_control(self) -> None:
         state = TransactionState("dashboard-control-run", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION")
         record_validation_profile(

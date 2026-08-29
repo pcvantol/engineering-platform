@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 34
+ENGINEERING_STORAGE_SCHEMA_VERSION = 35
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -937,6 +937,31 @@ def _schema_v34(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v35(connection: sqlite3.Connection) -> None:
+    """Persist immutable command start and terminal evidence as one lineage."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_validation_command_invocations ("
+        "run_id TEXT NOT NULL,validation_id TEXT NOT NULL,command_id TEXT NOT NULL,"
+        "category TEXT NOT NULL,control_identity TEXT NOT NULL,required_for_profile INTEGER NOT NULL,"
+        "started_at TEXT NOT NULL,currentness INTEGER NOT NULL,evidence_ref TEXT NOT NULL,"
+        "PRIMARY KEY(run_id,command_id))"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_validation_command_terminals ("
+        "run_id TEXT NOT NULL,command_id TEXT NOT NULL,completed_at TEXT NOT NULL,"
+        "duration_ms INTEGER,exit_code INTEGER,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,"
+        "PRIMARY KEY(run_id,command_id),"
+        "FOREIGN KEY(run_id,command_id) REFERENCES execution_validation_command_invocations(run_id,command_id))"
+    )
+    for table in ("execution_validation_command_invocations", "execution_validation_command_terminals"):
+        for operation in ("UPDATE", "DELETE"):
+            connection.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} "
+                f"BEFORE {operation} ON {table} BEGIN "
+                f"SELECT RAISE(ABORT, '{table} evidence is immutable.'); END"
+            )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1018,6 +1043,7 @@ MIGRATIONS: dict[int, Migration] = {
     32: _schema_v32,
     33: _schema_v33,
     34: _schema_v34,
+    35: _schema_v35,
 }
 
 
@@ -1542,6 +1568,56 @@ def record_validation_control_result(
         connection.close()
 
 
+def record_validation_command_invocation(
+    root: Path, *, run_id: str, validation_id: str, command_id: str, category: str,
+    control_identity: str, required_for_profile: bool, started_at: str, currentness: int,
+) -> None:
+    """Record authoritative command start before subprocess completion is known."""
+    values = (run_id, validation_id, command_id, category, control_identity, started_at)
+    if not all(isinstance(value, str) and value for value in values) or currentness < 0:
+        raise EngineeringStorageError("Validation command invocation is invalid.")
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_validation_command_invocations("
+            "run_id,validation_id,command_id,category,control_identity,required_for_profile,started_at,currentness,evidence_ref) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (run_id, validation_id, command_id, category, control_identity, int(required_for_profile), started_at, currentness, "command_invocation"),
+        )
+    finally:
+        connection.close()
+
+
+def record_validation_command_terminal(
+    root: Path, *, run_id: str, command_id: str, completed_at: str, exit_code: int | None,
+) -> None:
+    """Close a previously recorded command with its observed terminal outcome."""
+    if not all(isinstance(value, str) and value for value in (run_id, command_id, completed_at)):
+        raise EngineeringStorageError("Validation command terminal evidence is invalid.")
+    if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
+        raise EngineeringStorageError("Validation command exit code is invalid.")
+    result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
+    connection = open_storage(root)
+    try:
+        started = connection.execute(
+            "SELECT started_at FROM execution_validation_command_invocations WHERE run_id=? AND command_id=?",
+            (run_id, command_id),
+        ).fetchone()
+        duration_ms = None
+        if started and isinstance(started[0], str):
+            try:
+                duration_ms = max(0, round((datetime.fromisoformat(completed_at) - datetime.fromisoformat(started[0])).total_seconds() * 1000))
+            except ValueError:
+                pass
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_validation_command_terminals("
+            "run_id,command_id,completed_at,duration_ms,exit_code,result,evidence_ref) VALUES(?,?,?,?,?,?,?)",
+            (run_id, command_id, completed_at, duration_ms, exit_code, result, "command_terminal"),
+        )
+    finally:
+        connection.close()
+
+
 def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None:
     """Return the resolved profile and current control evidence without inference."""
     connection = open_storage(root)
@@ -1553,6 +1629,14 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
         rows = connection.execute(
             "SELECT validation_id,category,control_identity,required_for_profile,execution_status,result,evidence_ref,observed_at,currentness "
             "FROM execution_validation_control_results WHERE run_id=? ORDER BY id", (run_id,)
+        ).fetchall()
+        command_rows = connection.execute(
+            "SELECT inv.validation_id,inv.category,inv.control_identity,inv.required_for_profile,"
+            "inv.started_at,inv.currentness,term.completed_at,term.duration_ms,term.exit_code,term.result "
+            "FROM execution_validation_command_invocations inv "
+            "LEFT JOIN execution_validation_command_terminals term "
+            "ON term.run_id=inv.run_id AND term.command_id=inv.command_id "
+            "WHERE inv.run_id=? ORDER BY inv.started_at", (run_id,)
         ).fetchall()
     finally:
         connection.close()
@@ -1574,6 +1658,15 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
                 "evidence_ref": evidence_ref, "observed_at": observed_at, "currentness": currentness}
         elif int(currentness) == int(current["currentness"]) and result != current["result"]:
             controls[validation_id] = {**current, "result": "UNRESOLVED", "conflict": True}
+    for row in command_rows:
+        validation_id, category, identity, is_required, started_at, currentness, completed_at, duration_ms, exit_code, result = row
+        controls[validation_id] = {
+            "validation_id": validation_id, "category": category, "control_identity": identity,
+            "required_for_profile": bool(is_required), "execution_status": "EXECUTED",
+            "result": result or "UNAVAILABLE", "evidence_ref": "command_terminal" if completed_at else "command_invocation",
+            "observed_at": completed_at or started_at, "currentness": currentness,
+            "started_at": started_at, "ended_at": completed_at, "duration_ms": duration_ms, "exit_code": exit_code,
+        }
     return {"selected_validation_tier": profile[0], "validation_profile_version": profile[1],
             "required_validation_controls": tuple(required), "recorded_at": profile[3], "controls": controls}
 
