@@ -544,6 +544,35 @@ def status(repo: Path, state: str, **details: object) -> None:
     }
     context.update({key: value for key, value in details.items() if key in retained and value is not None})
     context.update({key: None for key in retained if key in details and details[key] is None})
+    # A terminal BLOCKED/FAILED execution remains a durable queue gate until
+    # an operator explicitly dismisses it or submits its controlled retry.
+    # Do not present that state as idle merely because the Inbox happens to be
+    # empty during this watcher cycle: the next prompt would still be held.
+    if (
+        state == "WATCHER_IDLE"
+        and is_active_blocking_predecessor(
+            repo, context.get("last_executed_run"), context.get("last_executed_phase"),
+        )
+    ):
+        predecessor_run = str(context["last_executed_run"])
+        predecessor_phase = str(context["last_executed_phase"])
+        state = "WAITING_FOR_PREDECESSOR"
+        context.update({
+            "blocking_predecessor_run": predecessor_run,
+            "blocking_predecessor_phase": predecessor_phase,
+            "blocking_predecessor_filename": context.get("last_executed_filename"),
+            "blocking_predecessor_title": context.get("last_executed_title"),
+            "predecessor_recovery_action": _predecessor_recovery_action(predecessor_run),
+        })
+        details = {
+            **details,
+            "runner_phase": "WAITING_FOR_PREDECESSOR",
+            "current_action": "Wachtrij gepauzeerd tot de voorafgaande prompt is hersteld.",
+            "diagnostic": (
+                f"Voorafgaande prompt {predecessor_run} eindigde als "
+                f"{predecessor_phase}; nieuwe Inbox-opdrachten worden niet geclaimd."
+            ),
+        }
     # ``blocking_predecessor_*`` is a derived operational projection.  Never
     # retain stale fields after canonical dismissal evidence makes the run
     # historical-only; this preserves its BLOCKED history and report.

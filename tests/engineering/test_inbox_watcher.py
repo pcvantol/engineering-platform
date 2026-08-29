@@ -1598,6 +1598,28 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNone(snapshot["blocking_predecessor_run"])
         self.assertIsNone(snapshot["predecessor_recovery_action"])
 
+    def test_idle_status_surfaces_an_undismissed_terminal_queue_gate(self) -> None:
+        run_id = "inbox-terminal-gate"
+        status_directory = self.repo / ".engineering" / "status"
+        status_directory.mkdir(parents=True)
+        (status_directory / "status.json").write_text(
+            json.dumps({
+                "last_executed_run": run_id,
+                "last_executed_phase": "BLOCKED",
+                "last_executed_filename": "blocked.md",
+                "last_executed_title": "Blocked prompt",
+            }),
+            encoding="utf-8",
+        )
+
+        inbox_watcher.status(self.repo, "WATCHER_IDLE", queued_jobs=0, queue_items=[])
+
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "WAITING_FOR_PREDECESSOR")
+        self.assertEqual(snapshot["current_phase"], "WAITING_FOR_PREDECESSOR")
+        self.assertEqual(snapshot["blocking_predecessor_run"], run_id)
+        self.assertEqual(snapshot["queue_depth"], 0)
+
     def test_explicit_retry_of_blocked_predecessor_precedes_later_prompts(self) -> None:
         later = self.inbox / "later.txt"
         later.write_text("# Later prompt", encoding="utf-8")

@@ -167,6 +167,26 @@ class DashboardStateTest(unittest.TestCase):
 
         self.assertEqual(payload, watcher)
 
+    def test_status_surfaces_an_undismissed_terminal_queue_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / ".engineering" / "status"
+            status.mkdir(parents=True)
+            watcher = {
+                "watcher_state": "WATCHER_IDLE",
+                "last_executed_run": "inbox-terminal-gate",
+                "last_executed_phase": "BLOCKED",
+                "last_executed_filename": "blocked.md",
+                "last_executed_title": "Blocked prompt",
+            }
+            (status / "status.json").write_text(json.dumps(watcher), encoding="utf-8")
+
+            payload = json.loads(dashboard_state.status(root))
+
+        self.assertEqual(payload["watcher_state"], "WAITING_FOR_PREDECESSOR")
+        self.assertEqual(payload["blocking_predecessor_run"], "inbox-terminal-gate")
+        self.assertEqual(payload["current_phase"], "WAITING_FOR_PREDECESSOR")
+
     def test_status_includes_blocking_predecessor_lifecycle_while_queue_waits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

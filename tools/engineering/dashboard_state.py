@@ -317,6 +317,32 @@ def status(root: Path) -> bytes:
                 "blocking_predecessor_title": None,
                 "predecessor_recovery_action": None,
             }
+        # A watcher publication from before predecessor projection was
+        # introduced can still say WATCHER_IDLE while its undismissed terminal
+        # execution would hold every later Inbox submission.  The dashboard is
+        # read-only, so normalize that misleading legacy projection here until
+        # the watcher publishes the same state on its next cycle.
+        if (
+            watcher.get("watcher_state") == "WATCHER_IDLE"
+            and is_active_blocking_predecessor(
+                root, watcher.get("last_executed_run"), watcher.get("last_executed_phase"),
+            )
+        ):
+            predecessor_run = watcher["last_executed_run"]
+            watcher = {
+                **watcher,
+                "watcher_state": "WAITING_FOR_PREDECESSOR",
+                "current_phase": "WAITING_FOR_PREDECESSOR",
+                "current_action": "Wachtrij gepauzeerd tot de voorafgaande prompt is hersteld.",
+                "blocking_predecessor_run": predecessor_run,
+                "blocking_predecessor_phase": watcher.get("last_executed_phase"),
+                "blocking_predecessor_filename": watcher.get("last_executed_filename"),
+                "blocking_predecessor_title": watcher.get("last_executed_title"),
+                "predecessor_recovery_action": (
+                    "Herstel de geblokkeerde prompt of dien die bewust opnieuw in met een eigen regel "
+                    f"`Retry-Of: {predecessor_run}`. De wachtrij blijft gepauzeerd totdat deze herindiening voltooid is."
+                ),
+            }
     except EngineeringStorageError:
         watcher = {}
         live = None
