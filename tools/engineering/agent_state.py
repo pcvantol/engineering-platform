@@ -113,6 +113,7 @@ class TransactionState:
     owner_authorized: bool = False
     transaction_kind: str = "IMPLEMENTATION"
     execution_mode: str = "MANAGED"
+    action_intent: str = "MUTATING_DELIVERY"
     genesis_repository_path: str | None = None
     genesis_commit_sha: str | None = None
     implementation_branch: str | None = None
@@ -152,6 +153,7 @@ class TransactionState:
         defaults = {
             "diagnostic": None, "owner_authorized": False, "transaction_kind": "IMPLEMENTATION",
             "execution_mode": "MANAGED", "genesis_repository_path": None, "genesis_commit_sha": None,
+            "action_intent": "MUTATING_DELIVERY",
             "implementation_branch": None, "implementation_pull_request": None,
             "implementation_head_sha": None, "implementation_merge_commit": None,
             "finalization_branch": None, "finalization_pull_request": None,
@@ -208,7 +210,7 @@ class TransactionState:
             raise StateError("checkpoint last_verified_sha is invalid")
         if state.diagnostic is not None and (not isinstance(state.diagnostic, str) or not state.diagnostic or state.diagnostic != redact_diagnostic(state.diagnostic)):
             raise StateError("checkpoint diagnostic is invalid or unsafe")
-        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"}:
+        if not isinstance(state.owner_authorized, bool) or state.transaction_kind not in {"IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"} or state.execution_mode not in {"MANAGED", "GENESIS"} or state.action_intent not in {"MUTATING_DELIVERY", "VALIDATION_ONLY"}:
             raise StateError("checkpoint authorization or transaction kind is invalid")
         if state.admission_decision not in {"NOT_STARTED", "PASS", "FAIL", "BLOCKED", "UNAVAILABLE"}:
             raise StateError("checkpoint admission decision is invalid")
@@ -358,7 +360,6 @@ class StateStore:
         return self.directory.parent.parent
 
     def load(self, run_id: str) -> TransactionState:
-        path = self.path_for(run_id)
         try:
             connection = open_storage(self.root, create=False)
             try:

@@ -305,6 +305,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
     implementation = checks.get("IMPLEMENTATION", {})
     finalization = checks.get("FINALIZATION", {})
     objective = _safe_objective(submission[3] if submission else {})
+    validation_only = checkpoint.get("action_intent") == "VALIDATION_ONLY"
     context: dict[str, object] = {
         "contract_name": "run_context", "contract_version": CONTRACT_VERSION, "generated_at": generated_at,
         "run_id": run_id, "evidence_version": snapshot, "projection_authority": PROJECTION_AUTHORITY,
@@ -324,11 +325,12 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
                     "summary_code": "WORKSPACE_OCCUPIED" if workspace["workspace_occupied"] is True else ("RUN_TERMINAL" if phase in {"BLOCKED", "FAILED"} else UNAVAILABLE),
                     "evidence_references": evidence, "blocking_run_id": workspace["active_owner_run_id"] if workspace["workspace_occupied"] is True else UNAVAILABLE, "blocking_pr": UNAVAILABLE,
                     "detected_at": _value(observed_at), "verified_at": _value(observed_at), "recoverability": UNAVAILABLE},
-        "delivery": {"implementation_pr": _value(checkpoint.get("implementation_pull_request") or checkpoint.get("pull_request") or implementation.get("pr_number")),
-                     "implementation_pr_current_state": _value(implementation.get("pr_state")), "implementation_merge_state": _value(implementation.get("merge_state")),
+        "delivery": {"action_intent": _value(checkpoint.get("action_intent")),
+                     "implementation_pr": "NOT_REQUIRED" if validation_only else _value(checkpoint.get("implementation_pull_request") or checkpoint.get("pull_request") or implementation.get("pr_number")),
+                     "implementation_pr_current_state": "NOT_REQUIRED" if validation_only else _value(implementation.get("pr_state")), "implementation_merge_state": _value(implementation.get("merge_state")),
                      "implementation_merge_commit": _value(checkpoint.get("implementation_merge_commit") or implementation.get("merge_commit")),
                      "implementation_required_checks_state": _value(implementation.get("required_checks_state")), "implementation_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_OPERATOR_MERGE" else UNAVAILABLE,
-                     "finalization_pr": _value(checkpoint.get("finalization_pull_request") or finalization.get("pr_number")), "finalization_pr_current_state": _value(finalization.get("pr_state")),
+                     "finalization_pr": "NOT_REQUIRED" if validation_only else _value(checkpoint.get("finalization_pull_request") or finalization.get("pr_number")), "finalization_pr_current_state": "NOT_REQUIRED" if validation_only else _value(finalization.get("pr_state")),
                      "finalization_merge_state": _value(finalization.get("merge_state")), "finalization_merge_commit": _value(checkpoint.get("finalization_merge_commit") or finalization.get("merge_commit")),
                      "finalization_required_checks_state": _value(finalization.get("required_checks_state")), "finalization_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_FINALIZATION_MERGE" else UNAVAILABLE,
                      "run_delivery_commit": _value(checkpoint.get("implementation_head_sha") or checkpoint.get("last_verified_sha")), "current_repository_head": _value(checkpoint.get("last_verified_sha")), "delivery_commit_head_relationship": UNAVAILABLE},

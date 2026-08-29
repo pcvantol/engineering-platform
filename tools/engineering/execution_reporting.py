@@ -971,7 +971,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
     snapshot = managed_autonomy_snapshot(
         root, run_id=state.run_id, execution_outcome=state.phase,
         implementation_pr=state.implementation_pull_request, finalization_pr=state.finalization_pull_request,
-        repository_state="MERGED_RECONCILED" if state.phase == "COMPLETE" and state.finalization_merge_commit else "UNAVAILABLE",
+        repository_state="MERGED_RECONCILED" if state.phase == "COMPLETE" and (state.finalization_merge_commit or state.action_intent == "VALIDATION_ONLY") else "UNAVAILABLE",
         workspace_state="WORKSPACE_READY" if state.phase == "COMPLETE" and bundle.worktree_state == "clean" else "UNAVAILABLE",
         main_origin_sync="YES" if bundle.target_branch == "main" else "UNAVAILABLE",
         worktree_state=bundle.worktree_state.upper(), active_blocker="NONE" if state.phase == "COMPLETE" else "UNAVAILABLE",
@@ -983,13 +983,15 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         submission_id=str(submission["submission_id"]) if submission else None,
         lineage_available=lineage is not None,
         reviewer_records=reviewer_records,
+        action_intent=state.action_intent,
     )
     def pr_lines(role: str) -> tuple[str, ...]:
         item = snapshot["pr_checks"].get(role, {})
+        not_required = state.action_intent == "VALIDATION_ONLY"
         return (
             f"- PR Role: `{role}`",
-            f"  - PR Number: `{item.get('pr_number') or snapshot[f'{role.lower()}_pr'] or 'UNAVAILABLE'}`",
-            f"  - Current PR State: `{item.get('pr_state', 'UNAVAILABLE')}`",
+            f"  - PR Number: `{item.get('pr_number') or snapshot[f'{role.lower()}_pr'] or ('NOT_REQUIRED' if not_required else 'UNAVAILABLE')}`",
+            f"  - Current PR State: `{item.get('pr_state', 'NOT_REQUIRED' if not_required else 'UNAVAILABLE')}`",
             f"  - Merge State: `{item.get('merge_state', 'UNAVAILABLE')}`",
             f"  - Merge Commit: `{item.get('merge_commit') or 'UNAVAILABLE'}`",
             f"  - Required Checks State: `{item.get('required_checks_state', 'UNAVAILABLE')}`",
@@ -1000,6 +1002,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
     return (
         "## Run Qualification",
         f"- Execution: `{snapshot['terminal_execution_state']}`",
+        f"- Action Intent: `{snapshot['action_intent']}`",
         f"- Run Qualification: `{snapshot['run_qualification']}`",
         "- Platform Qualification is reported separately and cannot upgrade this run.",
         f"- Fresh Submission: `{snapshot['fresh_submission']}`",

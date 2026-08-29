@@ -101,6 +101,30 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["pr_checks"]["IMPLEMENTATION"]["required_checks_state"], "PASS")
         self.assertEqual(snapshot["pr_checks"]["FINALIZATION"]["required_checks_state"], "PASS")
 
+    def test_validation_only_qualifies_without_delivery_prs_when_required_controls_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = "validation-only-proof"
+            record_run_qualification_context(root, run_id=run, submission_id="validation-only-submission", fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at="2026-08-29T00:00:00+00:00")
+            record_validation_profile(root, run_id=run, selected_validation_tier="DASHBOARD", validation_profile_version="1.0", required_validation_controls=("dashboard_browser",), recorded_at="2026-08-29T00:00:00+00:00")
+            record_validation_control_result(root, run_id=run, validation_id="dashboard_browser", category="browser", control_identity="npm run test:engineering-dashboard", required_for_profile=True, execution_status="EXECUTED", result="PASS", evidence_ref="command_terminal", observed_at="2026-08-29T00:01:00+00:00", currentness=1)
+            for action in ("VALIDATION_ONLY", "RECONCILIATION", "CLEANUP"):
+                append_action(root, run_id=run, action=action, authority="AUTONOMOUS_EP_ACTION")
+            snapshot = terminal_snapshot(root, run_id=run, execution_outcome="COMPLETE", implementation_pr=None, finalization_pr=None, repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY", main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE", recovery_required="NO", lineage_available=True, action_intent="VALIDATION_ONLY")
+        self.assertEqual(snapshot["run_qualification"], "QUALIFIED")
+        self.assertEqual(snapshot["required_validation_state"], "PASS")
+        self.assertIsNone(snapshot["implementation_pr"])
+        self.assertIsNone(snapshot["finalization_pr"])
+
+    def test_validation_only_is_not_promoted_when_required_evidence_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record_run_qualification_context(root, run_id="missing-validation-only", submission_id="s", fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at="2026-08-29T00:00:00+00:00")
+            record_validation_profile(root, run_id="missing-validation-only", selected_validation_tier="DASHBOARD", validation_profile_version="1.0", required_validation_controls=("dashboard_browser",), recorded_at="2026-08-29T00:00:00+00:00")
+            snapshot = terminal_snapshot(root, run_id="missing-validation-only", execution_outcome="COMPLETE", implementation_pr=None, finalization_pr=None, repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY", main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE", recovery_required="NO", lineage_available=True, action_intent="VALIDATION_ONLY")
+        self.assertNotEqual(snapshot["run_qualification"], "QUALIFIED")
+        self.assertIn("REQUIRED_VALIDATION_UNRESOLVED", snapshot["qualification_failure_reasons"])
+
     def test_operator_merge_actions_remain_expected_gates_through_reconciliation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -82,7 +82,7 @@ from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
@@ -913,6 +913,11 @@ class EngineeringRunner:
         self, state: TransactionState, implementation: AgentResult
     ) -> tuple[TransactionState, AgentResult]:
         """Run the bounded, mutable local gate before an implementation PR exists."""
+        if state.action_intent == "VALIDATION_ONLY":
+            # This gate is a delivery-only boundary.  A producer-authorized
+            # qualification run may supply validation evidence but must never
+            # be forced to invent a branch, commit, or pull request.
+            return state, implementation
         branch = implementation.branch or state.branch
         # Legacy/resumed checkpoints can already carry their implementation PR.
         # Never rewrite that evidence; new managed prompts are instructed to
@@ -1198,6 +1203,9 @@ Mandatory autonomous refactor and quality-control stage:
                     release_lease(self.root, self.active_lease)
                     self.active_lease = None
         try:
+            # Storage compatibility is verified below before reading the
+            # producer-owned run snapshot.  Keep this preflight parser free
+            # of datastore access.
             context = resolve_execution_context(objective, self.root)
         except RunnerError as error:
             evidence = self.repository.inspect(self.root)
@@ -1210,6 +1218,7 @@ Mandatory autonomous refactor and quality-control stage:
                 execution_mode="GENESIS"
                 if any(line.strip().casefold() == "execution mode: genesis" for line in objective.splitlines())
                 else "MANAGED",
+                action_intent="MUTATING_DELIVERY",
             )
             return self._save_terminal(state, "BLOCKED", "execution_context_resolution", str(error))
         evidence = self.repository.inspect(self.root)
@@ -1235,6 +1244,7 @@ Mandatory autonomous refactor and quality-control stage:
                 owner_authorized=owner_authorized,
                 transaction_kind=transaction_kind,
                 execution_mode=context.execution_mode,
+                action_intent=context.action_intent,
             )
         context = replace(context, run_id=state.run_id)
         passive_pr_wait = state.pull_request is not None and state.phase in {
@@ -1259,10 +1269,33 @@ Mandatory autonomous refactor and quality-control stage:
         if not passive_pr_wait and not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
+        try:
+            persisted_submission = load_submission_for_run(self.root, state.run_id)
+        except EngineeringStorageError:
+            persisted_submission = None
+        producer_context = persisted_submission.get("execution_context") if isinstance(persisted_submission, dict) else None
+        action_intent = producer_context.get("action_intent", "MUTATING_DELIVERY") if isinstance(producer_context, dict) else "MUTATING_DELIVERY"
+        context = resolve_execution_context(objective, self.root, action_intent=action_intent)
+        if state.action_intent != context.action_intent:
+            if state.phase != "INITIALIZE":
+                raise RunnerError("checkpoint action intent conflicts with the producer execution context")
+            state = replace(state, action_intent=context.action_intent)
+        if state.action_intent == "VALIDATION_ONLY" and isinstance(producer_context, dict):
+            profile = producer_context.get("validation_profile")
+            if isinstance(profile, dict):
+                try:
+                    record_validation_profile(
+                        self.root, run_id=state.run_id, selected_validation_tier=str(profile["tier"]),
+                        validation_profile_version=str(profile["version"]),
+                        required_validation_controls=tuple(str(item) for item in profile["required_controls"]),
+                        recorded_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                except (EngineeringStorageError, KeyError, TypeError):
+                    return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence could not be persisted.")
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
         if context.execution_mode == "MANAGED":
-            self._managed_action(state, "IMPLEMENTATION")
+            self._managed_action(state, "IMPLEMENTATION" if state.action_intent == "MUTATING_DELIVERY" else "VALIDATION_ONLY")
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
         self._total_phase = start_or_resume_phase(
@@ -1390,7 +1423,7 @@ Mandatory autonomous refactor and quality-control stage:
         capability_review = start_phase(self.root, state.run_id, "CAPABILITY_REVIEW")
         reviewer_evidence = (
             ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
-            if state.execution_mode == "MANAGED"
+            if state.execution_mode == "MANAGED" and state.action_intent == "MUTATING_DELIVERY"
             else None
         )
         memory = retrieve_engineering_memory(self.root, prompt_path)
@@ -1399,7 +1432,7 @@ Mandatory autonomous refactor and quality-control stage:
             prompt_path,
             state.transaction_kind if state else "IMPLEMENTATION",
             load_engineering_memory(self.root),
-        )
+        ) if state.action_intent == "MUTATING_DELIVERY" else ()
         self.reviewer_runtime = [
             {
                 "reviewer": item.reviewer,
@@ -1457,6 +1490,21 @@ Mandatory autonomous refactor and quality-control stage:
         complete_phase(self.root, capability_review)
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
+        if state.action_intent == "VALIDATION_ONLY":
+            # Required controls are executed by their canonical deterministic
+            # launchers, which persist run-scoped command evidence.  Do not
+            # dispatch an implementation provider merely to manufacture a
+            # delivery artifact for this explicitly non-mutating action.
+            self._managed_action(state, "VALIDATION_EXECUTION")
+            try:
+                validation_context = load_validation_context(self.root, state.run_id)
+            except EngineeringStorageError:
+                validation_context = None
+            required = validation_context.get("required_validation_controls", ()) if validation_context else ()
+            controls = validation_context.get("controls", {}) if validation_context else {}
+            if not required or not all(controls.get(control, {}).get("result") == "PASS" for control in required):
+                return self._save_terminal(state, "BLOCKED", "required_validation_unresolved", "Required validation controls do not have authoritative PASS evidence.")
+            return self._poll(state, AgentResult("COMPLETE"))
         try:
             if hasattr(self.agent, "set_activity_callback"):
                 self.agent.set_activity_callback(
@@ -1524,7 +1572,7 @@ Mandatory autonomous refactor and quality-control stage:
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
-        if state.transaction_kind == "IMPLEMENTATION" and (
+        if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
             result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure
         ):
             if state.owner_authorized:

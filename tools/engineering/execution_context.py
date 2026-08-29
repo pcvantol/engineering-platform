@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import re
 
 from .execution_errors import RunnerError
 from .platform_api import PlatformConfiguration, PlatformConfigurationError
@@ -18,6 +17,7 @@ class ExecutionContext:
     target_repository: Path | None
     lifecycle_policy: str
     selected_preflight: str
+    action_intent: str = "MUTATING_DELIVERY"
     run_id: str | None = None
 
 
@@ -35,11 +35,18 @@ def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
     return tuple(values)
 
 
-def resolve_execution_context(objective: str, host_repository: Path) -> ExecutionContext:
+ACTION_INTENTS = frozenset({"MUTATING_DELIVERY", "VALIDATION_ONLY"})
+
+
+def resolve_execution_context(
+    objective: str, host_repository: Path, *, action_intent: str = "MUTATING_DELIVERY"
+) -> ExecutionContext:
     """Resolve the mode and selected target before lifecycle admission."""
+    if action_intent not in ACTION_INTENTS:
+        raise RunnerError("Execution action intent is invalid.")
     modes = {line.split(":", 1)[1].strip().casefold() for line in objective.splitlines() if line.strip().casefold().startswith("execution mode:")}
     if "genesis" not in modes:
-        return ExecutionContext("MANAGED", host_repository.resolve(), None, "managed", "managed_readiness")
+        return ExecutionContext("MANAGED", host_repository.resolve(), None, "managed", "managed_readiness", action_intent)
     if modes != {"genesis"}:
         raise RunnerError("Execution Mode: Genesis conflicts with another execution mode declaration.")
     targets = _prompt_field_values(objective, "Target repository")
@@ -53,7 +60,7 @@ def resolve_execution_context(objective: str, host_repository: Path) -> Executio
     target = target.resolve()
     if target == host_repository.resolve():
         raise RunnerError("Genesis preflight blocked: Target repository cannot be the Engineering Platform host repository.")
-    return ExecutionContext("GENESIS", host_repository.resolve(), target, "local_only", "genesis_git_workspace")
+    return ExecutionContext("GENESIS", host_repository.resolve(), target, "local_only", "genesis_git_workspace", action_intent)
 
 
 def execution_mode_for(objective: str) -> str:

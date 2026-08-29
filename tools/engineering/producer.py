@@ -122,6 +122,17 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
     if context is not None:
         context = _object(context, "execution_context")
         _required_token(context.get("context_version"), "execution_context.context_version")
+        intent = context.get("action_intent")
+        if intent is not None and intent not in {"MUTATING_DELIVERY", "VALIDATION_ONLY"}:
+            raise ProducerSubmissionError("Producer Submission Envelope execution_context.action_intent is invalid.")
+        profile = context.get("validation_profile")
+        if profile is not None:
+            profile = _object(profile, "execution_context.validation_profile")
+            _required_token(profile.get("tier"), "execution_context.validation_profile.tier")
+            _required_token(profile.get("version"), "execution_context.validation_profile.version")
+            controls = profile.get("required_controls")
+            if not isinstance(controls, list) or not controls or any(_optional_token(item, "execution_context.validation_profile.required_controls") is None for item in controls):
+                raise ProducerSubmissionError("Producer Submission Envelope execution_context.validation_profile.required_controls is invalid.")
     handoff = envelope.get("forge_governance_handoff")
     if handoff is not None:
         try:

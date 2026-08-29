@@ -229,6 +229,7 @@ def terminal_snapshot(
     submission_id: str | None = None,
     lineage_available: bool = False,
     reviewer_records: tuple[dict[str, object], ...] = (),
+    action_intent: str = "MUTATING_DELIVERY",
 ) -> dict[str, object]:
     connection = open_storage(root)
     try:
@@ -283,6 +284,7 @@ def terminal_snapshot(
         "run_id": run_id,
         "terminal_execution_state": execution_outcome,
         "managed_authority_profile": "OPERATOR_OWNED_PR_MERGE",
+        "action_intent": action_intent,
         "fresh_submission": fresh,
         "retry_parent": retry_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
         "resume_parent": resume_parent or ("NONE" if lineage_available else "UNAVAILABLE"),
@@ -332,8 +334,9 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         return "NOT_QUALIFIED", ["TERMINAL_EXECUTION_BLOCKED"]
     if snapshot.get("fresh_submission") != "YES":
         reasons.append("FRESH_SUBMISSION_UNPROVEN")
+    validation_only = snapshot.get("action_intent") == "VALIDATION_ONLY"
     if snapshot.get("terminal_execution_state") != "COMPLETE":
-        reasons.append("IMPLEMENTATION_DELIVERY_UNPROVEN")
+        reasons.append("VALIDATION_EXECUTION_UNPROVEN" if validation_only else "IMPLEMENTATION_DELIVERY_UNPROVEN")
     if snapshot.get("unknown_authority_count", 0):
         reasons.append("EP_ACTION_AUTHORITY_UNPROVEN")
     if snapshot.get("unplanned_manual_intervention_count", 0):
@@ -343,16 +346,17 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         for row in snapshot.get("gates", [])
         if isinstance(row, dict)
     }
-    if gate.get("IMPLEMENTATION_MERGE_APPROVAL") != "SATISFIED":
-        reasons.append("IMPLEMENTATION_MERGE_GATE_UNPROVEN")
-    if gate.get("FINALIZATION_MERGE_APPROVAL") != "SATISFIED":
-        reasons.append("FINALIZATION_MERGE_GATE_UNPROVEN")
+    if not validation_only:
+        if gate.get("IMPLEMENTATION_MERGE_APPROVAL") != "SATISFIED":
+            reasons.append("IMPLEMENTATION_MERGE_GATE_UNPROVEN")
+        if gate.get("FINALIZATION_MERGE_APPROVAL") != "SATISFIED":
+            reasons.append("FINALIZATION_MERGE_GATE_UNPROVEN")
     autonomous = {
         row.get("action")
         for row in snapshot.get("actions", [])
         if isinstance(row, dict) and row.get("authority") == "AUTONOMOUS_EP_ACTION"
     }
-    if (
+    if not validation_only and (
         not {
             "IMPLEMENTATION",
             "POST_IMPLEMENTATION_MERGE",
@@ -369,7 +373,7 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         reasons.append("EVIDENCE_CONFLICT")
     if snapshot.get("pr_check_projection_conflict"):
         reasons.append("EVIDENCE_CONFLICT")
-    for role in ("IMPLEMENTATION", "FINALIZATION"):
+    for role in (() if validation_only else ("IMPLEMENTATION", "FINALIZATION")):
         if snapshot.get(f"{role.lower()}_pr") is not None:
             check = snapshot.get("pr_checks", {}).get(role, {})
             if check.get("required_checks_state") != "PASS":
