@@ -3593,12 +3593,6 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.run_id = "validation-diagnostic-run"
-        timestamp = "2026-08-29T00:00:00+00:00"
-        with open_storage(self.root) as connection:
-            connection.execute(
-                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (self.run_id, "2026-08-29", timestamp, timestamp, timestamp, 0, 0, "BLOCKED", "MANAGED", "test", "pcvantol/djconnect", "test"),
-            )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -3621,6 +3615,12 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.assertLessEqual(payload["retained_output_characters"], MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS)
         self.assertNotIn("private-token", payload["stderr_tail"])
         self.assertIn("AssertionError", payload["stderr_tail"])
+        with open_storage(self.root) as connection:
+            artifact = connection.execute(
+                "SELECT run_id,execution_id FROM execution_artifact_records WHERE artifact_id=?",
+                (validation_failure_artifact_id("command-1"),),
+            ).fetchone()
+        self.assertEqual(artifact, (None, "command-1"))
         record_validation_profile(
             self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
             required_validation_controls=("suite",), recorded_at="2026-08-29T00:00:00+00:00",
@@ -3640,6 +3640,7 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Failure Diagnostic Evidence: `" + reference + "`.", report)
         self.assertIn("tests.engineering.test_retry.TestRetry.test_retry", report)
+        self.assertIn("Authoritative Exit Code: `1`.", report)
 
     def test_failure_diagnostic_extracts_multiple_unittest_identities(self) -> None:
         reference = persist_validation_failure_diagnostic(
@@ -3737,3 +3738,32 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         control = load_validation_context(self.root, self.run_id)["controls"]["suite"]
         self.assertEqual(control["result"], "FAIL")
         self.assertEqual(control["diagnostic_evidence_ref"], reference)
+
+    def test_unbound_historical_diagnostic_is_not_backfilled_into_a_control(self) -> None:
+        command_id = "command-5"
+        persist_validation_failure_diagnostic(
+            self.root, run_id=self.run_id, command_id=command_id, validation_id="suite",
+            control_identity="generic deterministic command", exit_code=1, stdout="", stderr="failed",
+            capture_available=True,
+        )
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "UPDATE execution_artifact_records SET execution_id=NULL WHERE artifact_id=?",
+                (validation_failure_artifact_id(command_id),),
+            )
+        record_validation_profile(
+            self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",
+            required_validation_controls=("suite",), recorded_at="2026-08-29T00:00:00+00:00",
+            control_bindings=({"validation_id": "suite", "required": True, "category": "test", "control_identity": "generic deterministic command", "command": ["generic"]},),
+        )
+        record_validation_command_invocation(
+            self.root, run_id=self.run_id, validation_id="suite", command_id=command_id, category="test",
+            control_identity="generic deterministic command", required_for_profile=True,
+            started_at="2026-08-29T00:00:00+00:00", currentness=0,
+        )
+        record_validation_command_terminal(
+            self.root, run_id=self.run_id, command_id=command_id, completed_at="2026-08-29T00:00:01+00:00", exit_code=1,
+        )
+        control = load_validation_context(self.root, self.run_id)["controls"]["suite"]
+        self.assertEqual(control["result"], "FAIL")
+        self.assertEqual(control["diagnostic_evidence_ref"], "UNAVAILABLE")

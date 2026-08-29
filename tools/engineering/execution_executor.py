@@ -223,6 +223,7 @@ def persist_validation_failure_diagnostic(
             root, path, artifact_id=artifact_id,
             artifact_type="VALIDATION_FAILURE_DIAGNOSTIC",
             content_type="application/json", created_at=created_at, run_id=run_id,
+            execution_id=command_id,
         )
     except EngineeringStorageError:
         path.unlink(missing_ok=True)

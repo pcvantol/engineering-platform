@@ -535,6 +535,8 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             f"  - Evidence Reference: `{stored.get('evidence_ref', 'UNAVAILABLE')}`." if isinstance(stored, dict) else "  - Evidence Reference: persisted terminal checkpoint and Evidence Bundle.",
             f"  - Execution inclusion: `{included}`.",
         ))
+        if isinstance(stored, dict) and stored.get("exit_code") is not None:
+            lines.append(f"  - Authoritative Exit Code: `{stored['exit_code']}`.")
         if isinstance(stored, dict) and result != "PASS":
             diagnostic_reference = str(stored.get("diagnostic_evidence_ref") or "UNAVAILABLE")
             diagnostic = load_validation_failure_diagnostic(root, diagnostic_reference)
