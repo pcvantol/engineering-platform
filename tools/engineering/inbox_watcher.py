@@ -480,6 +480,9 @@ def _prompt_title(content: str, filename: str) -> str:
         for candidate in lines[index + 1 :]:
             if candidate.strip():
                 return redact_diagnostic(candidate.strip(), limit=240)
+    for line in lines:
+        if line.strip():
+            return redact_diagnostic(line.strip(), limit=240)
     return redact_diagnostic(filename, limit=240)
 
 
