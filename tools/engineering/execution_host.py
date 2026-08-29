@@ -563,7 +563,7 @@ class EngineeringRunner:
                 validation_id = (
                     "git_diff_check" if kind == "format_or_diff" else
                     "documentation_contract" if kind == "documentation_contract" else
-                    "dashboard_browser" if kind == "browser_e2e" else
+                    self._validation_id(command, kind) if kind == "browser_e2e" else
                     "repository_suite" if kind == "tests" and tier == "FULL" else
                     "engineering_python" if kind == "tests" else f"validation_{kind}"
                 )
@@ -777,6 +777,13 @@ class EngineeringRunner:
             return "tests"
         return None
 
+    @staticmethod
+    def _validation_id(command: str, kind: str) -> str:
+        """Reserve dashboard_browser for the canonical dashboard suite only."""
+        if kind == "browser_e2e" and "npm run test:engineering-dashboard" in command.casefold():
+            return "dashboard_browser"
+        return f"validation_{kind}"
+
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
         self._require_agent_readiness(state)
@@ -803,7 +810,7 @@ class EngineeringRunner:
             if event == "started":
                 kind = self._validation_kind(command)
                 if kind is not None:
-                    validation_id = "dashboard_browser" if kind == "browser_e2e" else f"validation_{kind}"
+                    validation_id = self._validation_id(command, kind)
                     try:
                         profile = load_validation_context(self.root, state.run_id)
                         required = validation_id in set(profile["required_validation_controls"]) if profile else False

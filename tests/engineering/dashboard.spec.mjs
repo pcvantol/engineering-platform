@@ -5341,6 +5341,14 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await expect.poll(() => page.evaluate(() => Math.round(window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0))).toBe(0);
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    // The footer is supplied by the live dashboard clock and server-push
+    // connection. Freeze those two strings so this visual reference only
+    // detects mobile layout regressions, rather than the current date or
+    // whether the test server accepted the transient EventSource connection.
+    await page.evaluate(() => {
+      document.querySelector("#lastRefresh").textContent = "Laatst bijgewerkt: donderdag 27 augustus 2026 om 19:58:27";
+      document.querySelector("#updateMode").textContent = "Serverpush: opnieuw verbinden…";
+    });
     const image = await page.screenshot({ animations: "disabled" });
     await testInfo.attach("iphone-portrait-dashboard", {
       body: image,
