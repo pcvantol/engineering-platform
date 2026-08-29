@@ -359,7 +359,7 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     connection = open_storage(root)
     try:
         rows = connection.execute(
-            "SELECT provider,model,model_authority,raw_provider_model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
+            "SELECT provider,model,model_authority,raw_provider_model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn,role FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
             (run_id,),
         ).fetchall()
         snapshot_rows = connection.execute(
@@ -389,9 +389,18 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     ordered = sorted(inputs)
     p95 = ordered[min(len(ordered) - 1, ceil(len(ordered) * 0.95) - 1)] if ordered else None
     input_deltas = [row[0] for row in snapshot_rows if isinstance(row[0], int)]
+    calls_by_role: dict[str, int] = {}
+    uncached_input_by_role: dict[str, int] = {}
+    for row in rows:
+        role = row[14] if isinstance(row[14], str) and row[14] else "UNSPECIFIED"
+        calls_by_role[role] = calls_by_role.get(role, 0) + 1
+        if isinstance(row[6], int):
+            uncached_input_by_role[role] = uncached_input_by_role.get(role, 0) + row[6]
     return {
         "invocation_detail": AUTHORITATIVE,
         "provider_invocation_count": len(rows),
+        "provider_invocations_by_role": calls_by_role,
+        "uncached_input_by_role": uncached_input_by_role or None,
         "input_tokens": total(4),
         "cached_input_tokens": total(5),
         "uncached_input_tokens": total(6),

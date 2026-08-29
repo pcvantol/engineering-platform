@@ -93,6 +93,7 @@ from .execution_reporting import ReportingCoordinator
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
+from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
 from .execution_timing import ActivePhase
 from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
@@ -249,8 +250,11 @@ def assemble_prompt(
     *,
     managed_target: Path | None = None,
     reviewer_evidence: ReviewerEvidence | None = None,
+    role: ProviderRole | None = None,
 ) -> str:
     objective = prompt_path.read_text(encoding="utf-8")
+    provider_role = role or role_for_phase(state.phase if state else "EXECUTE_AGENT")
+    projection = project_context(provider_role, objective)
     resume = (
         "No prior transaction checkpoint exists."
         if state is None
@@ -352,9 +356,10 @@ Local validation hand-off boundary:
 - Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
 """
     return f"""You are executing one bounded DJConnect engineering transaction.
+Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
-Supplied bounded objective follows:\n\n{objective}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
+Supplied bounded objective follows:\n\n{projection.text}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
 
 
 class EngineeringRunner:
@@ -390,6 +395,7 @@ class EngineeringRunner:
         self.lease_heartbeat: LeaseHeartbeat | None = None
         self.finalization = FinalizationCoordinator()
         self._total_phase: ActivePhase | None = None
+        self._provider_context_telemetry: dict[str, int] = {}
 
     def _heartbeat(self) -> None:
         if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
@@ -493,6 +499,8 @@ class EngineeringRunner:
             usage = {}
         metadata = observed_metadata if observed_metadata is not None else getattr(self.agent, "last_runtime_metadata", None)
         churn = observed_churn if observed_churn is not None else getattr(self.agent, "last_churn", None)
+        if observed_churn is None:
+            churn = {**(churn if isinstance(churn, dict) else {}), **self._provider_context_telemetry}
         duration = observed_duration if observed_duration is not None else getattr(self.agent, "last_execution_seconds", None)
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
@@ -786,6 +794,14 @@ class EngineeringRunner:
 
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
+        role = role_for_phase(state.phase, repair=repair, quality=quality)
+        decision = provider_need_for_phase(state.phase)
+        if not decision.required:
+            raise RunnerError(f"provider invocation refused: {decision.reason}")
+        self._provider_context_telemetry = {
+            "context_projected_bytes": len(prompt.encode("utf-8")),
+            "context_budget_version": 1,
+        }
         self._require_agent_readiness(state)
         parent = (
             start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
@@ -866,7 +882,7 @@ class EngineeringRunner:
         try:
             result = self.agent.invoke(self.root, prompt)
         except Exception:
-            self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", started_at=invocation_started)
+            self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started)
             for active in validation_spans.values():
                 complete_phase(self.root, active, outcome="INTERRUPTED")
             complete_phase(self.root, provider, outcome="FAILED")
@@ -878,7 +894,7 @@ class EngineeringRunner:
                 command_callback(None)
             if repair and callable(set_handoff_deadline):
                 set_handoff_deadline(None)
-        self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", started_at=invocation_started)
+        self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)

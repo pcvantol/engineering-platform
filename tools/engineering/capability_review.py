@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .agent_state import redact_diagnostic
+from .provider_context import ProviderRole, project_context
 from .reviewer_evidence import ReviewerEvidence
 
 
@@ -217,11 +218,18 @@ def reviewer_prompt(
     evidence: ReviewerEvidence | None = None,
 ) -> str:
     """Build the bounded read-only reviewer instruction without lifecycle authority."""
+    projection = project_context(ProviderRole.SPECIALIST_REVIEW, objective)
     prompt: dict[str, object] = {
         "reviewer": REVIEWER_LABELS[selection.reviewer],
         "capability": selection.capability,
         "selected_because": selection.selected_because,
-        "objective": objective,
+        "objective": projection.text,
+        "context_projection": {
+            "role": projection.role.value,
+            "budget_version": projection.budget_version,
+            "source_item_count": projection.source_item_count,
+            "omitted_low_priority_count": projection.omitted_low_priority_count,
+        },
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
         "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
     }

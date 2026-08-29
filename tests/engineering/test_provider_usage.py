@@ -30,7 +30,7 @@ class ProviderUsageTests(unittest.TestCase):
 
     def _persist(
         self, ordinal: int, *, model: str = "gpt-5.6-terra", usage: dict[str, int] | None = None,
-        snapshots: tuple[dict[str, int], ...] = (),
+        snapshots: tuple[dict[str, int], ...] = (), role: str = "agent",
     ) -> None:
         persist_provider_invocation(
             self.root,
@@ -42,7 +42,7 @@ class ProviderUsageTests(unittest.TestCase):
                 model_authority=AUTHORITATIVE,
                 raw_provider_model=model,
                 phase="PROVIDER_EXECUTION",
-                role="agent",
+                role=role,
                 started_at="2026-08-18T00:00:00+00:00",
                 completed_at="2026-08-18T00:00:01+00:00",
                 duration_ms=1000,
@@ -69,6 +69,14 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(summary["median_input_tokens_per_invocation"], 200)
         self.assertEqual(summary["usage_authority"], AUTHORITATIVE)
         self.assertEqual(summary["context_churn"]["file_read_count"], 3)
+        self.assertEqual(summary["provider_invocations_by_role"], {"agent": 2})
+        self.assertEqual(summary["uncached_input_by_role"], {"agent": 275})
+
+    def test_provider_usage_is_observable_by_semantic_role(self) -> None:
+        self._persist(1, role="IMPLEMENTATION")
+        self._persist(2, role="REPAIR")
+        summary = provider_usage_summary(self.root, "run-usage")
+        self.assertEqual(summary["provider_invocations_by_role"], {"IMPLEMENTATION": 1, "REPAIR": 1})
 
     def test_missing_usage_stays_unavailable(self) -> None:
         self._persist(1, usage={})
