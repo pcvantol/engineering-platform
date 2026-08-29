@@ -62,10 +62,15 @@ class CodexChatTest(unittest.TestCase):
             self.assertNotIn(str(root), command)
             self.assertIn("Laatste rapport", command[-1])
             self.assertIn("Laatste prompt", command[-1])
-            self.assertEqual(history(root, "inbox-last"), [
-                {"role": "user", "text": "Wat is de volgende stap? [REDACTED]"},
-                {"role": "assistant", "text": "Veilig advies."},
-            ])
+            saved_history = history(root, "inbox-last")
+            self.assertEqual(
+                [{"role": item["role"], "text": item["text"]} for item in saved_history],
+                [
+                    {"role": "user", "text": "Wat is de volgende stap? [REDACTED]"},
+                    {"role": "assistant", "text": "Veilig advies."},
+                ],
+            )
+            self.assertTrue(all(item["created_at"] for item in saved_history))
             clear_history(root, "inbox-last")
             self.assertEqual(history(root, "inbox-last"), [])
 
@@ -128,6 +133,7 @@ class CodexChatTest(unittest.TestCase):
             retained = history(root, "inbox-retained-chat")
             self.assertEqual(len(retained), MAX_HISTORY_ITEMS)
             self.assertEqual(retained[0]["text"], "bericht 1 [REDACTED]")
+            self.assertTrue(retained[0]["created_at"])
             self.assertNotIn("secret", " ".join(item["text"] for item in retained))
             with open_storage(root) as connection:
                 self.assertEqual(

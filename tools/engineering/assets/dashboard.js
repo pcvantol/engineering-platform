@@ -1177,26 +1177,57 @@ function updateChatHistoryCount(count) {
 function normaliseChatMessages(value) {
   return Array.isArray(value)
     ? value.filter((entry) => entry && ["user", "assistant"].includes(entry.role) && typeof entry.text === "string")
+        .map((entry) => ({
+          role: entry.role,
+          text: entry.text,
+          created_at: typeof entry.created_at === "string" ? entry.created_at : "",
+        }))
         .slice(-CHAT_HISTORY_LIMIT)
     : [];
 }
-function renderLegacyChatMessage(role, text) {
+function chatMessageTimestampLabel(value, now = new Date()) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return t("chat.timestamp_unavailable");
+  const date = new Date(timestamp), elapsed = now.getTime() - timestamp;
+  if (elapsed >= 0 && elapsed < 60_000) return t("chat.just_now");
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(),
+    messageDayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime(),
+    dayDifference = Math.round((dayStart - messageDayStart) / 86_400_000),
+    time = new Intl.DateTimeFormat(dashboardLocale, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).format(date);
+  let day;
+  if (dayDifference === 0) day = t("chat.today");
+  else if (dayDifference === 1) day = t("chat.yesterday");
+  else if (dayDifference > 1 && dayDifference < 7)
+    day = new Intl.DateTimeFormat(dashboardLocale, { weekday: "long" }).format(date);
+  else
+    day = new Intl.DateTimeFormat(dashboardLocale, {
+      weekday: "long", day: "numeric", month: "long", year: "numeric",
+    }).format(date);
+  return `${day}, ${time}`;
+}
+function renderLegacyChatMessage(role, text, createdAt = new Date().toISOString()) {
   let item = document.createElement("article"),
     label = document.createElement("span"),
+    timestamp = document.createElement("time"),
     body = document.createElement("div");
   item.className = "chat-message chat-message--" + role;
   label.className = "chat-message__role";
   label.textContent = t(role === "user" ? "chat.user" : "chat.assistant");
+  timestamp.className = "chat-message__timestamp";
+  timestamp.dateTime = createdAt;
+  timestamp.textContent = chatMessageTimestampLabel(createdAt);
   body.className = "chat-message__body";
   body.textContent = text;
-  item.append(label, body);
+  item.append(label, timestamp, body);
   $("chatMessages").append(item);
   item.scrollIntoView({ block: "nearest" });
 }
 function renderChatHistory() {
   const container = $("chatMessages");
   container.replaceChildren();
-  chatHistory.forEach((entry) => chatMessage(entry.role, entry.text));
+  chatHistory.forEach((entry) => chatMessage(entry.role, entry.text, entry.created_at));
 }
 function reconcileChatContext(run) {
   // Chat context is selected explicitly from Prompt History, never inferred
@@ -1212,9 +1243,10 @@ function askCodex() {
   // Show the submitted question immediately. The persisted conversation remains
   // authoritative and replaces this optimistic projection once the reply is
   // returned by the server.
-  chatHistory = [...chatHistory, { role: "user", text: message }]
+  const createdAt = new Date().toISOString();
+  chatHistory = [...chatHistory, { role: "user", text: message, created_at: createdAt }]
     .slice(-CHAT_HISTORY_LIMIT);
-  chatMessage("user", message);
+  chatMessage("user", message, createdAt);
   updateChatActions();
   fetch("/api/codex-chat", {
     method: "POST",
@@ -2936,16 +2968,20 @@ function localizeTemplateBindings() {
     element.title = t(element.dataset.i18nTitle);
   });
 }
-function chatMessage(role, text) {
+function chatMessage(role, text, createdAt = new Date().toISOString()) {
   let item = document.createElement("article"),
     label = document.createElement("span"),
+    timestamp = document.createElement("time"),
     body = document.createElement("div");
   item.className = "chat-message chat-message--" + role;
   label.className = "chat-message__role";
   label.textContent = t(role === "user" ? "chat.user" : "chat.assistant");
+  timestamp.className = "chat-message__timestamp";
+  timestamp.dateTime = createdAt;
+  timestamp.textContent = chatMessageTimestampLabel(createdAt);
   body.className = "chat-message__body";
   body.textContent = text;
-  item.append(label, body);
+  item.append(label, timestamp, body);
   $("chatMessages").append(item);
   item.scrollIntoView({ block: "nearest" });
 }
@@ -3213,20 +3249,24 @@ function renderMarkdownAnswer(target, value) {
   }
 }
 const plainChatMessage = chatMessage;
-chatMessage = (role, text) => {
+chatMessage = (role, text, createdAt) => {
   if (role !== "assistant") {
-    plainChatMessage(role, text);
+    plainChatMessage(role, text, createdAt);
     return;
   }
   const item = document.createElement("article"),
     label = document.createElement("span"),
+    timestamp = document.createElement("time"),
     body = document.createElement("div");
   item.className = "chat-message chat-message--assistant";
   label.className = "chat-message__role";
   label.textContent = t("chat.assistant");
+  timestamp.className = "chat-message__timestamp";
+  timestamp.dateTime = createdAt || new Date().toISOString();
+  timestamp.textContent = chatMessageTimestampLabel(timestamp.dateTime);
   body.className = "chat-message__body";
   renderMarkdownAnswer(body, text);
-  item.append(label, body);
+  item.append(label, timestamp, body);
   $("chatMessages").append(item);
   item.scrollIntoView({ block: "nearest" });
 };
@@ -3249,8 +3289,8 @@ function addChatMessageCopyButton(item, text) {
   item.append(button);
 }
 const chatMessageWithCopy = chatMessage;
-chatMessage = (role, text) => {
-  chatMessageWithCopy(role, text);
+chatMessage = (role, text, createdAt) => {
+  chatMessageWithCopy(role, text, createdAt);
   addChatMessageCopyButton($("chatMessages").lastElementChild, text);
 };
 renderChatHistory();
@@ -6581,6 +6621,7 @@ function chatHistoryMarkdown() {
         "## " +
         t(entry.role === "user" ? "chat.user" : "chat.assistant") +
         "\n\n" +
+        "_" + chatMessageTimestampLabel(entry.created_at) + "_\n\n" +
         entry.text.trim(),
     )
     .filter(Boolean);
@@ -6619,8 +6660,8 @@ renderChatHistory = () => {
   updateChatDownloadAvailability();
 };
 const chatMessageWithDownload = chatMessage;
-chatMessage = (role, text) => {
-  chatMessageWithDownload(role, text);
+chatMessage = (role, text, createdAt) => {
+  chatMessageWithDownload(role, text, createdAt);
   updateChatDownloadAvailability();
 };
 $("downloadChat").addEventListener("click", downloadChatHistory);
@@ -8172,6 +8213,7 @@ Object.assign(window, {
   applyDashboardTheme,
   chatHistoryMarkdown,
   chatMessage,
+  chatMessageTimestampLabel,
   capabilityRecommendation,
   enumLabel,
   executionTelemetry,

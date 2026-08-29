@@ -82,13 +82,13 @@ def _stored_history(root: Path, run_id: str) -> list[dict[str, str]]:
     connection = open_storage(root)
     try:
         rows = connection.execute(
-            "SELECT role,content FROM execution_chat_messages "
+            "SELECT role,content,created_at FROM execution_chat_messages "
             "WHERE run_id=? AND created_at>=? ORDER BY id ASC LIMIT ?",
             (run_id, _cutoff(), MAX_HISTORY_ITEMS),
         ).fetchall()
     finally:
         connection.close()
-    return [{"role": row[0], "text": row[1]} for row in rows]
+    return [{"role": row[0], "text": row[1], "created_at": row[2]} for row in rows]
 
 
 def history(root: Path, run_id: object) -> list[dict[str, str]]:

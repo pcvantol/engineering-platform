@@ -4174,13 +4174,13 @@ class DashboardStatusTest(unittest.TestCase):
         with self._dashboard_http_connection() as (_, connection):
             with (
                 patch("tools.engineering.dashboard.codex_chat_response", return_value="Veilig advies."),
-                patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Wat nu?"}, {"role": "assistant", "text": "Veilig advies."}]),
+                patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Wat nu?", "created_at": "2026-08-29T05:01:14+00:00"}, {"role": "assistant", "text": "Veilig advies.", "created_at": "2026-08-29T05:01:15+00:00"}]),
                 patch("tools.engineering.dashboard.log_event") as chat_log_event,
             ):
                 connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?"}), headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra", "messages": [{"role": "user", "text": "Wat nu?"}, {"role": "assistant", "text": "Veilig advies."}]})
+                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra", "messages": [{"role": "user", "text": "Wat nu?", "created_at": "2026-08-29T05:01:14+00:00"}, {"role": "assistant", "text": "Veilig advies.", "created_at": "2026-08-29T05:01:15+00:00"}]})
                 chat_log_event.assert_any_call(ANY, logging.INFO, "ai_chat_message_sent", diagnostic="[REDACTED]")
             connection.request("POST", "/api/codex-chat", body="{}", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
@@ -4190,11 +4190,11 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 403)
             response.read()
-            with patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Bewaard"}]):
+            with patch("tools.engineering.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Bewaard", "created_at": "2026-08-29T05:01:14+00:00"}]):
                 connection.request("GET", "/api/prompt-history/inbox-chat/chat")
                 response = connection.getresponse()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"messages": [{"role": "user", "text": "Bewaard"}]})
+                self.assertEqual(json.loads(response.read()), {"messages": [{"role": "user", "text": "Bewaard", "created_at": "2026-08-29T05:01:14+00:00"}]})
             with patch("tools.engineering.dashboard.clear_codex_chat_history") as clear:
                 connection.request("POST", "/api/codex-chat/clear", body='{"run_id":"inbox-chat"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()

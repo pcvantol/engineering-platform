@@ -2123,7 +2123,7 @@ test.describe("Engineering Status browser smoke", () => {
       chat_message_count: 1,
     }] } }));
     await page.route("**/api/prompt-history/inbox-chat-export/chat", (route) => route.fulfill({
-      json: { messages: [{ role: "user", text: "First question" }] },
+      json: { messages: [{ role: "user", text: "First question", created_at: "2026-08-29T05:01:14Z" }] },
     }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const chatHistoryLoaded = page.waitForResponse("**/api/prompt-history/inbox-chat-export/chat");
@@ -2134,12 +2134,15 @@ test.describe("Engineering Status browser smoke", () => {
       return {
         markdown: chatHistoryMarkdown(),
         executedAt: window.formatTimestamp("2026-08-29T05:01:14Z"),
+        messageTimestamp: window.chatMessageTimestampLabel("2026-08-29T05:01:14Z"),
       };
     });
     expect(exported.markdown).toContain("**UITVOERINGSTITEL**\nEngineering Platform — Dashboard Validation Proof");
     expect(exported.markdown).toContain("**RUN-ID**\ninbox-chat-export");
     expect(exported.markdown).toContain("**UITGEVOERD OP**\n" + exported.executedAt);
+    expect(exported.markdown).toContain("_" + exported.messageTimestamp + "_");
     expect(exported.markdown.indexOf("## Uitvoering")).toBeLessThan(exported.markdown.indexOf("## Jij"));
+    await expect(page.locator("#chatMessages time")).toHaveText(exported.messageTimestamp);
     await page.evaluate(() => {
       window.__copiedChat = "";
       Object.defineProperty(navigator, "clipboard", {
