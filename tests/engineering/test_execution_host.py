@@ -1226,6 +1226,82 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "currentness": 0,
         })
 
+    def test_validation_only_controls_are_pending_until_their_execution_stage(self) -> None:
+        run_id = "validation-only-pending"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
+            validation_profile_version="1.0", required_validation_controls=("dashboard_browser",),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        context = load_validation_context(self.root, run_id)
+        self.assertEqual(context["required_validation_controls"], ("dashboard_browser",))
+        self.assertEqual(context["controls"], {})
+
+    @patch.object(EngineeringRunner, "_run_required_validation_command")
+    def test_validation_only_executes_required_control_before_qualification(self, run: object) -> None:
+        run.return_value = 0  # type: ignore[attr-defined]
+        run_id = "validation-only-execution"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD",
+            validation_profile_version="1.0", required_validation_controls=("dashboard_browser",),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner._execute_required_validation_controls(
+            TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+        )
+        context = load_validation_context(self.root, run_id)
+        control = context["controls"]["dashboard_browser"]
+        self.assertFalse(state.terminal)
+        self.assertEqual(state.phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(control["execution_status"], "EXECUTED")
+        self.assertEqual(control["result"], "PASS")
+        self.assertEqual(control["control_identity"], "npm run test:engineering-dashboard")
+        self.assertEqual(agent.roots, [])
+        run.assert_called_once_with(("npm", "run", "test:engineering-dashboard"))  # type: ignore[attr-defined]
+
+    @patch.object(EngineeringRunner, "_run_required_validation_command")
+    def test_validation_only_all_required_pass_is_pass_and_failure_states_remain_authoritative(self, run: object) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        cases = (
+            ("all-pass", ("git_diff_check", "engineering_python"), (0, 0), ("PASS", "PASS")),
+            ("one-fail", ("git_diff_check", "engineering_python"), (0, 9), ("PASS", "FAIL")),
+            ("unavailable", ("dashboard_browser",), (None,), ("UNAVAILABLE",)),
+        )
+        for run_id, controls, exits, expected in cases:
+            with self.subTest(run_id=run_id):
+                record_validation_profile(
+                    self.root, run_id=run_id, selected_validation_tier="RUNTIME",
+                    validation_profile_version="1.0", required_validation_controls=controls,
+                    recorded_at="2026-08-29T00:00:00+00:00",
+                )
+                effects = list(exits)
+                run.side_effect = effects  # type: ignore[attr-defined]
+                state = runner._execute_required_validation_controls(
+                    TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+                )
+                context = load_validation_context(self.root, run_id)
+                self.assertFalse(state.terminal)
+                self.assertEqual(
+                    tuple(context["controls"][control]["result"] for control in controls), expected,
+                )
+
+    def test_validation_only_unmapped_control_is_terminally_not_executed_and_non_pass(self) -> None:
+        run_id = "validation-only-no-launcher"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="CUSTOM",
+            validation_profile_version="1.0", required_validation_controls=("unmapped_control",),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        runner._execute_required_validation_controls(
+            TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY")
+        )
+        control = load_validation_context(self.root, run_id)["controls"]["unmapped_control"]
+        self.assertEqual(control["execution_status"], "NOT_EXECUTED")
+        self.assertEqual(control["result"], "UNAVAILABLE")
+
     def test_managed_synchronization_blocks_before_agent_when_host_cannot_sync(self) -> None:
         repository = FakeRepository()
         repository.synchronize_error = RunnerError("fatal: Unable to create '.git/index.lock': Permission denied")

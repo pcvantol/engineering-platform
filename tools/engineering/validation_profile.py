@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+import sys
 
 DOCUMENTATION_PREFIXES = ("docs/",)
 DASHBOARD_PREFIXES = ("tools/engineering/assets/",)
@@ -16,6 +17,54 @@ REQUIRED_CONTROLS = {
     "RUNTIME": ("git_diff_check", "engineering_python", "dashboard_browser"),
     "FULL": ("git_diff_check", "repository_suite"),
 }
+
+
+@dataclass(frozen=True)
+class ValidationControlLauncher:
+    """One deterministic launcher for a resolved validation-control identity.
+
+    Profiles select identities; this registry owns the repository-local
+    implementation of those identities. Lifecycle code only schedules the
+    persisted identities and never branches on a project-specific control.
+    """
+
+    validation_id: str
+    category: str
+    control_identity: str
+    command: tuple[str, ...]
+
+
+def _python_command(*arguments: str) -> tuple[str, ...]:
+    return (sys.executable, *arguments)
+
+
+CONTROL_LAUNCHERS = {
+    "git_diff_check": ValidationControlLauncher(
+        "git_diff_check", "repository", "git diff --check", ("git", "diff", "--check"),
+    ),
+    "documentation_contract": ValidationControlLauncher(
+        "documentation_contract", "documentation",
+        "python3 -m unittest tests.engineering.test_engineering_operational_documentation",
+        _python_command("-m", "unittest", "tests.engineering.test_engineering_operational_documentation"),
+    ),
+    "engineering_python": ValidationControlLauncher(
+        "engineering_python", "python", "python3 -m unittest discover -s tests/engineering",
+        _python_command("-m", "unittest", "discover", "-s", "tests/engineering"),
+    ),
+    "dashboard_browser": ValidationControlLauncher(
+        "dashboard_browser", "browser", "npm run test:engineering-dashboard",
+        ("npm", "run", "test:engineering-dashboard"),
+    ),
+    "repository_suite": ValidationControlLauncher(
+        "repository_suite", "repository", "python3 -m unittest discover",
+        _python_command("-m", "unittest", "discover"),
+    ),
+}
+
+
+def control_launcher(validation_id: str) -> ValidationControlLauncher | None:
+    """Resolve a persisted required-control identity to its canonical launcher."""
+    return CONTROL_LAUNCHERS.get(validation_id)
 
 @dataclass(frozen=True)
 class ValidationProfile:

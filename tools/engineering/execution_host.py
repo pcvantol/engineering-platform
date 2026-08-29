@@ -49,7 +49,7 @@ from .prompt_history import record_terminal_report
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import runtime_workspace
-from .providers import GitProvider, CodexCliProvider
+from .providers import DeterministicValidationExecutor, GitProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
@@ -65,7 +65,7 @@ from .execution_context import (
     target_repository_authorization as context_target_repository_authorization,
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
-from .validation_profile import VALIDATION_PROFILE_VERSION, ValidationProfile, changed_paths, classify
+from .validation_profile import VALIDATION_PROFILE_VERSION, ValidationProfile, changed_paths, classify, control_launcher
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
@@ -328,6 +328,7 @@ class EngineeringRunner:
         self.transaction: ExecutionTransaction | None = None
         self.lease_heartbeat: LeaseHeartbeat | None = None
         self.finalization = FinalizationCoordinator()
+        self.validation_executor = DeterministicValidationExecutor()
         self._total_phase: ActivePhase | None = None
         self._provider_context_telemetry: dict[str, int] = {}
         self._provider_dispatch_telemetry: dict[str, int] = {}
@@ -572,6 +573,79 @@ class EngineeringRunner:
             except EngineeringStorageError:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
         return replace(state, validation_evidence=result.validation_evidence)
+
+    def _execute_required_validation_controls(self, state: TransactionState) -> TransactionState:
+        """Execute already-persisted required controls before qualification."""
+        try:
+            validation_context = load_validation_context(self.root, state.run_id)
+        except EngineeringStorageError:
+            validation_context = None
+        if not isinstance(validation_context, dict):
+            return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence could not be loaded.")
+        required = validation_context.get("required_validation_controls")
+        if not isinstance(required, tuple) or not required:
+            return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence does not contain required controls.")
+        validation = replace(state, phase="LOCAL_REPOSITORY_VALIDATION", next_action="execute_required_validation_controls")
+        self.store.save(validation)
+        write_live_status(self.root, validation, validation.next_action)
+        self._managed_action(validation, "VALIDATION_EXECUTION")
+        for ordinal, validation_id in enumerate(required, start=1):
+            launcher = control_launcher(validation_id)
+            observed_at = datetime.now(timezone.utc).isoformat()
+            if launcher is None:
+                # Resolved but unavailable launchers are terminal non-PASS
+                # evidence, not a pre-execution qualification decision.
+                try:
+                    record_validation_control_result(
+                        self.root, run_id=validation.run_id, validation_id=validation_id,
+                        category="unavailable", control_identity=validation_id,
+                        required_for_profile=True, execution_status="NOT_EXECUTED",
+                        result="UNAVAILABLE", evidence_ref="control_launcher_unavailable",
+                        observed_at=observed_at, currentness=validation.repair_iterations,
+                    )
+                except EngineeringStorageError:
+                    return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control evidence could not be persisted.")
+                continue
+            command_id = f"required-control-{ordinal}-{uuid.uuid4().hex[:12]}"
+            span = start_phase(
+                self.root, validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
+                attempt=max(1, validation.repair_iterations + 1),
+                metadata={"validation_id": launcher.validation_id, "command_id": command_id},
+            )
+            try:
+                record_validation_command_invocation(
+                    self.root, run_id=validation.run_id, validation_id=launcher.validation_id,
+                    command_id=command_id, category=launcher.category,
+                    control_identity=launcher.control_identity, required_for_profile=True,
+                    started_at=observed_at, currentness=validation.repair_iterations,
+                )
+            except EngineeringStorageError:
+                complete_phase(self.root, span, outcome="FAILED")
+                return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control invocation evidence could not be persisted.")
+            exit_code: int | None
+            previous_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
+            os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = validation.run_id
+            try:
+                exit_code = self._run_required_validation_command(launcher.command)
+            finally:
+                if previous_run_id is None:
+                    os.environ.pop("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID", None)
+                else:
+                    os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = previous_run_id
+            try:
+                record_validation_command_terminal(
+                    self.root, run_id=validation.run_id, command_id=command_id,
+                    completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
+                )
+            except EngineeringStorageError:
+                complete_phase(self.root, span, outcome="FAILED")
+                return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control terminal evidence could not be persisted.")
+            complete_phase(self.root, span, outcome="COMPLETE" if exit_code == 0 else "FAILED")
+        return validation
+
+    def _run_required_validation_command(self, command: tuple[str, ...]) -> int | None:
+        """Run one deterministic control, preserving unavailable terminals."""
+        return self.validation_executor.run(self.root, command)
 
     def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
         """Best-effort evidence instrumentation; it never changes lifecycle outcome."""
@@ -1502,18 +1576,22 @@ Mandatory autonomous refactor and quality-control stage:
         if state.terminal or state.phase == "WAIT_FOR_TERMINAL_EVIDENCE":
             return self._poll(state)
         if state.action_intent == "VALIDATION_ONLY":
-            # Required controls are executed by their canonical deterministic
-            # launchers, which persist run-scoped command evidence.  Do not
-            # dispatch an implementation provider merely to manufacture a
-            # delivery artifact for this explicitly non-mutating action.
-            self._managed_action(state, "VALIDATION_EXECUTION")
+            # The provider-free path still executes the persisted controls;
+            # absent pre-execution evidence is pending work, not terminally
+            # missing evidence.
+            state = self._execute_required_validation_controls(state)
+            if state.terminal:
+                return state
             try:
                 validation_context = load_validation_context(self.root, state.run_id)
             except EngineeringStorageError:
                 validation_context = None
             required = validation_context.get("required_validation_controls", ()) if validation_context else ()
             controls = validation_context.get("controls", {}) if validation_context else {}
-            if not required or not all(controls.get(control, {}).get("result") == "PASS" for control in required):
+            results = [controls.get(control, {}).get("result") for control in required]
+            if any(result == "FAIL" for result in results):
+                return self._save_terminal(state, "BLOCKED", "required_validation_failed", "Required validation controls did not pass.")
+            if not required or not all(result == "PASS" for result in results):
                 return self._save_terminal(state, "BLOCKED", "required_validation_unresolved", "Required validation controls do not have authoritative PASS evidence.")
             return self._poll(state, AgentResult("COMPLETE"))
         try:

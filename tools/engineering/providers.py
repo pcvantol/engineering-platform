@@ -56,6 +56,19 @@ class LocalProcessProvider:
         )
 
 
+class DeterministicValidationExecutor:
+    """Run one resolved validation control outside provider-agent dispatch."""
+
+    def __init__(self, process: ProcessProvider | None = None) -> None:
+        self.process = process or LocalProcessProvider()
+
+    def run(self, root: Path, command: tuple[str, ...]) -> int | None:
+        try:
+            return self.process.execute(root, command).returncode
+        except OSError:
+            return None
+
+
 class RepositoryProvider(Protocol):
     def status(self, root: Path) -> ProviderStatus: ...
     def command(self, root: Path, *args: str) -> str: ...
