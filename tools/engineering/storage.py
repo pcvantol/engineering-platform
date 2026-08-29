@@ -1533,17 +1533,40 @@ def record_run_qualification_context(
 def record_validation_profile(
     root: Path, *, run_id: str, selected_validation_tier: str, validation_profile_version: str,
     required_validation_controls: tuple[str, ...], recorded_at: str,
+    profile_reference: str | None = None, profile_selection_source: str | None = None,
+    control_bindings: tuple[dict[str, object], ...] | None = None,
 ) -> None:
     """Persist the exact mandatory controls before their execution evidence."""
     if not run_id or not selected_validation_tier or not validation_profile_version or not recorded_at:
         raise EngineeringStorageError("Validation profile identity is invalid.")
     if not required_validation_controls or any(not control for control in required_validation_controls):
         raise EngineeringStorageError("Validation profile controls are invalid.")
+    if control_bindings is None:
+        # Compatibility for existing callers while new lifecycle paths persist
+        # their binding explicitly before scheduling anything.
+        from .validation_profile import control_binding
+        resolved = tuple(control_binding(control) for control in required_validation_controls)
+        control_bindings = tuple(
+            binding if binding is not None else {
+                "validation_id": control, "required": True, "category": "unavailable",
+                "control_identity": control, "command": [],
+            }
+            for control, binding in zip(required_validation_controls, resolved, strict=True)
+        )
+    binding_ids = tuple(binding.get("validation_id") for binding in control_bindings if isinstance(binding, dict))
+    if binding_ids != required_validation_controls:
+        raise EngineeringStorageError("Validation profile bindings are invalid.")
+    payload = {
+        "validation_ids": list(required_validation_controls),
+        "profile_reference": profile_reference or f"validation-profile-registry:{selected_validation_tier}@{validation_profile_version}",
+        "profile_selection_source": profile_selection_source or "registry",
+        "control_bindings": list(control_bindings),
+    }
     connection = open_storage(root)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_profiles(run_id,selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at) VALUES(?,?,?,?,?)",
-            (run_id, selected_validation_tier, validation_profile_version, _encoded_payload({"validation_ids": list(required_validation_controls)}), recorded_at),
+            (run_id, selected_validation_tier, validation_profile_version, _encoded_payload(payload), recorded_at),
         )
     finally:
         connection.close()
@@ -1644,11 +1667,17 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
     if profile is None:
         return None
     try:
-        required = json.loads(profile[2]).get("validation_ids", [])
+        payload = json.loads(profile[2])
+        required = payload.get("validation_ids", [])
     except (TypeError, json.JSONDecodeError, AttributeError) as error:
         raise EngineeringStorageError("Validation profile controls are corrupt.") from error
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
         raise EngineeringStorageError("Validation profile controls are invalid.")
+    bindings = payload.get("control_bindings", [])
+    if not isinstance(bindings, list) or any(not isinstance(binding, dict) for binding in bindings):
+        raise EngineeringStorageError("Validation profile bindings are invalid.")
+    if bindings and tuple(binding.get("validation_id") for binding in bindings) != tuple(required):
+        raise EngineeringStorageError("Validation profile bindings are invalid.")
     controls: dict[str, dict[str, object]] = {}
     for row in rows:
         validation_id, category, identity, is_required, status, result, evidence_ref, observed_at, currentness = row
@@ -1669,7 +1698,10 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
             "started_at": started_at, "ended_at": completed_at, "duration_ms": duration_ms, "exit_code": exit_code,
         }
     return {"selected_validation_tier": profile[0], "validation_profile_version": profile[1],
-            "required_validation_controls": tuple(required), "recorded_at": profile[3], "controls": controls}
+            "profile_reference": payload.get("profile_reference", "UNAVAILABLE"),
+            "profile_selection_source": payload.get("profile_selection_source", "UNAVAILABLE"),
+            "required_validation_controls": tuple(required), "control_bindings": tuple(bindings),
+            "recorded_at": profile[3], "controls": controls}
 
 
 def record_artifact(

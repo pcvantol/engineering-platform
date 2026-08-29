@@ -1237,6 +1237,57 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(context["required_validation_controls"], ("dashboard_browser",))
         self.assertEqual(context["controls"], {})
 
+    def test_validation_only_binds_the_structured_profile_before_control_execution(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        state = runner._bind_validation_only_profile(
+            TransactionState("bound-validation-only", "pcvantol/djconnect", str(self.prompt), "CAPABILITY_REVIEW", action_intent="VALIDATION_ONLY"),
+            {"validation_profile": {
+                "tier": "DASHBOARD", "version": "1.0",
+                "required_controls": ["git_diff_check", "engineering_python", "dashboard_browser"],
+            }},
+        )
+        self.assertFalse(state.terminal)
+        context = load_validation_context(self.root, state.run_id)
+        self.assertEqual(context["profile_reference"], "validation-profile-registry:DASHBOARD@1.0")
+        self.assertEqual(context["profile_selection_source"], "producer_execution_context")
+        self.assertEqual(context["required_validation_controls"], ("git_diff_check", "engineering_python", "dashboard_browser"))
+        self.assertEqual(context["control_bindings"][-1]["command"], ["npm", "run", "test:engineering-dashboard"])
+        self.assertEqual(context["controls"], {})
+        # The immutable run record prevents a later selection from rewriting
+        # the controls that the executor and qualification will observe.
+        record_validation_profile(
+            self.root, run_id=state.run_id, selected_validation_tier="FULL", validation_profile_version="1.0",
+            required_validation_controls=("repository_suite",), recorded_at="2026-08-29T00:01:00+00:00",
+        )
+        self.assertEqual(load_validation_context(self.root, state.run_id)["selected_validation_tier"], "DASHBOARD")
+
+    def test_missing_validation_only_profile_blocks_without_control_or_provider_work(self) -> None:
+        agent = FakeAgent(AgentResult("COMPLETE"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = runner._bind_validation_only_profile(
+            TransactionState("missing-validation-profile", "pcvantol/djconnect", str(self.prompt), "CAPABILITY_REVIEW", action_intent="VALIDATION_ONLY"),
+            {"context_version": "1.0", "action_intent": "VALIDATION_ONLY"},
+        )
+        self.assertTrue(state.terminal)
+        self.assertEqual(state.next_action, "validation_profile_resolution")
+        self.assertIsNone(load_validation_context(self.root, state.run_id))
+        self.assertEqual(agent.prompts, [])
+
+    @patch.object(EngineeringRunner, "_run_required_validation_command")
+    def test_validation_only_executor_uses_the_persisted_control_binding(self, run: object) -> None:
+        run.return_value = 0  # type: ignore[attr-defined]
+        run_id = "persisted-binding-execution"
+        record_validation_profile(
+            self.root, run_id=run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0",
+            required_validation_controls=("dashboard_browser",),
+            profile_reference="fixture:dashboard", profile_selection_source="fixture",
+            control_bindings=({"validation_id": "dashboard_browser", "required": True, "category": "browser", "control_identity": "fixture launcher", "command": ["fixture", "dashboard"]},),
+            recorded_at="2026-08-29T00:00:00+00:00",
+        )
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        runner._execute_required_validation_controls(TransactionState(run_id, "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", action_intent="VALIDATION_ONLY"))
+        run.assert_called_once_with(("fixture", "dashboard"))  # type: ignore[attr-defined]
+
     @patch.object(EngineeringRunner, "_run_required_validation_command")
     def test_validation_only_executes_required_control_before_qualification(self, run: object) -> None:
         run.return_value = 0  # type: ignore[attr-defined]

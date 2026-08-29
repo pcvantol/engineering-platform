@@ -65,7 +65,11 @@ from .execution_context import (
     target_repository_authorization as context_target_repository_authorization,
 )
 from .execution_models import AgentResult, PullRequestEvidence, RepositoryEvidence
-from .validation_profile import VALIDATION_PROFILE_VERSION, ValidationProfile, changed_paths, classify, control_launcher
+from .validation_profile import (
+    VALIDATION_PROFILE_VERSION, ValidationControlLauncher, ValidationProfile,
+    ValidationProfileResolutionError, changed_paths, classify,
+    profile_control_bindings, resolve_producer_profile,
+)
 from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
@@ -574,6 +578,35 @@ class EngineeringRunner:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
         return replace(state, validation_evidence=result.validation_evidence)
 
+    def _bind_validation_only_profile(
+        self, state: TransactionState, producer_context: object,
+    ) -> TransactionState:
+        """Resolve and snapshot a producer-selected registry profile.
+
+        This runs after deterministic admission and before any provider or
+        deterministic-control work.  Its single immutable storage record is
+        the source of truth for the rest of the run.
+        """
+        profile_payload = producer_context.get("validation_profile") if isinstance(producer_context, dict) else None
+        try:
+            profile, reference = resolve_producer_profile(profile_payload)
+            bindings = profile_control_bindings(profile)
+            record_validation_profile(
+                self.root, run_id=state.run_id, selected_validation_tier=profile.tier,
+                validation_profile_version=VALIDATION_PROFILE_VERSION,
+                required_validation_controls=profile.required_controls,
+                profile_reference=reference,
+                profile_selection_source="producer_execution_context",
+                control_bindings=bindings,
+                recorded_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except (EngineeringStorageError, ValidationProfileResolutionError):
+            return self._save_terminal(
+                state, "BLOCKED", "validation_profile_resolution",
+                "Selected validation profile is unresolved or unavailable.",
+            )
+        return state
+
     def _execute_required_validation_controls(self, state: TransactionState) -> TransactionState:
         """Execute already-persisted required controls before qualification."""
         try:
@@ -585,27 +618,41 @@ class EngineeringRunner:
         required = validation_context.get("required_validation_controls")
         if not isinstance(required, tuple) or not required:
             return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence does not contain required controls.")
+        bindings = validation_context.get("control_bindings")
+        if not isinstance(bindings, tuple) or len(bindings) != len(required):
+            return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile control bindings could not be loaded.")
+        binding_by_id = {binding.get("validation_id"): binding for binding in bindings if isinstance(binding, dict)}
+        if tuple(binding_by_id) != required:
+            return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile control bindings are invalid.")
         validation = replace(state, phase="LOCAL_REPOSITORY_VALIDATION", next_action="execute_required_validation_controls")
         self.store.save(validation)
         write_live_status(self.root, validation, validation.next_action)
         self._managed_action(validation, "VALIDATION_EXECUTION")
         for ordinal, validation_id in enumerate(required, start=1):
-            launcher = control_launcher(validation_id)
-            observed_at = datetime.now(timezone.utc).isoformat()
-            if launcher is None:
-                # Resolved but unavailable launchers are terminal non-PASS
-                # evidence, not a pre-execution qualification decision.
+            binding = binding_by_id[validation_id]
+            command = binding.get("command")
+            if not isinstance(command, list) or not all(isinstance(item, str) and item for item in command):
+                return self._save_terminal(validation, "BLOCKED", "validation_profile_persistence", "Required validation profile control binding is invalid.")
+            if not command:
                 try:
                     record_validation_control_result(
                         self.root, run_id=validation.run_id, validation_id=validation_id,
-                        category="unavailable", control_identity=validation_id,
+                        category=str(binding.get("category") or "unavailable"),
+                        control_identity=str(binding.get("control_identity") or validation_id),
                         required_for_profile=True, execution_status="NOT_EXECUTED",
                         result="UNAVAILABLE", evidence_ref="control_launcher_unavailable",
-                        observed_at=observed_at, currentness=validation.repair_iterations,
+                        observed_at=datetime.now(timezone.utc).isoformat(), currentness=validation.repair_iterations,
                     )
                 except EngineeringStorageError:
                     return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control evidence could not be persisted.")
                 continue
+            launcher = ValidationControlLauncher(
+                validation_id=validation_id,
+                category=str(binding.get("category") or "unavailable"),
+                control_identity=str(binding.get("control_identity") or validation_id),
+                command=tuple(command),
+            )
+            observed_at = datetime.now(timezone.utc).isoformat()
             command_id = f"required-control-{ordinal}-{uuid.uuid4().hex[:12]}"
             span = start_phase(
                 self.root, validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
@@ -1017,9 +1064,12 @@ class EngineeringRunner:
                     self.root, run_id=validation.run_id, selected_validation_tier=profile.tier,
                     validation_profile_version=VALIDATION_PROFILE_VERSION,
                     required_validation_controls=profile.required_controls,
+                    profile_reference=f"validation-profile-registry:{profile.tier}@{VALIDATION_PROFILE_VERSION}",
+                    profile_selection_source="diff_classification",
+                    control_bindings=profile_control_bindings(profile),
                     recorded_at=datetime.now(timezone.utc).isoformat(),
                 )
-            except EngineeringStorageError:
+            except (EngineeringStorageError, ValidationProfileResolutionError):
                 return self._save_terminal(
                     validation, "BLOCKED", "validation_profile_persistence",
                     "Required validation profile evidence could not be persisted."
@@ -1354,18 +1404,6 @@ Mandatory autonomous refactor and quality-control stage:
             if state.phase != "INITIALIZE":
                 raise RunnerError("checkpoint action intent conflicts with the producer execution context")
             state = replace(state, action_intent=context.action_intent)
-        if state.action_intent == "VALIDATION_ONLY" and isinstance(producer_context, dict):
-            profile = producer_context.get("validation_profile")
-            if isinstance(profile, dict):
-                try:
-                    record_validation_profile(
-                        self.root, run_id=state.run_id, selected_validation_tier=str(profile["tier"]),
-                        validation_profile_version=str(profile["version"]),
-                        required_validation_controls=tuple(str(item) for item in profile["required_controls"]),
-                        recorded_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                except (EngineeringStorageError, KeyError, TypeError):
-                    return self._save_terminal(state, "BLOCKED", "validation_profile_persistence", "Required validation profile evidence could not be persisted.")
         # Establish canonical transaction identity before persisting readiness evidence.
         self.store.save(state)
         # This envelope is deliberately persisted once and can be resumed
@@ -1497,6 +1535,10 @@ Mandatory autonomous refactor and quality-control stage:
         )
         if admission_error is not None:
             return self._save_terminal(state, "BLOCKED", "deterministic_admission", admission_error)
+        if state.action_intent == "VALIDATION_ONLY":
+            state = self._bind_validation_only_profile(state, producer_context)
+            if state.terminal:
+                return state
         if context.execution_mode == "MANAGED":
             self._managed_action(state, "IMPLEMENTATION" if state.action_intent == "MUTATING_DELIVERY" else "VALIDATION_ONLY")
         self._provider_dispatch_telemetry = {

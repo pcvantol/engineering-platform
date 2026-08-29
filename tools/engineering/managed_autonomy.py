@@ -274,7 +274,10 @@ def terminal_snapshot(
         controls = validation_context["controls"]
         results = [controls.get(control, {}).get("result") for control in required]
         required_state = "FAIL" if any(result == "FAIL" for result in results) else "PASS" if results and all(result == "PASS" for result in results) else "UNRESOLVED"
-        profile_projection = {key: validation_context[key] for key in ("selected_validation_tier", "validation_profile_version", "required_validation_controls")}
+        profile_projection = {key: validation_context[key] for key in (
+            "selected_validation_tier", "validation_profile_version", "profile_reference",
+            "profile_selection_source", "required_validation_controls", "control_bindings",
+        )}
         validation = {**validation, **{key: value.get("result", "UNRESOLVED") for key, value in controls.items()}}
     elif required:
         # Historical evidence has no persisted profile: do not promote it.

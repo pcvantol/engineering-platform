@@ -161,7 +161,8 @@ def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tupl
     if profile is None:
         return lineage_projection, None
     try:
-        required = json.loads(profile[2]).get("validation_ids", [])
+        payload = json.loads(profile[2])
+        required = payload.get("validation_ids", [])
     except (AttributeError, TypeError, json.JSONDecodeError):
         return lineage_projection, None
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
@@ -186,7 +187,10 @@ def _qualification_evidence(connection: sqlite3.Connection, run_id: str) -> tupl
     )
     return lineage_projection, {
         "selected_validation_tier": profile[0], "validation_profile_version": profile[1],
+        "profile_reference": payload.get("profile_reference", UNAVAILABLE),
+        "profile_selection_source": payload.get("profile_selection_source", UNAVAILABLE),
         "required_validation_controls": required, "required_validation_state": required_state,
+        "control_bindings": payload.get("control_bindings", UNAVAILABLE),
         "recorded_at": profile[3],
         "controls": [
             {"validation_id": validation_id, "category": row[1], "required_for_profile": bool(row[2]),

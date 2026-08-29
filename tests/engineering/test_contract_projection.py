@@ -108,6 +108,8 @@ class ContractProjectionTests(unittest.TestCase):
         required = payload["validation"]["required_validation"]
         self.assertEqual(required["required_validation_state"], "PASS")
         self.assertEqual(required["required_validation_controls"], ["git_diff_check"])
+        self.assertEqual(required["profile_reference"], "validation-profile-registry:DOCUMENTATION@1.0")
+        self.assertEqual(required["control_bindings"][0]["validation_id"], "git_diff_check")
 
     def test_unknown_and_stale_actions_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

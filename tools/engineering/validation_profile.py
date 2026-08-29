@@ -34,6 +34,10 @@ class ValidationControlLauncher:
     command: tuple[str, ...]
 
 
+class ValidationProfileResolutionError(ValueError):
+    """The selected run profile is absent or does not match this registry."""
+
+
 def _python_command(*arguments: str) -> tuple[str, ...]:
     return (sys.executable, *arguments)
 
@@ -65,6 +69,48 @@ CONTROL_LAUNCHERS = {
 def control_launcher(validation_id: str) -> ValidationControlLauncher | None:
     """Resolve a persisted required-control identity to its canonical launcher."""
     return CONTROL_LAUNCHERS.get(validation_id)
+
+
+def control_binding(validation_id: str) -> dict[str, object] | None:
+    """Return the immutable launcher snapshot for one registry control."""
+    launcher = control_launcher(validation_id)
+    if launcher is None:
+        return None
+    return {
+        "validation_id": launcher.validation_id,
+        "required": True,
+        "category": launcher.category,
+        "control_identity": launcher.control_identity,
+        "command": list(launcher.command),
+    }
+
+
+def resolve_producer_profile(payload: object) -> tuple["ValidationProfile", str]:
+    """Resolve a producer-selected profile against the canonical registry.
+
+    A validation-only request carries the selection as structured execution
+    context; prose is never a selection input.  The producer may select a
+    registry profile, but may not substitute its own control set.
+    """
+    if not isinstance(payload, dict):
+        raise ValidationProfileResolutionError("Selected validation profile is unavailable.")
+    tier, version, controls = payload.get("tier"), payload.get("version"), payload.get("required_controls")
+    if not isinstance(tier, str) or tier not in REQUIRED_CONTROLS:
+        raise ValidationProfileResolutionError("Selected validation profile is invalid.")
+    if version != VALIDATION_PROFILE_VERSION:
+        raise ValidationProfileResolutionError("Selected validation profile version is unavailable.")
+    expected = REQUIRED_CONTROLS[tier]
+    if not isinstance(controls, list) or tuple(controls) != expected:
+        raise ValidationProfileResolutionError("Selected validation profile controls are invalid.")
+    return ValidationProfile(tier, (), tuple()), f"validation-profile-registry:{tier}@{version}"
+
+
+def profile_control_bindings(profile: "ValidationProfile") -> tuple[dict[str, object], ...]:
+    """Snapshot every launcher selected by a profile before execution."""
+    bindings = tuple(control_binding(validation_id) for validation_id in profile.required_controls)
+    if any(binding is None for binding in bindings):
+        raise ValidationProfileResolutionError("Selected validation profile launcher is unavailable.")
+    return tuple(binding for binding in bindings if binding is not None)
 
 @dataclass(frozen=True)
 class ValidationProfile:
