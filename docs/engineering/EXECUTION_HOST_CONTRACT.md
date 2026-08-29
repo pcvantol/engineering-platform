@@ -49,6 +49,16 @@ types and the context version fail closed before the Inbox claim. A JSON-like
 but invalid submission is never treated as a legacy prompt or partially
 processed.
 
+When a structured context declares `action_intent: VALIDATION_ONLY`, it must
+also declare `validation_profile` as the canonical registry object containing
+`tier`, `version` and the exact `required_controls` list. The producer selects
+the tier; Engineering Platform validates the complete object against its
+canonical registry before immutable submission persistence or Inbox
+publication. Prompt prose cannot select either field. `MUTATING_DELIVERY` and
+`validation_profile` remain independent explicit fields: a profile does not
+change the action intent, and mutating validation selection remains subject to
+its existing lifecycle policy.
+
 The exact submitted JSON envelope, submission metadata, Producer provenance,
 validated optional Execution Context snapshot and run linkage are written once
 to the canonical datastore before the Inbox file is consumed. Snapshot rows

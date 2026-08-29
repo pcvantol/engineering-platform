@@ -2,7 +2,7 @@ from __future__ import annotations
 import unittest
 from tools.engineering.validation_profile import (
     ValidationProfileResolutionError, classify, profile_control_bindings,
-    resolve_producer_profile,
+    producer_profile_payload, resolve_producer_profile,
 )
 
 class ValidationProfileTests(unittest.TestCase):
@@ -34,3 +34,11 @@ class ValidationProfileTests(unittest.TestCase):
             resolve_producer_profile(None)
         with self.assertRaises(ValidationProfileResolutionError):
             resolve_producer_profile({"tier": "DASHBOARD", "version": "1.0", "required_controls": ["dashboard_browser"]})
+
+    def test_producer_payload_is_derived_only_from_the_canonical_registry(self) -> None:
+        self.assertEqual(producer_profile_payload("DASHBOARD"), {
+            "tier": "DASHBOARD", "version": "1.0",
+            "required_controls": ["git_diff_check", "engineering_python", "dashboard_browser"],
+        })
+        with self.assertRaises(ValidationProfileResolutionError):
+            producer_profile_payload("DASHBOARD ")

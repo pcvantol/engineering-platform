@@ -54,11 +54,16 @@ authentication and request-size validation.
 
 `python3 -m tools.engineering.workspace_inbox_api` is the supported local
 operator-facing route for a structured Human submission. It requires an
-explicit `--producer-id` and explicit `--action-intent` value. The producer ID
-is normalized to `human:<operator-identity>` and is never `legacy`. It emits
-the existing v1 envelope, sets the existing prompt-level `Execution Mode:
-Managed` contract, persists the producer-owned Execution Context, and then
-uses this same bounded API. It does not infer action intent from prompt prose.
+explicit `--producer-id` and explicit `--action-intent` value. A structured
+`VALIDATION_ONLY` submission also requires `--validation-profile <tier>`.
+The tier is resolved before persistence against the canonical validation
+profile registry; the registry supplies the existing profile version and exact
+required-control list. Unknown, malformed and missing required profiles are
+rejected before any Inbox publication. The producer ID is normalized to
+`human:<operator-identity>` and is never `legacy`. It emits the existing v1
+envelope, sets the existing prompt-level `Execution Mode: Managed` contract,
+persists the producer-owned Execution Context, and then uses this same bounded
+API. It does not infer action intent or validation profile from prompt prose.
 
 For example:
 
@@ -66,14 +71,18 @@ For example:
 python3 -m tools.engineering.workspace_inbox_api \
   --prompt-file /path/to/objective.md \
   --producer-id operator-peter \
-  --action-intent VALIDATION_ONLY
+  --action-intent VALIDATION_ONLY \
+  --validation-profile DASHBOARD
 ```
 
-`MUTATING_DELIVERY` is equally explicit. The iPhone Shortcut may submit this
-same JSON envelope directly to the iCloud Inbox; it must not save only the
-prompt text when an explicit action intent is required. Plain-text files remain
-the compatibility path and always retain `HUMAN` / `legacy`, no supplied
-Execution Context, and the safe `MUTATING_DELIVERY` default.
+`MUTATING_DELIVERY` is equally explicit and does not acquire a profile merely
+because one is present. Forge uses the same `execution_context.validation_profile`
+contract when it supplies a structured profile. The iPhone Shortcut may submit
+this same JSON envelope directly to the iCloud Inbox; it must not save only the
+prompt text when an explicit action intent or profile is required. Plain-text
+files remain the compatibility path and always retain `HUMAN` / `legacy`, no
+supplied Execution Context, no producer-supplied validation profile, and the
+safe `MUTATING_DELIVERY` default.
 
 ### Dependabot admission
 

@@ -8,6 +8,7 @@ import json
 from tools.engineering.producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from tools.engineering.recommendation_handoff import ForgeGovernanceHandoff, report_lines
 from tools.engineering.execution_host import execution_mode_for
+from tools.engineering.validation_profile import producer_profile_payload
 
 
 class ProducerContractTest(unittest.TestCase):
@@ -35,6 +36,35 @@ class ProducerContractTest(unittest.TestCase):
             "prompt": {"text": "A bounded action"},
         }))
         self.assertIsNone(submission.execution_context)
+
+    def test_structured_validation_only_requires_a_canonical_profile_without_prompt_inference(self) -> None:
+        envelope = {
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "submission-validation-only"},
+            "producer": {"id": "forge", "type": "FORGE"},
+            "prompt": {"text": "validation_profile: DASHBOARD"},
+            "execution_context": {"context_version": "1.0", "action_intent": "VALIDATION_ONLY"},
+        }
+        with self.assertRaisesRegex(ProducerSubmissionError, "validation_profile is required"):
+            parse_producer_submission(json.dumps(envelope))
+        envelope["execution_context"]["validation_profile"] = producer_profile_payload("DASHBOARD")
+        self.assertEqual(
+            parse_producer_submission(json.dumps(envelope)).execution_context["validation_profile"],
+            producer_profile_payload("DASHBOARD"),
+        )
+
+    def test_profile_and_action_intent_are_independent_explicit_fields(self) -> None:
+        envelope = {
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "submission-mutating-profile"},
+            "producer": {"id": "forge", "type": "FORGE"},
+            "prompt": {"text": "validation only in prose"},
+            "execution_context": {
+                "context_version": "1.0", "action_intent": "MUTATING_DELIVERY",
+                "validation_profile": producer_profile_payload("DASHBOARD"),
+            },
+        }
+        self.assertEqual(parse_producer_submission(json.dumps(envelope)).execution_context["action_intent"], "MUTATING_DELIVERY")
 
     def test_invalid_json_like_envelope_fails_closed(self) -> None:
         with self.assertRaisesRegex(ProducerSubmissionError, "valid JSON"):

@@ -171,8 +171,22 @@ def _persisted_producer_submission(root: Path, state: TransactionState, fallback
     ), submission
 
 
-def _producer_submission_contract_lines(submission: dict[str, object] | None, state: TransactionState) -> tuple[str, ...]:
+def _producer_submission_contract_lines(
+    submission: dict[str, object] | None, state: TransactionState, root: Path | None = None,
+) -> tuple[str, ...]:
     context = submission.get("execution_context") if isinstance(submission, dict) else None
+    profile = context.get("validation_profile") if isinstance(context, dict) else None
+    validation_context = None
+    if root is not None:
+        try:
+            validation_context = load_validation_context(root, state.run_id)
+        except EngineeringStorageError:
+            validation_context = None
+    profile_source = (
+        validation_context.get("profile_selection_source", "not recorded")
+        if isinstance(validation_context, dict) and isinstance(profile, dict)
+        else "not supplied by Producer"
+    )
     return (
         "## Producer Submission Contract",
         f"- Submission ID: `{submission.get('submission_id') if submission else 'legacy'}`",
@@ -180,8 +194,12 @@ def _producer_submission_contract_lines(submission: dict[str, object] | None, st
         "- Submission Status: `PERSISTED_IMMUTABLY`",
         "",
         "## Execution Context Contract",
-        f"- Execution Context Status: `{'SUPPLIED' if isinstance(context, dict) else 'NOT_SUPPLIED_BY_PRODUCER'}`",
+        f"- Execution Context Status: `{'SUPPLIED_BY_PRODUCER' if isinstance(context, dict) else 'NOT_SUPPLIED_BY_PRODUCER'}`",
         f"- Execution Context Version: `{submission.get('execution_context_version') if isinstance(context, dict) else 'not supplied'}`",
+        f"- Execution Context Reference: `execution-submission:{submission.get('submission_id') if isinstance(context, dict) else 'legacy'}`",
+        f"- Action Intent: `{context.get('action_intent', 'not supplied') if isinstance(context, dict) else 'not supplied'}`",
+        f"- Validation Profile: `{profile.get('tier', 'not supplied') if isinstance(profile, dict) else 'not supplied'}`",
+        f"- Validation Profile Source: `{profile_source}`",
         "- Snapshot: " + (json.dumps(context, sort_keys=True) if isinstance(context, dict) else "Not supplied by Producer."),
         f"- Execution Status: `{state.phase}`",
         "",
@@ -1232,7 +1250,7 @@ def generate_terminal_report(
             f"- Engineering Action ID: `{producer.engineering_action_id or 'not supplied'}`",
             f"- Execution Constraint Version: `{producer.execution_constraint_version or 'not supplied'}`",
             "",
-            *_producer_submission_contract_lines(submission, state),
+            *_producer_submission_contract_lines(submission, state, root),
             "## Execution Target Identity",
             "- Execution Host: `Engineering Platform`",
             f"- Execution Host Repository: `{state.repository}`",

@@ -12,11 +12,13 @@ from tools.engineering.workspace_inbox_api import (
     WorkspaceInboxSubmissionError,
     build_human_envelope,
     canonical_human_producer_id,
+    main as workspace_inbox_main,
     publish,
     submit_human,
 )
 from tools.engineering.producer import parse_producer_submission
 from tools.engineering.storage import open_storage
+from tools.engineering.validation_profile import producer_profile_payload
 
 
 class WorkspaceInboxApiTest(unittest.TestCase):
@@ -42,7 +44,10 @@ class WorkspaceInboxApiTest(unittest.TestCase):
             "submission": {"id": "operator-validation-only-001"},
             "producer": {"id": "operator", "type": "HUMAN"},
             "prompt": {"text": "Validate the selected controls."},
-            "execution_context": {"context_version": "1.0", "action_intent": "VALIDATION_ONLY"},
+            "execution_context": {
+                "context_version": "1.0", "action_intent": "VALIDATION_ONLY",
+                "validation_profile": producer_profile_payload("DASHBOARD"),
+            },
         })
 
     def test_valid_forge_envelope_is_atomically_published_to_the_physical_inbox(self) -> None:
@@ -91,12 +96,14 @@ class WorkspaceInboxApiTest(unittest.TestCase):
                 connection.close()
         self.assertEqual(row[0], "HUMAN")
         self.assertEqual(json.loads(row[1])["action_intent"], "VALIDATION_ONLY")
+        self.assertEqual(json.loads(row[1])["validation_profile"], producer_profile_payload("DASHBOARD"))
 
     def test_operator_route_builds_explicit_nonlegacy_human_validation_only(self) -> None:
         envelope = build_human_envelope(
             prompt="Run the bounded validation controls.",
             producer_identity="operator-peter",
             action_intent="VALIDATION_ONLY",
+            validation_profile="DASHBOARD",
             submission_id="human-validation-001",
         )
         parsed = parse_producer_submission(json.dumps(envelope))
@@ -105,7 +112,10 @@ class WorkspaceInboxApiTest(unittest.TestCase):
         self.assertEqual(parsed.producer.producer_id, "human:operator-peter")
         self.assertNotEqual(parsed.producer.producer_id, "legacy")
         self.assertEqual(parsed.contract_version, ENVELOPE_CONTRACT_VERSION)
-        self.assertEqual(parsed.execution_context, {"context_version": "1.0", "action_intent": "VALIDATION_ONLY"})
+        self.assertEqual(parsed.execution_context, {
+            "context_version": "1.0", "action_intent": "VALIDATION_ONLY",
+            "validation_profile": producer_profile_payload("DASHBOARD"),
+        })
         self.assertTrue(parsed.prompt.startswith("Execution Mode: Managed"))
 
     def test_operator_route_keeps_mutating_delivery_explicit_and_does_not_parse_prose(self) -> None:
@@ -122,6 +132,14 @@ class WorkspaceInboxApiTest(unittest.TestCase):
             canonical_human_producer_id("legacy")
         with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "intent"):
             build_human_envelope(prompt="work", producer_identity="operator", action_intent="INFERRED")
+        with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "require a validation profile") as error:
+            build_human_envelope(prompt="work", producer_identity="operator", action_intent="VALIDATION_ONLY")
+        self.assertEqual(error.exception.code, "validation_profile_required")
+        with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "validation profile") as error:
+            build_human_envelope(
+                prompt="work", producer_identity="operator", action_intent="VALIDATION_ONLY", validation_profile="UNKNOWN"
+            )
+        self.assertEqual(error.exception.code, "invalid_validation_profile")
         with self.assertRaisesRegex(WorkspaceInboxSubmissionError, "Managed"):
             build_human_envelope(
                 prompt="Execution Mode: Genesis\n\nwork", producer_identity="operator", action_intent="VALIDATION_ONLY"
@@ -136,7 +154,7 @@ class WorkspaceInboxApiTest(unittest.TestCase):
             with patch.dict(os.environ, {"DJCONNECT_ENGINEERING_INBOX": str(transport)}, clear=False):
                 receipt = submit_human(
                     root, prompt="Run controls.", producer_identity="operator-peter",
-                    action_intent="VALIDATION_ONLY", submission_id="human-persisted-001",
+                    action_intent="VALIDATION_ONLY", validation_profile="DASHBOARD", submission_id="human-persisted-001",
                 )
             with open_storage(root) as connection:
                 row = connection.execute(
@@ -145,7 +163,52 @@ class WorkspaceInboxApiTest(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(row[:3], ("human:operator-peter", "HUMAN", "1.0"))
             self.assertEqual(json.loads(row[3])["action_intent"], "VALIDATION_ONLY")
+            self.assertEqual(json.loads(row[3])["validation_profile"], producer_profile_payload("DASHBOARD"))
             self.assertEqual(
                 parse_producer_submission((inbox / receipt.filename).read_text(encoding="utf-8")).execution_context["action_intent"],
                 "VALIDATION_ONLY",
             )
+            self.assertEqual(
+                parse_producer_submission((inbox / receipt.filename).read_text(encoding="utf-8")).execution_context["validation_profile"],
+                producer_profile_payload("DASHBOARD"),
+            )
+
+    def test_cli_accepts_a_canonical_validation_profile_and_publishes_the_same_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._root(directory)
+            transport = root / "transport"
+            inbox = transport / "Inbox"
+            inbox.mkdir(parents=True)
+            prompt = root / "objective.md"
+            prompt.write_text("Run selected controls.", encoding="utf-8")
+            with patch.dict(os.environ, {"DJCONNECT_ENGINEERING_INBOX": str(transport)}, clear=False):
+                code = workspace_inbox_main([
+                    "--root", str(root), "--prompt-file", str(prompt), "--producer-id", "operator-peter",
+                    "--action-intent", "VALIDATION_ONLY", "--validation-profile", "DASHBOARD",
+                    "--submission-id", "human-cli-001",
+                ])
+            self.assertEqual(code, 0)
+            with open_storage(root) as connection:
+                stored = connection.execute(
+                    "SELECT execution_context_snapshot FROM execution_submissions WHERE submission_id='human-cli-001'"
+                ).fetchone()
+            published = parse_producer_submission(next(inbox.glob("producer-human-cli-001-*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(stored[0]), published.execution_context)
+        self.assertEqual(published.execution_context["validation_profile"], producer_profile_payload("DASHBOARD"))
+
+    def test_invalid_profile_is_rejected_before_storage_or_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._root(directory)
+            transport = root / "transport"
+            inbox = transport / "Inbox"
+            inbox.mkdir(parents=True)
+            with patch.dict(os.environ, {"DJCONNECT_ENGINEERING_INBOX": str(transport)}, clear=False):
+                with self.assertRaises(WorkspaceInboxSubmissionError):
+                    submit_human(
+                        root, prompt="validation_profile: DASHBOARD", producer_identity="operator-peter",
+                        action_intent="VALIDATION_ONLY", validation_profile="not a tier", submission_id="human-invalid-001",
+                    )
+            with open_storage(root) as connection:
+                count = connection.execute("SELECT COUNT(*) FROM execution_submissions").fetchone()[0]
+            self.assertEqual(count, 0)
+            self.assertEqual(list(inbox.iterdir()), [])

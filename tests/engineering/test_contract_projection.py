@@ -11,6 +11,7 @@ import unittest
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.contracts import AllowedAction, evaluate_action, get_allowed_actions, get_run_context
 from tools.engineering.contracts.models import ContractVersionError, require_compatible_version
+from tools.engineering.execution_reporting import _producer_submission_contract_lines
 from tools.engineering.managed_autonomy import append_pr_check_observation
 from tools.engineering.storage import (
     open_storage,
@@ -18,6 +19,7 @@ from tools.engineering.storage import (
     record_submission,
     record_validation_control_result,
     record_validation_profile,
+    load_submission_for_run,
 )
 
 
@@ -110,6 +112,35 @@ class ContractProjectionTests(unittest.TestCase):
         self.assertEqual(required["required_validation_controls"], ["git_diff_check"])
         self.assertEqual(required["profile_reference"], "validation-profile-registry:DOCUMENTATION@1.0")
         self.assertEqual(required["control_bindings"][0]["validation_id"], "git_diff_check")
+
+    def test_report_exposes_the_persisted_producer_profile_without_prompt_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = self._state(root)
+            execution_context = {
+                "context_version": "1.0", "action_intent": "VALIDATION_ONLY",
+                "validation_profile": {
+                    "tier": "DASHBOARD", "version": "1.0",
+                    "required_controls": ["git_diff_check", "engineering_python", "dashboard_browser"],
+                },
+            }
+            record_submission(
+                root, submission_id="human-context", producer_id="human:operator", producer_type="HUMAN",
+                contract_version="1.0", prompt_content="profile: FULL", prompt_metadata={}, target_identity={},
+                original_envelope={}, execution_context=execution_context, received_at="2026-08-29T00:00:00+00:00",
+                link_run_id=state.run_id,
+            )
+            record_validation_profile(
+                root, run_id=state.run_id, selected_validation_tier="DASHBOARD", validation_profile_version="1.0",
+                required_validation_controls=("git_diff_check", "engineering_python", "dashboard_browser"),
+                profile_selection_source="producer_execution_context", recorded_at="2026-08-29T00:00:00+00:00",
+            )
+            submission = load_submission_for_run(root, state.run_id)
+            lines = "\n".join(_producer_submission_contract_lines(submission, state, root))
+        self.assertIn("Execution Context Status: `SUPPLIED_BY_PRODUCER`", lines)
+        self.assertIn("Action Intent: `VALIDATION_ONLY`", lines)
+        self.assertIn("Validation Profile: `DASHBOARD`", lines)
+        self.assertIn("Validation Profile Source: `producer_execution_context`", lines)
 
     def test_unknown_and_stale_actions_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

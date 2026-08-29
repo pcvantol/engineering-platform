@@ -105,6 +105,24 @@ def resolve_producer_profile(payload: object) -> tuple["ValidationProfile", str]
     return ValidationProfile(tier, (), tuple()), f"validation-profile-registry:{tier}@{version}"
 
 
+def producer_profile_payload(tier: object) -> dict[str, object]:
+    """Build the one allowed producer envelope value for a registry tier.
+
+    Producers select only the canonical tier.  The registry remains the sole
+    owner of profile version and required-control identities, so a caller
+    cannot create a second profile representation or substitute controls.
+    """
+    if not isinstance(tier, str) or tier not in REQUIRED_CONTROLS:
+        raise ValidationProfileResolutionError("Selected validation profile is invalid.")
+    payload: dict[str, object] = {
+        "tier": tier,
+        "version": VALIDATION_PROFILE_VERSION,
+        "required_controls": list(REQUIRED_CONTROLS[tier]),
+    }
+    resolve_producer_profile(payload)
+    return payload
+
+
 def profile_control_bindings(profile: "ValidationProfile") -> tuple[dict[str, object], ...]:
     """Snapshot every launcher selected by a profile before execution."""
     bindings = tuple(control_binding(validation_id) for validation_id in profile.required_controls)

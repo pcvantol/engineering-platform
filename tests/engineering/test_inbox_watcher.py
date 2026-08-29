@@ -1174,6 +1174,7 @@ class InboxWatcherTest(unittest.TestCase):
             prompt="# Validate\n\nRun required controls.",
             producer_identity="operator-peter",
             action_intent="VALIDATION_ONLY",
+            validation_profile="DASHBOARD",
             submission_id="human-watcher-001",
         )
         source = self.inbox / "structured-human.json"
@@ -1198,6 +1199,7 @@ class InboxWatcherTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row[:3], ("human:operator-peter", "HUMAN", "1.0"))
         self.assertEqual(json.loads(row[3])["action_intent"], "VALIDATION_ONLY")
+        self.assertEqual(json.loads(row[3])["validation_profile"]["tier"], "DASHBOARD")
 
     def test_queue_wait_uses_persisted_eligibility_and_ends_when_execution_is_claimed(self) -> None:
         prompt = self.inbox / "timed-job.txt"

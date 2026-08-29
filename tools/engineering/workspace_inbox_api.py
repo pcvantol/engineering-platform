@@ -20,6 +20,7 @@ from .producer import (
     parse_producer_submission,
 )
 from .storage import EngineeringStorageError, record_submission
+from .validation_profile import ValidationProfileResolutionError, producer_profile_payload
 
 
 class WorkspaceInboxSubmissionError(ValueError):
@@ -55,7 +56,8 @@ def canonical_human_producer_id(identity: str) -> str:
 
 
 def build_human_envelope(
-    *, prompt: str, producer_identity: str, action_intent: str, submission_id: str | None = None,
+    *, prompt: str, producer_identity: str, action_intent: str, validation_profile: str | None = None,
+    submission_id: str | None = None,
 ) -> dict[str, object]:
     """Build one explicit Managed HUMAN envelope using the existing v1 contract."""
     if not isinstance(prompt, str) or not prompt.strip():
@@ -74,6 +76,20 @@ def build_human_envelope(
         # Execution mode remains the existing prompt-level Execution Host
         # contract. It is explicit here, never inferred from objective prose.
         objective = f"Execution Mode: Managed\n\n{prompt}"
+    if action_intent == "VALIDATION_ONLY" and validation_profile is None:
+        raise WorkspaceInboxSubmissionError(
+            "validation_profile_required", "Human VALIDATION_ONLY submissions require a validation profile."
+        )
+    try:
+        profile_payload = (
+            producer_profile_payload(validation_profile)
+            if validation_profile is not None
+            else None
+        )
+    except ValidationProfileResolutionError as error:
+        raise WorkspaceInboxSubmissionError(
+            "invalid_validation_profile", "Human submission validation profile is invalid."
+        ) from error
     envelope: dict[str, object] = {
         "contract": {"name": ENVELOPE_CONTRACT_NAME, "version": ENVELOPE_CONTRACT_VERSION},
         "submission": {"id": identifier},
@@ -82,6 +98,7 @@ def build_human_envelope(
         "execution_context": {
             "context_version": HUMAN_EXECUTION_CONTEXT_VERSION,
             "action_intent": action_intent,
+            **({"validation_profile": profile_payload} if profile_payload is not None else {}),
         },
     }
     try:
@@ -160,13 +177,15 @@ def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
 
 def submit_human(
     root: Path,
-    *, prompt: str, producer_identity: str, action_intent: str, submission_id: str | None = None,
+    *, prompt: str, producer_identity: str, action_intent: str, validation_profile: str | None = None,
+    submission_id: str | None = None,
 ) -> WorkspaceInboxReceipt:
     """Persist then publish the exact structured Human envelope through ``publish``."""
     envelope = build_human_envelope(
         prompt=prompt,
         producer_identity=producer_identity,
         action_intent=action_intent,
+        validation_profile=validation_profile,
         submission_id=submission_id,
     )
     return publish(root, json.dumps(envelope, sort_keys=True))
@@ -179,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--producer-id", required=True)
     parser.add_argument("--action-intent", required=True, choices=sorted(HUMAN_ACTION_INTENTS))
+    parser.add_argument("--validation-profile", metavar="TIER")
     parser.add_argument("--submission-id")
     arguments = parser.parse_args(argv)
     try:
@@ -187,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt=arguments.prompt_file.read_text(encoding="utf-8"),
             producer_identity=arguments.producer_id,
             action_intent=arguments.action_intent,
+            validation_profile=arguments.validation_profile,
             submission_id=arguments.submission_id,
         )
     except (OSError, WorkspaceInboxSubmissionError) as error:

@@ -7,6 +7,7 @@ import json
 import re
 
 from .recommendation_handoff import ForgeGovernanceHandoffError, validate_forge_governance_handoff
+from .validation_profile import ValidationProfileResolutionError, resolve_producer_profile
 
 
 _FIELD_LIMIT = 160
@@ -126,6 +127,10 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
         if intent is not None and intent not in {"MUTATING_DELIVERY", "VALIDATION_ONLY"}:
             raise ProducerSubmissionError("Producer Submission Envelope execution_context.action_intent is invalid.")
         profile = context.get("validation_profile")
+        if intent == "VALIDATION_ONLY" and profile is None:
+            raise ProducerSubmissionError(
+                "Producer Submission Envelope execution_context.validation_profile is required for VALIDATION_ONLY."
+            )
         if profile is not None:
             profile = _object(profile, "execution_context.validation_profile")
             _required_token(profile.get("tier"), "execution_context.validation_profile.tier")
@@ -133,6 +138,12 @@ def parse_producer_submission(content: str) -> ProducerSubmission:
             controls = profile.get("required_controls")
             if not isinstance(controls, list) or not controls or any(_optional_token(item, "execution_context.validation_profile.required_controls") is None for item in controls):
                 raise ProducerSubmissionError("Producer Submission Envelope execution_context.validation_profile.required_controls is invalid.")
+            try:
+                resolve_producer_profile(profile)
+            except ValidationProfileResolutionError as error:
+                raise ProducerSubmissionError(
+                    "Producer Submission Envelope execution_context.validation_profile is invalid."
+                ) from error
     handoff = envelope.get("forge_governance_handoff")
     if handoff is not None:
         try:
