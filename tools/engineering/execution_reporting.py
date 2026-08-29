@@ -27,6 +27,7 @@ from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as reco
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run, load_run_lineage, load_validation_context
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
+from .validation_identity import is_canonical_dashboard_command
 
 
 class ReportingCoordinator:
@@ -455,12 +456,19 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
         stored = stored_controls.get(control_id) if isinstance(stored_controls, dict) else None
         # The terminal Evidence Bundle is appended last and therefore wins over
         # historical checkpoint entries for the current projection.
-        match = next((record for record in reversed(records) if any(marker in record["command"].casefold() for marker in markers)), None)
+        match = next((
+            record for record in reversed(records)
+            if (
+                is_canonical_dashboard_command(record["command"])
+                if control_id == "dashboard_browser"
+                else any(marker in record["command"].casefold() for marker in markers)
+            )
+        ), None)
         if isinstance(stored, dict):
             result = str(stored.get("result") or "UNAVAILABLE")
             reference = str(stored.get("control_identity") or "not recorded")
             execution_status = str(stored.get("execution_status") or "UNAVAILABLE")
-            included = "AVAILABLE" if control_id == "dashboard_browser" and "npm run test:engineering-dashboard" in reference else "UNAVAILABLE"
+            included = "AVAILABLE" if control_id == "dashboard_browser" and is_canonical_dashboard_command(reference) else "UNAVAILABLE"
         elif match is None:
             result, reference = "NOT_EXECUTED", "not recorded"
             execution_status, included = "NOT_EXECUTED", "UNAVAILABLE"
@@ -473,7 +481,7 @@ def _validation_control_projection(root: Path, state: TransactionState, bundle: 
             )
             reference = match["command"]
             execution_status = "EXECUTED"
-            included = "AVAILABLE" if control_id == "dashboard_browser" and "npm run test:engineering-dashboard" in reference.casefold() else "UNAVAILABLE"
+            included = "AVAILABLE" if control_id == "dashboard_browser" and is_canonical_dashboard_command(reference) else "UNAVAILABLE"
         lines.extend((
             f"- {name}: `{result}` — `{source}`",
             f"  - Validation ID: `{control_id}`; Category: `{category}`; Check: `{reference}`.",

@@ -4,35 +4,33 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import json
 import logging
 import os
 from pathlib import Path
-import subprocess
-import tempfile
+import subprocess  # noqa: F401 - compatibility export for host tests
 import time
 from threading import Lock
-from typing import Callable, Mapping, Protocol
+from typing import Protocol
 import uuid
 import re
 import sqlite3
+
+from .validation_identity import is_canonical_dashboard_command
 
 from .agent_state import MAX_COMMIT_EVIDENCE_RECORDS, StateError, StateStore, TransactionState, redact_diagnostic, verified_commit_evidence_record
 from .capability_review import (
     ReviewerResult,
     ReviewerSelection,
     records_for_storage,
-    reviewer_prompt,
     run_reviews,
     select_reviewers,
 )
-from .codex_observability import (
-    codex_final_message as _codex_final_message,
-    extract_codex_runtime_metadata,
-    extract_codex_usage,
-    write_codex_usage,
-)
+from .codex_observability import codex_final_message as _codex_final_message  # noqa: F401
+from .codex_observability import extract_codex_runtime_metadata  # noqa: F401
+from .codex_observability import extract_codex_usage  # noqa: F401
+from .codex_observability import write_codex_usage
 from .engineering_memory import (
     capture_engineering_memory,
     load_engineering_memory,
@@ -43,26 +41,21 @@ from .platform_version import (
     EngineeringPlatformCompatibilityError,
     EngineeringPlatformManifest,
     RunnerCompatibility,
-    detected_codex_cli_version,
     validate_compatibility,
 )
-from .qualification import dashboard, execute_qualification, latest_qualification
+from .qualification import dashboard, execute_qualification
 from .report_analysis import analyze as analyze_terminal_report
 from .prompt_history import record_terminal_report
-from .producer import ProducerMetadata, parse_producer_metadata
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
 from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
 from .platform_bootstrap import runtime_workspace
-from .providers import GitProvider, GitHubProvider, CodexCliProvider
+from .providers import GitProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
-from .drift_diagnostics import summary as drift_summary
-from .execution_lease import Lease, LeaseConflictError, LeaseHeartbeat, acquire as acquire_lease, heartbeat as heartbeat_lease, history as lease_history, host_identity, host_instance_id, liveness as lease_liveness, reconcile_stale, release as release_lease
+from .execution_lease import Lease, LeaseConflictError, LeaseHeartbeat, acquire as acquire_lease, heartbeat as heartbeat_lease, host_identity, host_instance_id, reconcile_stale, release as release_lease
 from .execution_readiness import ReadinessFacts, decide as decide_readiness, evaluate as evaluate_readiness, selected_profile
 from .execution_transaction import ExecutionTransaction
-from .execution_evidence import TerminalEvidenceBundle
-from .execution_context import ExecutionContext
 from .execution_context import (
     additional_workspace_write_roots as context_workspace_write_roots,
     execution_mode_for as context_execution_mode_for,
@@ -89,8 +82,7 @@ from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
 from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .execution_reporting import ReportingCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_readiness_evaluation, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_validation_context, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
@@ -176,65 +168,6 @@ class AgentClient(Protocol):
     def version(self) -> str: ...
 
     def invoke(self, root: Path, prompt: str) -> AgentResult: ...
-
-
-def project_codex_activity(event: object) -> str | None:
-    """Map a Codex JSONL event to bounded progress metadata.
-
-    The dashboard receives only a fixed activity label. Raw reasoning, prompts,
-    command text, tool arguments and tool output are intentionally ignored.
-    """
-    if not isinstance(event, dict) or event.get("type") not in {"item.started", "item.updated"}:
-        return None
-    item = event.get("item")
-    if not isinstance(item, dict):
-        return None
-    labels = {
-        "reasoning": "Codex plant de volgende stap",
-        "command_execution": "Codex voert een opdracht uit",
-        "file_change": "Codex bewerkt bestanden",
-        "web_search": "Codex onderzoekt referentiemateriaal",
-        "mcp_tool_call": "Codex gebruikt een ontwikkeltool",
-        "agent_message": "Codex formuleert het resultaat",
-    }
-    return labels.get(item.get("type"))
-
-
-
-def _redacted_cli_tail(value: str, prompt: str, *, limit: int = 1_200) -> str:
-    """Keep the actionable end of CLI output without retaining the prompt echo."""
-    without_prompt = value.replace(prompt, "[PROMPT_OMITTED]") if prompt else value
-    tail = "\n".join(without_prompt.splitlines()[-60:])
-    return redact_diagnostic(tail, limit=limit) or "(empty)"
-
-
-def _format_cli_failure(exit_code: int, stderr: str, stdout: str, prompt: str = "") -> str:
-    return "\n".join(
-        (
-            f"Codex CLI exit code: {exit_code}",
-            f"stderr tail: {_redacted_cli_tail(stderr, prompt)}",
-            f"stdout tail: {_redacted_cli_tail(stdout, prompt)}",
-        )
-    )
-
-
-def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
-    """Persist bounded, redacted CLI diagnostics for local troubleshooting."""
-    directory = root / ".engineering" / "logs" / "codex"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{run_id}.log"
-    content = "# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=3_000) + "\n"
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-    return path
 
 
 project_codex_activity = executor_project_codex_activity
@@ -842,7 +775,7 @@ class EngineeringRunner:
     @staticmethod
     def _validation_id(command: str, kind: str) -> str:
         """Reserve dashboard_browser for the canonical dashboard suite only."""
-        if kind == "browser_e2e" and "npm run test:engineering-dashboard" in command.casefold():
+        if kind == "browser_e2e" and is_canonical_dashboard_command(command):
             return "dashboard_browser"
         return f"validation_{kind}"
 
@@ -2456,12 +2389,19 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if state.phase == "COMPLETE" else 1
 
 
-
 # Reporting compatibility exports are implemented in execution_reporting.py.
-from .execution_reporting import (
-    _format_engineering_outcome, _format_reviewer_records, _format_terminal_report,
-    _next_action_message, _pull_request_summary, _repository_summary,
-    collect_terminal_evidence, corrected_terminal_report, format_management_summary,
-    format_terminal_management_summary, generate_terminal_report, report_consistency_errors,
+from .execution_reporting import (  # noqa: E402, F401
+    _format_engineering_outcome,
+    _format_reviewer_records,
+    _format_terminal_report,
+    _next_action_message,
+    _pull_request_summary,
+    _repository_summary,
+    collect_terminal_evidence,
+    corrected_terminal_report,
+    format_management_summary,
+    format_terminal_management_summary,
+    generate_terminal_report,
+    report_consistency_errors,
     terminal_report_matches_state,
 )

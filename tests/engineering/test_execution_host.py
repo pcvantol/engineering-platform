@@ -1138,6 +1138,22 @@ class LocalAgentRunnerTest(unittest.TestCase):
         })
         self.assertEqual(validation["outcome"], "COMPLETE")
 
+    def test_dashboard_browser_identity_requires_the_structural_npm_launcher(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None)
+        cases = (
+            ("npm run test:engineering-dashboard", "dashboard_browser"),
+            ("npm run test:engineering-dashboard -- --reporter=dot", "dashboard_browser"),
+            ("python3 -m unittest tests.engineering.test_dashboard_browser_validation", "validation_tests"),
+            ("pgrep -f 'playwright dashboard_browser_validation'", "validation_browser_e2e"),
+            ("echo npm run test:engineering-dashboard", "validation_browser_e2e"),
+            ("npm run test:engineering-dashboard && pgrep -f playwright", "validation_browser_e2e"),
+        )
+        for command, expected in cases:
+            with self.subTest(command=command):
+                kind = runner._validation_kind(command)
+                self.assertIsNotNone(kind)
+                self.assertEqual(runner._validation_id(command, kind), expected)
+
     def test_browser_command_terminal_evidence_preserves_invocation_on_pass_and_failure(self) -> None:
         class BrowserCommandAgent(CommandTimingFakeAgent):
             def __init__(self, exit_code: int | None) -> None:
@@ -2932,6 +2948,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("Dashboard/browser tests: `UNAVAILABLE` — `LOCAL`", body)
         self.assertIn("Execution status: `EXECUTED`.", body)
         self.assertIn("Execution inclusion: `AVAILABLE`.", body)
+
+    def test_complete_report_does_not_project_focused_or_diagnostic_commands_as_dashboard(self) -> None:
+        for command in (
+            "python3 -m unittest tests.engineering.test_dashboard_browser_validation",
+            "pgrep -f 'playwright dashboard_browser_validation'",
+        ):
+            with self.subTest(command=command):
+                state = TransactionState(
+                    f"dashboard-unrelated-{len(command)}", "pcvantol/djconnect", str(self.prompt), "COMPLETE",
+                    validation_evidence=({"command": command, "result": "passed"},), terminal=True,
+                )
+                body = generate_terminal_report(self.root, state).read_text(encoding="utf-8")
+                self.assertIn("Dashboard/browser tests: `NOT_EXECUTED` — `LOCAL`", body)
+                self.assertIn("Execution inclusion: `UNAVAILABLE`.", body)
 
     def test_engineering_evidence_2_report_is_self_validating_and_traceable(self) -> None:
         self.prompt.write_text(
