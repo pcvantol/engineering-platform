@@ -590,6 +590,30 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["current_phase"], "FINALIZE_AGENT")
         self.assertEqual(snapshot["finalization_pr"], 945)
 
+    def test_detached_runner_checkpoint_replaces_runner_starting_projection(self) -> None:
+        run_id = "inbox-detached-review"
+        state = TransactionState(
+            run_id, "pcvantol/djconnect", "prompt.md", "CAPABILITY_REVIEW",
+            next_action="review_capabilities",
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
+        inbox_watcher.status(
+            self.repo,
+            "RUNNER_STARTING",
+            run_id=run_id,
+            job_id="detached-review",
+            queued_jobs=0,
+            queue_items=[],
+        )
+
+        inbox_watcher._publish_active_queue(self.repo, [])
+
+        snapshot = inbox_watcher.load_projection(self.repo, "watcher_status")
+        self.assertEqual(snapshot["watcher_state"], "ENGINEERING_RUN_ACTIVE")
+        self.assertEqual(snapshot["run_id"], run_id)
+        self.assertEqual(snapshot["current_phase"], "CAPABILITY_REVIEW")
+        self.assertEqual(snapshot["current_action"], "review_capabilities")
+
     def test_operator_merge_wait_is_rate_limited_and_projects_prior_job_context(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState
 

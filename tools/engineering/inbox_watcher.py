@@ -590,10 +590,16 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
     except EngineeringStorageError:
         existing = {}
     state = _nonterminal_transaction_state(repo)
-    # A lease is only execution machinery, never lifecycle authority.  If the
-    # prior projection was idle while SQLite still has a non-terminal run,
-    # rebuild an active projection from that durable checkpoint.
-    if state is not None and existing.get("watcher_state") == "WATCHER_IDLE":
+    # A lease is only execution machinery, never lifecycle authority. Once
+    # the Execution Host has persisted a non-terminal checkpoint, it is the
+    # authoritative active-run projection. In particular, do not leave the
+    # dashboard and status command at RUNNER_STARTING after a detached runner
+    # has advanced into a real lifecycle phase.
+    if state is not None and existing.get("watcher_state") in {
+        "WATCHER_IDLE",
+        "JOB_CLAIMED",
+        "RUNNER_STARTING",
+    }:
         status(
             repo,
             "ENGINEERING_RUN_ACTIVE",
