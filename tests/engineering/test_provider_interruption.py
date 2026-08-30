@@ -8,7 +8,8 @@ from unittest.mock import patch
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import acquire, history
 from tools.engineering.execution_timing import phase_spans, start_phase
-from tools.engineering.provider_interruption import terminalize_after_host_exit
+from tools.engineering.provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
+from tools.engineering.provider_recovery import load_recovery_state
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 
 
@@ -106,3 +107,17 @@ class ProviderInterruptionRecoveryTests(unittest.TestCase):
         saved = self.store.load(self.state.run_id)
         self.assertTrue(saved.terminal)
         self.assertEqual(saved.terminal_condition, "provider_turn_interrupted")
+
+    def test_watcher_prepares_one_durable_same_run_recovery_before_terminalizing(self) -> None:
+        self._interrupted_invocation()
+        recovering = prepare_same_run_recovery_after_host_exit(self.root, self.state.run_id)
+        self.assertIsNotNone(recovering)
+        assert recovering is not None
+        self.assertEqual(recovering.run_id, self.state.run_id)
+        self.assertFalse(recovering.terminal)
+        self.assertEqual(recovering.next_action, "recover_provider_turn")
+        durable = load_recovery_state(self.root, self.state.run_id)
+        self.assertIsNotNone(durable)
+        assert durable is not None
+        self.assertEqual(durable["state"], "RECOVERY_AVAILABLE")
+        self.assertIsNone(prepare_same_run_recovery_after_host_exit(self.root, self.state.run_id))

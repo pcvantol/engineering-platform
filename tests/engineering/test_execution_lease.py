@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.engineering.agent_state import StateStore, TransactionState
 from tools.engineering.execution_lease import LeaseConflictError, LeaseHeartbeat, acquire, heartbeat, history, liveness, reconcile_stale, release
@@ -58,6 +60,69 @@ class ExecutionLeaseTest(unittest.TestCase):
         self.assertEqual(outcome[0]["outcome"], "RECOVERABLE")
         with open_storage(self.root) as connection:
             self.assertEqual(connection.execute("SELECT phase FROM engineering_transactions WHERE run_id='inbox-lease'").fetchone()[0], "INITIALIZE")
+
+    def test_verified_recovery_provider_retains_run_lease_after_host_expiry(self) -> None:
+        from tools.engineering.provider_recovery import (
+            claim_replacement_launch, create_recovery_available, record_provider_started,
+            transition_recovery_state,
+        )
+
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="departed-host")
+        create_recovery_available(
+            self.root, run_id="inbox-lease", triggering_invocation_id="attempt-one",
+            lifecycle_phase="EXECUTE_AGENT", branch="topic", worktree_identity=str(self.root),
+            lease_id=lease.lease_id,
+        )
+        self.assertTrue(transition_recovery_state(
+            self.root, run_id="inbox-lease", expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+        ))
+        claim = claim_replacement_launch(self.root, run_id="inbox-lease")
+        assert claim is not None
+        self.assertTrue(record_provider_started(
+            self.root, run_id="inbox-lease", receipt_id=str(claim["receipt_id"]),
+            pid=os.getpid(), process_group=os.getpgrp(),
+        ))
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "UPDATE execution_run_leases SET expires_at='2020-01-01T00:00:00+00:00' WHERE lease_id=?",
+                (lease.lease_id,),
+            )
+        outcomes = reconcile_stale(self.root)
+        self.assertEqual(outcomes[0]["outcome"], "RECOVERY_PROVIDER_STILL_ACTIVE")
+        self.assertEqual(liveness(self.root, "inbox-lease")["state"], "LIVE")
+        with self.assertRaises(LeaseConflictError):
+            acquire(self.root, "inbox-lease", identity="host", instance_id="competing-host")
+
+    def test_ambiguous_recovery_process_also_retains_lease_for_operator_resolution(self) -> None:
+        from tools.engineering.provider_recovery import (
+            claim_replacement_launch, create_recovery_available, record_provider_started,
+            transition_recovery_state,
+        )
+
+        lease = acquire(self.root, "inbox-lease", identity="host", instance_id="departed-host")
+        create_recovery_available(
+            self.root, run_id="inbox-lease", triggering_invocation_id="attempt-one",
+            lifecycle_phase="EXECUTE_AGENT", branch="topic", worktree_identity=str(self.root),
+            lease_id=lease.lease_id,
+        )
+        transition_recovery_state(
+            self.root, run_id="inbox-lease", expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+        )
+        claim = claim_replacement_launch(self.root, run_id="inbox-lease")
+        assert claim is not None
+        record_provider_started(
+            self.root, run_id="inbox-lease", receipt_id=str(claim["receipt_id"]),
+            pid=os.getpid(), process_group=os.getpgrp(),
+        )
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "UPDATE execution_run_leases SET expires_at='2020-01-01T00:00:00+00:00' WHERE lease_id=?",
+                (lease.lease_id,),
+            )
+        with patch("tools.engineering.execution_lease.verify_process_identity", return_value="MISMATCH"):
+            outcomes = reconcile_stale(self.root)
+        self.assertEqual(outcomes[0]["outcome"], "RECOVERY_PROVIDER_AMBIGUOUS")
+        self.assertEqual(liveness(self.root, "inbox-lease")["state"], "LIVE")
 
     def test_reconciles_a_proven_terminal_payload_after_lease_expiry(self) -> None:
         lease = acquire(self.root, "inbox-lease", identity="host", instance_id="instance-a")

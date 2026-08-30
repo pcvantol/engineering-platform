@@ -91,6 +91,13 @@ from .storage import EngineeringStorageError, load_admission_decision, load_subm
 from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
+from .provider_recovery import (
+    claim_replacement_launch, create_recovery_available, load_recovery_state, record_provider_started,
+    load_recovery_agent_result, mark_precheck_failed, persist_recovery_agent_result,
+    record_pre_execution_launch_failure, record_replacement_terminal, reconcile_recovery,
+    transition_recovery_state, consume_controlled_interruption_hook,
+)
+from .worktree_provenance import capture as capture_worktree_provenance, verify_recovery as verify_worktree_recovery
 from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
 from .provider_context_scope import ContextScope, POLICY_ID, initial_context_scope, provider_instruction
 from .execution_timing import ActivePhase
@@ -346,6 +353,106 @@ class EngineeringRunner:
         self._provider_context_telemetry: dict[str, int] = {}
         self._provider_dispatch_telemetry: dict[str, int] = {}
         self._dispatch_guard_enforced = False
+        self._last_provider_invocation_id: str | None = None
+
+    def _provider_recovery_preflight(self, state: TransactionState) -> str | None:
+        """Return a fail-closed reason before the sole same-run restart.
+
+        This deliberately relies on the host's already-held run lease and on
+        the process receipt that the client removes in its ``finally`` block;
+        a delay is never evidence that an old provider has stopped.
+        """
+        if state.terminal or dismissal_for_run(self.root, state.run_id):
+            return "CANCELLED"
+        if len(state.provider_recovery_attempts) >= 1 and state.provider_recovery_attempts[0].get("result") != "ACTIVE":
+            return "PRECHECK_FAILED"
+        if self.active_lease is None or self.active_lease.run_id != state.run_id:
+            return "PRECHECK_FAILED"
+        try:
+            evidence = self.repository.inspect(self.root)
+        except Exception:
+            return "PRECHECK_FAILED"
+        if state.branch and evidence.branch != state.branch:
+            return "PRECHECK_FAILED"
+        provenance = verify_worktree_recovery(
+            self.root, run_id=state.run_id, branch=state.branch,
+            transaction_baseline_sha=state.last_verified_sha,
+        )
+        if provenance is False:
+            return "PRECHECK_FAILED"
+        process_path = self.root / ".engineering" / "status" / "runner_process.json"
+        try:
+            process = json.loads(process_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            process = None
+        if isinstance(process, dict) and process.get("run_id") == state.run_id:
+            pid = process.get("pid")
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    process_path.unlink(missing_ok=True)
+                else:
+                    return "PRECHECK_FAILED"
+        return None
+
+    def _recovery_record(
+        self, state: TransactionState, *, original: str, replacement: str,
+        eligibility: str, result: str, requested_at: str, started_at: str,
+        completed_at: str,
+    ) -> TransactionState:
+        return replace(state, provider_recovery_attempts=({
+            "original_invocation_id": original, "replacement_invocation_id": replacement,
+            "phase": state.phase, "classification": "provider_turn_interrupted",
+            "eligibility": eligibility, "result": result,
+            "requested_at": requested_at, "started_at": started_at, "completed_at": completed_at,
+        },))
+
+    def _controlled_interruption_requested(self, state: TransactionState) -> bool:
+        """Read the opt-in, run-bound qualification hook; prompt text cannot set it.
+
+        The value is deliberately exact and process-local.  It is useful only
+        to qualification fixtures and remains inert for normal executions.
+        Durable consumption is represented by the recovery ledger.
+        """
+        return consume_controlled_interruption_hook(
+            self.root, run_id=state.run_id, phase=state.phase,
+        )
+
+    def _provider_process_boundary(self, state: TransactionState, process: object) -> None:
+        """Record the real provider start boundary for a claimed recovery."""
+        write_runner_process(self.root, state.run_id, process)
+        if not isinstance(process, dict):
+            return
+        recovery = load_recovery_state(self.root, state.run_id)
+        receipt_id = recovery.get("process_receipt_id") if isinstance(recovery, dict) else None
+        if recovery and recovery.get("state") == "RECOVERY_STARTING" and isinstance(receipt_id, str):
+            record_provider_started(
+                self.root, run_id=state.run_id, receipt_id=receipt_id,
+                pid=int(process["pid"]), process_group=int(process["process_group"]),
+            )
+
+    def _project_durable_recovery(self, state: TransactionState, recovery: dict[str, object]) -> None:
+        """Keep the legacy checkpoint field read-only-compatible with SQLite."""
+        result = str(recovery.get("state") or "")
+        projected_result = {
+            "RECOVERED": "RECOVERED",
+            "EXHAUSTED": "INTERRUPTED_AGAIN",
+            "PRECHECK_FAILED": "PRECHECK_FAILED",
+            "AMBIGUOUS": "PROVIDER_FAILED",
+        }.get(result)
+        if projected_result is None:
+            return
+        self.store.save(self._recovery_record(
+            state,
+            original=str(recovery.get("triggering_invocation_id") or "unavailable"),
+            replacement=str(recovery.get("replacement_invocation_id") or "unavailable"),
+            eligibility="ELIGIBLE" if result in {"RECOVERED", "EXHAUSTED"} else result,
+            result=projected_result,
+            requested_at=str(recovery.get("requested_at") or "unknown"),
+            started_at=str(recovery.get("provider_confirmed_active_at") or "not_started"),
+            completed_at=str(recovery.get("completed_at") or "not_completed"),
+        ))
 
     def _confirm_deterministic_admission(self, state: TransactionState) -> tuple[TransactionState, str | None]:
         """Confirm the persisted provider-free decision at the dispatch boundary.
@@ -490,7 +597,7 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
-    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None, interruption_reason: str | None = None) -> None:
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None, interruption_reason: str | None = None, invocation_id: str | None = None) -> str | None:
         """Append safe per-invocation evidence without affecting execution outcome."""
         usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
         snapshots = observed_snapshots if observed_snapshots is not None else getattr(self.agent, "last_usage_snapshots", ())
@@ -532,7 +639,7 @@ class EngineeringRunner:
             finally:
                 connection.close()
             now = datetime.now(timezone.utc).isoformat()
-            persist_provider_invocation(self.root, ProviderInvocation(
+            identifier = persist_provider_invocation(self.root, ProviderInvocation(
                 run_id=state.run_id, ordinal=ordinal, provider="codex_cli",
                 model=normalized_model,
                 model_authority=AUTHORITATIVE if isinstance(raw_model, str) else "UNAVAILABLE",
@@ -541,13 +648,25 @@ class EngineeringRunner:
                 duration_ms=round(duration * 1000) if isinstance(duration, (int, float)) and duration >= 0 else None,
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
                 retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
-                usage_snapshots=snapshots if isinstance(snapshots, tuple) else (),
+                usage_snapshots=snapshots if isinstance(snapshots, tuple) else (), invocation_id=invocation_id,
             ))
+            self._last_provider_invocation_id = identifier
+            return identifier
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
             LOGGER.warning("Provider invocation telemetry is unavailable for run %s", state.run_id)
+            return None
 
     def _record_agent_execution_time(self, state: TransactionState) -> TransactionState:
         """Accumulate only measured Codex CLI invocation time for this run."""
+        # A nested recovery invocation checkpoints its immutable ledger before
+        # returning to the ordinary lifecycle caller. Merge that one durable
+        # field here so a stale in-memory phase state cannot erase it.
+        try:
+            persisted = self.store.load(state.run_id)
+            if persisted.provider_recovery_attempts != state.provider_recovery_attempts:
+                state = replace(state, provider_recovery_attempts=persisted.provider_recovery_attempts)
+        except StateError:
+            pass
         measured = getattr(self.agent, "last_execution_seconds", None)
         if isinstance(measured, bool) or not isinstance(measured, (int, float)):
             return state
@@ -801,15 +920,44 @@ class EngineeringRunner:
         }
 
     def _record_repair_audit(self, state: TransactionState, *, failed_checks: str, objective: str, result: AgentResult | None, outcome: str) -> TransactionState:
-        """Append bounded per-repair evidence; never overwrite prior attempts."""
-        return replace(state, repair_audit=state.repair_audit + (self._audit_record(
+        """Persist one bounded repair attempt, replacing its prior durable plan."""
+        record = self._audit_record(
             iteration=state.repair_iterations,
             failed_checks=failed_checks,
             proposed_action=objective,
             result=result,
             outcome=outcome,
             empty_summary="Agent invocation did not return a repair summary.",
-        ),))
+        )
+        if state.repair_audit and state.repair_audit[-1].get("iteration") == str(state.repair_iterations) and state.repair_audit[-1].get("outcome") == "planned":
+            return replace(state, repair_audit=state.repair_audit[:-1] + (record,))
+        return replace(state, repair_audit=state.repair_audit + (record,))
+
+    def _repair_plan(self, state: TransactionState) -> dict[str, str] | None:
+        """Reload the exact pre-invocation plan; never reconstruct it from a prompt."""
+        if not state.repair_audit:
+            return None
+        plan = state.repair_audit[-1]
+        if plan.get("iteration") != str(state.repair_iterations) or plan.get("outcome") != "planned":
+            return None
+        return plan
+
+    def _advance_after_repair_agent_result(self, repair: TransactionState, result: AgentResult) -> TransactionState:
+        """Apply live or recovered Repair success using its persisted plan."""
+        plan = self._repair_plan(repair)
+        if plan is None:
+            return self._save_terminal(repair, "BLOCKED", "repair_plan_missing", "Repair result cannot be resumed without its persisted repair plan.")
+        failed_checks, objective = plan["failed_checks"], plan["proposed_action"]
+        repair = self._record_repair_audit(
+            repair, failed_checks=failed_checks, objective=objective, result=result,
+            outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
+        )
+        self.store.save(repair)
+        if result.terminal_state in {"BLOCKED", "FAILED"}:
+            return self._save_terminal(repair, result.terminal_state, "external_action_required", result.diagnostic)
+        if result.pull_request != repair.pull_request:
+            return self._save_terminal(repair, "BLOCKED", "bounded_scope_conflict", "Repair did not preserve the bounded pull request.")
+        return self._poll(replace(repair, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks"), result)
 
     def _record_local_validation_audit(self, state: TransactionState, *, result: AgentResult | None, outcome: str, profile: ValidationProfile) -> TransactionState:
         """Append one bounded local-validation iteration without sharing PR repair budget."""
@@ -961,8 +1109,14 @@ class EngineeringRunner:
             return "dashboard_browser"
         return f"validation_{kind}"
 
-    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
-        """Measure only the bounded runtime-provider process interval."""
+    def _invoke_provider_attempt_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
+        """Run one provider attempt; recovery launch authority lives in storage."""
+        # Baseline capture is content-free and idempotent. Recovery progress
+        # is captured separately at the interruption boundary below.
+        capture_worktree_provenance(
+            self.root, run_id=state.run_id, phase=state.phase, stage="baseline",
+            transaction_baseline_sha=state.last_verified_sha,
+        )
         role = role_for_phase(state.phase, repair=repair, quality=quality)
         initial_scope = initial_context_scope(
             phase=state.phase, repair_iterations=state.repair_iterations,
@@ -981,6 +1135,9 @@ class EngineeringRunner:
             "context_escalation_count": 0,
         }
         self._require_agent_readiness(state)
+        process_callback = getattr(self.agent, "set_process_callback", None)
+        if callable(process_callback):
+            process_callback(lambda process: self._provider_process_boundary(state, process))
         parent = (
             start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
             if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
@@ -1074,6 +1231,13 @@ class EngineeringRunner:
         prior_validation_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
         os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
         try:
+            if self._controlled_interruption_requested(state):
+                raise CodexInvocationError(
+                    "Provider turn interrupted before returning the required structured AgentResult.",
+                    "Controlled qualification interruption.", next_action="NONE",
+                    terminal_condition="provider_turn_interrupted",
+                    interruption_reason="controlled_qualification_interruption",
+                )
             result = self.agent.invoke(self.root, prompt)
         except KeyboardInterrupt as error:
             # A managed SIGINT/SIGTERM while the provider is active means no
@@ -1098,9 +1262,16 @@ class EngineeringRunner:
             ) from error
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
-            self._persist_provider_invocation(
+            recovery = load_recovery_state(self.root, state.run_id)
+            replacement_id = (
+                recovery.get("replacement_invocation_id")
+                if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_IN_PROGRESS"
+                else None
+            )
+            original_invocation = self._persist_provider_invocation(
                 state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION",
                 role=role.value, started_at=invocation_started, interruption_reason=interruption_reason,
+                invocation_id=replacement_id if isinstance(replacement_id, str) else None,
             )
             for active in validation_spans.values():
                 complete_phase(self.root, active, outcome="INTERRUPTED")
@@ -1108,6 +1279,45 @@ class EngineeringRunner:
             complete_phase(self.root, provider, outcome=outcome)
             if parent:
                 complete_phase(self.root, parent, outcome=outcome)
+            # A single provider-proven interruption may create durable
+            # recovery availability.  This attempt never launches a retry:
+            # the outer state-driven controller consumes that evidence.
+            if (
+                interruption_reason and isinstance(error, CodexInvocationError)
+                and original_invocation and not isinstance(recovery, dict)
+            ):
+                try:
+                    create_recovery_available(
+                        self.root, run_id=state.run_id, triggering_invocation_id=original_invocation,
+                        lifecycle_phase=state.phase, branch=state.branch,
+                        worktree_identity=str(self.root.resolve()),
+                        lease_id=self.active_lease.lease_id if self.active_lease else None,
+                    )
+                    capture_worktree_provenance(
+                        self.root, run_id=state.run_id, phase=state.phase, stage="interrupted",
+                        transaction_baseline_sha=state.last_verified_sha,
+                    )
+                except EngineeringStorageError:
+                    raise CodexInvocationError(
+                        "Provider interruption recovery evidence could not be persisted.",
+                        "Recovery storage is unavailable.", next_action="NONE",
+                        terminal_condition="provider_turn_interrupted",
+                        interruption_reason=interruption_reason,
+                    ) from error
+            elif isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_IN_PROGRESS":
+                # Attempt two is terminal evidence, never another launch
+                # opportunity. Unknown non-interruption failures are marked
+                # ambiguous by the controller.
+                record_replacement_terminal(
+                    self.root, run_id=state.run_id,
+                    outcome="INTERRUPTED" if interruption_reason else "FAILED",
+                )
+            elif isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_STARTING":
+                # No process callback was observed, so the provider adapter
+                # authoritatively failed before entering provider execution.
+                record_pre_execution_launch_failure(
+                    self.root, run_id=state.run_id, diagnostic_code=type(error).__name__,
+                )
             raise
         finally:
             if prior_validation_run_id is None:
@@ -1116,13 +1326,175 @@ class EngineeringRunner:
                 os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = prior_validation_run_id
             if callable(command_callback):
                 command_callback(None)
+            if callable(process_callback):
+                process_callback(None)
             if repair and callable(set_handoff_deadline):
                 set_handoff_deadline(None)
-        self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started)
+        durable_recovery = load_recovery_state(self.root, state.run_id)
+        replacement_id = (
+            durable_recovery.get("replacement_invocation_id")
+            if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS"
+            else None
+        )
+        replacement = self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started, invocation_id=replacement_id if isinstance(replacement_id, str) else None)
+        if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS":
+            result_reference = persist_recovery_agent_result(
+                self.root, run_id=state.run_id, invocation_id=str(replacement_id), result=result,
+            )
+            record_replacement_terminal(
+                self.root, run_id=state.run_id, outcome="SUCCESS", result_evidence_ref=result_reference,
+            )
+        if state.provider_recovery_attempts and state.provider_recovery_attempts[0].get("result") in {"RECOVERY_AVAILABLE", "ACTIVE"}:
+            prior = state.provider_recovery_attempts[0]
+            recovered = self._recovery_record(
+                state, original=prior["original_invocation_id"], replacement=replacement or "unavailable",
+                eligibility="ELIGIBLE", result="RECOVERED", requested_at=prior["requested_at"],
+                started_at=prior["started_at"], completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self.store.save(recovered)
         complete_phase(self.root, provider)
         if parent:
             complete_phase(self.root, parent)
         return result
+
+    def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
+        """Consume the durable recovery controller around individual attempts.
+
+        The controller is the sole authority for replacement identity and
+        launch.  This deliberately uses an iterative control flow: a provider
+        exception never recursively re-enters the lifecycle method.
+        """
+        current_attempt = attempt
+        while True:
+            recovery = load_recovery_state(self.root, state.run_id)
+            if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
+                precheck = self._provider_recovery_preflight(state)
+                if precheck is not None:
+                    mark_precheck_failed(self.root, run_id=state.run_id, diagnostic_code=precheck)
+                    self._project_durable_recovery(state, load_recovery_state(self.root, state.run_id) or recovery)
+                    raise CodexInvocationError(
+                        "Provider interruption recovery cannot continue.", "Recovery continuation preflight failed.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    )
+                if not transition_recovery_state(
+                    self.root, run_id=state.run_id, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+                ):
+                    continue
+                if claim_replacement_launch(self.root, run_id=state.run_id) is None:
+                    raise CodexInvocationError(
+                        "Provider interruption recovery launch is ambiguous.", "Replacement launch is already claimed.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    )
+                self.sleep(0.25)
+                current_attempt = (current_attempt or max(1, state.repair_iterations + 1)) + 1
+                # The next iteration dispatches the exact persisted
+                # replacement ID; it does not create a fresh invocation.
+                try:
+                    result = self._invoke_provider_attempt_with_timing(
+                        state, prompt, repair=repair, quality=quality,
+                        local_validation=local_validation, attempt=current_attempt,
+                    )
+                except CodexInvocationError:
+                    completed_recovery = load_recovery_state(self.root, state.run_id)
+                    if isinstance(completed_recovery, dict):
+                        self._project_durable_recovery(state, completed_recovery)
+                    raise
+                completed_recovery = load_recovery_state(self.root, state.run_id)
+                if isinstance(completed_recovery, dict):
+                    self._project_durable_recovery(state, completed_recovery)
+                return result
+            if isinstance(recovery, dict) and recovery.get("state") == "RECOVERED":
+                replacement_id = recovery.get("replacement_invocation_id")
+                if (
+                    recovery.get("lifecycle_phase") != state.phase
+                    or not isinstance(replacement_id, str)
+                ):
+                    raise CodexInvocationError(
+                        "Recovered provider result is invalid.", "Recovery phase or invocation lineage is inconsistent.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    )
+                payload = load_recovery_agent_result(
+                    self.root, str(recovery.get("result_evidence_ref") or ""),
+                    run_id=state.run_id, invocation_id=replacement_id,
+                )
+                if payload is None:
+                    raise CodexInvocationError(
+                        "Recovered provider result is unavailable.", "Recovery result evidence failed integrity verification.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    )
+                try:
+                    return AgentResult(
+                        terminal_state=str(payload["terminal_state"]), branch=payload.get("branch"),
+                        pull_request=payload.get("pull_request"), terminal_condition=str(payload.get("terminal_condition") or "repository_reconciled"),
+                        diagnostic=payload.get("diagnostic"), repository_path=payload.get("repository_path"),
+                        commit_sha=payload.get("commit_sha"),
+                        validation_evidence=tuple(payload.get("validation_evidence") or ()),
+                        quality_evidence=tuple(payload.get("quality_evidence") or ()),
+                        validation_disposition=str(payload.get("validation_disposition") or "product_failure"),
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise CodexInvocationError(
+                        "Recovered provider result is invalid.", "Recovery result evidence cannot be consumed safely.",
+                        next_action="NONE", terminal_condition="provider_turn_interrupted",
+                    ) from error
+            if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
+                raise CodexInvocationError(
+                    "Provider interruption recovery cannot continue.", "Recovery budget is exhausted or recovery evidence is unsafe.",
+                    next_action="NONE", terminal_condition="provider_turn_interrupted",
+                )
+            if isinstance(recovery, dict) and recovery.get("state") in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
+                reconciliation = reconcile_recovery(self.root, run_id=state.run_id)
+                if reconciliation == "LAUNCH_UNCLAIMED":
+                    claim = claim_replacement_launch(self.root, run_id=state.run_id)
+                    if claim is None:
+                        raise CodexInvocationError(
+                            "Provider recovery launch is ambiguous.", "Replacement launch claim could not be acquired.",
+                            next_action="NONE", terminal_condition="provider_turn_interrupted",
+                        )
+                    current_attempt = (current_attempt or max(1, state.repair_iterations + 1)) + 1
+                    return self._invoke_provider_attempt_with_timing(
+                        state, prompt, repair=repair, quality=quality,
+                        local_validation=local_validation, attempt=current_attempt,
+                    )
+                if reconciliation == "LAUNCH_CLAIMED_PREEXEC_FAILURE":
+                    current_attempt = (current_attempt or max(1, state.repair_iterations + 1)) + 1
+                    return self._invoke_provider_attempt_with_timing(
+                        state, prompt, repair=repair, quality=quality,
+                        local_validation=local_validation, attempt=current_attempt,
+                    )
+                if reconciliation == "RECOVERED":
+                    continue
+                if reconciliation == "SAME_PROVIDER_STILL_ACTIVE":
+                    # This is an active run, not a provider failure. The
+                    # caller returns the durable checkpoint without creating
+                    # a second provider attempt or terminalizing it.
+                    raise ProviderReadinessBlocked(state)
+                # No restart path exists after a claimed/provider-started
+                # attempt unless a terminal result can be proven.
+                raise CodexInvocationError(
+                    "Provider recovery is awaiting process reconciliation.", f"Recovery reconciliation: {reconciliation}.",
+                    next_action="NONE", terminal_condition="provider_turn_interrupted",
+                )
+            try:
+                result = self._invoke_provider_attempt_with_timing(
+                    state, prompt, repair=repair, quality=quality,
+                    local_validation=local_validation, attempt=current_attempt,
+                )
+                recovery = load_recovery_state(self.root, state.run_id)
+                if isinstance(recovery, dict):
+                    self._project_durable_recovery(state, recovery)
+                return result
+            except CodexInvocationError as error:
+                recovery = load_recovery_state(self.root, state.run_id)
+                if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
+                    self._project_durable_recovery(state, recovery)
+                if not error.provider_turn_interrupted or not isinstance(recovery, dict):
+                    raise
+                if recovery.get("state") != "RECOVERY_AVAILABLE":
+                    raise
+                # The top of the loop now claims the durable launch intent.
+                # This handler never allocates or authorizes a replacement.
+                continue
 
     def _run_local_repository_validation(
         self, state: TransactionState, implementation: AgentResult
@@ -1302,6 +1674,12 @@ Mandatory autonomous refactor and quality-control stage:
             quality = self._record_agent_execution_time(quality)
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(quality, error), implementation
+        return self._advance_after_quality_control_agent_result(quality, implementation, result)
+
+    def _advance_after_quality_control_agent_result(
+        self, quality: TransactionState, implementation: AgentResult, result: AgentResult,
+    ) -> tuple[TransactionState, AgentResult]:
+        """Apply live or recovered QC success without provider-session state."""
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(quality, result.terminal_state, "autonomous_quality_control_failed", result.diagnostic or "Autonomous quality control did not complete."), implementation
         if implementation.pull_request and result.pull_request and result.pull_request != implementation.pull_request:
@@ -1358,6 +1736,67 @@ Mandatory autonomous refactor and quality-control stage:
             "historical_pull_request_evidence",
             f"Agent result referenced already merged PR #{pull_request.number}; a new transaction must return its own open pull request.",
         )
+
+    def _advance_after_primary_agent_result(
+        self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence,
+    ) -> TransactionState:
+        """Shared post-provider transition for live and recovered results."""
+        if state.execution_mode == "GENESIS":
+            return self._reconcile_genesis_result(state, result)
+        recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
+        if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
+            result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure
+        ):
+            if state.owner_authorized:
+                state, result = self._run_local_repository_validation(state, result)
+                if state.terminal:
+                    return state
+            state, result = self._run_autonomous_quality_control(state, result)
+            if state.terminal:
+                return state
+        return self._continue_after_quality_control(state, result, evidence)
+
+    def _continue_after_quality_control(
+        self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence,
+    ) -> TransactionState:
+        """Advance delivery only after QC is already complete."""
+        state = replace(
+            state, phase="WAIT_FOR_TERMINAL_EVIDENCE", branch=result.branch or evidence.branch,
+            pull_request=result.pull_request, next_action="poll_required_checks",
+            terminal_condition=result.terminal_condition,
+            finalization_branch=(result.branch or evidence.branch)
+            if state.transaction_kind == "FINALIZATION" else state.finalization_branch,
+            finalization_pull_request=result.pull_request
+            if state.transaction_kind == "FINALIZATION" else state.finalization_pull_request,
+            reconciliation_pull_request=result.pull_request
+            if state.transaction_kind == "RECONCILIATION" else state.reconciliation_pull_request,
+        )
+        self.store.save(state)
+        write_live_status(self.root, state, state.next_action)
+        if state.owner_authorized and state.pull_request:
+            historical = self._reject_historical_agent_pull_request(state)
+            if historical is not None:
+                return historical
+            self.github.normalize_markdown_body(state.pull_request)
+            self.github.ready(state.pull_request)
+        return self._poll(state, result)
+
+    def _advance_after_recovered_provider_result(
+        self, state: TransactionState, result: AgentResult, evidence: RepositoryEvidence,
+        lifecycle_phase: str,
+    ) -> TransactionState:
+        """Route a validated durable result to its existing phase handler."""
+        if lifecycle_phase == "EXECUTE_AGENT":
+            return self._advance_after_primary_agent_result(state, result, evidence)
+        if lifecycle_phase == "QUALITY_CONTROL_AGENT":
+            implementation = AgentResult("COMPLETE", branch=state.branch, pull_request=state.pull_request)
+            quality, implementation = self._advance_after_quality_control_agent_result(state, implementation, result)
+            return quality if quality.terminal else self._continue_after_quality_control(quality, implementation, evidence)
+        if lifecycle_phase == "REPAIR_AGENT":
+            return self._advance_after_repair_agent_result(state, result)
+        if lifecycle_phase == "FINALIZE_AGENT":
+            return self._advance_after_finalization_agent_result(state, result)
+        return self._save_terminal(state, "BLOCKED", "recovered_provider_phase_invalid", "Recovered provider result has an unsupported lifecycle phase.")
 
     def run(
         self,
@@ -1487,6 +1926,12 @@ Mandatory autonomous refactor and quality-control stage:
         if not passive_pr_wait and not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
+        recovery_snapshot = load_recovery_state(self.root, state.run_id)
+        recovered_resume = (
+            isinstance(recovery_snapshot, dict)
+            and recovery_snapshot.get("state") == "RECOVERED"
+            and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT"}
+        )
         try:
             persisted_submission = load_submission_for_run(self.root, state.run_id)
         except EngineeringStorageError:
@@ -1595,6 +2040,19 @@ Mandatory autonomous refactor and quality-control stage:
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
+        if recovered_resume:
+            # Consume immutable attempt-two evidence before any fresh provider
+            # preparation or repository synchronization. This preserves the
+            # original branch/worktree and cannot allocate a new invocation.
+            result = self._invoke_agent_with_timing(state, "")
+            state = self._record_agent_execution_time(state)
+            state = self._record_validation_evidence(state, result)
+            state = self._record_verified_result_commit(
+                state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified",
+            )
+            return self._advance_after_recovered_provider_result(
+                state, result, evidence, str(recovery_snapshot["lifecycle_phase"]),
+            )
         # Synchronization is a host-owned admission step.  Do it while this
         # run owns the lease so agents never race each other for index.lock,
         # and so the bounded retry policy in the repository client is used.
@@ -1743,7 +2201,21 @@ Mandatory autonomous refactor and quality-control stage:
                 )
             if hasattr(self.agent, "set_process_callback"):
                 self.agent.set_process_callback(
-                    lambda process: write_runner_process(self.root, state.run_id, process)
+                    lambda process: (
+                        write_runner_process(self.root, state.run_id, process),
+                        (
+                            record_provider_started(
+                                self.root, run_id=state.run_id,
+                                receipt_id=str(load_recovery_state(self.root, state.run_id).get("process_receipt_id")),
+                                pid=int(process["pid"]), process_group=int(process["process_group"]),
+                            )
+                            if isinstance(process, dict)
+                            and isinstance(load_recovery_state(self.root, state.run_id), dict)
+                            and load_recovery_state(self.root, state.run_id).get("state") == "RECOVERY_STARTING"
+                            and load_recovery_state(self.root, state.run_id).get("process_receipt_id")
+                            else None
+                        ),
+                    )
                 )
             if hasattr(self.agent, "set_runtime_metadata_callback"):
                 self.agent.set_runtime_metadata_callback(
@@ -1788,42 +2260,7 @@ Mandatory autonomous refactor and quality-control stage:
             state = self._record_agent_execution_time(state)
             self.console_detail = error.console_detail
             return self._terminalize_provider_invocation_error(state, error)
-        if state.execution_mode == "GENESIS":
-            return self._reconcile_genesis_result(state, result)
-        recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
-        if state.transaction_kind == "IMPLEMENTATION" and state.action_intent == "MUTATING_DELIVERY" and (
-            result.terminal_state not in {"BLOCKED", "FAILED"} or recoverable_local_failure
-        ):
-            if state.owner_authorized:
-                state, result = self._run_local_repository_validation(state, result)
-                if state.terminal:
-                    return state
-            state, result = self._run_autonomous_quality_control(state, result)
-            if state.terminal:
-                return state
-        state = replace(
-            state,
-            phase="WAIT_FOR_TERMINAL_EVIDENCE",
-            branch=result.branch or evidence.branch,
-            pull_request=result.pull_request,
-            next_action="poll_required_checks",
-            terminal_condition=result.terminal_condition,
-            finalization_branch=(result.branch or evidence.branch)
-            if state.transaction_kind == "FINALIZATION" else state.finalization_branch,
-            finalization_pull_request=result.pull_request
-            if state.transaction_kind == "FINALIZATION" else state.finalization_pull_request,
-            reconciliation_pull_request=result.pull_request
-            if state.transaction_kind == "RECONCILIATION" else state.reconciliation_pull_request,
-        )
-        self.store.save(state)
-        write_live_status(self.root, state, state.next_action)
-        if state.owner_authorized and state.pull_request:
-            historical = self._reject_historical_agent_pull_request(state)
-            if historical is not None:
-                return historical
-            self.github.normalize_markdown_body(state.pull_request)
-            self.github.ready(state.pull_request)
-        return self._poll(state, result)
+        return self._advance_after_primary_agent_result(state, result, evidence)
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
         """Return another active Genesis run that owns the same local workspace."""
@@ -1908,7 +2345,30 @@ Mandatory autonomous refactor and quality-control stage:
                 next_action="poll_required_checks",
             )
         if state.transaction_kind == "FINALIZATION" and state.phase == "FINALIZE_AGENT":
+            if state.finalization_pull_request is None:
+                # Finalization entry is persisted before its provider handoff.
+                # A new host must continue that exact same entry rather than
+                # requiring a PR that has not yet been created.
+                return replace(
+                    state,
+                    last_verified_sha=evidence.head_sha,
+                    next_action="create_finalization",
+                )
             return self._recover_finalization_pull_request(state, evidence)
+        if (
+            state.transaction_kind == "FINALIZATION"
+            and state.finalization_pull_request is None
+            and state.finalization_branch is not None
+        ):
+            # Resumed-host setup temporarily projects CAPABILITY_REVIEW. Keep
+            # the already durable Finalization entry instead of falling back
+            # into the implementation execution phase.
+            return replace(
+                state,
+                phase="FINALIZE_AGENT",
+                last_verified_sha=evidence.head_sha,
+                next_action="create_finalization",
+            )
         if (
             state.transaction_kind == "FINALIZATION"
             and state.implementation_pull_request is None
@@ -2151,6 +2611,12 @@ Mandatory autonomous refactor and quality-control stage:
             next_action="repair_bounded_validation_failure",
             repair_iterations=state.repair_iterations + 1,
         )
+        # This plan is the canonical, bounded context needed to apply a
+        # successful recovered result after a host restart. It is persisted
+        # before the provider can begin; it is never rebuilt from prompt text.
+        repair = self._record_repair_audit(
+            repair, failed_checks=failed_checks, objective=objective, result=None, outcome="planned",
+        )
         self.store.save(repair)
         write_live_status(self.root, repair, repair.next_action)
         try:
@@ -2172,11 +2638,6 @@ Mandatory autonomous refactor and quality-control stage:
                 phase="REPAIR_AGENT",
                 description="pull_request_repair_commit_verified",
             )
-            repair = self._record_repair_audit(
-                repair, failed_checks=failed_checks, objective=objective, result=result,
-                outcome="agent_failed" if result.terminal_state in {"BLOCKED", "FAILED"} else "submitted_for_recheck",
-            )
-            self.store.save(repair)
             self._persist_agent_usage(repair.run_id)
         except CodexHandoffTimeout:
             repair = self._record_agent_execution_time(repair)
@@ -2198,21 +2659,7 @@ Mandatory autonomous refactor and quality-control stage:
             self.console_detail = error.console_detail
             repair = self._record_repair_audit(repair, failed_checks=failed_checks, objective=objective, result=None, outcome="agent_failed")
             return self._terminalize_provider_invocation_error(repair, error)
-        if result.terminal_state in {"BLOCKED", "FAILED"}:
-            return self._save_terminal(
-                repair, result.terminal_state, "external_action_required", result.diagnostic
-            )
-        if result.pull_request != repair.pull_request:
-            return self._save_terminal(
-                repair,
-                "BLOCKED",
-                "bounded_scope_conflict",
-                "Repair did not preserve the bounded pull request.",
-            )
-        return self._poll(
-            replace(repair, phase="WAIT_FOR_TERMINAL_EVIDENCE", next_action="poll_required_checks"),
-            result,
-        )
+        return self._advance_after_repair_agent_result(repair, result)
 
     def _start_finalization(
         self, state: TransactionState, implementation_pr: int
@@ -2311,6 +2758,17 @@ Mandatory autonomous refactor and quality-control stage:
             if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
         complete_phase(self.root, finalization_span)
+        return self._advance_after_finalization_agent_result(finalization, result)
+
+    def _advance_after_finalization_agent_result(
+        self, finalization: TransactionState, result: AgentResult,
+    ) -> TransactionState:
+        """Apply a live or durably recovered Finalization result.
+
+        Timing spans belong exclusively to the live caller.  This method uses
+        only checkpointed lifecycle identity and the validated AgentResult so
+        a restarted host cannot fabricate Finalization timing evidence.
+        """
         if result.terminal_state in {"BLOCKED", "FAILED"} or not result.pull_request:
             return self._save_terminal(
                 finalization,

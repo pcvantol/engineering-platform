@@ -142,6 +142,10 @@ class TransactionState:
     admission_decision: str = "NOT_STARTED"
     admission_completed_at: str | None = None
     admission_evidence_source: str | None = None
+    # A run-bound, append-only record of the one automatic provider restart.
+    # This is checkpoint data, not a database migration: old rows simply read
+    # with an empty ledger.
+    provider_recovery_attempts: tuple[dict[str, str], ...] = ()
     terminal: bool = False
     schema_version: int = SCHEMA_VERSION
 
@@ -175,6 +179,7 @@ class TransactionState:
             "admission_decision": "NOT_STARTED",
             "admission_completed_at": None,
             "admission_evidence_source": None,
+            "provider_recovery_attempts": (),
         }
         if set(raw).issubset(expected) and set(raw) | set(defaults) == expected:
             raw = {**defaults, **raw}
@@ -192,6 +197,8 @@ class TransactionState:
             raw = {**raw, "commit_evidence": tuple(raw["commit_evidence"])}
         if isinstance(raw.get("auth_recovery_providers"), list):
             raw = {**raw, "auth_recovery_providers": tuple(raw["auth_recovery_providers"])}
+        if isinstance(raw.get("provider_recovery_attempts"), list):
+            raw = {**raw, "provider_recovery_attempts": tuple(raw["provider_recovery_attempts"])}
         try:
             state = cls(**raw)
         except TypeError as error:
@@ -220,6 +227,20 @@ class TransactionState:
             raise StateError("checkpoint admission completion timestamp is invalid")
         if state.admission_evidence_source is not None and state.admission_evidence_source not in {"WATCHER", "RUNNER"}:
             raise StateError("checkpoint admission evidence source is invalid")
+        recovery_fields = {"original_invocation_id", "replacement_invocation_id", "phase", "classification", "eligibility", "result", "requested_at", "started_at", "completed_at"}
+        if (
+            not isinstance(state.provider_recovery_attempts, tuple)
+            or len(state.provider_recovery_attempts) > 1
+            or any(
+                not isinstance(item, dict) or set(item) != recovery_fields
+                or any(not isinstance(value, str) or not value or len(value) > 160 or value != redact_diagnostic(value, limit=160) for value in item.values())
+                or item["classification"] != "provider_turn_interrupted"
+                or item["eligibility"] not in {"ELIGIBLE", "INELIGIBLE", "PRECHECK_FAILED", "CANCELLED"}
+                or item["result"] not in {"RECOVERY_AVAILABLE", "ACTIVE", "RECOVERED", "INTERRUPTED_AGAIN", "INELIGIBLE", "PRECHECK_FAILED", "CANCELLED", "PROVIDER_FAILED"}
+                for item in state.provider_recovery_attempts
+            )
+        ):
+            raise StateError("checkpoint provider recovery ledger is invalid or unsafe")
         if state.genesis_repository_path is not None and (not isinstance(state.genesis_repository_path, str) or not Path(state.genesis_repository_path).is_absolute()):
             raise StateError("genesis repository path is invalid")
         if state.genesis_commit_sha is not None and (not isinstance(state.genesis_commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", state.genesis_commit_sha)):
@@ -255,7 +276,7 @@ class TransactionState:
                 not isinstance(item, dict) or set(item) != audit_fields
                 or not all(isinstance(value, str) and value and len(value) <= MAX_DIAGNOSTIC_LENGTH and value == redact_diagnostic(value) for value in item.values())
                 or not item["iteration"].isdigit() or int(item["iteration"]) < 1
-                or item["outcome"] not in {"submitted_for_recheck", "agent_failed", "agent_timed_out"}
+                or item["outcome"] not in {"planned", "submitted_for_recheck", "agent_failed", "agent_timed_out"}
                 or (item["commit_sha"] != "not_recorded" and not re.fullmatch(r"[0-9a-f]{40}", item["commit_sha"]))
                 for item in state.repair_audit
             )

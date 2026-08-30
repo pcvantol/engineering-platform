@@ -128,6 +128,30 @@ def write_live_status(
         except OSError:
             previous_recovery = {"baseline_clean": False}
     terminal_phase = state.phase in {"COMPLETE", "BLOCKED", "FAILED"}
+    # SQLite recovery evidence is authoritative across host restarts. The
+    # checkpoint ledger is retained only as a compatibility projection.
+    try:
+        from .provider_recovery import load_recovery_state
+        recovery_record = load_recovery_state(root, state.run_id)
+    except EngineeringStorageError:
+        recovery_record = None
+    if recovery_record is None:
+        recovery_record = state.provider_recovery_attempts[0] if state.provider_recovery_attempts else None
+    recovery_result = recovery_record.get("result") if isinstance(recovery_record, dict) else None
+    recovery_state = recovery_record.get("state") if isinstance(recovery_record, dict) else None
+    provider_recovery = {
+        "state": (
+            "RECOVERING" if recovery_state in {"RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"} or recovery_result == "ACTIVE" else
+            "RECOVERED" if recovery_state == "RECOVERED" or recovery_result == "RECOVERED" else
+            "EXHAUSTED" if recovery_state == "EXHAUSTED" or recovery_result == "INTERRUPTED_AGAIN" else
+            "NOT_APPLICABLE"
+        ),
+        "automatic_recovery_attempt": "1/1" if recovery_record else "0/1",
+        "trigger": (recovery_record.get("classification") or "provider_turn_interrupted") if isinstance(recovery_record, dict) else None,
+        "original_provider_invocation": (recovery_record.get("triggering_invocation_id") or recovery_record.get("original_invocation_id")) if isinstance(recovery_record, dict) else None,
+        "replacement_provider_invocation": recovery_record.get("replacement_invocation_id") if isinstance(recovery_record, dict) else None,
+        "result": recovery_result,
+    }
     payload = {
         "run_id": state.run_id,
         "phase": state.phase,
@@ -168,6 +192,7 @@ def write_live_status(
         # workspace clean. It allows the emergency control to fail closed when
         # a run has commits, a pre-existing branch, or an unknown base.
         "workspace_recovery": previous_recovery,
+        "provider_recovery": provider_recovery,
     }
     transient = None if state.terminal or terminal_phase else transient_action or previous_transient_action
     try:

@@ -2293,6 +2293,16 @@ function renderHealthStatus(x, snapshot = {}) {
   $("action").textContent = translate(
     x.current_action || t("ui.no_active_action"),
   );
+  const providerRecovery = x.provider_recovery || {};
+  const providerRecoveryState = String(providerRecovery.state || "NOT_APPLICABLE");
+  $("providerRecovery").hidden = !["RECOVERING", "RECOVERED", "EXHAUSTED"].includes(providerRecoveryState);
+  $("providerRecoveryValue").textContent = providerRecoveryState === "RECOVERING"
+    ? t("provider_recovery.recovering")
+    : providerRecoveryState === "RECOVERED"
+      ? t("provider_recovery.recovered")
+      : providerRecoveryState === "EXHAUSTED"
+        ? t("provider_recovery.exhausted")
+        : "";
   const legacyProgress = x.workspace_progress || {};
   const liveSnapshot = x.live_worktree_snapshot || (x.workspace_progress ? {
     uncommitted: { modified: legacyProgress.modified, added: legacyProgress.created, deleted: legacyProgress.deleted },

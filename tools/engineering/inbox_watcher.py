@@ -60,7 +60,8 @@ from .dependabot_admission import (
 )
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, load_submission_for_run, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
-from .provider_interruption import terminalize_after_host_exit
+from .provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
+from .provider_recovery import watcher_resume_action
 from .dashboard_configuration import get as dashboard_configuration
 from .database_maintenance import run_periodic_database_maintenance
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
@@ -2172,6 +2173,24 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
         execution_started_at, completed = _execute_runner_command(repo, prompt, run_id)
+        # Recovery launch decisions are driven solely by the durable recovery
+        # row.  The evidence helper may create that row for a host shutdown
+        # that occurred before the host could do so itself; it never selects
+        # an invocation or a retry count.
+        if watcher_resume_action(repo, run_id) is None:
+            prepare_same_run_recovery_after_host_exit(repo, run_id)
+        recovery_action = watcher_resume_action(repo, run_id)
+        if recovery_action is not None:
+            status(
+                repo, "RUNNER_RECOVERING", job_id=job_id, run_id=run_id,
+                queued_jobs=len(candidates) - 1, queue_items=_queue_items(candidates, source),
+                current_action="Provider interrupted — recovering automatically (1/1)",
+            )
+            log_event(logger, logging.INFO, "provider_recovery_continuing", run_id=run_id, diagnostic=recovery_action)
+            # A resumed host receives the original run ID and prompt only.
+            # It consumes controller state; the watcher never creates a
+            # replacement invocation or executes a provider itself.
+            execution_started_at, completed = _execute_runner_command(repo, prompt, run_id)
         # A foreground child can exit after persisting provider interruption
         # evidence but before its normal report/receipt projection. Reconcile
         # only that explicit evidence before falling back to a generic report.

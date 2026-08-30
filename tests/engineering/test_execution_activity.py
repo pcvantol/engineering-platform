@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import json
+import os
 import subprocess
 import unittest
 
@@ -17,9 +18,19 @@ from tools.engineering.execution_activity import (
 )
 from tools.engineering import dashboard
 from tools.engineering.agent_state import StateStore, TransactionState
+from tools.engineering.execution_models import AgentResult
 from tools.engineering.prompt_history import record_prompt_execution
 from tools.engineering.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
 from tools.engineering.storage import open_storage
+from tools.engineering.provider_recovery import (
+    claim_replacement_launch,
+    create_recovery_available,
+    load_recovery_state,
+    persist_recovery_agent_result,
+    record_provider_started,
+    record_replacement_terminal,
+    transition_recovery_state,
+)
 
 
 class ExecutionActivityTests(unittest.TestCase):
@@ -141,3 +152,69 @@ class ExecutionActivityTests(unittest.TestCase):
         self.assertEqual(delivery["renamed"], [{"from": "old.txt", "to": "renamed.txt"}])
         self.assertEqual(delivery["total_unique_changed_paths"], 3)
         self.assertEqual(delivery["phase_attribution"]["implementation"]["renamed"], [{"from": "old.txt", "to": "renamed.txt"}])
+
+    def test_recovered_provider_attempts_remain_separate_persisted_activity(self) -> None:
+        run_id = "recovered-activity"
+        StateStore(self.root / ".engineering" / "engineering-runs").save(
+            TransactionState(run_id, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", branch="codex/recovered")
+        )
+        original_invocation = persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id=run_id, ordinal=1, provider="codex_cli", model="gpt-5.6-terra",
+                model_authority=AUTHORITATIVE, phase="PROVIDER_EXECUTION", role="IMPLEMENTATION",
+                started_at="2026-08-30T00:00:00+00:00", completed_at="2026-08-30T00:00:01+00:00",
+                duration_ms=1000, usage={},
+            ),
+        )
+        recovery = create_recovery_available(
+            self.root, run_id=run_id, triggering_invocation_id=original_invocation,
+            lifecycle_phase="EXECUTE_AGENT", branch="codex/recovered",
+            worktree_identity=str(self.root), lease_id=None,
+        )
+        self.assertTrue(transition_recovery_state(
+            self.root, run_id=run_id, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING"
+        ))
+        claim = claim_replacement_launch(self.root, run_id=run_id)
+        assert claim is not None
+        self.assertTrue(record_provider_started(
+            self.root, run_id=run_id, receipt_id=str(claim["receipt_id"]), pid=os.getpid(),
+            process_group=os.getpgrp(),
+        ))
+        result_ref = persist_recovery_agent_result(
+            self.root, run_id=run_id, invocation_id=str(recovery["replacement_invocation_id"]),
+            result=AgentResult("COMPLETE", branch="codex/recovered"),
+        )
+        self.assertTrue(record_replacement_terminal(
+            self.root, run_id=run_id, outcome="SUCCESS", result_evidence_ref=result_ref
+        ))
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id=run_id, ordinal=2, provider="codex_cli", model="gpt-5.6-terra",
+                model_authority=AUTHORITATIVE, phase="PROVIDER_EXECUTION", role="IMPLEMENTATION",
+                started_at="2026-08-30T00:00:02+00:00", completed_at="2026-08-30T00:00:03+00:00",
+                duration_ms=1000, usage={}, invocation_id=str(recovery["replacement_invocation_id"]),
+            ),
+        )
+        with open_storage(self.root) as connection:
+            connection.execute(
+                "INSERT INTO execution_validation_command_invocations "
+                "(run_id,validation_id,command_id,category,control_identity,required_for_profile,started_at,currentness,evidence_ref) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (run_id, "unit", "host-validation", "host", "unit", 1, "2026-08-30T00:00:00+00:00", 0, "command_invocation"),
+            )
+            usage_rows = connection.execute(
+                "SELECT input_tokens,output_tokens FROM provider_invocations WHERE run_id=? ORDER BY ordinal", (run_id,)
+            ).fetchall()
+        self.assertEqual(load_recovery_state(self.root, run_id)["state"], "RECOVERED")
+        self.assertEqual(usage_rows, [(None, None), (None, None)])
+        activity = cumulative_activity(self.root, run_id)
+        self.assertEqual(activity["primary_codex_commands_total"], 2)
+        self.assertEqual(activity["host_validation_commands_total"], 1)
+        self.assertEqual(activity["overall_activity_total"], 3)
+        summary = persist_terminal_activity_summary(
+            self.root,
+            {"run_id": run_id, "summary_version": 1, "activity": activity, "terminal_delivery_diff": {}},
+        )
+        self.assertEqual(terminal_activity_summary(self.root, run_id), summary)

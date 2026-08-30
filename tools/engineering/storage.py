@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 37
+ENGINEERING_STORAGE_SCHEMA_VERSION = 38
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -1010,6 +1010,45 @@ def _schema_v37(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE provider_usage_snapshots ADD COLUMN {name} INTEGER")
 
 
+def _schema_v38(connection: sqlite3.Connection) -> None:
+    """Persist one bounded provider-interruption recovery and its process receipt.
+
+    Provider invocation telemetry remains immutable and is appended only when
+    an invocation reaches its terminal evidence boundary.  These two tables
+    record the preceding launch lifecycle needed to recover safely after the
+    Execution Host itself disappears.
+    """
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS provider_recovery_attempts ("
+        "run_id TEXT PRIMARY KEY REFERENCES engineering_transactions(run_id) ON DELETE CASCADE,"
+        "recovery_ordinal INTEGER NOT NULL CHECK(recovery_ordinal=1),"
+        "maximum_attempts INTEGER NOT NULL CHECK(maximum_attempts=1),"
+        "triggering_invocation_id TEXT NOT NULL, replacement_invocation_id TEXT NOT NULL UNIQUE,"
+        "lifecycle_phase TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ("
+        "'RECOVERY_AVAILABLE','RECOVERY_STARTING','RECOVERY_IN_PROGRESS','RECOVERED',"
+        "'EXHAUSTED','PRECHECK_FAILED','AMBIGUOUS')) ,"
+        "requested_at TEXT NOT NULL, provider_session_id TEXT UNIQUE, launch_claimed_at TEXT, process_receipt_id TEXT,"
+        "process_pid INTEGER, process_group INTEGER, provider_confirmed_active_at TEXT,"
+        "completed_at TEXT, result TEXT, result_evidence_ref TEXT, branch TEXT,"
+        "worktree_identity TEXT, lease_id TEXT, fault_injection_consumed_at TEXT, diagnostic_code TEXT)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS provider_invocation_receipts ("
+        "receipt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES provider_recovery_attempts(run_id) ON DELETE CASCADE,"
+        "invocation_id TEXT NOT NULL, launch_state TEXT NOT NULL CHECK(launch_state IN ('CLAIMED','PROCESS_STARTED','TERMINAL')),"
+        "provider_session_id TEXT, process_pid INTEGER, process_group INTEGER, process_start_fingerprint TEXT,"
+        "process_executable_identity TEXT, started_at TEXT NOT NULL, completed_at TEXT,"
+        "outcome TEXT, result_evidence_ref TEXT, UNIQUE(run_id, invocation_id, launch_state))"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS provider_recovery_state_lookup ON provider_recovery_attempts(state,requested_at)")
+    for table in ("provider_invocation_receipts",):
+        for operation in ("UPDATE", "DELETE"):
+            connection.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} BEFORE {operation} ON {table} BEGIN "
+                f"SELECT RAISE(ABORT, '{table} evidence is immutable.'); END"
+            )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1094,6 +1133,7 @@ MIGRATIONS: dict[int, Migration] = {
     35: _schema_v35,
     36: _schema_v36,
     37: _schema_v37,
+    38: _schema_v38,
 }
 
 

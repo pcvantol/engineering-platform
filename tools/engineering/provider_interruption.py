@@ -12,6 +12,7 @@ from .execution_lease import release_terminal_lease
 from .execution_timing import reconcile_interrupted_phases
 from .live_status import write_live_status
 from .storage import open_storage
+from .provider_recovery import create_recovery_available, load_recovery_state
 
 
 INTERRUPTION_CLASSIFICATION = "provider_turn_interrupted"
@@ -81,6 +82,13 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
     active provider work.  Generic stale leases remain recoverable and are not
     converted into failures here.
     """
+    recovery = load_recovery_state(root, run_id)
+    # Durable recovery state takes precedence over retrospective provider
+    # evidence.  Only exhausted/unsafe recovery reaches the old terminalizer.
+    if isinstance(recovery, dict) and recovery.get("state") in {
+        "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS", "RECOVERED",
+    }:
+        return None
     evidence = _latest_interrupted_invocation(root, run_id)
     if evidence is None:
         return None
@@ -116,3 +124,37 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
         LOGGER.exception("Terminal provider-interruption lease release failed for run %s", run_id)
     write_live_status(root, terminal, terminal.next_action)
     return terminal
+
+
+def prepare_same_run_recovery_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+    """Persist the sole watcher-side continuation before it launches a host.
+
+    This intentionally accepts only the exact evidence already accepted by
+    ``terminalize_after_host_exit``.  It never creates a submission, branch,
+    or lease; the normal resumed host owns those operations.
+    """
+    evidence = _latest_interrupted_invocation(root, run_id)
+    if evidence is None:
+        return None
+    invocation_id, _classification = evidence
+    store = StateStore(root / ".engineering" / "engineering-runs")
+    try:
+        state = store.load(run_id)
+    except StateError:
+        return None
+    if state.terminal or load_recovery_state(root, run_id) is not None:
+        return None
+    try:
+        create_recovery_available(
+            root, run_id=run_id, triggering_invocation_id=invocation_id,
+            lifecycle_phase=state.phase, branch=state.branch,
+            worktree_identity=str(root.resolve()), lease_id=None,
+        )
+    except Exception:
+        LOGGER.exception("Provider recovery evidence could not be persisted for %s", run_id)
+        return None
+    # This compact projection has no authority over recovery. It merely keeps
+    # existing status readers coherent until they read the durable row.
+    recovering = replace(state, next_action="recover_provider_turn", diagnostic="Provider interruption recovery is pending under the same execution.")
+    write_live_status(root, recovering, "Provider interrupted — recovering automatically (1/1)")
+    return recovering

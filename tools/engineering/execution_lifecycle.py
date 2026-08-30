@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .storage import EngineeringStorageError, open_storage
+from .storage import EngineeringStorageError, load_run_qualification_snapshot, open_storage
 from .agent_state import TransactionState
+from .provider_recovery import load_recovery_state
 from .status_reconciliation import is_stale_rolling_status_block
 
 
@@ -413,6 +414,24 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     recovery = None
     if status_reconciliation_block:
         recovery = {"kind": "status_reconciliation", "run_id": run_id}
+    else:
+        # Provider recovery is durable SQLite evidence.  Do not consult the
+        # historical checkpoint ledger here: it can be stale after a host
+        # interruption, whereas this row is atomically advanced with the
+        # replacement provider receipt.
+        provider_recovery = load_recovery_state(root, run_id)
+        if provider_recovery is not None:
+            recovery = {
+                "kind": "provider_interruption",
+                "state": provider_recovery.get("state"),
+                "result": provider_recovery.get("result"),
+                "triggering_invocation_id": provider_recovery.get("triggering_invocation_id"),
+                "replacement_invocation_id": provider_recovery.get("replacement_invocation_id"),
+                "recovery_ordinal": provider_recovery.get("recovery_ordinal"),
+                "maximum_attempts": provider_recovery.get("maximum_attempts"),
+                "lifecycle_phase": provider_recovery.get("lifecycle_phase"),
+            }
+    qualification = load_run_qualification_snapshot(root, run_id) or {}
     return {
         "run_id": run_id,
         "execution_mode": mode,
@@ -421,4 +440,8 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         "current_step": display_phase if display_phase in path else None,
         "steps": steps,
         "recovery": recovery,
+        "qualification": {
+            "required_validation_state": qualification.get("required_validation_state", "UNAVAILABLE"),
+            "run_qualification": qualification.get("run_qualification", "UNAVAILABLE"),
+        },
     }

@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import call, patch
 
-from tools.engineering.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic
+from tools.engineering.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
 from tools.engineering.storage import (
     ENGINEERING_STORAGE_SCHEMA_VERSION,
     load_projection,
@@ -77,7 +77,7 @@ from tools.engineering.execution_executor import (
     validation_failure_artifact_id,
     workspace_change_summary,
 )
-from tools.engineering.execution_lease import history as lease_history, liveness as lease_liveness
+from tools.engineering.execution_lease import history as lease_history, liveness as lease_liveness, release as release_lease
 from tools.engineering.execution_timing import complete_phase, phase_spans, start_phase
 from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
 from tools.engineering.storage import open_storage
@@ -385,6 +385,471 @@ class ClientContractTest(unittest.TestCase):
             SubprocessRepositoryClient().synchronize_main(checkout)
 
             self.assertEqual(self._git(checkout, "rev-parse", "HEAD"), self._git(seed, "rev-parse", "main"))
+
+    def test_resumed_host_reuses_persisted_implementation_pr_after_two_restarts(self) -> None:
+        """A departed host resumes the one persisted implementation PR only."""
+        class HostDisappeared(RuntimeError):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            _, checkout = self._managed_sync_fixture(temporary)
+            prompt = checkout / "prompt.md"
+            prompt.write_text("# bounded objective\n", encoding="utf-8")
+            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                '{"platform_version":"2.0.0","runner_version":"2.0.0",'
+                '"bootstrap_contract":"2026.12","checkpoint_format":1,'
+                '"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0",'
+                '"watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0",'
+                '"handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
+                encoding="utf-8",
+            )
+            store = StateStore(checkout / ".engineering" / "engineering-runs")
+            commit = "b" * 40
+            branch = "codex/reuse-implementation-pr"
+            repository = FakeRepository()
+
+            class DeliveryAgent(FakeAgent):
+                def __init__(self) -> None:
+                    super().__init__(AgentResult("COMPLETE"))
+                    self.pr_create_calls = 0
+
+                def invoke(self, root: Path, prompt_text: str) -> AgentResult:
+                    self.roots.append(root)
+                    self.prompts.append(prompt_text)
+                    if "Local repository validation gate" in prompt_text:
+                        self.pr_create_calls += 1
+                        return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
+                    if "Mandatory autonomous refactor" in prompt_text:
+                        return AgentResult("COMPLETE", branch, 701, commit_sha=commit)
+                    repository.evidence = RepositoryEvidence(
+                        "pcvantol/djconnect", branch, commit, True
+                    )
+                    return AgentResult("COMPLETE", branch, commit_sha=commit)
+
+            agent = DeliveryAgent()
+            github = FakeGitHub([
+                PullRequestEvidence(
+                    701, "OPEN", True, True, head_branch=branch, base_branch="main"
+                )
+            ])
+            first_host = EngineeringRunner(
+                checkout, store, repository, github, agent, lambda _: None
+            )
+
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(first_host, "_poll", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    first_host.run(prompt, run_id="implementation-pr-restart", owner_authorized=True)
+
+            persisted = store.load("implementation-pr-restart")
+            self.assertEqual(persisted.run_id, "implementation-pr-restart")
+            self.assertTrue(
+                any(item["commit_sha"] == commit for item in persisted.commit_evidence)
+            )
+            self.assertEqual(persisted.pull_request, 701)
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(github.ready_calls, [701])
+            self.assertNotIn("Retry-Of:", prompt.read_text(encoding="utf-8"))
+
+            assert first_host.lease_heartbeat is not None
+            assert first_host.active_lease is not None
+            release_lease(checkout, first_host.lease_heartbeat.stop())
+            first_host.active_lease = None
+            first_host.lease_heartbeat = None
+
+            resumed_store = StateStore(checkout / ".engineering" / "engineering-runs")
+            resumed_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            resumed_host = EngineeringRunner(
+                checkout, resumed_store, repository, github, resumed_agent, lambda _: None
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ):
+                resumed = resumed_host.run(
+                    prompt, run_id="implementation-pr-restart", resume=True
+                )
+
+            self.assertEqual(resumed.run_id, persisted.run_id)
+            self.assertEqual(resumed.commit_evidence, persisted.commit_evidence)
+            self.assertEqual(resumed.pull_request, persisted.pull_request)
+            self.assertEqual(resumed.phase, "WAIT_FOR_OPERATOR_MERGE")
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(resumed_agent.prompts, [])
+            self.assertEqual(
+                [path.stem for path in resumed_store.directory.glob("*.json")],
+                ["implementation-pr-restart"],
+            )
+
+            second_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            second_host = EngineeringRunner(
+                checkout,
+                StateStore(checkout / ".engineering" / "engineering-runs"),
+                repository,
+                github,
+                second_agent,
+                lambda _: None,
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ):
+                second_restart = second_host.run(
+                    prompt, run_id="implementation-pr-restart", resume=True
+                )
+
+            self.assertEqual(second_restart.run_id, persisted.run_id)
+            self.assertEqual(second_restart.commit_evidence, persisted.commit_evidence)
+            self.assertEqual(second_restart.pull_request, persisted.pull_request)
+            self.assertEqual(second_restart.phase, "WAIT_FOR_OPERATOR_MERGE")
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(github.ready_calls, [701])
+            self.assertEqual(second_agent.prompts, [])
+
+    def test_resumed_host_observes_merged_implementation_pr_once_before_finalization(self) -> None:
+        """A merged implementation hand-off enters Finalization once after restart."""
+        class HostDisappeared(RuntimeError):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            _, checkout = self._managed_sync_fixture(temporary)
+            prompt = checkout / "prompt.md"
+            prompt.write_text("# bounded objective\n", encoding="utf-8")
+            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                '{"platform_version":"2.0.0","runner_version":"2.0.0",'
+                '"bootstrap_contract":"2026.12","checkpoint_format":1,'
+                '"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0",'
+                '"watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0",'
+                '"handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
+                encoding="utf-8",
+            )
+            run_id, commit, implementation_pr = "implementation-merge-restart", "b" * 40, 701
+            state = TransactionState(
+                run_id, "pcvantol/djconnect", str(prompt), "WAIT_FOR_OPERATOR_MERGE",
+                branch="codex/reuse-implementation-pr", pull_request=implementation_pr,
+                owner_authorized=True, last_verified_sha=commit,
+                waiting_for_merge_since="2026-08-30T00:00:00+00:00",
+                commit_evidence=(verified_commit_evidence_record(
+                    phase="LOCAL_REPOSITORY_VALIDATION", observed_at="2026-08-30T00:00:00+00:00",
+                    commit_sha=commit, description="local_repository_validation_commit_verified",
+                ),),
+            )
+            store = StateStore(checkout / ".engineering" / "engineering-runs")
+            store.save(state)
+            repository = FakeRepository(contains=True)
+            github = FakeGitHub([
+                PullRequestEvidence(
+                    implementation_pr, "MERGED", True, True, commit,
+                    head_branch=state.branch, base_branch="main",
+                )
+            ])
+            delivery_create_calls = 1
+            first_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            first_host = EngineeringRunner(
+                checkout, store, repository, github, first_agent, lambda _: None
+            )
+
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(first_host, "_invoke_agent_with_timing", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    first_host.run(prompt, run_id=run_id, resume=True)
+
+            finalization_entry = store.load(run_id)
+            self.assertEqual(finalization_entry.run_id, run_id)
+            self.assertEqual(finalization_entry.implementation_pull_request, implementation_pr)
+            self.assertEqual(finalization_entry.implementation_merge_commit, commit)
+            self.assertEqual(finalization_entry.phase, "FINALIZE_AGENT")
+            self.assertEqual(finalization_entry.transaction_kind, "FINALIZATION")
+            self.assertEqual(delivery_create_calls, 1)
+            self.assertEqual(github.calls, 1)
+            self.assertEqual(github.merge_calls, [])
+            self.assertEqual(first_agent.prompts, [])
+            self.assertNotIn("Retry-Of:", prompt.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [path.stem for path in store.directory.glob("*.json")], [run_id]
+            )
+
+            second_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            second_host = EngineeringRunner(
+                checkout,
+                StateStore(checkout / ".engineering" / "engineering-runs"),
+                repository,
+                github,
+                second_agent,
+                lambda _: None,
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(second_host, "_invoke_agent_with_timing", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    second_host.run(prompt, run_id=run_id, resume=True)
+            second_restart = StateStore(
+                checkout / ".engineering" / "engineering-runs"
+            ).load(run_id)
+
+            self.assertEqual(second_restart.run_id, run_id)
+            self.assertEqual(second_restart.implementation_pull_request, implementation_pr)
+            self.assertEqual(second_restart.implementation_merge_commit, commit)
+            self.assertEqual(second_restart.phase, "FINALIZE_AGENT")
+            self.assertEqual(delivery_create_calls, 1)
+            self.assertEqual(github.calls, 1)
+            self.assertEqual(github.merge_calls, [])
+            self.assertEqual(second_agent.prompts, [])
+            self.assertEqual(
+                sum(
+                    span["phase_name"] == "REPOSITORY_FINALIZATION"
+                    for span in phase_spans(checkout, run_id)
+                ),
+                1,
+            )
+
+    def test_resumed_host_reuses_persisted_finalization_pr_after_two_restarts(self) -> None:
+        """A durable Finalization PR hand-off never creates a replacement."""
+        class HostDisappeared(RuntimeError):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            _, checkout = self._managed_sync_fixture(temporary)
+            prompt = checkout / "prompt.md"
+            prompt.write_text("# bounded objective\n", encoding="utf-8")
+            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                '{"platform_version":"2.0.0","runner_version":"2.0.0",'
+                '"bootstrap_contract":"2026.12","checkpoint_format":1,'
+                '"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0",'
+                '"watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0",'
+                '"handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
+                encoding="utf-8",
+            )
+            run_id, implementation_pr, finalization_pr = "finalization-pr-restart", 701, 702
+            implementation_commit, finalization_commit = "b" * 40, "c" * 40
+            implementation_branch = "codex/reuse-implementation-pr"
+            finalization_branch = f"codex/finalize-{run_id}"
+            state = TransactionState(
+                run_id, "pcvantol/djconnect", str(prompt), "FINALIZE_AGENT",
+                branch=finalization_branch, owner_authorized=True,
+                transaction_kind="FINALIZATION", implementation_branch=implementation_branch,
+                implementation_pull_request=implementation_pr,
+                implementation_merge_commit=implementation_commit,
+                finalization_branch=finalization_branch,
+            )
+            store = StateStore(checkout / ".engineering" / "engineering-runs")
+            repository = FakeRepository(contains=True)
+
+            class FinalizationDeliveryAgent(FakeAgent):
+                def __init__(self) -> None:
+                    super().__init__(AgentResult("COMPLETE"))
+                    self.pr_create_calls = 0
+
+                def invoke(self, root: Path, prompt_text: str) -> AgentResult:
+                    self.roots.append(root)
+                    self.prompts.append(prompt_text)
+                    self.pr_create_calls += 1
+                    repository.evidence = RepositoryEvidence(
+                        "pcvantol/djconnect", finalization_branch, finalization_commit, True
+                    )
+                    return AgentResult(
+                        "COMPLETE", finalization_branch, finalization_pr,
+                        commit_sha=finalization_commit,
+                    )
+
+            agent = FinalizationDeliveryAgent()
+            github = FakeGitHub([
+                PullRequestEvidence(
+                    finalization_pr, "OPEN", True, True,
+                    head_branch=finalization_branch, base_branch="main",
+                )
+            ])
+            delivery_host = EngineeringRunner(
+                checkout, store, repository, github, agent, lambda _: None
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(delivery_host, "_poll", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    delivery_host._start_finalization(state, implementation_pr)
+
+            persisted = store.load(run_id)
+            self.assertEqual(persisted.run_id, run_id)
+            self.assertEqual(persisted.finalization_pull_request, finalization_pr)
+            self.assertEqual(persisted.pull_request, finalization_pr)
+            self.assertTrue(
+                any(item["commit_sha"] == finalization_commit for item in persisted.commit_evidence)
+            )
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(agent.prompts.count(agent.prompts[0]), 1)
+            self.assertNotIn("Retry-Of:", prompt.read_text(encoding="utf-8"))
+
+            first_restart_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            first_restart = EngineeringRunner(
+                checkout,
+                StateStore(checkout / ".engineering" / "engineering-runs"),
+                repository,
+                github,
+                first_restart_agent,
+                lambda _: None,
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ):
+                first_resumed = first_restart.run(prompt, run_id=run_id, resume=True)
+
+            self.assertEqual(first_resumed.run_id, run_id)
+            self.assertEqual(first_resumed.finalization_pull_request, finalization_pr)
+            self.assertEqual(first_resumed.pull_request, finalization_pr)
+            self.assertEqual(first_resumed.commit_evidence, persisted.commit_evidence)
+            self.assertEqual(first_resumed.phase, "WAIT_FOR_OPERATOR_MERGE")
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(first_restart_agent.prompts, [])
+
+            second_restart_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            second_restart = EngineeringRunner(
+                checkout,
+                StateStore(checkout / ".engineering" / "engineering-runs"),
+                repository,
+                github,
+                second_restart_agent,
+                lambda _: None,
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ):
+                second_resumed = second_restart.run(prompt, run_id=run_id, resume=True)
+
+            self.assertEqual(second_resumed.run_id, run_id)
+            self.assertEqual(second_resumed.finalization_pull_request, finalization_pr)
+            self.assertEqual(second_resumed.pull_request, finalization_pr)
+            self.assertEqual(second_resumed.commit_evidence, persisted.commit_evidence)
+            self.assertEqual(second_resumed.phase, "WAIT_FOR_OPERATOR_MERGE")
+            self.assertEqual(agent.pr_create_calls, 1)
+            self.assertEqual(first_restart_agent.prompts, [])
+            self.assertEqual(second_restart_agent.prompts, [])
+            self.assertEqual(github.merge_calls, [])
+            self.assertEqual(github.calls, 3)
+            self.assertEqual(
+                [path.stem for path in store.directory.glob("*.json")], [run_id]
+            )
+
+    def test_resumed_host_observes_merged_finalization_pr_once_before_reconciliation(self) -> None:
+        """A merged Finalization PR enters reconciliation without replaying delivery."""
+        class HostDisappeared(RuntimeError):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            _, checkout = self._managed_sync_fixture(temporary)
+            prompt = checkout / "prompt.md"
+            prompt.write_text("# bounded objective\n", encoding="utf-8")
+            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                '{"platform_version":"2.0.0","runner_version":"2.0.0",'
+                '"bootstrap_contract":"2026.12","checkpoint_format":1,'
+                '"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0",'
+                '"watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0",'
+                '"handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
+                encoding="utf-8",
+            )
+            run_id, implementation_pr, finalization_pr = "finalization-merge-restart", 701, 702
+            implementation_commit, finalization_commit, merge_commit = "b" * 40, "c" * 40, "d" * 40
+            finalization_branch = "codex/finalize-finalization-merge-restart"
+            state = TransactionState(
+                run_id, "pcvantol/djconnect", str(prompt), "WAIT_FOR_OPERATOR_MERGE",
+                branch=finalization_branch, pull_request=finalization_pr,
+                owner_authorized=True, transaction_kind="FINALIZATION",
+                implementation_branch="codex/reuse-implementation-pr",
+                implementation_pull_request=implementation_pr,
+                implementation_merge_commit=implementation_commit,
+                finalization_branch=finalization_branch,
+                finalization_pull_request=finalization_pr,
+                finalization_head_sha=finalization_commit,
+                waiting_for_merge_since="2026-08-30T00:00:00+00:00",
+                commit_evidence=(verified_commit_evidence_record(
+                    phase="FINALIZE_AGENT", observed_at="2026-08-30T00:00:00+00:00",
+                    commit_sha=finalization_commit, description="finalization_commit_verified",
+                ),),
+            )
+            store = StateStore(checkout / ".engineering" / "engineering-runs")
+            store.save(state)
+            repository = FakeRepository(contains=True)
+            github = FakeGitHub([
+                PullRequestEvidence(
+                    finalization_pr, "MERGED", True, True, merge_commit,
+                    head_branch=finalization_branch, base_branch="main",
+                )
+            ])
+            finalization_pr_create_calls = 1
+            first_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            first_host = EngineeringRunner(
+                checkout, store, repository, github, first_agent, lambda _: None
+            )
+
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(first_host, "_invoke_agent_with_timing", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    first_host.run(prompt, run_id=run_id, resume=True)
+
+            reconciliation_entry = store.load(run_id)
+            self.assertEqual(reconciliation_entry.run_id, run_id)
+            self.assertEqual(reconciliation_entry.transaction_kind, "RECONCILIATION")
+            self.assertEqual(reconciliation_entry.phase, "RECONCILE_AGENT")
+            self.assertEqual(reconciliation_entry.finalization_pull_request, finalization_pr)
+            self.assertTrue(
+                any(item["commit_sha"] == finalization_commit for item in reconciliation_entry.commit_evidence)
+            )
+            self.assertTrue(
+                any(item["commit_sha"] == merge_commit for item in reconciliation_entry.commit_evidence)
+            )
+            self.assertEqual(reconciliation_entry.finalization_merge_commit, merge_commit)
+            self.assertEqual(finalization_pr_create_calls, 1)
+            self.assertEqual(github.calls, 1)
+            self.assertEqual(github.merge_calls, [])
+            self.assertEqual(first_agent.prompts, [])
+            self.assertNotIn("Retry-Of:", prompt.read_text(encoding="utf-8"))
+
+            second_agent = FakeAgent(AgentResult("BLOCKED", diagnostic="must not be invoked"))
+            second_host = EngineeringRunner(
+                checkout,
+                StateStore(checkout / ".engineering" / "engineering-runs"),
+                repository,
+                github,
+                second_agent,
+                lambda _: None,
+            )
+            with patch(
+                "tools.engineering.execution_host.provider_readiness_failures", return_value=()
+            ), patch.object(second_host, "_invoke_agent_with_timing", side_effect=HostDisappeared):
+                with self.assertRaises(HostDisappeared):
+                    second_host.run(prompt, run_id=run_id, resume=True)
+            second_restart = StateStore(
+                checkout / ".engineering" / "engineering-runs"
+            ).load(run_id)
+
+            self.assertEqual(second_restart.run_id, run_id)
+            self.assertEqual(second_restart.transaction_kind, "RECONCILIATION")
+            self.assertEqual(second_restart.phase, "RECONCILE_AGENT")
+            self.assertEqual(second_restart.finalization_pull_request, finalization_pr)
+            self.assertEqual(second_restart.commit_evidence, reconciliation_entry.commit_evidence)
+            self.assertEqual(second_restart.finalization_merge_commit, merge_commit)
+            self.assertEqual(finalization_pr_create_calls, 1)
+            self.assertEqual(github.calls, 1)
+            self.assertEqual(github.merge_calls, [])
+            self.assertEqual(second_agent.prompts, [])
+            self.assertEqual(
+                [path.stem for path in store.directory.glob("*.json")], [run_id]
+            )
+            with open_storage(checkout) as connection:
+                reconciliation_transitions = connection.execute(
+                    "SELECT COUNT(*) FROM managed_autonomy_actions "
+                    "WHERE run_id=? AND action='AUTOMATIC_RECONCILIATION'",
+                    (run_id,),
+                ).fetchone()[0]
+            self.assertEqual(reconciliation_transitions, 1)
 
     def test_repository_synchronization_fails_closed_when_main_diverges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

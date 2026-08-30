@@ -26,6 +26,7 @@ from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_for_run, load_run_lineage, load_validation_context
 from .provider_usage import provider_usage_summary
+from .provider_recovery import load_recovery_state
 from .execution_activity import build_terminal_activity_summary, persist_terminal_activity_summary, terminal_activity_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 from .validation_identity import is_canonical_dashboard_command
@@ -698,13 +699,23 @@ def _execution_receipt_projection(root: Path, state: TransactionState, producer:
     activity_total = activity.get("activity", {}).get("overall_activity_total", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     delivery_paths = activity.get("terminal_delivery_diff", {}).get("total_unique_changed_paths", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     conflicts_text = ", ".join(conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
+    recovery = load_recovery_state(root, state.run_id) or {}
+    submission = load_submission_for_run(root, state.run_id) or {}
     return (
         f"- Receipt ID: `{state.run_id}`",
         "- Execution Host: `Engineering Platform`",
         f"- Run ID: `{state.run_id}`",
         f"- Correlation ID: `{producer.correlation_id or 'not recorded'}`",
+        f"- Producer ID: `{producer.producer_id}`",
+        f"- Producer Type: `{producer.producer_type}`",
+        f"- Submission ID: `{submission.get('submission_id', 'NOT_RECORDED')}`",
         f"- Receipt Status: `{state.phase}`",
         f"- Receipt Resolution: `{state.terminal_condition}`",
+        f"- Recovery State: `{recovery.get('state', 'NOT_RECORDED')}`",
+        f"- Recovery Result: `{recovery.get('result', 'NOT_RECORDED')}`",
+        f"- Recovery Triggering Invocation ID: `{recovery.get('triggering_invocation_id', 'NOT_RECORDED')}`",
+        f"- Recovery Replacement Invocation ID: `{recovery.get('replacement_invocation_id', 'NOT_RECORDED')}`",
+        f"- Recovery Attempt / Budget: `{recovery.get('recovery_ordinal', 'NOT_RECORDED')}/{recovery.get('maximum_attempts', 'NOT_RECORDED')}`",
         f"- Qualification Snapshot: `{snapshot.get('qualification_snapshot_id', 'UNAVAILABLE')}`",
         f"- Required Validation State: `{snapshot.get('required_validation_state', 'UNAVAILABLE')}`",
         f"- Implementation Delivery: `{snapshot.get('implementation_delivery', 'UNAVAILABLE')}`",

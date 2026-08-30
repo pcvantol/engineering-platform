@@ -11,6 +11,7 @@ import uuid
 
 from .storage import EngineeringStorageError, open_storage
 from .execution_timing import reconcile_interrupted_phases
+from .provider_process_identity import ProcessIdentity, verify_process_identity
 
 LEASE_VERSION = 1
 HEARTBEAT_INTERVAL_SECONDS = 15
@@ -51,6 +52,38 @@ def _event(connection: object, lease_id: str, run_id: str, event: str, outcome: 
         "INSERT OR IGNORE INTO execution_lease_events(lease_id,run_id,event_type,outcome,recorded_at) VALUES(?,?,?,?,?)",
         (lease_id, run_id, event, outcome or "", _now().isoformat()),
     )
+
+
+def _recovery_provider_lease_state(connection: object, run_id: str) -> str:
+    """Read recovery receipts through the caller's lease transaction.
+
+    This avoids opening a second SQLite writer while stale-lease
+    reconciliation owns ``BEGIN IMMEDIATE``.  Only a session-bound, PID reuse
+    protected PROCESS_STARTED receipt can retain an expired host lease.
+    """
+    try:
+        recovery = connection.execute(
+            "SELECT state,replacement_invocation_id,provider_session_id FROM provider_recovery_attempts WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if not recovery or recovery[0] != "RECOVERY_IN_PROGRESS":
+            return "NOT_ACTIVE"
+        rows = connection.execute(
+            "SELECT provider_session_id,process_pid,process_group,process_start_fingerprint,process_executable_identity "
+            "FROM provider_invocation_receipts WHERE run_id=? AND invocation_id=? AND launch_state='PROCESS_STARTED'",
+            (run_id, recovery[1]),
+        ).fetchall()
+    except Exception:
+        return "NOT_ACTIVE"
+    if len(rows) != 1 or not isinstance(recovery[2], str):
+        return "AMBIGUOUS"
+    session_id, pid, group, fingerprint, executable = rows[0]
+    if (
+        session_id != recovery[2] or not isinstance(pid, int) or not isinstance(group, int)
+        or not isinstance(fingerprint, str) or not isinstance(executable, str)
+    ):
+        return "AMBIGUOUS"
+    return "ACTIVE" if verify_process_identity(ProcessIdentity(pid, group, fingerprint, executable)) == "MATCH" else "AMBIGUOUS"
 
 
 class LeaseHeartbeat:
@@ -194,6 +227,28 @@ def reconcile_stale(root: Path) -> list[dict[str, str]]:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute("SELECT lease_id,run_id,host_instance_id,last_heartbeat_at FROM execution_run_leases WHERE lease_state='ACTIVE' AND expires_at<?", (now,)).fetchall()
         for lease_id, run_id, instance, heartbeat_at in rows:
+            # Provider execution is independent of the host heartbeat.  A
+            # recovered provider turn can still be authoritatively active
+            # after its parent host disappeared; expiring this run lease
+            # would falsely make repository mutation ownership available.
+            recovery_lease_state = _recovery_provider_lease_state(connection, str(run_id))
+            if recovery_lease_state in {"ACTIVE", "AMBIGUOUS"}:
+                renewed = (_now() + timedelta(seconds=LEASE_TIMEOUT_SECONDS)).isoformat()
+                connection.execute(
+                    "UPDATE execution_run_leases SET last_heartbeat_at=?,expires_at=?,updated_at=? "
+                    "WHERE lease_id=? AND lease_state='ACTIVE'",
+                    (now, renewed, now, lease_id),
+                )
+                outcome = (
+                    "RECOVERY_PROVIDER_STILL_ACTIVE"
+                    if recovery_lease_state == "ACTIVE" else "RECOVERY_PROVIDER_AMBIGUOUS"
+                )
+                _event(connection, str(lease_id), str(run_id), outcome)
+                outcomes.append({
+                    "run_id": str(run_id), "host_instance_id": str(instance),
+                    "last_heartbeat": str(heartbeat_at), "outcome": outcome,
+                })
+                continue
             transaction = connection.execute(
                 "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (run_id,)
             ).fetchone()

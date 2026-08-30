@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+import os
 
 from tools.engineering.managed_autonomy import (
     append_action,
@@ -16,9 +17,42 @@ from tools.engineering.storage import (
     record_validation_control_result,
     record_validation_profile,
 )
+from tools.engineering.agent_state import StateStore, TransactionState
+from tools.engineering.execution_models import AgentResult
+from tools.engineering.provider_recovery import (
+    claim_replacement_launch, create_recovery_available, load_recovery_state,
+    persist_recovery_agent_result, record_provider_started, record_replacement_terminal,
+    transition_recovery_state,
+)
+from tools.engineering.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
 
 
 class ManagedAutonomyEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def _recovered(root: Path, run: str, *, outcome: str = "SUCCESS") -> None:
+        StateStore(root / ".engineering" / "engineering-runs").save(
+            TransactionState(run, "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT", branch="codex/recovered")
+        )
+        original = persist_provider_invocation(root, ProviderInvocation(
+            run_id=run, ordinal=1, provider="codex_cli", model="gpt-5.6-terra", model_authority=AUTHORITATIVE,
+            phase="PROVIDER_EXECUTION", role="IMPLEMENTATION", started_at="2026-08-30T00:00:00+00:00",
+            completed_at="2026-08-30T00:00:01+00:00", duration_ms=1000, usage={},
+        ))
+        recovery = create_recovery_available(root, run_id=run, triggering_invocation_id=original,
+            lifecycle_phase="EXECUTE_AGENT", branch="codex/recovered", worktree_identity=str(root), lease_id=None)
+        assert transition_recovery_state(root, run_id=run, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING")
+        claim = claim_replacement_launch(root, run_id=run)
+        assert claim is not None
+        assert record_provider_started(root, run_id=run, receipt_id=str(claim["receipt_id"]), pid=os.getpid(), process_group=os.getpgrp())
+        result = persist_recovery_agent_result(root, run_id=run, invocation_id=str(recovery["replacement_invocation_id"]), result=AgentResult("COMPLETE", branch="codex/recovered"))
+        assert record_replacement_terminal(root, run_id=run, outcome=outcome, result_evidence_ref=result)
+        persist_provider_invocation(root, ProviderInvocation(
+            run_id=run, ordinal=2, provider="codex_cli", model="gpt-5.6-terra", model_authority=AUTHORITATIVE,
+            phase="PROVIDER_EXECUTION", role="IMPLEMENTATION", started_at="2026-08-30T00:00:02+00:00",
+            completed_at="2026-08-30T00:00:03+00:00", duration_ms=1000, usage={},
+            invocation_id=str(recovery["replacement_invocation_id"]),
+        ))
+
     def _qualified(self, root: Path, *, retry_parent: str | None = None, resume_parent: str | None = None) -> dict[str, object]:
         run = "inbox-managed-proof"
         record_run_qualification_context(
@@ -103,6 +137,45 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["implementation_delivery"], "COMPLETE")
         self.assertEqual(snapshot["finalization_delivery"], "COMPLETE")
         self.assertEqual(snapshot["execution_mode"], "MANAGED")
+
+    def test_recovered_run_qualification_uses_only_ordinary_terminal_gates(self) -> None:
+        cases = (
+            ("validation-fail", {"validation": "FAIL"}, "NOT_QUALIFIED"),
+            ("implementation-incomplete", {"implementation": None}, "NOT_QUALIFIED"),
+            ("finalization-incomplete", {"finalization": None}, "NOT_QUALIFIED"),
+            ("reconciliation-incomplete", {"repository": "ACTIVE"}, "NOT_QUALIFIED"),
+            ("complete", {}, "QUALIFIED"),
+            ("recovered-alone", {"ordinary_evidence": False}, "NOT_QUALIFIED"),
+        )
+        for name, change, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                run = "inbox-managed-proof"
+                self._recovered(root, run)
+                self.assertEqual(load_recovery_state(root, run)["state"], "RECOVERED")
+                if change.get("ordinary_evidence") is False:
+                    snapshot = terminal_snapshot(root, run_id=run, execution_outcome="COMPLETE", implementation_pr=None, finalization_pr=None, repository_state="ACTIVE", workspace_state="ACTIVE", main_origin_sync="NO", worktree_state="DIRTY", active_blocker="UNKNOWN", recovery_required="YES", persist=True)
+                else:
+                    self._qualified(root)
+                    if change.get("validation") == "FAIL":
+                        record_validation_control_result(root, run_id=run, validation_id="git_diff_check", category="repository", control_identity="git diff --check", required_for_profile=True, execution_status="EXECUTED", result="FAIL", evidence_ref="local", observed_at="2026-08-30T00:01:00+00:00", currentness=3)
+                    snapshot = terminal_snapshot(root, run_id=run, execution_outcome="COMPLETE", implementation_pr=change.get("implementation", 101), finalization_pr=change.get("finalization", 102), repository_state=change.get("repository", "MERGED_RECONCILED"), workspace_state="WORKSPACE_READY", main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE", recovery_required="NO", lineage_available=True, persist=True)
+                self.assertEqual(snapshot["run_qualification"], expected)
+
+    def test_exhausted_provider_recovery_with_failed_terminal_cannot_qualify(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = "exhausted-recovery"
+            self._recovered(root, run, outcome="INTERRUPTED")
+            self.assertEqual(load_recovery_state(root, run)["state"], "EXHAUSTED")
+            snapshot = terminal_snapshot(
+                root, run_id=run, execution_outcome="FAILED", implementation_pr=None,
+                finalization_pr=None, repository_state="ACTIVE", workspace_state="ACTIVE",
+                main_origin_sync="NO", worktree_state="DIRTY", active_blocker="UNKNOWN",
+                recovery_required="YES", persist=True,
+            )
+        self.assertEqual(snapshot["run_qualification"], "NOT_QUALIFIED")
+        self.assertEqual(snapshot["qualification_failure_reasons"], ["TERMINAL_EXECUTION_FAILED"])
 
     def test_mutating_delivery_requires_both_prs_and_authoritative_merges(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

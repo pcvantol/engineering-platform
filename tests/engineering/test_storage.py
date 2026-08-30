@@ -41,6 +41,27 @@ from tools.engineering.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_provider_recovery_schema_is_prospective_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = TransactionState("recovery-schema", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            StateStore(root / ".engineering" / "engineering-runs").save(state)
+            connection = open_storage(root)
+            connection.execute(
+                "INSERT INTO provider_recovery_attempts(run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,lifecycle_phase,state,requested_at) VALUES(?,?,?,?,?,?,?,?)",
+                (state.run_id, 1, 1, "invocation-1", "invocation-2", "EXECUTE_AGENT", "RECOVERY_AVAILABLE", "2026-08-30T00:00:00+00:00"),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO provider_recovery_attempts(run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,lifecycle_phase,state,requested_at) VALUES(?,?,?,?,?,?,?,?)",
+                    ("second-run", 2, 1, "invocation-x", "invocation-y", "EXECUTE_AGENT", "RECOVERY_AVAILABLE", "2026-08-30T00:00:00+00:00"),
+                )
+            recovery_columns = {row[1] for row in connection.execute("PRAGMA table_info(provider_recovery_attempts)")}
+            receipt_columns = {row[1] for row in connection.execute("PRAGMA table_info(provider_invocation_receipts)")}
+            self.assertIn("provider_session_id", recovery_columns)
+            self.assertTrue({"provider_session_id", "process_start_fingerprint", "process_executable_identity"} <= receipt_columns)
+            connection.close()
+
     def test_platform_manifest_tracks_the_current_storage_schema(self) -> None:
         root = Path(__file__).parents[2]
         manifest = EngineeringPlatformManifest.load(
@@ -250,6 +271,9 @@ class EngineeringStorageTest(unittest.TestCase):
                 )
                 connection.execute(
                     "DELETE FROM engineering_schema_migrations WHERE version=37"
+                )
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version=38"
                 )
             with activate_storage_schema(root) as connection:
                 columns = {
