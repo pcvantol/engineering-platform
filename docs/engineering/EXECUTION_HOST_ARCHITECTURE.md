@@ -115,3 +115,7 @@ steps. A second interruption or any ambiguous recovery evidence fails closed
 for operator attention. Execution receipts retain each provider attempt
 separately, while validation and delivery evidence remain attributable to their
 own lifecycle activities.
+
+A recovered record is phase-scoped historical evidence: it may be retained for
+reporting, but it can be consumed only by its recorded lifecycle phase and
+cannot satisfy or interfere with a later provider phase.
