@@ -6,6 +6,69 @@ This contract lets DJConnect, Forge and Workspace consume an installed,
 pinned Engineering Platform wheel without carrying EP source code or owning EP
 execution data.
 
+## Local Consumer API v1 contract foundation
+
+Phase 1 / Increment 1 defines a machine-readable, versioned **v1** contract.
+It is an additive contract artifact only: no API server, socket, credential
+issuance, credential verifier persistence, Keychain call, consumer cutover or
+storage migration exists in this increment.
+
+The v1 contract categories are request, response and error envelopes; project
+scope; consumer identity and authentication envelope shape; normalization;
+validation; and redaction. A later runtime must expose this same contract over
+HTTP with versioned JSON. HTTP/JSON is the public contract, not an authorization
+to bind broadly: exposure defaults fail-closed and remains configuration
+controlled. A future Unix-domain socket may be an internal or optional local
+transport only; consumers must not depend on a socket path as their API
+identity.
+
+Every contract operation uses explicit `project_id` scope. Consumer identity
+and the future bearer credential are both bound to that scope; a mutable
+`project_name` is never authorization identity. Missing or malformed scope,
+incompatible versions, unsupported request types, unknown forbidden fields,
+malformed authentication envelopes, invalid normalization input and oversized
+bounded values fail closed without permissive repair.
+
+### Authentication and secret boundary
+
+For each registered consumer/project relationship, EP will issue one opaque,
+cryptographically random bearer credential. EP alone owns issuance, credential
+identity/fingerprint, validation, revocation, rotation and metadata. Consumers
+receive only the opaque credential and store it in their operating system's
+native secret store—Apple Keychain on macOS. Credentials must never be stored
+in source control, repository configuration, consumer-owned SQLite,
+environment files committed to source, Prompt History, Engineering Reports,
+logs or dashboard projections.
+
+EP must never retain the plaintext reusable credential after issuance. The
+later authentication-runtime increment persists only the bounded verifier,
+fingerprint and metadata necessary for validation. Credential policy is
+independent of submitted engineering-prompt content: prompts can never grant,
+expand or override API authorization.
+
+### Deterministic validation, normalization and errors
+
+The v1 schema will define deterministic Unicode and newline normalization,
+empty/null handling, bounded identifiers and stable serialization where each is
+applicable. It rejects malformed input rather than silently repairing it.
+Errors are bounded, machine-readable and stable; they must never reveal a
+bearer credential, authorization header, provider secret, stack trace or
+database content. Any projection containing a prohibited secret-bearing field
+is rejected or redacted before it reaches logs, reports, Prompt History or the
+dashboard.
+
+### Increment acceptance gate
+
+The subsequent implementation must test valid requests/responses/errors,
+missing and malformed `project_id`, incompatible versions, unknown fields,
+Unicode and newline normalization, deterministic serialization, stable errors,
+malformed auth envelopes and credential redaction/prohibited-secret
+projections. Full EP and dashboard regressions plus the extraction audit must
+pass. It does not require a new live-API Managed E2E, but existing iCloud/HUMAN
+ingress, provider recovery, validation/qualification, reporting and
+Forge-facing behavior must remain regression-green. No schema activation,
+historical evidence rewrite or runtime cutover is allowed.
+
 ## Project registration
 
 Before a consumer submits an Engineering Action, it registers one active

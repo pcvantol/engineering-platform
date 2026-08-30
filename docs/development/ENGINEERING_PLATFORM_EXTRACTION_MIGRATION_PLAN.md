@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction and migration plan
 
-**Status:** Proposed for Platform Architect review
+**Status:** Phase 0 complete; Phase 1 / Increment 1 authorized
 **Scope:** Engineering Platform 2.x extraction from `pcvantol/djconnect` to a
 standalone, local-first Execution Operations Platform
 **Decision baseline:** [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md) and the
@@ -144,6 +144,23 @@ evaluation.
 
 ## Delivery sequence
 
+## Authorized Phase 1 increment sequence
+
+The Phase 1 sequence is deliberately bounded. Only Increment 1 is authorized
+for implementation at this time.
+
+| Increment | Canonical name | Authorization |
+| --- | --- | --- |
+| Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Authorized, contract-only |
+| Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Not authorized |
+| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Not authorized |
+
+Increment 1 defines the versioned Local Consumer API v1 contract and
+fail-closed validation only. It must not add an HTTP listener, Unix-socket
+server, bearer generation or verification runtime, Keychain integration,
+consumer cutover, storage migration, service-installation change or network
+exposure.
+
 ### Phase 0 — Freeze the extraction baseline
 
 **Purpose:** establish the exact 2.x source and evidence baseline before any
@@ -189,6 +206,23 @@ repository movement.
 ### Phase 1 — Complete the public contract and service boundary
 
 **Purpose:** make the consumer boundary explicit before moving code.
+
+**Architectural decisions:** HTTP with versioned JSON contracts is the
+canonical consumer contract; its contract is independent from bind/exposure
+policy. Initial runtime exposure remains fail-closed and configuration
+controlled, and may be loopback-only when Increment 2 is explicitly
+authorized. Unix-domain sockets are not the public contract, although a later
+implementation may use one internally without changing that contract.
+
+EP is the credential authority. Each registered consumer/project relationship
+will use one opaque cryptographically random bearer credential scoped to the
+registered consumer identity and canonical `project_id`. EP will own issuance,
+fingerprint/verifier metadata, validation, revocation and rotation; it will
+never persist reusable plaintext credentials. Consumers persist their opaque
+credential in the native OS secret store (Apple Keychain on macOS), never in a
+repository, consumer SQLite store, Prompt History, report or dashboard. These
+are contract decisions only in Increment 1; their runtime implementation is
+reserved for later increments.
 
 1. Turn the accepted consumer contract into versioned machine-readable host
    API schemas: input fields, types, enum values, length limits, newline and
@@ -610,17 +644,22 @@ listed operational evidence and review approval.
 
 ## Architect decisions requested
 
-1. Confirm loopback HTTP, a local socket, or both as the initial Local Consumer
-   API transport behind the application-service boundary.
-2. Confirm capability issuance, rotation, project restrictions and OS
-   credential-storage policy for DJConnect, Forge and Workspace.
-3. Confirm the history-extraction method and exact path manifest for the new
+The following decisions are accepted by ADR-0020: HTTP + versioned JSON is the
+canonical Local Consumer API contract; exposure remains fail-closed and
+configuration-controlled; Unix sockets are not the public contract; EP owns
+per-consumer/project bearer-credential authority; and consumers use OS-native
+secret storage (Apple Keychain on macOS). Increment 1 is explicitly
+contract-only.
+
+Remaining later-phase decisions are:
+
+1. Confirm the history-extraction method and exact path manifest for the new
    repository.
-4. Confirm the target per-user data-root conventions for macOS and the
+2. Confirm the target per-user data-root conventions for macOS and the
    portability contract for other operating systems.
-5. Confirm the schema/data compatibility decision record that retires
+3. Confirm the schema/data compatibility decision record that retires
    LEGACY_ROLLBACK_COMPATIBLE into LEGACY_ROLLBACK_RETIRED.
-6. Confirm the installation scheduler policy separately from per-project FIFO
+4. Confirm the installation scheduler policy separately from per-project FIFO
    semantics, and confirm that EP validates future Forge dependency metadata
    without deriving or scheduling dependencies itself.
 

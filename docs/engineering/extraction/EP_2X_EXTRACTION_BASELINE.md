@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 / Increment 2 reconciliation control
+**Status:** Phase 0 complete; Phase 1 / Increment 1 authorized
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -31,21 +31,17 @@ future drift comparisons.
 
 ## Tag / rollback decision
 
-**BASELINE_TAG_REQUIRES_OWNER_ACTION.** No tag points at the baseline commit.
-The normal repository convention is `internal-ha-<commit>`, so the expected
-tag is `internal-ha-9fa2a2526e27d01cc7089d804b35c2a9c7ef435c`. Creating and
-pushing a tag is a release action and is outside this Managed transaction.
-The immutable commit is a precise provisional rollback reference, but the
-canonical Phase-0 roadmap requires an approved baseline tag or an explicit
-governance exception; neither was supplied here.
+**BASELINE_TAG_SATISFIED.** The immutable baseline commit is tagged as
+`internal-ha-9fa2a2526e27d01cc7089d804b35c2a9c7ef435c`. It is the approved
+rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 245 candidate files from EP runtime,
+The audit independently discovers 283 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`a3bf0e8c7a6e7fd8c2993446e1d9e9143133b80743275f88041de53da94b3a18` and
+`cae40adf5d1b55b6576b265fcbb1ee6fe5f7867f43e5a92eaa07c7e5e584a5bf` and
 semantic-manifest digest
 `4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee`.
 
@@ -55,10 +51,10 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `245 / 245` |
+| Candidate universe / exactly once | `283 / 283` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
-| EP product source / Python inspected | `76 / 58` |
+| EP product source / Python inspected | `95 / 76` |
 | DJConnect, Home Assistant, repository-local blocking imports | `0 / 0 / 0` |
 
 ## Reproduction
@@ -76,11 +72,14 @@ overlap, deterministic file overrides and newly introduced EP files.
 
 ## Gate result
 
-The manifest-completeness P0 is resolved, but the roadmap-required baseline
-tag decision remains owner-gated. Therefore the only truthful result is:
+The Phase-0 manifest, baseline tag and deterministic audit controls are all
+satisfied. The next authorized implementation is **Phase 1 / Increment 1 —
+Local Consumer API Contract Foundation**. It is contract-only: it introduces
+neither a live transport nor authentication, credential, storage or consumer
+cutover runtime.
 
 ```text
-PARTIAL — PHASE 0 FOLLOW-UP REQUIRED
+PASS — PHASE 0 COMPLETE
 ```
 
 No product/runtime behavior, extraction, standalone repository, namespace
