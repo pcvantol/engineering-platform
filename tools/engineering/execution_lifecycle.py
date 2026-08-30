@@ -174,8 +174,13 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
         reconciliation_merge_required = reconciliation_merge_required or _pull_request_recorded(checkpoint.get("pull_request"))
     else:
         implementation_merge_required = implementation_merge_required or _pull_request_recorded(checkpoint.get("pull_request"))
+    verified_merge_resume_kinds: set[str] = set()
+    if checkpoint.get("next_action") == "resume_verified_merge":
+        verified_merge_resume_kinds.add(str(transaction_kind))
     for event_phase, event_checkpoint, recorded_at in events:
         event = _checkpoint(event_checkpoint)
+        if event.get("next_action") == "resume_verified_merge":
+            verified_merge_resume_kinds.add(str(event.get("transaction_kind") or "IMPLEMENTATION"))
         recorded_pull_request = recorded_pull_request or any(
             _pull_request_recorded(event.get(field))
             for field in ("pull_request", "implementation_pull_request", "finalization_pull_request", "reconciliation_pull_request")
@@ -206,22 +211,21 @@ def projection(root: Path, run_id: str | None) -> dict[str, object]:
     # Reaching the pull-request hand-off is not evidence that the pull request
     # was merged. A later finalization step (or a successful terminal state)
     # is the first lifecycle evidence that can make the merge node complete.
-    verified_merge_resume = checkpoint.get("next_action") == "resume_verified_merge"
     implementation_merge_completed = (
         terminal_state == "COMPLETE"
         or "FINALIZE_AGENT" in observed
         or "REPOSITORY_CLEANUP" in observed
-        or (verified_merge_resume and transaction_kind == "IMPLEMENTATION")
+        or "IMPLEMENTATION" in verified_merge_resume_kinds
     )
     finalization_merge_completed = (
         terminal_state == "COMPLETE"
         or "REPOSITORY_CLEANUP" in observed
-        or (verified_merge_resume and transaction_kind == "FINALIZATION")
+        or "FINALIZATION" in verified_merge_resume_kinds
     )
     reconciliation_merge_completed = (
         terminal_state == "COMPLETE"
         or "REPOSITORY_CLEANUP" in observed
-        or (verified_merge_resume and transaction_kind == "RECONCILIATION")
+        or "RECONCILIATION" in verified_merge_resume_kinds
     )
     # The managed contract permits a no-PR path and a single implementation-PR
     # path. A terminal pre-flight block is not merge evidence. Omit boundaries

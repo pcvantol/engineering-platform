@@ -183,6 +183,30 @@ class ExecutionLifecycleProjectionTests(unittest.TestCase):
         self.assertEqual(by_id["FINALIZE_AGENT"]["state"], "COMPLETED")
         self.assertEqual(by_id["WAIT_FOR_FINALIZATION_MERGE"]["state"], "ACTIVE")
 
+    def test_verified_finalization_merge_stays_completed_during_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._state(root, "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=840)
+            self._state(root, "FINALIZE_AGENT", transaction_kind="FINALIZATION", implementation_pull_request=840)
+            self._state(
+                root, "WAIT_FOR_OPERATOR_MERGE", transaction_kind="FINALIZATION",
+                implementation_pull_request=840, pull_request=841, finalization_pull_request=841,
+                next_action="await_operator_pr_merge",
+            )
+            self._state(
+                root, "WAIT_FOR_OPERATOR_MERGE", transaction_kind="FINALIZATION",
+                implementation_pull_request=840, pull_request=841, finalization_pull_request=841,
+                next_action="resume_verified_merge",
+            )
+            self._state(
+                root, "RECONCILE_AGENT", transaction_kind="RECONCILIATION",
+                implementation_pull_request=840, finalization_pull_request=841,
+            )
+            value = projection(root, "inbox-flow")
+        by_id = {step["id"]: step for step in value["steps"]}
+        self.assertEqual(value["current_step"], "RECONCILE_AGENT")
+        self.assertEqual(by_id["WAIT_FOR_FINALIZATION_MERGE"]["state"], "COMPLETED")
+
     def test_completed_managed_run_omits_merge_steps_without_pull_requests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
