@@ -737,7 +737,7 @@ def _publish_active_queue(repo: Path, candidates: list[tuple[Path, str]]) -> Non
 
 
 def _nonterminal_transaction_state(repo: Path) -> TransactionState | None:
-    """Return the latest durable non-terminal transaction, if it is readable."""
+    """Return the latest durable non-terminal transaction that is not dismissed."""
     placeholders = ",".join("?" for _ in TERMINAL_PHASES)
     try:
         connection = open_storage(repo)
@@ -749,7 +749,13 @@ def _nonterminal_transaction_state(repo: Path) -> TransactionState | None:
             ).fetchone()
         finally:
             connection.close()
-        return TransactionState.from_dict(json.loads(row[0])) if row else None
+        state = TransactionState.from_dict(json.loads(row[0])) if row else None
+        # A dismissal is immutable operator-handling evidence, not a rewrite
+        # of the historical checkpoint.  It must nevertheless prevent a
+        # stale non-terminal checkpoint from being projected as live again.
+        if state is not None and dismissal_for_run(repo, state.run_id):
+            return None
+        return state
     except (EngineeringStorageError, TypeError, json.JSONDecodeError, ValueError):
         return None
 
@@ -1133,6 +1139,10 @@ def _active_transaction(repo: Path) -> bool:
         return False
     run_id = payload.get("run_id")
     if isinstance(run_id, str):
+        # Historical checkpoints remain immutable after dismissal.  Do not
+        # let one reclaim Inbox ownership or recreate a live dashboard card.
+        if dismissal_for_run(repo, run_id):
+            return False
         checkpoint_phase, _ = _runner_result(repo, run_id)
         if checkpoint_phase in TERMINAL_PHASES:
             return False

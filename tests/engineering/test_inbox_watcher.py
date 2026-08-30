@@ -692,6 +692,43 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["current_phase"], "CAPABILITY_REVIEW")
         self.assertEqual(snapshot["current_action"], "review_capabilities")
 
+    def test_dismissed_stale_checkpoint_does_not_reclaim_live_projection(self) -> None:
+        from tools.engineering.prompt_history import record_prompt_execution
+        from tools.engineering.storage import record_execution_dismissal
+
+        run_id = "inbox-dismissed-stale-checkpoint"
+        record_prompt_execution(
+            self.repo, run_id=run_id, terminal_state="FAILED",
+            prompt_title="Historical failed execution", executed_at="2026-08-30T11:47:14Z",
+        )
+        record_execution_dismissal(
+            self.repo, run_id=run_id, terminal_state="FAILED",
+            dismissed_at="2026-08-30T12:00:00Z", dismissed_by="dashboard_operator",
+        )
+        StateStore(self.repo / ".engineering" / "engineering-runs").save(
+            TransactionState(
+                run_id, "pcvantol/djconnect", "prompt.md", "QUALITY_CONTROL_AGENT",
+                next_action="autonomous_refactor_and_quality_control",
+            )
+        )
+        with open_storage(self.repo) as connection:
+            store_projection(
+                connection,
+                "live_status",
+                {"run_id": run_id, "phase": "QUALITY_CONTROL_AGENT"},
+            )
+        inbox_watcher.status(
+            self.repo, "WATCHER_IDLE", queued_jobs=0, queue_items=[], run_id=None,
+        )
+
+        self.assertIsNone(inbox_watcher._nonterminal_transaction_state(self.repo))
+        self.assertFalse(inbox_watcher._active_transaction(self.repo))
+        self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
+
+        snapshot = json_status(self.repo)
+        self.assertEqual(snapshot["watcher_state"], "WATCHER_IDLE")
+        self.assertIsNone(snapshot["run_id"])
+
     def test_operator_merge_wait_is_rate_limited_and_projects_prior_job_context(self) -> None:
         from tools.engineering.agent_state import StateStore, TransactionState
 
