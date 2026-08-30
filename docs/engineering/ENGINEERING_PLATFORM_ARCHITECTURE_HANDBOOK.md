@@ -424,3 +424,6 @@ chosen tier and required command categories, while the separate bounded
 validation evidence records the executed command summaries. CI retains its
 required check and skips only the expensive browser execution for an
 unambiguous documentation profile.
+
+An explicit negative success summary, such as `no whitespace errors`, records
+`PASS`; only unnegated failure language is classified as a validation failure.
