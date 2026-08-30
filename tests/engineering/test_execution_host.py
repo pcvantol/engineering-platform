@@ -1731,6 +1731,68 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "currentness": 0,
         })
 
+    def test_validation_evidence_keeps_no_errors_summaries_passing(self) -> None:
+        summaries = (
+            "Passed; committed documentation diff has no whitespace errors.",
+            "No errors detected.",
+            "Validation passed with no errors.",
+            "git diff --check passed; no whitespace errors.",
+        )
+        for index, summary in enumerate(summaries, start=1):
+            with self.subTest(summary=summary):
+                state = TransactionState(
+                    f"validation-no-errors-{index}", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+                )
+                record_validation_profile(
+                    self.root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION",
+                    validation_profile_version="1.0", required_validation_controls=("git_diff_check",),
+                    recorded_at="2026-08-30T00:00:00+00:00",
+                )
+                result = AgentResult("COMPLETE", validation_evidence=({
+                    "command": "git diff --check", "result": summary,
+                },))
+                EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)._record_validation_evidence(state, result)
+                self.assertEqual(load_validation_context(self.root, state.run_id)["controls"]["git_diff_check"]["result"], "PASS")
+
+    def test_validation_evidence_keeps_explicit_failures_fail_closed(self) -> None:
+        summaries = (
+            "ERROR: git diff --check failed",
+            "Validation failed",
+            "Whitespace error detected",
+        )
+        for index, summary in enumerate(summaries, start=1):
+            with self.subTest(summary=summary):
+                state = TransactionState(
+                    f"validation-real-failure-{index}", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+                )
+                record_validation_profile(
+                    self.root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION",
+                    validation_profile_version="1.0", required_validation_controls=("git_diff_check",),
+                    recorded_at="2026-08-30T00:00:00+00:00",
+                )
+                result = AgentResult("COMPLETE", validation_evidence=({
+                    "command": "git diff --check", "result": summary,
+                },))
+                EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)._record_validation_evidence(state, result)
+                self.assertEqual(load_validation_context(self.root, state.run_id)["controls"]["git_diff_check"]["result"], "FAIL")
+
+    def test_combined_documentation_validation_no_errors_does_not_create_false_failure(self) -> None:
+        state = TransactionState(
+            "documentation-no-errors", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+        )
+        record_validation_profile(
+            self.root, run_id=state.run_id, selected_validation_tier="DOCUMENTATION",
+            validation_profile_version="1.0", required_validation_controls=("documentation_contract",),
+            recorded_at="2026-08-30T00:00:00+00:00",
+        )
+        result = AgentResult("COMPLETE", validation_evidence=({
+            "command": "git diff --check && python3 -m unittest tests.engineering.test_engineering_operational_documentation",
+            "result": "Passed: no whitespace errors; 14 tests passed.",
+        },))
+        EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(result), lambda _: None)._record_validation_evidence(state, result)
+        context = load_validation_context(self.root, state.run_id)
+        self.assertEqual(context["controls"]["documentation_contract"]["result"], "PASS")
+
     def test_validation_only_controls_are_pending_until_their_execution_stage(self) -> None:
         run_id = "validation-only-pending"
         record_validation_profile(

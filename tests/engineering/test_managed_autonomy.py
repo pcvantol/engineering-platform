@@ -137,6 +137,8 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["implementation_delivery"], "COMPLETE")
         self.assertEqual(snapshot["finalization_delivery"], "COMPLETE")
         self.assertEqual(snapshot["execution_mode"], "MANAGED")
+        self.assertEqual(snapshot["required_validation_state"], "PASS")
+        self.assertFalse(snapshot["validation_projection_conflict"])
 
     def test_recovered_run_qualification_uses_only_ordinary_terminal_gates(self) -> None:
         cases = (

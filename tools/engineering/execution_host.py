@@ -694,14 +694,7 @@ class EngineeringRunner:
             kind = self._validation_kind(command)
             if kind is None:
                 continue
-            normalized = summary.casefold()
-            status = (
-                "NOT_APPLICABLE" if "not applicable" in normalized else
-                "UNAVAILABLE" if any(token in normalized for token in ("unavailable", "not recorded")) else
-                "FAIL" if any(token in normalized for token in ("fail", "error", "blocked", "timeout", "timed out")) else
-                "PASS" if any(token in normalized for token in ("pass", "passed", "succeed")) else
-                "UNAVAILABLE"
-            )
+            status = self._validation_summary_status(summary)
             try:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
@@ -723,6 +716,26 @@ class EngineeringRunner:
             except EngineeringStorageError:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
         return replace(state, validation_evidence=result.validation_evidence)
+
+    @staticmethod
+    def _validation_summary_status(summary: str) -> str:
+        """Classify bounded validation prose without treating ``no errors`` as a failure."""
+        normalized = summary.casefold()
+        if "not applicable" in normalized:
+            return "NOT_APPLICABLE"
+        if any(token in normalized for token in ("unavailable", "not recorded")):
+            return "UNAVAILABLE"
+        # Remove explicitly negated error terms before looking for a failure.
+        # This keeps a real ``ERROR:`` or ``error detected`` fail-closed while
+        # allowing ordinary success summaries such as ``no whitespace errors``.
+        failure_subject = re.sub(
+            r"\b(?:no|without)(?:\s+[a-z0-9_-]+){0,4}\s+errors?\b", "", normalized,
+        )
+        if any(token in failure_subject for token in ("fail", "error", "blocked", "timeout", "timed out")):
+            return "FAIL"
+        if any(token in normalized for token in ("pass", "passed", "succeed", "no errors", "without errors")):
+            return "PASS"
+        return "UNAVAILABLE"
 
     def _bind_validation_only_profile(
         self, state: TransactionState, producer_context: object,
