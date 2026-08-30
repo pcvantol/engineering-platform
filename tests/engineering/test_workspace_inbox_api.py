@@ -87,7 +87,7 @@ class WorkspaceInboxApiTest(unittest.TestCase):
             (transport / "Inbox").mkdir(parents=True)
             with patch.dict(os.environ, {"DJCONNECT_ENGINEERING_INBOX": str(transport)}, clear=False):
                 receipt = publish(root, self._human_validation_only_envelope())
-            self.assertTrue(receipt.filename.startswith("producer-operator-validation-only-001-"))
+            self.assertEqual(receipt.filename, "producer-operator-validation-only-001.json")
             connection = open_storage(root)
             try:
                 row = connection.execute(
@@ -201,7 +201,7 @@ class WorkspaceInboxApiTest(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT execution_context_snapshot FROM execution_submissions WHERE submission_id='human-cli-001'"
                 ).fetchone()
-            published = parse_producer_submission(next(inbox.glob("producer-human-cli-001-*.json")).read_text(encoding="utf-8"))
+            published = parse_producer_submission((inbox / "producer-human-cli-001.json").read_text(encoding="utf-8"))
         self.assertEqual(json.loads(stored[0]), published.execution_context)
         self.assertEqual(published.execution_context["validation_profile"], producer_profile_payload("DASHBOARD"))
 

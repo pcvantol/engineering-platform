@@ -1,11 +1,11 @@
 # Engineering Inbox Protocol v1
 
-The configured Runtime Prompt transport accepts UTF-8 `.txt`, `.md` and
-filename-neutral files whose bounded content is recognizably Markdown;
-iOS-created `.txt` files are supported. The watcher requires a regular,
-non-empty, non-symlink file with stable size and mtime before moving it out of
-the transport inbox into local Engineering Platform storage. Job identity derives from
-filename and content digest.
+The execution watcher accepts only atomic UTF-8 JSON Producer Submission
+Envelopes. A new stable UTF-8 `.txt` in the iCloud Inbox is convenience input
+for the Human Text Ingress Adapter, never an executable submission. The adapter
+uses the canonical structured Human submission service, persists the immutable
+submission and Execution Context, atomically publishes JSON, then moves the
+source to `Accepted/`; deterministic rejections move it to `Rejected/`.
 
 Jobs are strictly sequential: `iCloud Inbox → .engineering/inbox/Running →
 .engineering/inbox/Completed|Failed`. A local immutable
@@ -96,10 +96,35 @@ python3 -m tools.engineering.workspace_inbox_api \
 because one is present. Forge uses the same `execution_context.validation_profile`
 contract when it supplies a structured profile. The iPhone Shortcut may submit
 this same JSON envelope directly to the iCloud Inbox; it must not save only the
-prompt text when an explicit action intent or profile is required. Plain-text
-files remain the compatibility path and always retain `HUMAN` / `legacy`, no
-supplied Execution Context, no producer-supplied validation profile, and the
-safe `MUTATING_DELIVERY` default.
+prompt text when an explicit action intent or profile is required.
+
+### Human Text Ingress Adapter
+
+The Human Text Ingress Adapter and `workspace_inbox_api` converge on the same
+structured Human implementation. An unannotated `.txt` uses configured
+`human_ingress.producer_id` (environment key
+`DJCONNECT_ENGINEERING_HUMAN_INGRESS_PRODUCER_ID`, default
+`human:operator-peter`), `MANAGED` and explicit `MUTATING_DELIVERY`, without
+inventing a validation profile. Prompt prose never changes these values.
+
+An exact, first-byte header may set only `action_intent`
+(`MUTATING_DELIVERY` or `VALIDATION_ONLY`) and `validation_profile`:
+
+```text
+---
+action_intent: VALIDATION_ONLY
+validation_profile: DASHBOARD
+---
+
+Validate the dashboard controls.
+```
+
+Unknown, duplicate or malformed header fields reject the source. A
+`VALIDATION_ONLY` submission requires a registry-valid profile. Source identity
+and deterministic submission ID prevent duplicate publication across watcher
+events, restarts and post-publication archival failures. At first activation
+the adapter snapshots pre-existing `.txt` source identities; those historical
+files remain ignored until deliberately re-saved.
 
 ### Dependabot admission
 

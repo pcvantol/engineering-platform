@@ -1254,7 +1254,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(entry["report_available"])
 
     def test_complete_job_is_serialized_and_archived(self) -> None:
-        (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
+        (self.inbox / "job.md").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-0cff9d624c2412db"
         report_dir = self.repo / ".engineering/reports"
         report_dir.mkdir(parents=True)
@@ -1273,11 +1273,11 @@ class InboxWatcherTest(unittest.TestCase):
             run.call_args.args[0][-4:],
             ["--run-id", run_id, "--admitted-storage-schema", str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION)],
         )
-        self.assertEqual(len(list(inbox_watcher.local_folders(self.repo)["Completed"].glob("*__job.txt"))), 1)
+        self.assertEqual(len(list(inbox_watcher.local_folders(self.repo)["Completed"].glob("*__job.md"))), 1)
         self.assertFalse((self.root / "Reports").exists())
         snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "JOB_COMPLETED")
-        self.assertEqual(snapshot["last_executed_filename"], "job.txt")
+        self.assertEqual(snapshot["last_executed_filename"], "job.md")
         self.assertEqual(snapshot["last_executed_title"], "prompt")
         self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
@@ -1326,7 +1326,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(run, ("human:operator-peter", "HUMAN", "1.0"))
 
     def test_queue_wait_uses_persisted_eligibility_and_ends_when_execution_is_claimed(self) -> None:
-        prompt = self.inbox / "timed-job.txt"
+        prompt = self.inbox / "timed-job.md"
         prompt.write_text("# prompt", encoding="utf-8")
         run_id = "inbox-queue-timing"
         checkpoint = self.repo / ".engineering" / "engineering-runs" / f"{run_id}.json"
@@ -1361,7 +1361,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(summary["total_wall_time_ms"], spans["TOTAL_EXECUTION"]["duration_ms"])
 
     def test_background_watcher_detaches_runner_and_keeps_admission_active(self) -> None:
-        (self.inbox / "job.txt").write_text("# prompt", encoding="utf-8")
+        (self.inbox / "job.md").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-detached-run"
         with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
             "tools.engineering.inbox_watcher.subprocess.Popen"
@@ -1374,21 +1374,21 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn("once", command)
         self.assertEqual(environment[inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT], run_id)
         self.assertTrue(environment[inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT])
-        self.assertTrue((self.inbox / "job.txt").exists())
+        self.assertTrue((self.inbox / "job.md").exists())
         self.assertTrue(inbox_watcher._active_transaction(self.repo))
         snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "RUNNER_STARTING")
         self.assertEqual(snapshot["run_id"], run_id)
 
     def test_active_detached_runner_keeps_scanning_and_publishes_later_inbox_prompts(self) -> None:
-        (self.inbox / "running.txt").write_text("# Running prompt", encoding="utf-8")
+        (self.inbox / "running.md").write_text("# Running prompt", encoding="utf-8")
         run_id = "inbox-detached-run"
         with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
             "tools.engineering.inbox_watcher.subprocess.Popen"
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
 
-        queued = self.inbox / "later.txt"
+        queued = self.inbox / "later.md"
         queued.write_text("# Later prompt", encoding="utf-8")
 
         self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
@@ -1399,7 +1399,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["queue_depth"], 2)
         self.assertEqual(
             {item["filename"] for item in snapshot["queue_items"]},
-            {"later.txt", "running.txt"},
+            {"later.md", "running.md"},
         )
 
     def test_detached_runner_execution_keeps_scanning_when_a_second_prompt_arrives(self) -> None:
@@ -1676,7 +1676,7 @@ class InboxWatcherTest(unittest.TestCase):
             )
 
     def test_blocked_predecessor_holds_later_inbox_prompts_without_claiming_them(self) -> None:
-        (self.inbox / "next.txt").write_text("# Later prompt", encoding="utf-8")
+        (self.inbox / "next.md").write_text("# Later prompt", encoding="utf-8")
         status_directory = self.repo / ".engineering" / "status"
         status_directory.mkdir(parents=True)
         (status_directory / "status.json").write_text(
@@ -1696,13 +1696,13 @@ class InboxWatcherTest(unittest.TestCase):
 
         snapshot = json_status(self.repo)
         run.assert_not_called()
-        self.assertTrue((self.inbox / "next.txt").exists())
+        self.assertTrue((self.inbox / "next.md").exists())
         self.assertEqual(snapshot["watcher_state"], "WAITING_FOR_PREDECESSOR")
         self.assertEqual(snapshot["current_phase"], "WAITING_FOR_PREDECESSOR")
         self.assertEqual(snapshot["blocking_predecessor_run"], "inbox-blocked123")
         self.assertEqual(snapshot["blocking_predecessor_title"], "Blocked predecessor")
         self.assertIn("Retry-Of: inbox-blocked123", snapshot["predecessor_recovery_action"])
-        self.assertEqual(snapshot["queue_items"][0]["filename"], "next.txt")
+        self.assertEqual(snapshot["queue_items"][0]["filename"], "next.md")
         self.assertEqual(snapshot["queue_items"][0]["title"], "Later prompt")
 
     def test_dismissed_blocked_predecessor_does_not_block_unrelated_admission(self) -> None:
@@ -1718,7 +1718,7 @@ class InboxWatcherTest(unittest.TestCase):
             self.repo, run_id=run_id, terminal_state="BLOCKED",
             dismissed_at="2026-08-18T12:01:00Z", dismissed_by="dashboard_operator",
         )
-        (self.inbox / "next.txt").write_text("# Unrelated future work", encoding="utf-8")
+        (self.inbox / "next.md").write_text("# Unrelated future work", encoding="utf-8")
         status_directory = self.repo / ".engineering" / "status"
         status_directory.mkdir(parents=True)
         (status_directory / "status.json").write_text(json.dumps({
@@ -1803,9 +1803,9 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["queue_depth"], 0)
 
     def test_explicit_retry_of_blocked_predecessor_precedes_later_prompts(self) -> None:
-        later = self.inbox / "later.txt"
+        later = self.inbox / "later.md"
         later.write_text("# Later prompt", encoding="utf-8")
-        retry = self.inbox / "retry.txt"
+        retry = self.inbox / "retry.md"
         retry_content = "Retry-Of: inbox-blocked123\n# Corrected predecessor"
         retry.write_text(retry_content, encoding="utf-8")
         now = time.time_ns()

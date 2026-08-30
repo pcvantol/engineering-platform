@@ -47,6 +47,7 @@ from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerMetadata, ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
+from .human_text_ingress import ingest as ingest_human_text
 from .drift_diagnostics import summary as drift_summary
 from .dependabot_admission import (
     configured_repository as dependabot_repository,
@@ -1021,7 +1022,7 @@ def submit_execution_retry(repo: Path, root: Path, run_id: str, *, queue_recover
             f"Retry-Timestamp: {timestamp}\n<!-- {operation}: {uuid.uuid4().hex} -->\n\n{content}"
         )
         inbox = folders(root)["Inbox"]
-        suffix = source.suffix.lower() if source.suffix.lower() in {".md", ".markdown", ".txt"} else ".md"
+        suffix = source.suffix.lower() if source.suffix.lower() in {".md", ".markdown"} else ".md"
         filename = f"retry-{run_id}-{uuid.uuid4().hex[:8]}{suffix}"
         destination, temporary = inbox / filename, inbox / f".{filename}.tmp"
         try:
@@ -1658,11 +1659,15 @@ class QueueAdmission:
 
 
 def _scan_queue(root: Path, interval: float) -> list[QueueCandidate]:
-    """Return stable Inbox prompts in their canonical execution order."""
+    """Return stable structured envelopes in execution order.
+
+    Text is convenience transport input only. It is adapted to JSON before
+    this scan and can never be claimed as an executable submission.
+    """
     return [
         (path, content)
         for path in discover(root, interval)
-        if (content := stable_prompt(path, 0.0)) is not None
+        if path.suffix.lower() in {".json", ".md", ".markdown"} and (content := stable_prompt(path, 0.0)) is not None
     ]
 
 
@@ -1881,6 +1886,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     areas = local_folders(repo)
     with _lock(repo):
         _admit_dependabot_pull_requests(repo, root, logger)
+        ingest_human_text(repo, folders(root)["Inbox"], read_source=lambda source: stable_prompt(source, interval))
         # Terminal telemetry is a rebuildable projection.  Drain durable
         # intents before any new work so a vanished daemon/lease cannot make a
         # completed run disappear from the dashboard or daily trend.

@@ -154,9 +154,23 @@ def publish(root: Path, envelope: str) -> WorkspaceInboxReceipt:
         raise WorkspaceInboxSubmissionError(
             "submission_audit_unavailable", "Inbox submission audit evidence could not be stored safely."
         ) from error
-    filename = f"producer-{submission.submission_id}-{uuid.uuid4().hex[:12]}.json"
+    # A submission ID owns one immutable physical envelope. This makes a retry
+    # after persistence or source-archive failure idempotent.
+    filename = f"producer-{submission.submission_id}.json"
     target = inbox / filename
     partial = inbox / f".{filename}.partial"
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except OSError as error:
+            raise WorkspaceInboxSubmissionError(
+                "inbox_publication_failed", "Forge submission could not be read safely from the Inbox."
+            ) from error
+        if existing != envelope:
+            raise WorkspaceInboxSubmissionError(
+                "submission_id_conflict", "Submission identity already belongs to a different envelope."
+            )
+        return WorkspaceInboxReceipt(submission.submission_id, filename, inbox, received_at)
     try:
         partial.write_text(envelope, encoding="utf-8")
         partial.chmod(0o600)
