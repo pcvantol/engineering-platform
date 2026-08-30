@@ -34,3 +34,7 @@ field is `UNAVAILABLE` / not recorded for this historical run. Projections use
 the same persisted summary for the Engineering Report, Execution Receipt
 projection, dashboard and Prompt History. No raw commands, prompts, output,
 tokens, secrets, private paths or file contents are retained by this metric.
+
+An observed zero is distinct from `UNAVAILABLE`: zero records that the
+applicable persisted counter was measured as zero, while `UNAVAILABLE` records
+that no compatible activity summary exists for that run.
