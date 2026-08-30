@@ -355,6 +355,44 @@ class InboxWatcherTest(unittest.TestCase):
             [call.args[2] for call in log_event.call_args_list],
         )
 
+    def test_watcher_defers_source_restart_while_execution_ownership_is_active(self) -> None:
+        lifecycle_context = {
+            "application_version": inbox_watcher.WATCHER_VERSION,
+            "git_commit": "abc123def456",
+            "launchd_label": inbox_watcher.LABEL,
+            "launch_agent_path": "/tmp/inbox.plist",
+        }
+        with (
+            patch("tools.engineering.inbox_watcher.provision_workspace"),
+            patch("tools.engineering.inbox_watcher.cloud_root", return_value=self.root),
+            patch("tools.engineering.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
+            patch("tools.engineering.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
+            patch("tools.engineering.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
+            patch("tools.engineering.inbox_watcher.single_instance", return_value=nullcontext()),
+            patch("tools.engineering.inbox_watcher.once"),
+            patch("tools.engineering.inbox_watcher._active_transaction", return_value=True),
+            patch("tools.engineering.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
+            patch("tools.engineering.inbox_watcher.time.sleep", side_effect=KeyboardInterrupt),
+            patch("tools.engineering.inbox_watcher.log_event") as log_event,
+        ):
+            self.assertEqual(
+                inbox_watcher.main(["run", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
+                0,
+            )
+        self.assertIn(
+            "watcher_source_revision_restart_deferred",
+            [call.args[2] for call in log_event.call_args_list],
+        )
+        connection = open_storage(self.repo)
+        try:
+            row = connection.execute(
+                "SELECT payload FROM execution_projections WHERE projection_name='watcher_restart_pending'"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(row[0])["state"], "restart_pending_after_active_execution")
+
     def test_watcher_projects_dashboard_migration_block_instead_of_stale_merge_wait(self) -> None:
         from tools.engineering.platform_bootstrap import WorkspaceMigrationBlockedError
 

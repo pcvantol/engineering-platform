@@ -16,11 +16,18 @@ class CodexInvocationError(RunnerError):
         *,
         next_action: str = "inspect_codex_cli",
         terminal_condition: str = "codex_invocation_failed",
+        interruption_reason: str | None = None,
     ) -> None:
         super().__init__(persistent_diagnostic)
         self.console_detail = console_detail
         self.next_action = next_action
         self.terminal_condition = terminal_condition
+        self.interruption_reason = interruption_reason
+
+    @property
+    def provider_turn_interrupted(self) -> bool:
+        """Whether provider evidence proves a turn ended without a result."""
+        return self.terminal_condition == "provider_turn_interrupted" and bool(self.interruption_reason)
 
 
 class CodexHandoffTimeout(RunnerError):

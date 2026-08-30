@@ -39,6 +39,14 @@ _VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
 _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
 _UNITTEST_COUNT = re.compile(r"\b(?P<name>failures|errors)=(?P<count>\d+)\b")
+_TURN_ABORTED = re.compile(r'"type"\s*:\s*"turn_aborted"[^\n]*"reason"\s*:\s*"interrupted"', re.IGNORECASE)
+
+
+def provider_turn_interruption(stdout: str, stderr: str) -> str | None:
+    """Classify only provider-proven interrupted turns without inventing a result."""
+    if _TURN_ABORTED.search(f"{stdout}\n{stderr}"):
+        return "interrupted"
+    return None
 
 
 def codex_failure_disposition(
@@ -525,11 +533,13 @@ class CodexCliClient:
             next_action, terminal_condition, diagnostic = codex_failure_disposition(
                 completed.returncode, completed.stdout, completed.stderr
             )
+            interruption = provider_turn_interruption(completed.stdout, completed.stderr)
             raise CodexInvocationError(
                 diagnostic,
                 detail,
-                next_action=next_action,
-                terminal_condition=terminal_condition,
+                next_action="NONE" if interruption else next_action,
+                terminal_condition="provider_turn_interrupted" if interruption else terminal_condition,
+                interruption_reason=interruption,
             )
         try:
             raw = json.loads(_codex_final_message(completed.stdout))
@@ -560,9 +570,14 @@ class CodexCliClient:
                 result = replace(result, diagnostic=redact_diagnostic(result.diagnostic))
             return result
         except (IndexError, json.JSONDecodeError, TypeError) as error:
+            interruption = provider_turn_interruption(completed.stdout, completed.stderr)
             raise CodexInvocationError(
-                "Codex CLI did not return the required structured terminal result.",
+                "Provider turn interrupted before returning the required structured terminal result."
+                if interruption else "Codex CLI did not return the required structured terminal result.",
                 _format_cli_failure(completed.returncode, completed.stderr, completed.stdout, prompt),
+                next_action="NONE" if interruption else "inspect_codex_cli",
+                terminal_condition="provider_turn_interrupted" if interruption else "codex_invocation_failed",
+                interruption_reason=interruption,
             ) from error
 
     def _run_invocation(

@@ -789,6 +789,18 @@ class ClientContractTest(unittest.TestCase):
         )
         self.assertNotIn("purchase more credits", str(raised.exception))
 
+    @patch("tools.engineering.execution_host.subprocess.run")
+    def test_codex_client_classifies_interrupted_turn_without_agent_result(self, run: object) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            ("codex",), 1, '{"type":"turn_aborted","reason":"interrupted"}\n', ""
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(CodexInvocationError) as raised:
+                CodexCliClient().invoke(Path(temporary), "objective")
+        self.assertTrue(raised.exception.provider_turn_interrupted)
+        self.assertEqual(raised.exception.terminal_condition, "provider_turn_interrupted")
+        self.assertEqual(raised.exception.next_action, "NONE")
+
     @patch("tools.engineering.execution_host.generate_terminal_report", return_value=None)
     @patch("tools.engineering.execution_host.EngineeringRunner")
     def test_main_publishes_complete_runner_result(self, runner_type: object, _: object) -> None:
@@ -1695,6 +1707,28 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(result.next_action, "resolve_codex_usage_limit")
         self.assertEqual(result.terminal_condition, "codex_usage_limit_reached")
         self.assertNotEqual(result.terminal_condition, "operator_merge_required")
+
+    def test_provider_interruption_terminalizes_without_a_follow_up_action(self) -> None:
+        state = TransactionState(
+            "interrupted-provider-run", "pcvantol/djconnect", str(self.prompt), "LOCAL_REPOSITORY_VALIDATION",
+            next_action="run_local_repository_validation",
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("COMPLETE")), lambda _: None
+        )
+        error = CodexInvocationError(
+            "Provider turn interrupted before returning the required structured terminal result.",
+            "redacted provider detail",
+            next_action="NONE",
+            terminal_condition="provider_turn_interrupted",
+            interruption_reason="interrupted",
+        )
+        terminal = runner._terminalize_provider_invocation_error(state, error)
+        self.assertEqual(terminal.phase, "FAILED")
+        self.assertTrue(terminal.terminal)
+        self.assertEqual(terminal.next_action, "NONE")
+        self.assertEqual(terminal.terminal_condition, "provider_turn_interrupted")
+        self.assertEqual(self.store.load(state.run_id), terminal)
 
     def test_codex_activity_projection_is_fixed_and_never_echoes_event_content(self) -> None:
         self.assertEqual(

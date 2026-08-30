@@ -126,6 +126,7 @@ def write_live_status(
             }
         except OSError:
             previous_recovery = {"baseline_clean": False}
+    terminal_phase = state.phase in {"COMPLETE", "BLOCKED", "FAILED"}
     payload = {
         "run_id": state.run_id,
         "phase": state.phase,
@@ -137,13 +138,13 @@ def write_live_status(
         "pull_request": state.pull_request,
         "waiting_for_merge_since": state.waiting_for_merge_since,
         "repair_iteration": state.repair_iterations,
-        "repository_state": "MERGED_RECONCILED" if state.phase == "COMPLETE" else "ACTIVE",
-        "workspace_state": "WORKSPACE_READY" if state.phase == "COMPLETE" else "ACTIVE",
+        "repository_state": "MERGED_RECONCILED" if state.phase == "COMPLETE" else state.phase if terminal_phase else "ACTIVE",
+        "workspace_state": "WORKSPACE_READY" if state.phase == "COMPLETE" else "TERMINAL" if terminal_phase else "ACTIVE",
         "last_update": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": 0,
         "prompt_characters": prompt_characters,
         "diagnostic": state.diagnostic,
-        "resume_command": f"engineering-execution-host {state.prompt_path} --run-id {state.run_id} --resume",
+        "resume_command": None if terminal_phase else f"engineering-execution-host {state.prompt_path} --run-id {state.run_id} --resume",
         "execution_mode": state.execution_mode,
         "target_repository": checkout.name if state.execution_mode == "GENESIS" else state.repository,
         "checkout_path": str(checkout),
@@ -163,7 +164,6 @@ def write_live_status(
         # a run has commits, a pre-existing branch, or an unknown base.
         "workspace_recovery": previous_recovery,
     }
-    terminal_phase = state.phase in {"COMPLETE", "BLOCKED", "FAILED"}
     transient = None if state.terminal or terminal_phase else transient_action or previous_transient_action
     try:
         payload["execution_context"] = load_execution_context_snapshot(root, state.run_id)

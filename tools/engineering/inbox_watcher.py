@@ -2419,6 +2419,33 @@ def main(argv: list[str] | None = None) -> int:
                             _run_periodic_database_maintenance(repo, logger)
                             current_revision = _source_revision(repo)
                             if started_revision and current_revision and current_revision != started_revision:
+                                if _active_transaction(repo):
+                                    try:
+                                        connection = open_storage(repo)
+                                        try:
+                                            store_projection(
+                                                connection,
+                                                "watcher_restart_pending",
+                                                {
+                                                    "state": "restart_pending_after_active_execution",
+                                                    "observed_revision": current_revision,
+                                                    "started_revision": started_revision,
+                                                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                                                },
+                                                classification="OBSERVABILITY",
+                                            )
+                                        finally:
+                                            connection.close()
+                                    except EngineeringStorageError:
+                                        logger.warning("Watcher restart deferral persistence is unavailable")
+                                    log_event(
+                                        logger,
+                                        logging.INFO,
+                                        "watcher_source_revision_restart_deferred",
+                                        diagnostic="Active execution ownership is present; watcher restart is deferred.",
+                                    )
+                                    time.sleep(interval)
+                                    continue
                                 log_event(
                                     logger,
                                     logging.INFO,

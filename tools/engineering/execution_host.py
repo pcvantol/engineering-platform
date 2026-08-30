@@ -482,7 +482,7 @@ class EngineeringRunner:
         if isinstance(usage, dict):
             write_codex_usage(self.root, run_id, usage)
 
-    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None) -> None:
+    def _persist_provider_invocation(self, state: TransactionState, *, phase: str, role: str = "agent", started_at: str | None = None, observed_usage: dict[str, object] | None = None, observed_metadata: dict[str, object] | None = None, observed_churn: dict[str, object] | None = None, observed_duration: float | None = None, observed_snapshots: tuple[dict[str, int], ...] | None = None, interruption_reason: str | None = None) -> None:
         """Append safe per-invocation evidence without affecting execution outcome."""
         usage = observed_usage if observed_usage is not None else getattr(self.agent, "last_usage", None)
         snapshots = observed_snapshots if observed_snapshots is not None else getattr(self.agent, "last_usage_snapshots", ())
@@ -495,6 +495,11 @@ class EngineeringRunner:
             **self._provider_context_telemetry,
             **self._provider_dispatch_telemetry,
         }
+        if interruption_reason:
+            # Existing bounded invocation telemetry is the durable diagnostic
+            # channel; an interrupted turn has no AgentResult or final usage.
+            churn["interruption_classification"] = "provider_turn_interrupted"
+            churn["interruption_reason"] = redact_diagnostic(interruption_reason, limit=120)
         duration = observed_duration if observed_duration is not None else getattr(self.agent, "last_execution_seconds", None)
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
@@ -1043,13 +1048,18 @@ class EngineeringRunner:
         os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
         try:
             result = self.agent.invoke(self.root, prompt)
-        except Exception:
-            self._persist_provider_invocation(state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION", role=role.value, started_at=invocation_started)
+        except Exception as error:
+            interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
+            self._persist_provider_invocation(
+                state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION",
+                role=role.value, started_at=invocation_started, interruption_reason=interruption_reason,
+            )
             for active in validation_spans.values():
                 complete_phase(self.root, active, outcome="INTERRUPTED")
-            complete_phase(self.root, provider, outcome="FAILED")
+            outcome = "INTERRUPTED" if interruption_reason else "FAILED"
+            complete_phase(self.root, provider, outcome=outcome)
             if parent:
-                complete_phase(self.root, parent, outcome="FAILED")
+                complete_phase(self.root, parent, outcome=outcome)
             raise
         finally:
             if prior_validation_run_id is None:
@@ -1144,7 +1154,7 @@ Local repository validation gate — iteration {iteration} of {MAX_LOCAL_REPOSIT
                 validation = self._record_agent_execution_time(validation)
                 self.console_detail = error.console_detail
                 validation = self._record_local_validation_audit(validation, result=None, outcome="agent_failed", profile=profile)
-                return self._save_terminal(validation, "BLOCKED", error.next_action, str(error)), implementation
+                return self._terminalize_provider_invocation_error(validation, error), implementation
             if result.terminal_state in {"BLOCKED", "FAILED"}:
                 if (
                     result.terminal_state == "FAILED"
@@ -1243,7 +1253,7 @@ Mandatory autonomous refactor and quality-control stage:
         except CodexInvocationError as error:
             quality = self._record_agent_execution_time(quality)
             self.console_detail = error.console_detail
-            return self._save_terminal(quality, "BLOCKED", error.next_action, str(error), terminal_condition=error.terminal_condition), implementation
+            return self._terminalize_provider_invocation_error(quality, error), implementation
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(quality, result.terminal_state, "autonomous_quality_control_failed", result.diagnostic or "Autonomous quality control did not complete."), implementation
         if implementation.pull_request and result.pull_request and result.pull_request != implementation.pull_request:
@@ -1729,13 +1739,7 @@ Mandatory autonomous refactor and quality-control stage:
         except CodexInvocationError as error:
             state = self._record_agent_execution_time(state)
             self.console_detail = error.console_detail
-            return self._save_terminal(
-                state,
-                "BLOCKED",
-                error.next_action,
-                str(error),
-                terminal_condition=error.terminal_condition,
-            )
+            return self._terminalize_provider_invocation_error(state, error)
         if state.execution_mode == "GENESIS":
             return self._reconcile_genesis_result(state, result)
         recoverable_local_failure = self._is_recoverable_implementation_validation_failure(state, result)
@@ -2145,13 +2149,7 @@ Mandatory autonomous refactor and quality-control stage:
             repair = self._record_agent_execution_time(repair)
             self.console_detail = error.console_detail
             repair = self._record_repair_audit(repair, failed_checks=failed_checks, objective=objective, result=None, outcome="agent_failed")
-            return self._save_terminal(
-                repair,
-                "BLOCKED",
-                error.next_action,
-                str(error),
-                terminal_condition=error.terminal_condition,
-            )
+            return self._terminalize_provider_invocation_error(repair, error)
         if result.terminal_state in {"BLOCKED", "FAILED"}:
             return self._save_terminal(
                 repair, result.terminal_state, "external_action_required", result.diagnostic
@@ -2254,16 +2252,13 @@ Mandatory autonomous refactor and quality-control stage:
             complete_phase(self.root, finalization_span, outcome="BLOCKED")
             return blocked.state
         except CodexInvocationError as error:
-            complete_phase(self.root, finalization_span, outcome="FAILED")
+            complete_phase(
+                self.root, finalization_span,
+                outcome="INTERRUPTED" if error.provider_turn_interrupted else "FAILED",
+            )
             finalization = self._record_agent_execution_time(finalization)
             self.console_detail = error.console_detail
-            return self._save_terminal(
-                finalization,
-                "BLOCKED",
-                error.next_action,
-                str(error),
-                terminal_condition=error.terminal_condition,
-            )
+            return self._terminalize_provider_invocation_error(finalization, error)
         finally:
             if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
@@ -2348,7 +2343,7 @@ Mandatory autonomous refactor and quality-control stage:
         except CodexInvocationError as error:
             reconciliation = self._record_agent_execution_time(reconciliation)
             self.console_detail = error.console_detail
-            return self._save_terminal(reconciliation, "BLOCKED", error.next_action, str(error), terminal_condition=error.terminal_condition)
+            return self._terminalize_provider_invocation_error(reconciliation, error)
         return self._poll(reconciliation, result)
 
     def _save_terminal(
@@ -2370,16 +2365,44 @@ Mandatory autonomous refactor and quality-control stage:
         )
         self.store.save(terminal)
         if self.active_lease is not None and self.active_lease.run_id == terminal.run_id:
-            if self.lease_heartbeat is not None:
-                self.active_lease = self.lease_heartbeat.stop()
-                self.lease_heartbeat = None
-            release_lease(self.root, self.active_lease)
-            self.active_lease = None
+            lease = self.active_lease
+            try:
+                if self.lease_heartbeat is not None:
+                    lease = self.lease_heartbeat.stop()
+                    self.lease_heartbeat = None
+                release_lease(self.root, lease)
+            except Exception:
+                # A durable terminal checkpoint is authoritative even when
+                # post-terminal lease cleanup is unavailable.  Stale lease
+                # reconciliation records that separate cleanup concern.
+                LOGGER.exception("Terminal lease release failed for run %s", terminal.run_id)
+            finally:
+                self.active_lease = None
         if phase == "COMPLETE":
             capture_engineering_memory(self.root, terminal, self.reviewer_records)
         write_live_status(self.root, terminal, action)
         print(f"[{terminal.phase}] {action}")
         return terminal
+
+    def _terminalize_provider_invocation_error(
+        self, state: TransactionState, error: CodexInvocationError
+    ) -> TransactionState:
+        """Turn provider-proven interruption into one durable terminal truth."""
+        if error.provider_turn_interrupted:
+            return self._save_terminal(
+                state,
+                "FAILED",
+                "NONE",
+                str(error),
+                terminal_condition="provider_turn_interrupted",
+            )
+        return self._save_terminal(
+            state,
+            "BLOCKED",
+            error.next_action,
+            str(error),
+            terminal_condition=error.terminal_condition,
+        )
 
     def _save_operator_merge_wait(self, state: TransactionState) -> TransactionState:
         """Persist a PR hand-off and release the foreground lease.
