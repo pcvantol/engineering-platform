@@ -84,6 +84,27 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertIsNone(summary["input_tokens"])
         self.assertEqual(summary["usage_authority"], "UNAVAILABLE")
 
+    def test_interruption_diagnostic_persists_without_turn_usage(self) -> None:
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id="run-interrupted", ordinal=1, provider="codex_cli", model=None,
+                phase="PROVIDER_EXECUTION", role="IMPLEMENTATION",
+                started_at="2026-08-30T00:00:00+00:00", completed_at="2026-08-30T00:00:01+00:00",
+                duration_ms=None, usage={},
+                churn={
+                    "interruption_classification": "provider_turn_interrupted",
+                    "interruption_reason": "interrupted",
+                },
+            ),
+        )
+        with open_storage(self.root) as connection:
+            row = connection.execute(
+                "SELECT usage_authority,churn FROM provider_invocations WHERE run_id='run-interrupted'"
+            ).fetchone()
+        self.assertEqual(row[0], "UNAVAILABLE")
+        self.assertIn('"interruption_classification":"provider_turn_interrupted"', row[1])
+
     def test_versioned_rates_and_eur_are_derived(self) -> None:
         terra = credit_estimate(
             "gpt-5.6-terra",

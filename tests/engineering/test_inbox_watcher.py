@@ -1423,13 +1423,16 @@ class InboxWatcherTest(unittest.TestCase):
         prompt = self.inbox / "preflight.md"
         prompt.write_text("# Preflight prompt", encoding="utf-8")
         _, run_id, _ = inbox_watcher._job_id(prompt, prompt.read_text(encoding="utf-8"))
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "tools.engineering.inbox_watcher.terminalize_after_host_exit", return_value=None
+        ) as reconcile, patch("tools.engineering.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 ("engineering-execution-host",), 2, "", "Engineering Platform upgrade required."
             )
             code = inbox_watcher.once(self.repo, self.root, 0)
 
         self.assertEqual(code, 2)
+        reconcile.assert_called_once_with(self.repo, run_id)
         snapshot = json_status(self.repo)
         self.assertEqual(snapshot["watcher_state"], "JOB_FAILED")
         self.assertEqual(snapshot["last_executed_run"], run_id)
@@ -1437,6 +1440,14 @@ class InboxWatcherTest(unittest.TestCase):
         report = self.repo / ".engineering" / "reports" / f"corrected_{run_id}.md"
         self.assertTrue(report.exists())
         self.assertTrue(inbox_watcher._report_matches_terminal_phase(report, "FAILED"))
+
+    def test_corrected_provider_interruption_report_exposes_checkpoint_reason(self) -> None:
+        report = inbox_watcher._corrected_terminal_report(
+            "inbox-provider-interrupted", "FAILED", "Provider turn interrupted.",
+            terminal_condition="provider_turn_interrupted",
+        )
+        self.assertIn("- Terminal reason: `provider_turn_interrupted`", report)
+        self.assertIn("Provider turn interrupted.", report)
 
     def test_failed_host_preflight_prevents_inbox_claim(self) -> None:
         prompt = self.inbox / "host-failure.md"

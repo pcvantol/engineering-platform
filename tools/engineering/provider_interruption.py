@@ -1,0 +1,89 @@
+"""Recovery of provider-proven interrupted transactions after host exit."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+import json
+import logging
+from pathlib import Path
+
+from .agent_state import StateError, StateStore, TransactionState
+from .execution_lease import release_terminal_lease
+from .execution_timing import reconcile_interrupted_phases
+from .live_status import write_live_status
+from .storage import open_storage
+
+
+INTERRUPTION_CLASSIFICATION = "provider_turn_interrupted"
+TERMINAL_DIAGNOSTIC = (
+    "Provider turn interrupted before returning the required structured AgentResult."
+)
+LOGGER = logging.getLogger(__name__)
+
+
+def _latest_interrupted_invocation(root: Path, run_id: str) -> str | None:
+    """Return only durable, allow-listed provider interruption evidence."""
+    try:
+        connection = open_storage(root)
+        try:
+            row = connection.execute(
+                "SELECT invocation_id,churn FROM provider_invocations WHERE run_id=? "
+                "ORDER BY ordinal DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        churn = json.loads(row[1])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(churn, dict):
+        return None
+    if churn.get("interruption_classification") != INTERRUPTION_CLASSIFICATION:
+        return None
+    return str(row[0]) if isinstance(row[0], str) else None
+
+
+def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+    """Close a non-terminal run only when its latest provider evidence proves interruption.
+
+    This is intentionally a watcher-side recovery boundary: the detached
+    Execution Host has already exited, so releasing its lease cannot terminate
+    active provider work.  Generic stale leases remain recoverable and are not
+    converted into failures here.
+    """
+    invocation_id = _latest_interrupted_invocation(root, run_id)
+    if invocation_id is None:
+        return None
+    store = StateStore(root / ".engineering" / "engineering-runs")
+    try:
+        state = store.load(run_id)
+    except StateError:
+        return None
+    if state.terminal:
+        return state
+    terminal = replace(
+        state,
+        phase="FAILED",
+        terminal=True,
+        next_action="NONE",
+        terminal_condition=INTERRUPTION_CLASSIFICATION,
+        diagnostic=f"{TERMINAL_DIAGNOSTIC} Provider invocation: {invocation_id}.",
+    )
+    store.save(terminal)
+    reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED")
+    # The checkpoint is durable before cleanup. A cleanup failure therefore
+    # cannot overwrite the proven failure outcome.
+    try:
+        release_terminal_lease(root, run_id)
+    except Exception:
+        # Lease cleanup is secondary evidence.  The durable checkpoint stays
+        # authoritative and normal stale-lease reconciliation can record the
+        # separate cleanup concern on a later cycle.
+        LOGGER.exception("Terminal provider-interruption lease release failed for run %s", run_id)
+    write_live_status(root, terminal, terminal.next_action)
+    return terminal

@@ -103,6 +103,7 @@ from .managed_autonomy import (
     append_validation_observation as record_managed_validation,
     record_gate as record_managed_gate,
 )
+from .component_logging import component_logger, shutdown_signal_logging
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1048,6 +1049,27 @@ class EngineeringRunner:
         os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
         try:
             result = self.agent.invoke(self.root, prompt)
+        except KeyboardInterrupt as error:
+            # A managed SIGINT/SIGTERM while the provider is active means no
+            # valid AgentResult exists. Persist the canonical interruption
+            # before returning control to the normal terminal path.
+            interruption_reason = "host_shutdown_during_provider_turn"
+            self._persist_provider_invocation(
+                state, phase="REPAIR" if repair else "QUALITY_CONTROL" if quality else "PROVIDER_EXECUTION",
+                role=role.value, started_at=invocation_started, interruption_reason=interruption_reason,
+            )
+            for active in validation_spans.values():
+                complete_phase(self.root, active, outcome="INTERRUPTED")
+            complete_phase(self.root, provider, outcome="INTERRUPTED")
+            if parent:
+                complete_phase(self.root, parent, outcome="INTERRUPTED")
+            raise CodexInvocationError(
+                "Provider turn interrupted before returning the required structured AgentResult.",
+                "Execution Host received a shutdown signal while a provider turn was active.",
+                next_action="NONE",
+                terminal_condition="provider_turn_interrupted",
+                interruption_reason=interruption_reason,
+            ) from error
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
             self._persist_provider_invocation(
@@ -2567,14 +2589,17 @@ def main(argv: list[str] | None = None) -> int:
         CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
         compatibility=compatibility,
     )
+    logger = component_logger(root, "execution-host")
+    lifecycle_context = {"application_version": "2.0.0", "target_component": "execution-host"}
     try:
-        state = runner.run(
-            prompt_path,
-            args.run_id,
-            args.resume,
-            args.owner_authorized,
-            args.transaction_kind,
-        )
+        with shutdown_signal_logging(logger, lifecycle_context):
+            state = runner.run(
+                prompt_path,
+                args.run_id,
+                args.resume,
+                args.owner_authorized,
+                args.transaction_kind,
+            )
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2

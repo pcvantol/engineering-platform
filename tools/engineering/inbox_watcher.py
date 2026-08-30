@@ -59,6 +59,7 @@ from .dependabot_admission import (
 )
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
+from .provider_interruption import terminalize_after_host_exit
 from .dashboard_configuration import get as dashboard_configuration
 from .database_maintenance import run_periodic_database_maintenance
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
@@ -442,7 +443,13 @@ def _report_matches_terminal_phase(report: Path, phase: str | None) -> bool:
     return "COMPLETE —" in body
 
 
-def _corrected_terminal_report(run_id: str, phase: str | None, diagnostic: str | None) -> str:
+def _corrected_terminal_report(
+    run_id: str,
+    phase: str | None,
+    diagnostic: str | None,
+    *,
+    terminal_condition: str | None = None,
+) -> str:
     """Publish bounded, checkpoint-authoritative terminal evidence on contradiction."""
     outcome = (
         "COMPLETE — terminal checkpoint confirms completed engineering delivery."
@@ -457,6 +464,7 @@ def _corrected_terminal_report(run_id: str, phase: str | None, diagnostic: str |
             "",
             f"- Run ID: `{run_id}`",
             f"- Terminal state: `{phase or 'FAILED'}`",
+            *( (f"- Terminal reason: `{terminal_condition}`",) if terminal_condition else () ),
             "",
             "## Management Summary",
             outcome,
@@ -2088,7 +2096,12 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
         )
         log_event(logger, logging.INFO, "runner_started", run_id=run_id)
         execution_started_at, completed = _execute_runner_command(repo, prompt, run_id)
+        # A foreground child can exit after persisting provider interruption
+        # evidence but before its normal report/receipt projection. Reconcile
+        # only that explicit evidence before falling back to a generic report.
+        recovered_terminal = terminalize_after_host_exit(repo, run_id)
         phase, diagnostic = _runner_result(repo, run_id)
+        terminal_condition = recovered_terminal.terminal_condition if recovered_terminal else None
         if phase == OPERATOR_MERGE_WAIT_PHASE:
             try:
                 waiting_state = StateStore(repo / ".engineering" / "engineering-runs").load(run_id)
@@ -2129,7 +2142,9 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             delivered = repo / ".engineering" / "reports" / f"corrected_{run_id}.md"
             delivered.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             delivered.write_text(
-                _corrected_terminal_report(run_id, terminal_phase, reason), encoding="utf-8"
+                _corrected_terminal_report(
+                    run_id, terminal_phase, reason, terminal_condition=terminal_condition,
+                ), encoding="utf-8"
             )
             log_event(logger, logging.WARNING, "terminal_report_corrected", run_id=run_id)
         successful = completed.returncode == 0 and terminal_phase == "COMPLETE" and delivered is not None
@@ -2154,7 +2169,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             runner_phase=terminal_phase,
             report=str(delivered) if delivered else None,
             diagnostic=reason,
-            resume_instruction=f"Run engineering-execution-host with --run-id {run_id} --resume.",
+            resume_instruction=None if terminal_phase in TERMINAL_PHASES else f"Run engineering-execution-host with --run-id {run_id} --resume.",
             submitted_filename=source.name,
             prompt_title=title,
             last_executed_filename=source.name,

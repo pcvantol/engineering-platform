@@ -15,6 +15,7 @@ from statistics import median
 from typing import Mapping
 from uuid import uuid4
 
+from .agent_state import redact_diagnostic
 from .storage import open_storage
 
 
@@ -27,6 +28,11 @@ RATE_TABLE = {
 }
 AUTHORITATIVE, DERIVED, UNAVAILABLE = "AUTHORITATIVE", "DERIVED", "UNAVAILABLE"
 _SPEED_STATES = frozenset({"FAST", "NORMAL_DEFAULT", "OTHER", "UNKNOWN"})
+_SAFE_CHURN_TEXT_FIELDS = frozenset({
+    "interruption_classification",
+    "interruption_reason",
+    "usage_state",
+})
 _MODEL_NORMALIZATION = {
     "gpt-5.6-sol": "gpt-5.6-sol",
     "gpt-5.6-terra": "gpt-5.6-terra",
@@ -274,11 +280,20 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
     identifier = (
         invocation.invocation_id or f"{invocation.run_id}-{invocation.ordinal}-{uuid4().hex[:12]}"
     )
-    churn = {
-        key: _number(value)
-        for key, value in (invocation.churn or {}).items()
-        if _number(value) is not None
-    }
+    # Invocation churn is normally numeric aggregation.  A provider turn that
+    # never returns an AgentResult additionally needs one small, deterministic
+    # diagnostic to let the watcher recover the same terminal outcome after a
+    # host interruption.  Keep this allow-list deliberately narrow: arbitrary
+    # provider output is never retained here.
+    churn: dict[str, int | str] = {}
+    for key, value in (invocation.churn or {}).items():
+        number = _number(value)
+        if number is not None:
+            churn[key] = number
+        elif key in _SAFE_CHURN_TEXT_FIELDS and isinstance(value, str):
+            compact = redact_diagnostic(value, limit=120)
+            if compact:
+                churn[key] = compact
     snapshots = tuple(
         {
             key: _number(snapshot.get(key))

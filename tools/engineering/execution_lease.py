@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import socket
 from threading import Event, Thread
@@ -117,7 +116,8 @@ def acquire(root: Path, run_id: str, *, identity: str, instance_id: str, process
 
 
 def heartbeat(root: Path, lease: Lease, *, timeout_seconds: int = LEASE_TIMEOUT_SECONDS) -> Lease:
-    now = _now(); expiry = now + timedelta(seconds=timeout_seconds)
+    now = _now()
+    expiry = now + timedelta(seconds=timeout_seconds)
     connection = open_storage(root)
     try:
         updated = connection.execute("UPDATE execution_run_leases SET last_heartbeat_at=?,expires_at=?,updated_at=? WHERE lease_id=? AND run_id=? AND host_instance_id=? AND lease_state='ACTIVE'", (now.isoformat(), expiry.isoformat(), now.isoformat(), lease.lease_id, lease.run_id, lease.host_instance_id)).rowcount
@@ -140,9 +140,55 @@ def release(root: Path, lease: Lease) -> None:
         connection.close()
 
 
+def release_terminal_lease(root: Path, run_id: str) -> bool:
+    """Release a departed host's lease only after its checkpoint is terminal.
+
+    The watcher calls this after its foreground child has exited and after it
+    has persisted the terminal transaction.  It is not a stale-lease shortcut
+    and never decides lifecycle state itself.
+    """
+    connection = open_storage(root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT phase,payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+        ).fetchone()
+        terminal = False
+        if row and row[0] in TERMINAL_PHASES:
+            try:
+                payload = json.loads(row[1])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            terminal = isinstance(payload, dict) and payload.get("terminal") is True
+        if not terminal:
+            connection.execute("ROLLBACK")
+            return False
+        rows = connection.execute(
+            "SELECT lease_id FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE'",
+            (run_id,),
+        ).fetchall()
+        now = _now().isoformat()
+        changed = connection.execute(
+            "UPDATE execution_run_leases SET lease_state='RELEASED',updated_at=? "
+            "WHERE run_id=? AND lease_state='ACTIVE'",
+            (now, run_id),
+        ).rowcount
+        for (lease_id,) in rows:
+            _event(connection, str(lease_id), run_id, "LEASE_RELEASED")
+        connection.execute("COMMIT")
+        return bool(changed)
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
 def reconcile_stale(root: Path) -> list[dict[str, str]]:
     """Reconcile datastore ownership only; never fabricate a terminal lifecycle state."""
-    now = _now().isoformat(); outcomes: list[dict[str, str]] = []; interrupted_runs: list[str] = []
+    now = _now().isoformat()
+    outcomes: list[dict[str, str]] = []
+    interrupted_runs: list[str] = []
     connection = open_storage(root)
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -213,7 +259,8 @@ def liveness(root: Path, run_id: object) -> dict[str, object]:
     """Project canonical liveness without consulting status files or processes."""
     if not isinstance(run_id, str):
         return {"state": "UNAVAILABLE"}
-    now = _now().isoformat(); connection = open_storage(root)
+    now = _now().isoformat()
+    connection = open_storage(root)
     try:
         row = connection.execute("SELECT host_identity,host_instance_id,last_heartbeat_at,expires_at,lease_state FROM execution_run_leases WHERE run_id=? ORDER BY created_at DESC LIMIT 1", (run_id,)).fetchone()
         reconciliation = connection.execute(

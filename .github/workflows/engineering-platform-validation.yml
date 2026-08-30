@@ -108,7 +108,10 @@ jobs:
       - name: Install browser validation dependencies
         run: npm ci
       - name: Install Chromium for browser validation
-        run: npx playwright install --with-deps chromium
+        # ubuntu-latest already provides the system libraries Playwright needs.
+        # Avoid refreshing third-party apt repositories here: their transient
+        # availability must not make one dashboard shard fail before tests run.
+        run: npx playwright install chromium
       - name: Browser smoke test for Engineering Status (shard ${{ matrix.shard }})
         # Keep successful runs compact; Playwright's dot reporter still emits
         # the full failure diagnostics, traces and artifact references.

@@ -1730,6 +1730,33 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(terminal.terminal_condition, "provider_turn_interrupted")
         self.assertEqual(self.store.load(state.run_id), terminal)
 
+    def test_host_shutdown_during_provider_turn_persists_interruption_evidence(self) -> None:
+        class InterruptedAgent(FakeAgent):
+            def invoke(self, _: Path, __: str) -> AgentResult:
+                raise KeyboardInterrupt
+
+        state = TransactionState(
+            "signal-interrupted-provider-run", "pcvantol/djconnect", str(self.prompt),
+            "LOCAL_REPOSITORY_VALIDATION", next_action="run_local_repository_validation",
+        )
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]),
+            InterruptedAgent(AgentResult("COMPLETE")), lambda _: None,
+        )
+
+        with self.assertRaises(CodexInvocationError) as raised:
+            runner._invoke_agent_with_timing(state, "objective", local_validation=True)
+
+        self.assertTrue(raised.exception.provider_turn_interrupted)
+        self.assertEqual(raised.exception.next_action, "NONE")
+        with open_storage(self.root) as connection:
+            churn = json.loads(connection.execute(
+                "SELECT churn FROM provider_invocations WHERE run_id=?", (state.run_id,)
+            ).fetchone()[0])
+        self.assertEqual(churn["interruption_classification"], "provider_turn_interrupted")
+        self.assertEqual(churn["interruption_reason"], "host_shutdown_during_provider_turn")
+        self.assertTrue(all(span["outcome"] == "INTERRUPTED" for span in phase_spans(self.root, state.run_id)))
+
     def test_codex_activity_projection_is_fixed_and_never_echoes_event_content(self) -> None:
         self.assertEqual(
             project_codex_activity(
