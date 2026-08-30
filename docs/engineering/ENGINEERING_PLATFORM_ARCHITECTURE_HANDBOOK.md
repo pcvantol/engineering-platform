@@ -64,6 +64,63 @@ No Engineering Platform capability may duplicate these Forge responsibilities.
 An Engineering Report or Execution Receipt is execution evidence; it is not
 Forge Decision Evidence and cannot become planning state.
 
+## Home deployment profile: Forge, EP, Workspace and Workers
+
+This is the canonical logical architecture for the intended home deployment.
+It describes authority and deployment separately; it does **not** authorize
+implementation work, an extraction phase, or an Increment 2 change.
+
+```text
+Workspace (human client)                         Repository / GitHub
+        │                                                │
+        │ planning / governance interaction              │ commit / branch / PR / merge truth
+        v                                                v
+Forge ── Engineering Action + canonical project_id ──> Engineering Platform
+planning / governance truth                              admission / execution / evidence truth
+                                                          │
+                                                          │ capability-matched assignment
+                                                          v
+                                                   replaceable Worker(s)
+                                                   Codex / Git / tests / builds
+```
+
+The initial home profile places one authoritative Forge installation, one
+authoritative EP installation and one primary Worker on an always-on Mac mini.
+That co-location is a deployment choice, not logical coupling or a product-wide
+singleton invariant. Workspace is a client that can be installed elsewhere;
+it may initiate and observe work, but owns no canonical planning or execution
+state. A MacBook or later host may supply a Worker without acquiring Forge or
+EP authority.
+
+### Principles
+
+- **Separate authorities.** Forge/Workspace own planning and governance truth;
+  EP owns admission, execution lifecycle, leases, provider dispatch,
+  validation, delivery evidence, qualification and reconciliation; repositories
+  and GitHub own commit, branch, pull-request and merge truth. Workers execute
+  only under EP authority.
+- **Separate state machines.** Forge Mission state and EP Execution state are
+  related through immutable Producer/Engineering-Action provenance, but neither
+  is a projection or lifecycle transition of the other.
+- **Canonical identity.** `project_id` is the opaque canonical identity supplied
+  by Forge/Workspace to EP. EP treats it as a foreign identity and never mints,
+  infers or translates it from a path, repository name or label.
+- **Concurrency and leases.** The repository/execution scope is the concurrency
+  boundary. At most one mutating execution may hold a scope at a time. Queue
+  ordering defaults to FIFO, but selection is policy-driven. Its mutation lease
+  remains held through delivery, finalization and reconciliation, not merely
+  until a provider returns.
+- **Replaceable Workers.** A Worker is selected for declared capabilities, not
+  because it is a particular machine or provider. Losing or replacing a Worker
+  cannot transfer EP lifecycle ownership; recovery uses EP's durable state and
+  fresh repository evidence.
+- **Storage and discovery.** External NVMe is reconstructable execution storage
+  for checkouts, worktrees, builds, caches and artifacts. Canonical Forge and
+  EP databases remain on durable internal control-plane storage. Discovery uses
+  stable instance identity plus mDNS and configured Tailscale endpoints.
+  Tailscale is transport, never authentication; each service still authenticates
+  and authorizes its caller.
+
 ## 1.x freeze and future evolution
 
 Engineering Platform 1.x is feature complete. Future innovation is expected

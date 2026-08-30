@@ -55,6 +55,33 @@ gates later work on a valid live lease after a transaction exists. Recovery
 continues through the existing Resume/Retry/Dismiss semantics and retains the
 previous lease history.
 
+## Execution scope, Workers and deployment
+
+EP serializes mutating work at the repository/execution-scope boundary: no more
+than one mutating execution may own a scope at once. FIFO is the default queue
+ordering within that scope, but admission and selection remain policy-driven;
+FIFO is not a second planning authority. The active mutation lease starts with
+the accepted execution and is retained through provider work, validation,
+delivery, finalization and reconciliation. It is released only after terminal
+or governed recovery evidence establishes that the scope is safe for later
+work.
+
+Workers are capability-based, replaceable execution resources. A Worker may
+provide Codex, Git, tests, builds or browser validation, but it never owns the
+execution lifecycle or canonical evidence. EP dispatches only under its
+admission, lease and provider policy; a disconnected Worker is recoverable
+from EP's durable execution state and fresh repository/GitHub evidence.
+
+In the initial home profile, Forge, EP and a primary Worker can be co-located
+on an always-on Mac mini. This is deployment topology only: Forge and EP remain
+separate authorities, Workspace remains a remote-capable human client, and a
+later Worker may run elsewhere. External NVMe may hold reconstructable
+execution data such as checkouts, worktrees, caches, builds and artifacts;
+canonical EP control-plane storage must remain durable and independent of that
+execution volume. Instance identity plus mDNS and configured Tailscale
+endpoints support discovery and reachability. Tailscale is transport, not
+authentication or authorization.
+
 ## Reviewer repository evidence
 
 After the Managed Execution Host synchronizes the repository while holding

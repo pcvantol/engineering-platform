@@ -42,6 +42,15 @@ EP keeps one installation-wide SQLite database. All EP execution data carries
 scope. Each project has an independent Inbox route and queue; an execution for
 one project can never consume another project's prompt.
 
+`project_id` enters EP as a Forge/Workspace-owned foreign canonical identity.
+EP validates its registration but never mints, infers or translates it from a
+path, repository name or label. The registered repository/execution scope is
+the concurrency boundary: at most one mutating EP execution may own that scope
+at a time. FIFO is the default ordering within a scope; policy may make an
+explicit, auditable selection without making EP a Forge planner. The mutation
+lease remains held through delivery, finalization and reconciliation, not just
+through provider execution.
+
 Project names are deliberately not copied into project-scoped lifecycle,
 receipt, report, telemetry or Prompt History rows. Their stable relation is
 always the canonical `project_id`; selector and dashboard labels are resolved
