@@ -2197,6 +2197,43 @@ test.describe("Engineering Status browser smoke", () => {
     ).resolves.toBe("currentRun");
   });
 
+  test("formats structured execution-context snapshots as readable fields", async ({ page }) => {
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
+      run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
+    }] } }));
+    await page.route("**/api/prompt-history/inbox-context/details", (route) => route.fulfill({ json: {
+      history: {
+        run_id: "inbox-context", status: "COMPLETE", title: "Context prompt", executed_at: "2026-08-30T08:00:00Z",
+        execution_context: {
+          context_version: "1.0", action_intent: "VALIDATION_ONLY",
+          validation_profile: {
+            tier: "DASHBOARD", version: "1.0",
+            required_controls: ["git_diff_check", "engineering_python", "dashboard_browser"],
+          },
+        },
+      },
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
+    const historyRow = page.locator("#promptHistoryRows .prompt-history-row");
+    await historyRow.waitFor({ state: "visible" });
+    await dispatchDashboardPointerClick(historyRow);
+    const content = page.locator("#promptHistoryDetailContent");
+    await expect(content).toContainText("Actie-intentie");
+    await expect(content).toContainText("Alleen validatie");
+    await expect(content).toContainText("Validatieprofiel");
+    await expect(content).toContainText("Dashboard");
+    await expect(content).toContainText("Vereiste validatiecontroles");
+    await expect(content).toContainText("Git Diff Check");
+    await expect(content).not.toContainText('{"action_intent"');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const contextCard = page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context");
+    expect(await contextCard.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+  });
+
   test("opens execution details from prompt history in its dedicated modal", async ({ page }) => {
     await page.route("**/api/prompt-history", (route) => route.fulfill({ json: { runs: [{
       run_id: "inbox-modal", status: "BLOCKED", title: "Modal prompt", executed_at: "2026-08-04T08:00:00Z",
@@ -2518,6 +2555,14 @@ test.describe("Engineering Status browser smoke", () => {
         target_repository: "pcvantol/djconnect",
         checkout_path: "/Users/example/Documents/GitHub/djconnect",
         active_branch: "main",
+        execution_context: {
+          context_version: "1.0",
+          action_intent: "MUTATING_DELIVERY",
+          validation_profile: {
+            tier: "DASHBOARD", version: "1.0",
+            required_controls: ["git_diff_check", "engineering_python", "dashboard_browser"],
+          },
+        },
       } },
     }));
     const statusLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -2526,6 +2571,13 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const modeField = page.locator("#executionContext .execution-mode-field");
     await expect(modeField).toContainText("MANAGED");
+    const contextCard = page.locator("#executionContext");
+    await expect(contextCard).toContainText("Actie-intentie");
+    await expect(contextCard).toContainText("Leveringswijziging");
+    await expect(contextCard).toContainText("Validatieprofiel");
+    await expect(contextCard).toContainText("Git Diff Check");
+    await expect(contextCard).toContainText("geen aanvullende missie- of planningscontext");
+    await expect(contextCard).not.toContainText("Missie-ID");
     const info = modeField.locator(".execution-mode-info");
     await expect(info).toHaveAttribute("aria-label", DASHBOARD_MESSAGES.nl["execution_mode_info.open"]);
     await dispatchDashboardPointerClick(info);
@@ -3481,7 +3533,8 @@ test.describe("Engineering Status browser smoke", () => {
     await alternatives.locator("summary").click();
     await expect(alternatives).toHaveAttribute("open", "");
     await expect(alternatives).toContainText("Mission Borealis");
-    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(1);
+    await expect(page.locator("#promptHistoryDetailContent button")).toHaveCount(2);
+    await expect(page.locator("#promptHistoryDetailContent .execution-mode-info")).toHaveCount(1);
     await expect(page.locator("#promptHistoryDetailContent .prompt-history-run-id-copy")).toHaveCount(1);
   });
 
@@ -8501,7 +8554,12 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("17");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("Uitvoeringsmodus");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("GENESIS");
-    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Actieve branch");
+    const historicalModeInfo = executionContext.locator(".execution-mode-info");
+    await expect(historicalModeInfo).toHaveAttribute("aria-label", DASHBOARD_MESSAGES.nl["execution_mode_info.open"]);
+    await historicalModeInfo.click();
+    await expect(page.locator("#executionModeModal")).toBeVisible();
+    await page.locator("#executionModeModalClose").click();
+    await expect(page.locator("#promptHistoryDetailContent")).toContainText("Doelbranch");
     await expect(page.locator("#promptHistoryDetailContent")).toContainText("forge-phase-evidence");
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-status .indicator--green")).toHaveCount(1);
     await expect(detailSidebar).toHaveCount(1);

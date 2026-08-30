@@ -1534,6 +1534,20 @@ class InboxWatcherTest(unittest.TestCase):
             ),
             "DASHBOARD VALIDATION PROOF V5",
         )
+        self.assertEqual(
+            inbox_watcher._prompt_title(
+                "Execution Mode: Managed\n\nRUN QUALIFICATION EVIDENCE CLOSURE V2\n\nContext",
+                "fallback.md",
+            ),
+            "RUN QUALIFICATION EVIDENCE CLOSURE V2",
+        )
+        self.assertEqual(
+            inbox_watcher._prompt_title(
+                "Execution Mode: Genesis\n\nCreate a new workspace\n\nContext",
+                "fallback.md",
+            ),
+            "Create a new workspace",
+        )
 
     def test_lock_recovers_only_stale_owner_and_prevents_parallel_owner(self) -> None:
         with inbox_watcher._lock(self.repo):

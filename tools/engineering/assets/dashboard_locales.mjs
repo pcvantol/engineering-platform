@@ -201,6 +201,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.specialist_reviews": "Specialist agent reviews",
     "detail.target_checkout": "Local checkout",
     "detail.target_repository": "Target repository",
+    "detail.target_branch": "Target branch",
     "detail.total_duration": "Total duration",
     "detail.total_tokens": "Total tokens",
     "detail.tracked_files": "Tracked files",
@@ -828,6 +829,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.specialist_reviews": "Specialistische agentreviews",
     "detail.target_checkout": "Lokale checkout",
     "detail.target_repository": "Doelrepository",
+    "detail.target_branch": "Doelbranch",
     "detail.total_duration": "Totale doorlooptijd",
     "detail.total_tokens": "Totaal tokens",
     "detail.tracked_files": "Getrackte bestanden",
@@ -1455,6 +1457,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.specialist_reviews": "Spezialistenreviews",
     "detail.target_checkout": "Lokaler Checkout",
     "detail.target_repository": "Ziel-Repository",
+    "detail.target_branch": "Ziel-Branch",
     "detail.total_duration": "Gesamtdauer",
     "detail.total_tokens": "Token insgesamt",
     "detail.tracked_files": "Verfolgte Dateien",
@@ -2016,6 +2019,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.specialist_reviews": "Revues des agents spécialisés",
     "detail.target_checkout": "Checkout local",
     "detail.target_repository": "Dépôt cible",
+    "detail.target_branch": "Branche cible",
     "detail.total_duration": "Durée totale",
     "detail.total_tokens": "Total de jetons",
     "detail.tracked_files": "Fichiers suivis",
@@ -2577,6 +2581,7 @@ export const DASHBOARD_MESSAGES = {
     "detail.specialist_reviews": "Revisiones de agentes especializados",
     "detail.target_checkout": "Checkout local",
     "detail.target_repository": "Repositorio de destino",
+    "detail.target_branch": "Rama de destino",
     "detail.total_duration": "Duración total",
     "detail.total_tokens": "Total de tokens",
     "detail.tracked_files": "Archivos rastreados",
@@ -2951,6 +2956,16 @@ Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.mission_progress":"Prog
 Object.assign(DASHBOARD_MESSAGES.de, {"execution_context.mission_title":"Missionstitel","execution_context.mission_lifecycle":"Missionslebenszyklus","execution_context.business_summary":"Geschäftszusammenfassung","execution_context.engineering_summary":"Engineering-Zusammenfassung","execution_context.current_intent":"Aktuelle Absicht","execution_context.current_engineering_action":"Aktuelle Engineering-Aktion","execution_context.execution_phase":"Ausführungsphase","execution_context.planning_confidence":"Planungssicherheit","execution_context.current_iteration":"Aktuelle Iteration","execution_context.last_runtime_update":"Letztes Runtime-Update","execution_context.version":"Ausführungskontext-Version"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.mission_title":"Titre de la mission","execution_context.mission_lifecycle":"Cycle de vie de la mission","execution_context.business_summary":"Résumé métier","execution_context.engineering_summary":"Résumé d’ingénierie","execution_context.current_intent":"Intention actuelle","execution_context.current_engineering_action":"Action d’ingénierie actuelle","execution_context.execution_phase":"Phase d’exécution","execution_context.planning_confidence":"Confiance de planification","execution_context.current_iteration":"Itération actuelle","execution_context.last_runtime_update":"Dernière mise à jour runtime","execution_context.version":"Version du contexte d’exécution"});
 Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.mission_title":"Título de la misión","execution_context.mission_lifecycle":"Ciclo de vida de la misión","execution_context.business_summary":"Resumen de negocio","execution_context.engineering_summary":"Resumen de ingeniería","execution_context.current_intent":"Intención actual","execution_context.current_engineering_action":"Acción de ingeniería actual","execution_context.execution_phase":"Fase de ejecución","execution_context.planning_confidence":"Confianza de planificación","execution_context.current_iteration":"Iteración actual","execution_context.last_runtime_update":"Última actualización de runtime","execution_context.version":"Versión del contexto de ejecución"});
+Object.assign(DASHBOARD_MESSAGES.en, {"execution_context.action_intent":"Action intent","execution_context.action_intent.mutating_delivery":"Delivery change","execution_context.action_intent.validation_only":"Validation only","execution_context.validation_profile":"Validation profile","execution_context.validation_profile_version":"Validation profile version","execution_context.required_validation_controls":"Required validation controls"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"execution_context.action_intent":"Actie-intentie","execution_context.action_intent.mutating_delivery":"Leveringswijziging","execution_context.action_intent.validation_only":"Alleen validatie","execution_context.validation_profile":"Validatieprofiel","execution_context.validation_profile_version":"Versie validatieprofiel","execution_context.required_validation_controls":"Vereiste validatiecontroles"});
+Object.assign(DASHBOARD_MESSAGES.de, {"execution_context.action_intent":"Aktionsabsicht","execution_context.action_intent.mutating_delivery":"Bereitstellungsänderung","execution_context.action_intent.validation_only":"Nur Validierung","execution_context.validation_profile":"Validierungsprofil","execution_context.validation_profile_version":"Validierungsprofilversion","execution_context.required_validation_controls":"Erforderliche Validierungsprüfungen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.action_intent":"Intention d’action","execution_context.action_intent.mutating_delivery":"Modification de livraison","execution_context.action_intent.validation_only":"Validation uniquement","execution_context.validation_profile":"Profil de validation","execution_context.validation_profile_version":"Version du profil de validation","execution_context.required_validation_controls":"Contrôles de validation requis"});
+Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.action_intent":"Intención de la acción","execution_context.action_intent.mutating_delivery":"Cambio de entrega","execution_context.action_intent.validation_only":"Solo validación","execution_context.validation_profile":"Perfil de validación","execution_context.validation_profile_version":"Versión del perfil de validación","execution_context.required_validation_controls":"Controles de validación obligatorios"});
+Object.assign(DASHBOARD_MESSAGES.en, {"execution_context.planning_not_supplied":"No additional mission or planning context was supplied by the producer."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"execution_context.planning_not_supplied":"De producer heeft geen aanvullende missie- of planningscontext geleverd."});
+Object.assign(DASHBOARD_MESSAGES.de, {"execution_context.planning_not_supplied":"Der Producer hat keinen zusätzlichen Missions- oder Planungskontext bereitgestellt."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"execution_context.planning_not_supplied":"Le producteur n’a fourni aucun contexte supplémentaire de mission ou de planification."});
+Object.assign(DASHBOARD_MESSAGES.es, {"execution_context.planning_not_supplied":"El productor no proporcionó contexto adicional de misión o planificación."});
 
 Object.assign(DASHBOARD_MESSAGES.en, {
   "state.WATCHER_WORKSPACE_MIGRATION_BLOCKED": "Watcher restart blocked by workspace migration",
@@ -3440,6 +3455,7 @@ export const OPERATIONAL_TRANSLATION_KEYS = Object.freeze([
   "operational.waiting_for_operator_merge",
   "operational.stale_host_ownership",
   "operational.run_local_repository_validation",
+  "operational.execute_required_validation_controls",
   "operational.poll_required_checks",
   "operational.provider_auth_repair_required",
   "operational.create_finalization",
@@ -3465,6 +3481,7 @@ Object.assign(DASHBOARD_MESSAGES.en, {
   "operational.workspace_migration_blocked_by_active_dashboard": "Watcher restart is blocked by dashboard activity during workspace migration",
   "operational.reconcile_rolling_records_on_main": "Reconciling rolling records on main",
   "operational.run_local_repository_validation": "Running local repository validation",
+  "operational.execute_required_validation_controls": "Running required validation controls",
 });
 Object.assign(DASHBOARD_MESSAGES.nl, {
   "reviewer.home_assistant_integration": "Home Assistant-integratie",
@@ -3474,6 +3491,7 @@ Object.assign(DASHBOARD_MESSAGES.nl, {
   "operational.workspace_migration_blocked_by_active_dashboard": "Watcherherstart is geblokkeerd door dashboardactiviteit tijdens werkruimtemigratie",
   "operational.reconcile_rolling_records_on_main": "Doorlopende registraties op main reconciliëren",
   "operational.run_local_repository_validation": "Lokale repositoryvalidatie uitvoeren",
+  "operational.execute_required_validation_controls": "Verplichte validatiecontroles uitvoeren",
 });
 Object.assign(DASHBOARD_MESSAGES.de, {
   "reviewer.home_assistant_integration": "Home-Assistant-Integration",
@@ -3483,6 +3501,7 @@ Object.assign(DASHBOARD_MESSAGES.de, {
   "operational.workspace_migration_blocked_by_active_dashboard": "Der Neustart des Watchers wird während der Arbeitsbereichsmigration durch Dashboard-Aktivität blockiert",
   "operational.reconcile_rolling_records_on_main": "Fortlaufende Einträge auf main werden abgeglichen",
   "operational.run_local_repository_validation": "Lokale Repositoryvalidierung ausführen",
+  "operational.execute_required_validation_controls": "Erforderliche Validierungsprüfungen ausführen",
 });
 Object.assign(DASHBOARD_MESSAGES.fr, {
   "reviewer.home_assistant_integration": "Intégration Home Assistant",
@@ -3492,6 +3511,7 @@ Object.assign(DASHBOARD_MESSAGES.fr, {
   "operational.workspace_migration_blocked_by_active_dashboard": "Le redémarrage du surveillant est bloqué par l’activité du tableau de bord pendant la migration de l’espace de travail",
   "operational.reconcile_rolling_records_on_main": "Rapprochement des enregistrements courants sur main",
   "operational.run_local_repository_validation": "Exécution de la validation locale du dépôt",
+  "operational.execute_required_validation_controls": "Exécution des contrôles de validation requis",
 });
 Object.assign(DASHBOARD_MESSAGES.es, {
   "reviewer.home_assistant_integration": "Integración de Home Assistant",
@@ -3501,6 +3521,7 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "operational.workspace_migration_blocked_by_active_dashboard": "El reinicio del monitor está bloqueado por la actividad del panel durante la migración del espacio de trabajo",
   "operational.reconcile_rolling_records_on_main": "Conciliando los registros continuos en main",
   "operational.run_local_repository_validation": "Ejecutando la validación local del repositorio",
+  "operational.execute_required_validation_controls": "Ejecutando los controles de validación obligatorios",
 });
 
 Object.assign(DASHBOARD_MESSAGES.en, {

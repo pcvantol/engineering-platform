@@ -481,8 +481,15 @@ def _prompt_title(content: str, filename: str) -> str:
             if candidate.strip():
                 return redact_diagnostic(candidate.strip(), limit=240)
     for line in lines:
-        if line.strip():
-            return redact_diagnostic(line.strip(), limit=240)
+        candidate = line.strip()
+        # Structured producer envelopes prepend the explicit execution-mode
+        # contract. It is operational metadata, not the operator's prompt
+        # title. Keep this generic parser usable for both Managed and Genesis
+        # submissions without changing their immutable prompt content.
+        if candidate.casefold() in {"execution mode: managed", "execution mode: genesis"}:
+            continue
+        if candidate:
+            return redact_diagnostic(candidate, limit=240)
     return redact_diagnostic(filename, limit=240)
 
 

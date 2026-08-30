@@ -170,6 +170,7 @@ const OPERATIONAL_PRESENTATION_KEYS = {
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
   run_local_repository_validation: "operational.run_local_repository_validation",
+  execute_required_validation_controls: "operational.execute_required_validation_controls",
   workspace_migration_blocked_by_active_dashboard: "operational.workspace_migration_blocked_by_active_dashboard",
   create_finalization: "operational.create_finalization",
   RECONCILE_AGENT: "lifecycle.step.reconcile_agent",
@@ -1547,18 +1548,22 @@ function openExecutionModeModal(event) {
 function executionModeField(value) {
   const field = executionContextField(t("field.execution_mode"), value);
   const content = field.lastElementChild;
-  const row = document.createElement("span"), info = document.createElement("button");
+  const row = document.createElement("span");
   row.className = "execution-mode-field__value";
+  content.replaceWith(row);
+  row.append(content, executionModeInfoButton());
+  field.classList.add("execution-mode-field");
+  return field;
+}
+function executionModeInfoButton() {
+  const info = document.createElement("button");
   info.className = "component-info execution-mode-info";
   info.type = "button";
   info.setAttribute("aria-label", t("execution_mode_info.open"));
   info.title = t("execution_mode_info.open");
   info.innerHTML = '<span aria-hidden="true">i</span>';
   info.addEventListener("click", openExecutionModeModal);
-  content.replaceWith(row);
-  row.append(content, info);
-  field.classList.add("execution-mode-field");
-  return field;
+  return info;
 }
 function renderExecutionContext(context, execution = {}) {
   const card = $("executionContext");
@@ -1579,7 +1584,7 @@ function renderExecutionContext(context, execution = {}) {
     );
     return;
   }
-  const fields = [
+  const planningFields = [
     [t("detail.mission_id"), context.mission_id],
     [t("execution_context.mission_title"), context.mission_title],
     [t("execution_context.mission_lifecycle"), context.mission_lifecycle],
@@ -1592,17 +1597,37 @@ function renderExecutionContext(context, execution = {}) {
     [t("execution_context.current_iteration"), context.current_iteration],
     [t("execution_context.mission_progress"), context.mission_progress],
     [t("execution_context.last_runtime_update"), context.last_runtime_update || context.last_updated_timestamp],
-    [t("execution_context.version"), context.context_version],
     [t("execution_context.decision_evidence_reference"), context.decision_evidence_reference || context.decision_evidence],
     [t("execution_context.decision_type"), context.decision_type],
     [t("execution_context.execution_receipt_reference"), context.execution_receipt_reference || context.last_execution_receipt],
     [t("execution_context.dispatcher_state"), context.dispatcher_state],
     [t("execution_context.approved_mission_queue_state"), context.approved_mission_queue_state],
+  ].filter(([, value]) => executionContextValue(value));
+  const profile = context.validation_profile && typeof context.validation_profile === "object"
+    ? context.validation_profile : null;
+  const suppliedFields = [
+    ...(context.action_intent ? [[
+      t("execution_context.action_intent"),
+      t(`execution_context.action_intent.${String(context.action_intent).toLowerCase()}`, {}, humanizeIdentifier(context.action_intent)),
+    ]] : []),
+    ...(profile?.tier ? [[t("execution_context.validation_profile"), humanizeIdentifier(profile.tier)]] : []),
+    ...(profile?.version ? [[t("execution_context.validation_profile_version"), profile.version]] : []),
+    ...(Array.isArray(profile?.required_controls) && profile.required_controls.length ? [[
+      t("execution_context.required_validation_controls"),
+      profile.required_controls.map(humanizeIdentifier).join(", "),
+    ]] : []),
+    ...(context.context_version ? [[t("execution_context.version"), context.context_version]] : []),
   ];
   card.replaceChildren(
     Object.assign(document.createElement("strong"), { textContent: t("ui.execution_context") }),
     ...hostFields.map(([label, value, isExecutionMode]) => isExecutionMode ? executionModeField(value) : executionContextField(label, value, false, label === t("detail.target_checkout"))),
-    ...fields.map(([label, value, badge]) => executionContextField(label, value, badge)),
+    ...suppliedFields.map(([label, value]) => executionContextField(label, value)),
+    ...(planningFields.length
+      ? planningFields.map(([label, value, badge]) => executionContextField(label, value, badge))
+      : [Object.assign(document.createElement("p"), {
+        className: "execution-context__planning-empty",
+        textContent: t("execution_context.planning_not_supplied"),
+      })]),
   );
 }
 function renderOperatorMergeWait(x) {
@@ -5016,7 +5041,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       [t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : null],
       [t("detail.producer_version"), history.producer_version],
       [t("detail.target_repository"), history.target_repository],
-      [t("ui.active_branch"), history.target_branch],
+      [t("detail.target_branch"), history.target_branch],
       [t("detail.target_checkout"), history.target_checkout_path],
       [t("detail.tracked_files"), history.tracked_file_count],
       [t("detail.files_modified"), metadata.modified],
@@ -6970,6 +6995,52 @@ function detailField(label, value, preformatted = false, folder = false) {
   field.append(name, content);
   return field;
 }
+function detailListField(label, values) {
+  const field = document.createElement("div"), name = document.createElement("span"), list = document.createElement("ul");
+  field.className = "field detail-list-field";
+  name.className = "label";
+  name.textContent = label;
+  const entries = Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  list.replaceChildren(...entries.map((value) => Object.assign(document.createElement("li"), {
+    textContent: humanizeIdentifier(value),
+  })));
+  field.append(name, list);
+  return field;
+}
+function detailExecutionModeField(value) {
+  const field = detailField(t("detail.execution_mode"), value);
+  const content = field.lastElementChild, row = document.createElement("span");
+  row.className = "execution-mode-field__value";
+  content.replaceWith(row);
+  row.append(content, executionModeInfoButton());
+  field.classList.add("execution-mode-field");
+  return field;
+}
+function humanizeIdentifier(value) {
+  const acronyms = { api: "API", ci: "CI", css: "CSS", html: "HTML", json: "JSON", ui: "UI" };
+  return String(value || "").trim().split(/[_-]+/).filter(Boolean).map((part) => {
+    const lower = part.toLowerCase();
+    if (acronyms[lower]) return acronyms[lower];
+    if (lower === "github") return "GitHub";
+    if (lower === "python") return "Python";
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }).join(" ") || t("detail.not_recorded");
+}
+function executionContextSnapshotFields(context) {
+  const profile = context?.validation_profile && typeof context.validation_profile === "object"
+    ? context.validation_profile : null;
+  const actionIntent = String(context?.action_intent || "").trim();
+  return [
+    ...(actionIntent ? [detailField(
+      t("execution_context.action_intent"),
+      t(`execution_context.action_intent.${actionIntent.toLowerCase()}`, {}, humanizeIdentifier(actionIntent)),
+    )] : []),
+    ...(profile?.tier ? [detailField(t("execution_context.validation_profile"), humanizeIdentifier(profile.tier))] : []),
+    ...(profile?.version ? [detailField(t("execution_context.validation_profile_version"), profile.version)] : []),
+    ...(Array.isArray(profile?.required_controls) && profile.required_controls.length
+      ? [detailListField(t("execution_context.required_validation_controls"), profile.required_controls)] : []),
+  ];
+}
 function promptHistoryRunIdField(runId) {
   const field = detailField(t("detail.run_id"), runId, true);
   field.classList.add("prompt-history-run-id-field");
@@ -7048,7 +7119,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("execution_context.mission_lifecycle"), executionContextValue(context.mission_lifecycle) || t("execution_context.not_supplied")),
     detailField(t("execution_context.decision_evidence_reference"), executionContextValue(context.decision_evidence_reference || context.decision_evidence) || t("execution_context.not_supplied")),
     detailField(t("execution_context.execution_receipt_reference"), executionContextValue(context.execution_receipt_reference || context.last_execution_receipt) || t("execution_context.not_supplied")),
-    detailField(t("execution_context.snapshot"), JSON.stringify(context)),
+    ...executionContextSnapshotFields(context),
   ] : [detailField(t("execution_context.snapshot"), t("execution_context.not_supplied"))];
   const summaryFields = [
     promptDetailStatusField(history.status),
@@ -7075,7 +7146,7 @@ function promptDetailExecutionSections(history) {
       : []),
   ];
   const contextMetadataFields = [
-    detailField(t("detail.execution_mode"), history.execution_mode || t("detail.not_recorded")),
+    detailExecutionModeField(history.execution_mode || t("detail.not_recorded")),
     detailField(t("detail.producer"), history.producer_id || t("detail.not_recorded")),
     detailField(t("detail.producer_type"), history.producer_type ? t(`enum.${history.producer_type}`) : t("detail.not_recorded")),
     detailField(t("detail.producer_version"), history.producer_version || t("detail.not_recorded")),
@@ -7086,7 +7157,7 @@ function promptDetailExecutionSections(history) {
     detailField(t("detail.engineering_action_id"), history.engineering_action_id || t("detail.not_recorded")),
     detailField(t("detail.correlation_id"), history.correlation_id || t("detail.not_recorded")),
     detailField(t("detail.target_repository"), history.target_repository || t("detail.not_recorded")),
-    detailField(t("ui.active_branch"), history.target_branch || t("detail.not_recorded"), true),
+    detailField(t("detail.target_branch"), history.target_branch || t("detail.not_recorded"), true),
     detailField(t("detail.target_checkout"), history.target_checkout_path || t("detail.not_recorded"), true, true),
     detailField(t("detail.tracked_files"), history.tracked_file_count ?? t("detail.not_recorded")),
     detailField(t("detail.files_modified"), history.execution_metadata?.modified ?? t("detail.not_recorded")),
