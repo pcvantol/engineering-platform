@@ -114,5 +114,5 @@ PASS — PHASE 0 COMPLETE
 **Phase 1 / Increment 1 — Local Consumer API Contract Foundation** is
 complete. It remained contract-only: no live HTTP or socket transport,
 credential issuance, credential persistence, OS secret-store integration,
-storage migration or consumer cutover is part of that increment. Increment 2
-remains separately unauthorized.
+storage migration or consumer cutover is part of that increment. ADR-0021 now
+authorizes a separate future Increment 2 implementation; it has not started.

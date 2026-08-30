@@ -147,12 +147,12 @@ evaluation.
 ## Authorized Phase 1 increment sequence
 
 The Phase 1 sequence is deliberately bounded. Increment 1 is complete;
-Increment 2 remains a separate architecture authorization gate.
+Increment 2 is architecturally authorized but remains unimplemented.
 
 | Increment | Canonical name | Authorization |
 | --- | --- | --- |
 | Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Complete, contract-only |
-| Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Not authorized |
+| Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Authorized, not implemented |
 | Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Not authorized |
 
 Increment 1 defines the versioned Local Consumer API v1 contract and
@@ -167,7 +167,15 @@ serialization, stable safe errors, credential redaction and focused contract
 coverage. The extraction audit reports 285 candidates classified exactly once
 with no extraction-blocking imports. No runtime transport, authentication or
 credential authority, Keychain call, storage migration or consumer cutover was
-added. Increment 2 remains unauthorized.
+added. ADR-0021 now authorizes, but does not implement, Increment 2.
+
+**Increment 2 architecture authorization:** ADR-0021 authorizes only a
+dedicated EP-managed loopback HTTP service; bounded health and read-only v1
+capability endpoints; fail-closed bearer authentication; exact project scope;
+schema-39 EP verifier metadata; service doctor integration; and isolation from
+the existing lifecycle. It authorizes neither a consumer cutover nor any
+mutating engineering action. Operator issuance and consumer Keychain work stay
+in Increment 3.
 
 ### Phase 0 — Freeze the extraction baseline
 

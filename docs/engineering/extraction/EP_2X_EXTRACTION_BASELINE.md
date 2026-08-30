@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 complete; Phase 1 / Increment 1 complete
+**Status:** Phase 0 complete; Phase 1 / Increment 1 complete; Increment 2 authorized
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -75,8 +75,8 @@ overlap, deterministic file overrides and newly introduced EP files.
 The Phase-0 manifest, baseline tag and deterministic audit controls are all
 satisfied. **Phase 1 / Increment 1 — Local Consumer API Contract Foundation**
 is complete. It remained contract-only: it introduces neither a live transport
-nor authentication, credential, storage or consumer cutover runtime. Increment
-2 remains separately unauthorized.
+nor authentication, credential, storage or consumer cutover runtime. ADR-0021
+now authorizes a separate future Increment 2 implementation; it has not started.
 
 ```text
 PASS — PHASE 0 COMPLETE

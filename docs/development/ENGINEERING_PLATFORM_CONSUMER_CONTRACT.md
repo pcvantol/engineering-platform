@@ -57,6 +57,22 @@ database content. Any projection containing a prohibited secret-bearing field
 is rejected or redacted before it reaches logs, reports, Prompt History or the
 dashboard.
 
+### Phase 1 / Increment 2 architecture authorization
+
+Increment 2 is authorized but not implemented. ADR-0021 fixes the later
+runtime shape: a dedicated EP-owned, loopback-only service at `127.0.0.1` with
+default port `8766`; unauthenticated bounded `GET /health`; and one read-only,
+authenticated `POST /v1/capabilities` endpoint. It adds no consumer cutover or
+mutating engineering action.
+
+The transport accepts a credential only through `Authorization: Bearer
+<credential>`. `UNAUTHENTICATED` is the stable 401-equivalent error for missing
+or invalid credentials; `PROJECT_NOT_AUTHORIZED` is the stable 403-equivalent
+error for a valid credential outside the exact canonical `project_id` scope.
+The future schema-39 EP-owned verifier record never stores plaintext bearer
+values. Issuance, registration, rotation/revocation workflows and Keychain
+integration remain Increment 3 work.
+
 ### Local Consumer API v1 envelope schema
 
 The canonical machine-readable version representation is the string `"1.0"`.
@@ -98,6 +114,9 @@ contains a stable `code`, safe fixed `message`, and optional bounded `field` and
 `MISSING_PROJECT_ID`, `INVALID_PROJECT_ID`, `INVALID_CONSUMER_IDENTITY`,
 `INVALID_AUTH_ENVELOPE`, `UNKNOWN_FIELD`, `UNSUPPORTED_REQUEST_TYPE`,
 `INVALID_NORMALIZATION`, `VALUE_TOO_LARGE` and `MALFORMED_REQUEST`.
+ADR-0021 additionally reserves `UNAUTHENTICATED` and
+`PROJECT_NOT_AUTHORIZED` as the Increment-2 transport authentication and
+authorization errors; their runtime mapping is not implemented yet.
 
 Contract JSON is serialized with sorted keys, compact separators and UTF-8
 Unicode. Transport serialization preserves the credential carrier; safe
