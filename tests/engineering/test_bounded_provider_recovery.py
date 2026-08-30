@@ -222,3 +222,66 @@ class BoundedProviderRecoveryTests(unittest.TestCase):
         result = runner._invoke_agent_with_timing(self.state, "objective")
         self.assertEqual(result.terminal_state, "COMPLETE")
         self.assertEqual(runner.agent.outcomes, [])
+
+    def test_same_phase_invalid_recovered_result_remains_fail_closed(self) -> None:
+        runner = self._runner([])
+        create_recovery_available(
+            self.root, run_id=self.state.run_id, triggering_invocation_id="attempt-one",
+            lifecycle_phase=self.state.phase, branch="topic", worktree_identity=str(self.root),
+            lease_id=runner.active_lease.lease_id if runner.active_lease else None,
+        )
+        self.assertTrue(transition_recovery_state(
+            self.root, run_id=self.state.run_id, expected="RECOVERY_AVAILABLE", target="RECOVERED",
+            result="SUCCESS", result_evidence_ref="artifact:missing-result",
+        ))
+        with self.assertRaisesRegex(CodexInvocationError, "Recovered provider result is unavailable"):
+            runner._invoke_agent_with_timing(self.state, "objective")
+        self.assertEqual(runner.agent.outcomes, [])
+
+    def test_historical_quality_recovery_does_not_block_finalization_provider(self) -> None:
+        quality = TransactionState(
+            self.state.run_id, "pcvantol/djconnect", str(self.prompt), "QUALITY_CONTROL_AGENT", branch="topic",
+        )
+        finalization = TransactionState(
+            self.state.run_id, "pcvantol/djconnect", str(self.prompt), "FINALIZE_AGENT", branch="topic",
+            transaction_kind="FINALIZATION",
+        )
+        runner = _Runner(
+            self.root, self.store, _Repository(), object(), _Agent([AgentResult("COMPLETE", branch="topic")]), lambda _: None,
+        )
+        self.store.save(quality)
+        runner.active_lease = acquire(self.root, self.state.run_id, identity="test", instance_id="host")
+        recovery = create_recovery_available(
+            self.root, run_id=self.state.run_id, triggering_invocation_id="quality-attempt-one",
+            lifecycle_phase="QUALITY_CONTROL_AGENT", branch="topic", worktree_identity=str(self.root),
+            lease_id=runner.active_lease.lease_id,
+        )
+        self.assertTrue(transition_recovery_state(
+            self.root, run_id=self.state.run_id, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+        ))
+        claim = claim_replacement_launch(self.root, run_id=self.state.run_id)
+        assert claim is not None
+        self.assertTrue(record_provider_started(
+            self.root, run_id=self.state.run_id, receipt_id=str(claim["receipt_id"]), pid=os.getpid(), process_group=os.getpgrp(),
+        ))
+        reference = persist_recovery_agent_result(
+            self.root, run_id=self.state.run_id, invocation_id=str(recovery["replacement_invocation_id"]),
+            result=AgentResult("COMPLETE", branch="topic"),
+        )
+        self.assertTrue(record_replacement_terminal(
+            self.root, run_id=self.state.run_id, outcome="SUCCESS", result_evidence_ref=reference,
+        ))
+
+        result = runner._invoke_agent_with_timing(finalization, "finalize")
+
+        self.assertEqual(result.terminal_state, "COMPLETE")
+        self.assertEqual(runner.agent.outcomes, [])
+        with open_storage(self.root) as connection:
+            recovery_row = connection.execute(
+                "SELECT lifecycle_phase,state FROM provider_recovery_attempts WHERE run_id=?", (self.state.run_id,),
+            ).fetchone()
+            finalization_invocations = connection.execute(
+                "SELECT COUNT(*) FROM provider_invocations WHERE run_id=? AND phase='PROVIDER_EXECUTION'", (self.state.run_id,),
+            ).fetchone()[0]
+        self.assertEqual(recovery_row, ("QUALITY_CONTROL_AGENT", "RECOVERED"))
+        self.assertEqual(finalization_invocations, 1)

@@ -470,6 +470,8 @@ class EngineeringRunner:
                 admission = load_admission_decision(self.root, state.run_id)
             except EngineeringStorageError:
                 admission = None
+            # A recovered row remains durable historical evidence after its
+            # originating phase; only that phase may consume the result.
             if (
                 admission is None
                 or admission.get("run_id") != state.run_id
@@ -1403,7 +1405,11 @@ class EngineeringRunner:
                 if isinstance(completed_recovery, dict):
                     self._project_durable_recovery(state, completed_recovery)
                 return result
-            if isinstance(recovery, dict) and recovery.get("state") == "RECOVERED":
+            if (
+                isinstance(recovery, dict)
+                and recovery.get("state") == "RECOVERED"
+                and recovery.get("lifecycle_phase") == state.phase
+            ):
                 replacement_id = recovery.get("replacement_invocation_id")
                 if (
                     recovery.get("lifecycle_phase") != state.phase
