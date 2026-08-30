@@ -124,6 +124,26 @@ terminal date, and a repeated recovery cannot add a second run or count.
 
 ## Operator actions
 
+## Controlled provider-interruption qualification proof
+
+For the dedicated, one-shot recovery proof, an operator may arm only an
+already-admitted, non-terminal run before it reaches `QUALITY_CONTROL_AGENT`:
+
+```sh
+python3 -m tools.engineering.provider_recovery arm-controlled-interruption \
+  --repo /Users/pcvantol/Documents/GitHub/djconnect \
+  --run-id <run-id> --phase QUALITY_CONTROL_AGENT
+```
+
+Inspect the exact control with `controlled-interruption-status` and cancel an
+unconsumed control with `disarm-controlled-interruption`, using the same
+`--repo`, `--run-id`, and `--phase` arguments. The control persists only
+bounded run/phase/operator metadata under the local Engineering artifact
+hierarchy. Its atomic consumed artifact remains the authoritative evidence;
+once consumed it cannot be disarmed or fired again. Prompt text and submission
+provenance cannot create this control, and it never creates a retry submission
+or new root run.
+
 ## Local repository validation gate
 
 Validation is selected from the actual bounded-branch diff. Documentation and

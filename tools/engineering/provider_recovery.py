@@ -7,6 +7,7 @@ resumed for an already existing run.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import argparse
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from uuid import uuid4
 from .provider_process_identity import ProcessIdentity, capture_process_identity, verify_process_identity
 from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .execution_lease import liveness as lease_liveness
+from .agent_state import PHASES, StateError, StateStore, redact_diagnostic
 
 
 RECOVERY_STATES = frozenset({
@@ -25,10 +27,76 @@ RECOVERY_STATES = frozenset({
 })
 ACTIVE_RECOVERY_STATES = frozenset({"RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"})
 TERMINAL_RECOVERY_STATES = RECOVERY_STATES - ACTIVE_RECOVERY_STATES
+CONTROLLED_INTERRUPTION_PHASES = frozenset({"QUALITY_CONTROL_AGENT"})
+CONTROL_DIRECTORY = Path(".engineering/artifacts/provider-recovery-fault-injection")
+
+
+class ControlledInterruptionControlError(ValueError):
+    """A bounded operator control request is invalid or unsafe."""
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _control_paths(root: Path, run_id: str, phase: str) -> tuple[Path, Path]:
+    directory = root / CONTROL_DIRECTORY
+    return directory / "armed" / f"{run_id}-{phase}.json", directory / f"{run_id}-{phase}.json"
+
+
+def controlled_interruption_status(root: Path, *, run_id: str, phase: str) -> str:
+    armed, consumed = _control_paths(root, run_id, phase)
+    if consumed.is_file():
+        return "CONSUMED"
+    return "ARMED" if armed.is_file() else "NOT_ARMED"
+
+
+def _validate_control_target(root: Path, *, run_id: str, phase: str) -> object:
+    if phase not in CONTROLLED_INTERRUPTION_PHASES:
+        raise ControlledInterruptionControlError("phase is not supported for controlled interruption")
+    try:
+        state = StateStore(root / ".engineering" / "engineering-runs").load(run_id)
+    except StateError as error:
+        raise ControlledInterruptionControlError(str(error)) from error
+    if state.terminal:
+        raise ControlledInterruptionControlError("run is terminal")
+    # The hook is deliberately offered only before its lifecycle boundary.  A
+    # phase already entered may have an active provider that cannot be raced.
+    if state.phase not in PHASES or state.phase in {"QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT", "RECONCILE_AGENT", "WAIT_FOR_TERMINAL_EVIDENCE", "WAIT_FOR_OPERATOR_MERGE", "REPOSITORY_CLEANUP"}:
+        raise ControlledInterruptionControlError("target phase is already active or has passed")
+    return state
+
+
+def arm_controlled_interruption(root: Path, *, run_id: str, phase: str, armed_by: str | None = None, reason: str | None = None) -> dict[str, object]:
+    _validate_control_target(root, run_id=run_id, phase=phase)
+    armed, consumed = _control_paths(root, run_id, phase)
+    if consumed.is_file():
+        raise ControlledInterruptionControlError("controlled interruption is already consumed")
+    payload = {"version": 1, "state": "ARMED", "run_id": run_id, "phase": phase, "armed_at": _now(), "armed_by": redact_diagnostic(armed_by or os.environ.get("USER", "operator"), limit=120)}
+    if reason:
+        payload["reason"] = redact_diagnostic(reason, limit=240)
+    armed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(armed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as error:
+        raise ControlledInterruptionControlError("controlled interruption is already armed") from error
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return payload
+
+
+def disarm_controlled_interruption(root: Path, *, run_id: str, phase: str) -> str:
+    armed, consumed = _control_paths(root, run_id, phase)
+    if consumed.is_file():
+        raise ControlledInterruptionControlError("controlled interruption is already consumed and cannot be disarmed")
+    try:
+        armed.unlink()
+    except FileNotFoundError:
+        return "NOT_ARMED"
+    return "DISARMED"
 
 
 def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str) -> bool:
@@ -42,12 +110,13 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
     command data.
     """
     requested = os.environ.get("DJCONNECT_ENGINEERING_TEST_INTERRUPT_PROVIDER_ONCE")
-    if requested != f"{run_id}:{phase}" or load_recovery_state(root, run_id) is not None:
+    armed, path = _control_paths(root, run_id, phase)
+    durable_armed = armed.is_file()
+    if (requested != f"{run_id}:{phase}" and not durable_armed) or load_recovery_state(root, run_id) is not None:
         return False
     artifact_id = f"provider-recovery-fault-injection:{run_id}:{phase}"
-    directory = root / ".engineering" / "artifacts" / "provider-recovery-fault-injection"
+    directory = root / CONTROL_DIRECTORY
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{run_id}-{phase}.json"
     payload = {
         "kind": "CONTROLLED_PROVIDER_INTERRUPTION",
         "run_id": run_id,
@@ -55,7 +124,16 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
         "consumed_at": _now(),
     }
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if durable_armed:
+            # Claim the ARMED record by atomically turning it into the existing
+            # consumed marker. A concurrent disarm therefore cannot erase an
+            # already-claimed proof, and a crash cannot permit a refire.
+            os.replace(armed, path)
+            descriptor = os.open(path, os.O_WRONLY | os.O_TRUNC)
+        else:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileNotFoundError:
+        return False
     except FileExistsError:
         return False
     try:
@@ -74,6 +152,32 @@ def consume_controlled_interruption_hook(root: Path, *, run_id: str, phase: str)
         # qualification-hook write, failing closed is safer than firing twice.
         return False
     return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Manage run-scoped controlled provider interruption proof controls")
+    parser.add_argument("command", choices=("arm-controlled-interruption", "controlled-interruption-status", "disarm-controlled-interruption"))
+    parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--phase", required=True)
+    parser.add_argument("--reason")
+    args = parser.parse_args(argv)
+    root = args.repo.resolve()
+    try:
+        if args.command == "arm-controlled-interruption":
+            payload = arm_controlled_interruption(root, run_id=args.run_id, phase=args.phase, reason=args.reason)
+            print(json.dumps({"status": "ARMED", **payload}, sort_keys=True))
+        elif args.command == "controlled-interruption-status":
+            print(json.dumps({"status": controlled_interruption_status(root, run_id=args.run_id, phase=args.phase), "run_id": args.run_id, "phase": args.phase}, sort_keys=True))
+        else:
+            print(json.dumps({"status": disarm_controlled_interruption(root, run_id=args.run_id, phase=args.phase), "run_id": args.run_id, "phase": args.phase}, sort_keys=True))
+    except ControlledInterruptionControlError as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 def load_recovery_state(root: Path, run_id: str) -> dict[str, object] | None:
