@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Iterable
 
-from .storage import EngineeringStorageError, load_run_lineage, load_validation_context, open_storage
+from .storage import (
+    EngineeringStorageError,
+    load_run_lineage,
+    load_run_qualification_snapshot,
+    load_validation_context,
+    open_storage,
+    record_run_qualification_snapshot,
+)
 
 AUTHORITIES = frozenset(
     {
@@ -230,7 +239,12 @@ def terminal_snapshot(
     lineage_available: bool = False,
     reviewer_records: tuple[dict[str, object], ...] = (),
     action_intent: str = "MUTATING_DELIVERY",
+    persist: bool = False,
 ) -> dict[str, object]:
+    if persist:
+        persisted = load_run_qualification_snapshot(root, run_id)
+        if persisted is not None:
+            return persisted
     connection = open_storage(root)
     try:
         actions = connection.execute(
@@ -325,6 +339,54 @@ def terminal_snapshot(
     # same run-scoped meaning and must never be mistaken for platform-wide
     # qualification evidence.
     snapshot["managed_autonomy_qualification"] = snapshot["run_qualification"]
+    if persist:
+        required_controls = snapshot.get("validation_profile", {})
+        required_controls = required_controls if isinstance(required_controls, dict) else {}
+        required_control_snapshot = {
+            "profile_reference": required_controls.get("profile_reference", "UNAVAILABLE"),
+            "validation_profile_version": required_controls.get("validation_profile_version", "UNAVAILABLE"),
+            "required_validation_controls": required_controls.get("required_validation_controls", ()),
+            "validation_current": snapshot["validation_current"],
+        }
+        snapshot["required_control_snapshot_ref"] = "required-controls:sha256:" + hashlib.sha256(
+            json.dumps(required_control_snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest()
+        snapshot["terminal_checkpoint_ref"] = f"terminal-checkpoint:{run_id}:{execution_outcome}"
+        cleanup_attempted = any(
+            action["action"] == "CLEANUP" and action["authority"] == "AUTONOMOUS_EP_ACTION"
+            for action in snapshot["actions"]
+        )
+        snapshot["cleanup_outcome"] = (
+            "COMPLETED" if cleanup_attempted and execution_outcome == "COMPLETE"
+            else "FAILED" if cleanup_attempted and execution_outcome in {"BLOCKED", "FAILED"}
+            else "NOT_REQUIRED" if action_intent == "VALIDATION_ONLY"
+            else "UNAVAILABLE"
+        )
+        snapshot["reconciliation_evidence"] = {
+            "repository_state": repository_state,
+            "workspace_state": workspace_state,
+            "main_origin_sync": main_origin_sync,
+            "worktree_state": worktree_state,
+            "active_blocking_predecessor": active_blocker,
+            "recovery_required": recovery_required,
+        }
+        conflicts = []
+        if snapshot["validation_projection_conflict"]:
+            conflicts.append("VALIDATION_CURRENT_CONFLICT")
+        if snapshot["pr_check_projection_conflict"]:
+            conflicts.append("PR_CHECK_CURRENT_CONFLICT")
+        snapshot["projection_conflicts"] = conflicts
+        # The persisted contract has exactly two outcomes.  The existing
+        # in-memory compatibility label remains available to old callers.
+        if snapshot["run_qualification"] == "EVIDENCE_INSUFFICIENT":
+            snapshot["run_qualification"] = "NOT_QUALIFIED"
+            snapshot["managed_autonomy_qualification"] = "NOT_QUALIFIED"
+        snapshot["persisted_at"] = snapshot["observed_at"]
+        identity_payload = {key: value for key, value in snapshot.items() if key not in {"qualification_snapshot_id", "persisted_at", "observed_at"}}
+        snapshot["qualification_snapshot_id"] = "qualification:sha256:" + hashlib.sha256(
+            json.dumps(identity_payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest()
+        return record_run_qualification_snapshot(root, snapshot)
     return snapshot
 
 

@@ -22,6 +22,7 @@ from tools.engineering.storage import (
     load_projection,
     load_execution_context_snapshot,
     load_forge_governance_handoff_snapshot,
+    load_run_qualification_snapshot,
     open_storage,
     record_ai_capacity_bi_hourly,
     record_artifact,
@@ -29,6 +30,7 @@ from tools.engineering.storage import (
     record_admission_decision,
     load_admission_decision,
     record_readiness_evaluation,
+    record_run_qualification_snapshot,
     load_readiness_evaluation,
     regenerate_status_projections,
     store_projection,
@@ -242,6 +244,9 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute(
                     "DELETE FROM engineering_schema_migrations WHERE version=35"
                 )
+                connection.execute(
+                    "DELETE FROM engineering_schema_migrations WHERE version=36"
+                )
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
@@ -254,6 +259,24 @@ class EngineeringStorageTest(unittest.TestCase):
                     ).fetchone()[0],
                     ENGINEERING_STORAGE_SCHEMA_VERSION,
                 )
+
+    def test_run_qualification_snapshot_is_immutable_and_historical_runs_are_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertIsNone(load_run_qualification_snapshot(root, "legacy-run"))
+            snapshot = {
+                "run_id": "future-run", "qualification_snapshot_id": "qualification:sha256:test",
+                "required_control_snapshot_ref": "required-controls:sha256:test",
+                "terminal_checkpoint_ref": "terminal-checkpoint:future-run:COMPLETE",
+                "persisted_at": "2026-08-30T00:00:00+00:00", "terminal_execution_state": "COMPLETE",
+                "required_validation_state": "PASS", "cleanup_outcome": "COMPLETED",
+                "run_qualification": "QUALIFIED", "projection_conflicts": [],
+            }
+            stored = record_run_qualification_snapshot(root, snapshot)
+            self.assertEqual(stored["run_qualification"], "QUALIFIED")
+            with open_storage(root) as connection:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute("UPDATE execution_run_qualification_snapshots SET payload='{}'")
 
     def test_schema_four_imports_legacy_redacted_component_logs_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -421,6 +444,16 @@ class EngineeringStorageTest(unittest.TestCase):
                     activate_storage_schema(root)
                 with sqlite3.connect(database_path(root)) as connection:
                     connection.execute("UPDATE execution_run_leases SET lease_state='RELEASED'")
+                    connection.execute(
+                        "INSERT OR REPLACE INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)",
+                        ("inbox-schema-activation", "{}", "VALIDATION", "2026-08-30T00:00:00+00:00"),
+                    )
+                with self.assertRaisesRegex(EngineeringStorageError, "no non-terminal execution"):
+                    activate_storage_schema(root)
+                with sqlite3.connect(database_path(root)) as connection:
+                    connection.execute(
+                        "UPDATE engineering_transactions SET phase='COMPLETE' WHERE run_id='inbox-schema-activation'"
+                    )
                 lock = root / WORKSPACE_DIRECTORY / "locks" / "dashboard.lock"
                 lock.parent.mkdir(parents=True)
                 with lock.open("a+", encoding="utf-8") as handle:

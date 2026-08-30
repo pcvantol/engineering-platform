@@ -85,13 +85,13 @@ Storage code delivery and shared-runtime activation are separate operations:
 5. restart watcher, relay and dashboard on the merged revision, then run host
    verification.
 
-The activation command refuses active execution leases and held watcher or
-dashboard locks. Normal component startup refuses an existing lower-version
+The activation command refuses active execution leases, non-terminal
+transactions and held watcher or dashboard locks. Normal component startup refuses an existing lower-version
 store rather than migrating it. Thus a managed prompt cannot bypass this
 boundary merely by importing newer source without its admission environment.
 
 Schema `33` adds immutable qualification lineage and resolved validation
-policy. Schema `34` adds redacted advisory AI-chat transcripts. Schema `35` adds immutable command-invocation and terminal-evidence records for validation controls. They are keyed to a
+policy. Schema `34` adds redacted advisory AI-chat transcripts. Schema `35` adds immutable command-invocation and terminal-evidence records for validation controls. Schema `36` adds one immutable, prospective run-bound qualification snapshot, binding the required-control snapshot, validation state, cleanup outcome, reconciliation evidence, projection conflicts and run qualification to the terminal checkpoint. Historical runs are never backfilled. They are keyed to a
 terminal Run ID, retain at most 20 messages for 90 days and are excluded from
 generic details, Markdown and JSON exports. Messages are insert-only; expired
 messages are pruned before a new message is retained and a per-run clear is

@@ -281,6 +281,13 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
             run = connection.execute("SELECT execution_mode,producer_id,producer_type,execution_started_at,execution_finished_at,execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)).fetchone()
             submission = connection.execute("SELECT s.submission_id,s.producer_id,s.producer_type,s.prompt_metadata,s.received_at FROM execution_submissions AS s JOIN execution_submission_links AS l ON l.submission_id=s.submission_id WHERE l.run_id=?", (run_id,)).fetchone()
             qualification_lineage, qualification_validation = _qualification_evidence(connection, run_id)
+            try:
+                row = connection.execute(
+                    "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
+                ).fetchone()
+                qualification_snapshot = _json_object(row[0]) if row else None
+            except sqlite3.OperationalError:
+                qualification_snapshot = None
             checks = _current_checks(connection, run_id)
             validation_controls = _validation_controls(connection, run_id, "pending")
             workspace = _lease_projection(connection, run_id)
@@ -288,7 +295,7 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
         finally:
             connection.close()
     except (EngineeringStorageError, sqlite3.Error):
-        transaction = run = submission = qualification_lineage = qualification_validation = None
+        transaction = run = submission = qualification_lineage = qualification_validation = qualification_snapshot = None
         checks = {}
         validation_controls = []
         workspace = {"workspace_state": UNAVAILABLE, "workspace_occupied": UNAVAILABLE, "active_owner_run_id": UNAVAILABLE,
@@ -310,6 +317,10 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
     finalization = checks.get("FINALIZATION", {})
     objective = _safe_objective(submission[3] if submission else {})
     validation_only = checkpoint.get("action_intent") == "VALIDATION_ONLY"
+    persisted_required_validation = (
+        qualification_snapshot.get("validation_profile", UNAVAILABLE)
+        if qualification_snapshot else qualification_validation or UNAVAILABLE
+    )
     context: dict[str, object] = {
         "contract_name": "run_context", "contract_version": CONTRACT_VERSION, "generated_at": generated_at,
         "run_id": run_id, "evidence_version": snapshot, "projection_authority": PROJECTION_AUTHORITY,
@@ -339,8 +350,10 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
                      "finalization_required_checks_state": _value(finalization.get("required_checks_state")), "finalization_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_FINALIZATION_MERGE" else UNAVAILABLE,
                      "run_delivery_commit": _value(checkpoint.get("implementation_head_sha") or checkpoint.get("last_verified_sha")), "current_repository_head": _value(checkpoint.get("last_verified_sha")), "delivery_commit_head_relationship": UNAVAILABLE},
         "validation": {"engineering_platform_qualification": UNAVAILABLE, "controls": validation_controls,
-                       "required_validation": qualification_validation or UNAVAILABLE},
-        "repository": {"repository_identity": _value(checkpoint.get("repository")), "expected_branch": "main", "current_branch": _value(checkpoint.get("branch")), "worktree_state": UNAVAILABLE, "main_origin_relationship": UNAVAILABLE, "repository_state": UNAVAILABLE, "delivery_commit_relationship": UNAVAILABLE, "last_verified_at": _value(observed_at)},
+                       "required_validation": persisted_required_validation,
+                       "run_qualification": qualification_snapshot.get("run_qualification", UNAVAILABLE) if qualification_snapshot else UNAVAILABLE,
+                       "qualification_snapshot": qualification_snapshot or UNAVAILABLE},
+        "repository": {"repository_identity": _value(checkpoint.get("repository")), "expected_branch": "main", "current_branch": _value(checkpoint.get("branch")), "worktree_state": qualification_snapshot.get("reconciliation_evidence", {}).get("worktree_state", UNAVAILABLE) if qualification_snapshot else UNAVAILABLE, "main_origin_relationship": qualification_snapshot.get("reconciliation_evidence", {}).get("main_origin_sync", UNAVAILABLE) if qualification_snapshot else UNAVAILABLE, "repository_state": qualification_snapshot.get("reconciliation_evidence", {}).get("repository_state", UNAVAILABLE) if qualification_snapshot else UNAVAILABLE, "delivery_commit_relationship": UNAVAILABLE, "last_verified_at": _value(observed_at)},
         "workspace": workspace,
         "timing": {"run_wall_time": _value(run[5] if run else None), "provider_execution_time": _value(checkpoint.get("agent_execution_seconds")), "reviewer_time": UNAVAILABLE, "validation_time": UNAVAILABLE, "external_wait_time": UNAVAILABLE, "ci_wait_time": UNAVAILABLE, "merge_gate_wait_time": _value(checkpoint.get("waiting_for_merge_since")), "finalization_time": UNAVAILABLE, "reconciliation_time": UNAVAILABLE, "last_activity_at": _value(observed_at)},
         "usage": usage,

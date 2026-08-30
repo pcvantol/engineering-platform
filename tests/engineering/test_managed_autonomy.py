@@ -116,6 +116,30 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertIsNone(snapshot["implementation_pr"])
         self.assertIsNone(snapshot["finalization_pr"])
 
+    def test_terminal_qualification_snapshot_persists_the_exact_control_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = "persisted-validation-proof"
+            record_run_qualification_context(root, run_id=run, submission_id="persisted-submission", fresh_submission=True, retry_parent_run_id=None, resume_parent_run_id=None, recorded_at="2026-08-30T00:00:00+00:00")
+            record_validation_profile(root, run_id=run, selected_validation_tier="GENERIC", validation_profile_version="1.0", required_validation_controls=("control",), recorded_at="2026-08-30T00:00:00+00:00")
+            record_validation_control_result(root, run_id=run, validation_id="control", category="suite", control_identity="generic", required_for_profile=True, execution_status="EXECUTED", result="PASS", evidence_ref="terminal", observed_at="2026-08-30T00:01:00+00:00", currentness=1)
+            for action in ("VALIDATION_ONLY", "CLEANUP"):
+                append_action(root, run_id=run, action=action, authority="AUTONOMOUS_EP_ACTION")
+            snapshot = terminal_snapshot(root, run_id=run, execution_outcome="COMPLETE", implementation_pr=None, finalization_pr=None, repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY", main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE", recovery_required="NO", action_intent="VALIDATION_ONLY", persist=True)
+        self.assertEqual(snapshot["required_validation_state"], "PASS")
+        self.assertEqual(snapshot["cleanup_outcome"], "COMPLETED")
+        self.assertEqual(snapshot["projection_conflicts"], [])
+        self.assertEqual(snapshot["run_qualification"], "QUALIFIED")
+        self.assertTrue(snapshot["required_control_snapshot_ref"].startswith("required-controls:sha256:"))
+
+    def test_cleanup_failure_is_persisted_separately_from_the_terminal_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            append_action(root, run_id="cleanup-failure", action="CLEANUP", authority="AUTONOMOUS_EP_ACTION")
+            snapshot = terminal_snapshot(root, run_id="cleanup-failure", execution_outcome="BLOCKED", implementation_pr=None, finalization_pr=None, repository_state="UNAVAILABLE", workspace_state="UNAVAILABLE", main_origin_sync="UNAVAILABLE", worktree_state="UNAVAILABLE", active_blocker="UNAVAILABLE", recovery_required="UNAVAILABLE", persist=True)
+        self.assertEqual(snapshot["cleanup_outcome"], "FAILED")
+        self.assertEqual(snapshot["run_qualification"], "NOT_QUALIFIED")
+
     def test_validation_only_is_not_promoted_when_required_evidence_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

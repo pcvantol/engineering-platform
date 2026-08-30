@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 35
+ENGINEERING_STORAGE_SCHEMA_VERSION = 36
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -968,6 +968,27 @@ def _schema_v35(connection: sqlite3.Connection) -> None:
             )
 
 
+def _schema_v36(connection: sqlite3.Connection) -> None:
+    """Persist one immutable, run-bound qualification snapshot prospectively.
+
+    The snapshot is deliberately a bounded JSON document because its fields
+    are a versioned projection of already-authoritative run evidence, not a
+    second relational evidence engine.  No legacy row is created here.
+    """
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_run_qualification_snapshots ("
+        "run_id TEXT PRIMARY KEY,snapshot_version INTEGER NOT NULL,"
+        "snapshot_id TEXT NOT NULL UNIQUE,required_control_snapshot_ref TEXT NOT NULL,"
+        "terminal_checkpoint_ref TEXT NOT NULL,payload TEXT NOT NULL,persisted_at TEXT NOT NULL)"
+    )
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER IF NOT EXISTS execution_run_qualification_snapshots_immutable_{operation.casefold()} "
+            f"BEFORE {operation} ON execution_run_qualification_snapshots BEGIN "
+            "SELECT RAISE(ABORT, 'Run qualification snapshot is immutable.'); END"
+        )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1050,6 +1071,7 @@ MIGRATIONS: dict[int, Migration] = {
     33: _schema_v33,
     34: _schema_v34,
     35: _schema_v35,
+    36: _schema_v36,
 }
 
 
@@ -1723,6 +1745,67 @@ def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None
             "recorded_at": profile[3], "controls": controls}
 
 
+def record_run_qualification_snapshot(root: Path, snapshot: dict[str, object]) -> dict[str, object]:
+    """Store the first authoritative qualification projection for one run.
+
+    This is intentionally insert-only: terminal reporting, receipts and the
+    dashboard all consume this same snapshot after it has been persisted.
+    """
+    run_id = snapshot.get("run_id")
+    snapshot_id = snapshot.get("qualification_snapshot_id")
+    required_ref = snapshot.get("required_control_snapshot_ref")
+    terminal_ref = snapshot.get("terminal_checkpoint_ref")
+    persisted_at = snapshot.get("persisted_at")
+    if not all(isinstance(value, str) and value for value in (run_id, snapshot_id, required_ref, terminal_ref, persisted_at)):
+        raise EngineeringStorageError("Run qualification snapshot identity is invalid.")
+    if snapshot.get("required_validation_state") not in {"PASS", "FAIL", "UNRESOLVED"}:
+        raise EngineeringStorageError("Run qualification snapshot validation state is invalid.")
+    if snapshot.get("cleanup_outcome") not in {"COMPLETED", "NOT_REQUIRED", "FAILED", "UNAVAILABLE"}:
+        raise EngineeringStorageError("Run qualification snapshot cleanup outcome is invalid.")
+    if snapshot.get("run_qualification") not in {"QUALIFIED", "NOT_QUALIFIED"}:
+        raise EngineeringStorageError("Run qualification snapshot outcome is invalid.")
+    if snapshot.get("run_qualification") == "QUALIFIED" and snapshot.get("terminal_execution_state") != "COMPLETE":
+        raise EngineeringStorageError("A non-complete terminal run cannot be qualified.")
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    connection = open_storage(root)
+    try:
+        connection.execute(
+            "INSERT OR IGNORE INTO execution_run_qualification_snapshots("
+            "run_id,snapshot_version,snapshot_id,required_control_snapshot_ref,terminal_checkpoint_ref,payload,persisted_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (run_id, 1, snapshot_id, required_ref, terminal_ref, payload, persisted_at),
+        )
+    finally:
+        connection.close()
+    stored = load_run_qualification_snapshot(root, run_id)
+    if stored is None:
+        raise EngineeringStorageError("Run qualification snapshot was not persisted.")
+    return stored
+
+
+def load_run_qualification_snapshot(root: Path, run_id: str) -> dict[str, object] | None:
+    """Load a persisted snapshot without deriving or backfilling legacy runs."""
+    connection = open_storage(root)
+    try:
+        row = connection.execute(
+            "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # A supported historical database can legitimately predate v36.
+        return None
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Run qualification snapshot is corrupt.") from error
+    if not isinstance(payload, dict) or payload.get("run_id") != run_id:
+        raise EngineeringStorageError("Run qualification snapshot is invalid.")
+    return payload
+
+
 def record_artifact(
     root: Path,
     path: Path,
@@ -1884,6 +1967,15 @@ def _assert_controlled_schema_activation(root: Path, path: Path) -> None:
                     if active is not None:
                         raise EngineeringStorageError(
                             "Engineering storage activation requires no active execution lease."
+                        )
+                if "engineering_transactions" in tables:
+                    active_transaction = connection.execute(
+                        "SELECT 1 FROM engineering_transactions "
+                        "WHERE phase NOT IN ('COMPLETE','BLOCKED','FAILED') LIMIT 1"
+                    ).fetchone()
+                    if active_transaction is not None:
+                        raise EngineeringStorageError(
+                            "Engineering storage activation requires no non-terminal execution."
                         )
             finally:
                 connection.close()

@@ -1040,6 +1040,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         lineage_available=lineage is not None,
         reviewer_records=reviewer_records,
         action_intent=state.action_intent,
+        persist=True,
     )
     def pr_lines(role: str) -> tuple[str, ...]:
         item = snapshot["pr_checks"].get(role, {})
@@ -1074,6 +1075,12 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         f"- Unexpected Manual Interventions: `{snapshot['unplanned_manual_intervention_count']}`",
         f"- Unknown Authority Actions: `{snapshot['unknown_authority_count']}`",
         f"- Required Validation State: `{snapshot['required_validation_state']}`",
+        f"- Required-control Snapshot: `{snapshot.get('required_control_snapshot_ref', 'UNAVAILABLE')}`",
+        f"- Cleanup Outcome: `{snapshot.get('cleanup_outcome', 'UNAVAILABLE')}`",
+        f"- Repository State: `{snapshot.get('reconciliation_evidence', {}).get('repository_state', 'UNAVAILABLE')}`",
+        f"- Workspace State: `{snapshot.get('reconciliation_evidence', {}).get('workspace_state', 'UNAVAILABLE')}`",
+        f"- Projection Conflicts: `{', '.join(snapshot.get('projection_conflicts', [])) or 'NONE'}`",
+        f"- Qualification Snapshot: `{snapshot.get('qualification_snapshot_id', 'UNAVAILABLE')}`",
         f"- Qualification Reasons: `{', '.join(snapshot['qualification_failure_reasons']) or 'none'}`",
         "",
     )
