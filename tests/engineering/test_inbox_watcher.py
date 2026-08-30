@@ -1230,6 +1230,7 @@ class InboxWatcherTest(unittest.TestCase):
     def test_structured_human_envelope_preserves_the_persisted_action_intent_for_the_watcher(self) -> None:
         envelope = build_human_envelope(
             prompt="# Validate\n\nRun required controls.",
+            title="Required controls",
             producer_identity="operator-peter",
             action_intent="VALIDATION_ONLY",
             validation_profile="DASHBOARD",
@@ -1237,6 +1238,7 @@ class InboxWatcherTest(unittest.TestCase):
         )
         source = self.inbox / "structured-human.json"
         source.write_text(json.dumps(envelope), encoding="utf-8")
+        self.assertEqual(inbox_watcher._prompt_title(source.read_text(encoding="utf-8"), source.name), "Required controls")
         run_id = "inbox-structured-human"
         report = self.repo / ".engineering" / "reports" / f"report_{run_id}.md"
         report.parent.mkdir(parents=True)

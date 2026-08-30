@@ -478,6 +478,15 @@ def _corrected_terminal_report(
 
 def _prompt_title(content: str, filename: str) -> str:
     """Expose only a bounded submitted title, never the prompt body."""
+    try:
+        submission = parse_producer_submission(content)
+        prompt_payload = submission.envelope.get("prompt")
+        metadata = prompt_payload.get("metadata", {}) if isinstance(prompt_payload, dict) else {}
+        title = metadata.get("title") if isinstance(metadata, dict) else None
+        if isinstance(title, str) and title.strip():
+            return redact_diagnostic(title.strip(), limit=240)
+    except ProducerSubmissionError:
+        pass
     lines = content.splitlines()
     for line in lines:
         if line.startswith("# ") and line[2:].strip():
