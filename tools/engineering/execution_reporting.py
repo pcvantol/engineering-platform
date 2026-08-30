@@ -1215,6 +1215,16 @@ def generate_terminal_report(
         f"- Test Output Bytes: `{(churn.get('passing_test_output_bytes', 0) + churn.get('failed_test_diagnostic_bytes', 0)) if churn else 'UNAVAILABLE'}`",
         "- Dominant Churn Indicators: derived only from bounded invocation counters; raw prompts and outputs are not retained.",
         "",
+        "## Provider Context Scope",
+        f"- Policy: `{churn.get('context_scope_policy', 'UNAVAILABLE')}`",
+        f"- Initial Scope: `{churn.get('context_scope_initial', 'UNAVAILABLE')}`",
+        f"- Effective Scope: `{churn.get('context_scope_effective', 'UNAVAILABLE')}`",
+        f"- Context Escalations: `{churn.get('context_escalation_count', 'UNAVAILABLE')}`",
+        f"- Escalation Reasons: `{churn.get('context_escalation_reasons', 'NONE')}`",
+        f"- Historical PRs Inspected: `{provider_usage.get('historical_pr_results') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
+        f"- Historical Commits Inspected: `{provider_usage.get('historical_commit_results') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
+        f"- Historical Context Bytes: `{provider_usage.get('historical_context_bytes') if provider_usage.get('historical_context_metrics_authority') != 'UNAVAILABLE' else 'UNAVAILABLE'}`",
+        "",
     )
     timing_lines = ["## Execution Phase Timing"]
     if timing.get("phase_telemetry_available"):

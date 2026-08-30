@@ -92,6 +92,7 @@ from .dashboard_browser_validation import dashboard_evidence_path, load_dashboar
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
 from .provider_context import ProviderRole, project_context, provider_need_for_phase, role_for_phase
+from .provider_context_scope import ContextScope, POLICY_ID, initial_context_scope, provider_instruction
 from .execution_timing import ActivePhase
 from .execution_timing import complete_active_phase as _complete_active_phase
 from .execution_timing import complete_phase as _complete_phase
@@ -195,6 +196,11 @@ def assemble_prompt(
     objective = prompt_path.read_text(encoding="utf-8")
     provider_role = role or role_for_phase(state.phase if state else "EXECUTE_AGENT")
     projection = project_context(provider_role, objective)
+    scope = initial_context_scope(
+        phase=state.phase if state else "EXECUTE_AGENT",
+        repair_iterations=state.repair_iterations if state else 0,
+        objective=objective,
+    )
     resume = (
         "No prior transaction checkpoint exists."
         if state is None
@@ -253,6 +259,7 @@ Invocation-scoped source-read reuse:
   identity, assertion and diagnostic context. Never treat a bounded result as
   proof when it is ambiguous: expand it or fail closed.
 """
+    context_scope_instruction = "\n" + provider_instruction(scope) + "\n"
     investigation_ledger = InvocationInvestigationLedger().record(
         "repository_identity", "repository_status", "git_ancestry"
     ) if reviewer_evidence is not None else InvocationInvestigationLedger()
@@ -296,7 +303,7 @@ Local validation hand-off boundary:
 - Return that branch with `pull_request: null` after relevant focused validation. The host owns the next local repository validation gate and only that gate may create the implementation PR after the canonical suite passes.
 """
     return f"""You are executing one bounded DJConnect engineering transaction.
-Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.
+Provider role: {provider_role.value}. Context projection: {projection.budget_version}; source items: {projection.source_item_count}; omitted lower-priority items: {projection.omitted_low_priority_count}.{context_scope_instruction}
 Read BOOTSTRAP.md, ENGINEERING_METHOD.md, PROMPT_INITIALIZATION.md and AGENTS.md from the actual repository before acting. Repository and GitHub evidence override this checkpoint: {resume}
 {authority}{genesis}{managed_synchronization}{managed_admission}{shared_evidence}{invocation_read_reuse}{primary_tool_loop}{local_gate}{pr_handoff}
 Supplied bounded objective follows:\n\n{projection.text}\n{managed_boundary}\n\nReturn only one JSON object with terminal_state (COMPLETE, WAITING, BLOCKED, or FAILED), branch, pull_request, terminal_condition (repository_reconciled, open_pr_checks_terminal, external_blocked, or local_commit_reconciled), diagnostic, repository_path, commit_sha, validation_evidence, quality_evidence and validation_disposition. validation_evidence is a bounded list of executed validation {{command, result}} summaries; use [] when none ran. quality_evidence is [] except for the autonomous quality-control stage, where it contains only bounded, executed {{activity, result}} records. validation_disposition is product_failure unless the required suite failed for an environmental instability that you demonstrated with bounded evidence, such as an isolated rerun of the same failing check passing without a code change. It never makes a failed suite pass. Never include secrets, tokens, headers, environment values, prompts, repository file contents, stack traces, or raw command output. Use null for other fields that do not apply. The diagnostic must be a short human-readable reason without secrets, tokens, headers, environment values, prompt content, repository file content, stack traces, or raw command output."""
@@ -496,6 +503,17 @@ class EngineeringRunner:
             **self._provider_context_telemetry,
             **self._provider_dispatch_telemetry,
         }
+        escalations = getattr(self.agent, "last_context_escalations", ())
+        if isinstance(escalations, tuple):
+            safe_escalations = [item for item in escalations if isinstance(item, dict)]
+            if safe_escalations:
+                churn.update({
+                    "context_scope_effective": ContextScope.INVESTIGATION.value,
+                    "context_escalation_count": len(safe_escalations),
+                    "context_escalation_reasons": ",".join(str(item.get("reason", "")) for item in safe_escalations),
+                    "context_escalation_boundaries": ",".join(str(item.get("boundary_kind", "")) for item in safe_escalations),
+                    "context_escalation_diagnostic": str(safe_escalations[-1].get("diagnostic", "")),
+                })
         if interruption_reason:
             # Existing bounded invocation telemetry is the durable diagnostic
             # channel; an interrupted turn has no AgentResult or final usage.
@@ -946,6 +964,10 @@ class EngineeringRunner:
     def _invoke_agent_with_timing(self, state: TransactionState, prompt: str, *, repair: bool = False, quality: bool = False, local_validation: bool = False, attempt: int | None = None) -> AgentResult:
         """Measure only the bounded runtime-provider process interval."""
         role = role_for_phase(state.phase, repair=repair, quality=quality)
+        initial_scope = initial_context_scope(
+            phase=state.phase, repair_iterations=state.repair_iterations,
+            objective=Path(state.prompt_path).read_text(encoding="utf-8"),
+        )
         decision = provider_need_for_phase(state.phase)
         if not decision.required:
             raise RunnerError(f"provider invocation refused: {decision.reason}")
@@ -953,6 +975,10 @@ class EngineeringRunner:
         self._provider_context_telemetry = {
             "context_projected_bytes": len(prompt.encode("utf-8")),
             "context_budget_version": 1,
+            "context_scope_policy": POLICY_ID,
+            "context_scope_initial": initial_scope.value,
+            "context_scope_effective": initial_scope.value,
+            "context_escalation_count": 0,
         }
         self._require_agent_readiness(state)
         parent = (

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import json
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -26,7 +27,7 @@ SEARCH_MATCH_LIMIT = 24
 SEARCH_LINE_LIMIT = 240
 GIT_FACT_LIMIT = 2_048
 GITHUB_FACT_LIMIT = 4_096
-PROXIED_TOOLS = ("git", "gh", "rg", "grep", "pytest", "python", "python3", "npm", "npx")
+PROXIED_TOOLS = ("git", "gh", "rg", "grep", "pytest", "python", "python3", "npm", "npx", "djconnect-context-escalate")
 
 
 @dataclass(frozen=True)
@@ -120,20 +121,34 @@ class ToolProxyEnvironment:
         repository_root = Path(__file__).resolve().parents[2]
         for name in PROXIED_TOOLS:
             launcher = directory / name
+            target = "context_escalation_main" if name == "djconnect-context-escalate" else "proxy_main"
             launcher.write_text(
-                f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom tools.engineering.evidence_projection import proxy_main\nproxy_main({name!r})\n",
+                f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom tools.engineering.evidence_projection import {target}\n{target}({name!r})\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o700)
         environment = dict(os.environ)
         environment["DJCONNECT_EVIDENCE_ORIGINAL_PATH"] = environment.get("PATH", os.defpath)
         environment["PATH"] = f"{directory}{os.pathsep}{environment['DJCONNECT_EVIDENCE_ORIGINAL_PATH']}"
+        environment["DJCONNECT_CONTEXT_ESCALATION_FILE"] = str(directory / "context-escalations.jsonl")
         return environment
 
     def __exit__(self, *_: object) -> None:
         if self._temporary is not None:
             self._temporary.cleanup()
             self._temporary = None
+
+    def context_escalations(self) -> tuple[dict[str, object], ...]:
+        if self._temporary is None:
+            return ()
+        path = Path(self._temporary.name) / "context-escalations.jsonl"
+        try:
+            return tuple(
+                item for line in path.read_text(encoding="utf-8").splitlines()
+                if isinstance((item := json.loads(line)), dict)
+            )
+        except (OSError, json.JSONDecodeError):
+            return ()
 
 
 def proxy_main(name: str | None = None) -> None:
@@ -153,6 +168,35 @@ def proxy_main(name: str | None = None) -> None:
     else:
         sys.stdout.write(project_output((name, *sys.argv[1:]), raw, completed.returncode).text)
     raise SystemExit(completed.returncode)
+
+
+def context_escalation_main(_: str | None = None) -> None:
+    """Validate and record one bounded historical-context escalation."""
+    from .provider_context_scope import ContextEscalationReason, ContextEscalationRequest, HistoryBoundaryKind
+
+    arguments = sys.argv[1:]
+    try:
+        diagnostic_index = arguments.index("--diagnostic")
+        values, diagnostic = arguments[:diagnostic_index], " ".join(arguments[diagnostic_index + 1:])
+        if len(values) != 4:
+            raise ValueError("Expected REASON BOUNDARY_KIND BOUNDARY LIMIT.")
+        request = ContextEscalationRequest(
+            ContextEscalationReason(values[0]), HistoryBoundaryKind(values[1]), values[2], int(values[3]), diagnostic
+        ).validate()
+    except (ValueError, IndexError) as error:
+        sys.stderr.write(f"Context escalation rejected: {error}\n")
+        raise SystemExit(2)
+    path = os.environ.get("DJCONNECT_CONTEXT_ESCALATION_FILE")
+    if not path:
+        sys.stderr.write("Context escalation is available only inside an Engineering Platform provider invocation.\n")
+        raise SystemExit(2)
+    record = {
+        "reason": request.reason.value, "boundary_kind": request.boundary_kind.value,
+        "boundary": request.boundary, "limit": request.limit, "diagnostic": request.diagnostic,
+    }
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    sys.stdout.write("CONTEXT_ESCALATION_ADMITTED\n")
 
 
 def deterministic_fixture() -> dict[str, object]:

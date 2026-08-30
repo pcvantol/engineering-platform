@@ -32,6 +32,12 @@ _SAFE_CHURN_TEXT_FIELDS = frozenset({
     "interruption_classification",
     "interruption_reason",
     "usage_state",
+    "context_scope_policy",
+    "context_scope_initial",
+    "context_scope_effective",
+    "context_escalation_reasons",
+    "context_escalation_boundaries",
+    "context_escalation_diagnostic",
 })
 _MODEL_NORMALIZATION = {
     "gpt-5.6-sol": "gpt-5.6-sol",
@@ -153,10 +159,16 @@ def churn_from_jsonl(*outputs: str) -> dict[str, int]:
             "failed_test_diagnostic_bytes",
             "git_output_bytes",
             "github_output_bytes",
+            "historical_commit_queries",
+            "historical_commit_results",
+            "historical_pr_queries",
+            "historical_pr_results",
+            "historical_context_bytes",
             "tool_loop_operations",
         )
     }
     reads: set[str] = set()
+    historical_observed = False
     for output in outputs:
         for line in output.splitlines():
             try:
@@ -202,7 +214,23 @@ def churn_from_jsonl(*outputs: str) -> dict[str, int]:
                 result["git_output_bytes"] += size
             if re.search(r"\b(?:gh)\b", normalized):
                 result["github_output_bytes"] += size
+            if re.search(r"\bgit\s+(?:log|blame)\b", normalized):
+                historical_observed = True
+                result["historical_commit_queries"] += 1
+                result["historical_commit_results"] += len(raw.splitlines()) if isinstance(raw, str) else 0
+                result["historical_context_bytes"] += size
+            if re.search(r"\bgh\s+(?:pr\s+list|search\s+prs)\b", normalized):
+                historical_observed = True
+                result["historical_pr_queries"] += 1
+                result["historical_pr_results"] += len(raw.splitlines()) if isinstance(raw, str) else 0
+                result["historical_context_bytes"] += size
     result["distinct_files_read"] = len(reads)
+    if not historical_observed:
+        for key in (
+            "historical_commit_queries", "historical_commit_results", "historical_pr_queries",
+            "historical_pr_results", "historical_context_bytes",
+        ):
+            result.pop(key)
     return result
 
 
@@ -386,7 +414,7 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
     if not rows:
         return {"invocation_detail": UNAVAILABLE}
     inputs = [row[4] for row in rows if isinstance(row[4], int)]
-    churn: dict[str, int] = {}
+    churn: dict[str, int | str] = {}
     for row in rows:
         try:
             values = json.loads(row[13])
@@ -395,7 +423,12 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
         if isinstance(values, dict):
             for key, value in values.items():
                 if isinstance(value, int):
-                    churn[key] = churn.get(key, 0) + value
+                    previous = churn.get(key, 0)
+                    churn[key] = (previous if isinstance(previous, int) else 0) + value
+                elif key in _SAFE_CHURN_TEXT_FIELDS and isinstance(value, str):
+                    # Scope is invocation evidence, not an aggregate.  The
+                    # last invocation is the effective run projection.
+                    churn[key] = value
 
     def total(index: int) -> int | float | None:
         values = [row[index] for row in rows if isinstance(row[index], (int, float))]
@@ -411,6 +444,9 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
         calls_by_role[role] = calls_by_role.get(role, 0) + 1
         if isinstance(row[6], int):
             uncached_input_by_role[role] = uncached_input_by_role.get(role, 0) + row[6]
+    observed_history = any(key in churn for key in (
+        "historical_commit_queries", "historical_pr_queries", "historical_context_bytes"
+    ))
     return {
         "invocation_detail": AUTHORITATIVE,
         "provider_invocation_count": len(rows),
@@ -432,6 +468,12 @@ def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
         if any(row[12] == AUTHORITATIVE for row in rows)
         else UNAVAILABLE,
         "context_churn": churn,
+        "historical_context_metrics_authority": AUTHORITATIVE if observed_history else UNAVAILABLE,
+        "historical_commit_queries": churn.get("historical_commit_queries") if observed_history else None,
+        "historical_commit_results": churn.get("historical_commit_results") if observed_history else None,
+        "historical_pr_queries": churn.get("historical_pr_queries") if observed_history else None,
+        "historical_pr_results": churn.get("historical_pr_results") if observed_history else None,
+        "historical_context_bytes": churn.get("historical_context_bytes") if observed_history else None,
         "usage_snapshot_count": len(snapshot_rows) or None,
         "intermediate_usage_delta_available": bool(input_deltas),
         "maximum_incremental_input_tokens": max(input_deltas) if input_deltas else None,

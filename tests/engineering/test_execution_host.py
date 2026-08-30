@@ -3066,6 +3066,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 completed_at="2026-08-18T12:00:01Z",
                 duration_ms=1000,
                 usage={"input_tokens": 400, "cached_input_tokens": 100, "output_tokens": 20},
+                churn={
+                    "context_scope_policy": "provider-context-v1",
+                    "context_scope_initial": "NORMAL",
+                    "context_scope_effective": "NORMAL",
+                    "context_escalation_count": 0,
+                },
             ),
         )
 
@@ -3075,6 +3081,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("- Maximum Provider Invocation Cumulative Input: `400`", body)
         self.assertIn("- Actual Single-Request Context Size: `UNAVAILABLE`", body)
         self.assertIn("- Active Context Size: `UNAVAILABLE`", body)
+        self.assertIn("## Provider Context Scope", body)
+        self.assertIn("- Policy: `provider-context-v1`", body)
+        self.assertIn("- Initial Scope: `NORMAL`", body)
+        self.assertIn("- Context Escalations: `0`", body)
+        self.assertIn("- Historical PRs Inspected: `UNAVAILABLE`", body)
         self.assertNotRegex(
             body,
             r"(?mi)^-\s*.*(?:context size|active context|request context).*:\s*`400`",
@@ -3573,6 +3584,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn('"persistence": "none"', prompt)
         self.assertIn("Prefer exact branch/HEAD/status", prompt)
         self.assertIn("Reviewer advice and primary conclusions are never ledger", prompt)
+
+    def test_provider_prompt_receives_current_delta_first_context_scope_policy(self) -> None:
+        state = TransactionState("context-scope", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        prompt = assemble_prompt(self.prompt, state)
+        self.assertIn("Provider Context Scope: NORMAL; Policy: provider-context-v1", prompt)
+        self.assertIn("merge-base delta against canonical base", prompt)
+        self.assertIn("Do not enumerate historical pull requests", prompt)
 
     def test_managed_finalization_prompt_returns_after_pr_handoff_without_polling(self) -> None:
         state = TransactionState(

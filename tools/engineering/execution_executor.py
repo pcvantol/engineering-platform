@@ -278,6 +278,7 @@ class CodexCliClient:
         self.last_usage: dict[str, int | float | str] = {}
         self.last_usage_snapshots: tuple[dict[str, int], ...] = ()
         self.last_churn: dict[str, int] = {}
+        self.last_context_escalations: tuple[dict[str, object], ...] = ()
         self.last_execution_seconds: float | None = None
         self.last_runtime_metadata = self._runtime_metadata()
         # This deliberately contains only aggregate counters, plus the
@@ -355,6 +356,7 @@ class CodexCliClient:
     ) -> ReviewerResult:
         self.last_usage = {}
         self.last_churn = {}
+        self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
         schema = {
@@ -379,7 +381,8 @@ class CodexCliClient:
             schema_path = Path(handle.name)
         try:
             started = time.monotonic()
-            with ToolProxyEnvironment() as environment:
+            proxy = ToolProxyEnvironment()
+            with proxy as environment:
                 completed = self.provider.invoke(
                     root,
                     (
@@ -395,6 +398,7 @@ class CodexCliClient:
                         reviewer_prompt(selection, objective, evidence),
                     ), environment=environment,
                 )
+            self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             self.last_usage.update(usage_from_jsonl(completed.stdout, completed.stderr))
@@ -438,6 +442,7 @@ class CodexCliClient:
         self.last_usage = {}
         self.last_usage_snapshots = ()
         self.last_churn = {}
+        self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
         state_directory = root / ".engineering" / "engineering-runs"
@@ -514,8 +519,10 @@ class CodexCliClient:
                 command.extend(("--add-dir", str(extra_root)))
             command.extend(("--output-schema", str(schema_path), prompt))
             started = time.monotonic()
-            with ToolProxyEnvironment() as environment:
+            proxy = ToolProxyEnvironment()
+            with proxy as environment:
                 completed = self._run_invocation(tuple(command), root, environment)
+            self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)
             self.last_usage = extract_codex_usage(completed.stdout, completed.stderr)
             # Prefer one final explicit usage snapshot; legacy extraction stays

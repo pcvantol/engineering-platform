@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 import re
 
+from .provider_context_scope import POLICY_ID
+
 
 class ProviderRole(StrEnum):
     SPECIALIST_REVIEW = "SPECIALIST_REVIEW"
@@ -33,7 +35,7 @@ class ContextProjection:
     text: str
     source_item_count: int
     omitted_low_priority_count: int
-    budget_version: str = "provider-context-v1"
+    budget_version: str = POLICY_ID
 
     @property
     def telemetry(self) -> dict[str, int]:

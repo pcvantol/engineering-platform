@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 
 from .agent_state import redact_diagnostic
 from .provider_context import ProviderRole, project_context
+from .provider_context_scope import ContextScope, POLICY_ID, provider_instruction
 from .reviewer_evidence import ReviewerEvidence
 
 
@@ -229,6 +230,11 @@ def reviewer_prompt(
             "budget_version": projection.budget_version,
             "source_item_count": projection.source_item_count,
             "omitted_low_priority_count": projection.omitted_low_priority_count,
+        },
+        "provider_context_scope": {
+            "policy": POLICY_ID,
+            "initial_scope": ContextScope.NORMAL.value,
+            "instruction": provider_instruction(ContextScope.NORMAL),
         },
         "authority": "Read-only inspection and recommendations only. Do not edit, commit, push, merge, create pull requests, finalize, or change lifecycle state.",
         "scope": "Analyse only the declared capability. Cross-capability analysis requires objective repository evidence.",
