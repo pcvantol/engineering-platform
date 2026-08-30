@@ -82,6 +82,17 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("Retry Execution", operations)
         self.assertIn("Queue Recovery", operations)
 
+    def test_execution_host_architecture_bounds_provider_interruption_recovery(self) -> None:
+        architecture = (ROOT / "docs" / "engineering" / "EXECUTION_HOST_ARCHITECTURE.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## Provider interruption recovery boundary", architecture)
+        self.assertIn("only within the existing run", architecture)
+        self.assertIn("at most one automatic recovery attempt", architecture)
+        self.assertIn("distinct invocation identity", architecture)
+        self.assertIn("not a\nretry submission", architecture)
+        self.assertIn("A second interruption or any ambiguous recovery evidence fails closed", architecture)
+
     def test_roadmap_and_active_backlog_distinguish_completed_1_5_from_maintenance(self) -> None:
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(
             encoding="utf-8"

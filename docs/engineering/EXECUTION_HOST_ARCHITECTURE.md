@@ -103,3 +103,15 @@ resumed execution creates a fresh projection rather than reusing a mutable
 observation. Git/GitHub detail remains available through narrow on-demand
 retrieval when a review actually needs it. Genesis runs receive no Managed
 checkout projection.
+
+## Provider interruption recovery boundary
+
+A provider-proven interruption is recovered only within the existing run. The
+host persists the interruption before it considers a replacement invocation,
+then consumes at most one automatic recovery attempt for that run, branch and
+worktree. The replacement receives a distinct invocation identity; it is not a
+retry submission, a new root run or permission to repeat completed delivery
+steps. A second interruption or any ambiguous recovery evidence fails closed
+for operator attention. Execution receipts retain each provider attempt
+separately, while validation and delivery evidence remain attributable to their
+own lifecycle activities.
