@@ -24,7 +24,7 @@ from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
-from .storage import EngineeringStorageError, load_readiness_evaluation, load_submission_for_run, load_run_lineage, load_validation_context
+from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_for_run, load_run_lineage, load_validation_context
 from .provider_usage import provider_usage_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 from .validation_identity import is_canonical_dashboard_command
@@ -678,7 +678,14 @@ def _runtime_projection(
     )
 
 
-def _execution_receipt_projection(state: TransactionState, producer: ProducerMetadata) -> tuple[str, ...]:
+def _execution_receipt_projection(root: Path, state: TransactionState, producer: ProducerMetadata) -> tuple[str, ...]:
+    """Render receipt qualification fields only from the persisted terminal snapshot."""
+    try:
+        snapshot = load_run_qualification_snapshot(root, state.run_id) or {}
+    except EngineeringStorageError:
+        snapshot = {}
+    conflicts = snapshot.get("projection_conflicts", [])
+    conflicts_text = ", ".join(conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
     return (
         f"- Receipt ID: `{state.run_id}`",
         "- Execution Host: `Engineering Platform`",
@@ -686,6 +693,15 @@ def _execution_receipt_projection(state: TransactionState, producer: ProducerMet
         f"- Correlation ID: `{producer.correlation_id or 'not recorded'}`",
         f"- Receipt Status: `{state.phase}`",
         f"- Receipt Resolution: `{state.terminal_condition}`",
+        f"- Qualification Snapshot: `{snapshot.get('qualification_snapshot_id', 'UNAVAILABLE')}`",
+        f"- Required Validation State: `{snapshot.get('required_validation_state', 'UNAVAILABLE')}`",
+        f"- Implementation Delivery: `{snapshot.get('implementation_delivery', 'UNAVAILABLE')}`",
+        f"- Finalization Delivery: `{snapshot.get('finalization_delivery', 'UNAVAILABLE')}`",
+        f"- Cleanup Outcome: `{snapshot.get('cleanup_outcome', 'UNAVAILABLE')}`",
+        f"- Repository State: `{snapshot.get('reconciliation_evidence', {}).get('repository_state', 'UNAVAILABLE')}`",
+        f"- Workspace State: `{snapshot.get('reconciliation_evidence', {}).get('workspace_state', 'UNAVAILABLE')}`",
+        f"- Run Qualification: `{snapshot.get('run_qualification', 'UNAVAILABLE')}`",
+        f"- Projection Conflicts: `{conflicts_text}`",
     )
 
 
@@ -1039,9 +1055,12 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         submission_id=str(submission["submission_id"]) if submission else None,
         lineage_available=lineage is not None,
         reviewer_records=reviewer_records,
+        execution_mode=state.execution_mode,
         action_intent=state.action_intent,
         persist=True,
     )
+    validation_profile = snapshot.get("validation_profile")
+    validation_profile = validation_profile if isinstance(validation_profile, dict) else {}
     def pr_lines(role: str) -> tuple[str, ...]:
         item = snapshot["pr_checks"].get(role, {})
         not_required = state.action_intent == "VALIDATION_ONLY"
@@ -1060,6 +1079,7 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         "## Run Qualification",
         f"- Execution: `{snapshot['terminal_execution_state']}`",
         f"- Action Intent: `{snapshot['action_intent']}`",
+        f"- Execution Mode: `{snapshot['execution_mode']}`",
         f"- Run Qualification: `{snapshot['run_qualification']}`",
         "- Platform Qualification is reported separately and cannot upgrade this run.",
         f"- Fresh Submission: `{snapshot['fresh_submission']}`",
@@ -1075,7 +1095,13 @@ def _managed_autonomy_projection(root: Path, state: TransactionState, bundle: Te
         f"- Unexpected Manual Interventions: `{snapshot['unplanned_manual_intervention_count']}`",
         f"- Unknown Authority Actions: `{snapshot['unknown_authority_count']}`",
         f"- Required Validation State: `{snapshot['required_validation_state']}`",
+        f"- Selected Validation Profile: `{validation_profile.get('selected_validation_tier', 'UNAVAILABLE')}`",
+        f"- Validation Profile Version: `{validation_profile.get('validation_profile_version', 'UNAVAILABLE')}`",
+        f"- Validation Profile Reference: `{validation_profile.get('profile_reference', 'UNAVAILABLE')}`",
+        f"- Validation Profile Source: `{validation_profile.get('profile_selection_source', 'UNAVAILABLE')}`",
         f"- Required-control Snapshot: `{snapshot.get('required_control_snapshot_ref', 'UNAVAILABLE')}`",
+        f"- Implementation Delivery: `{snapshot.get('implementation_delivery', 'UNAVAILABLE')}`",
+        f"- Finalization Delivery: `{snapshot.get('finalization_delivery', 'UNAVAILABLE')}`",
         f"- Cleanup Outcome: `{snapshot.get('cleanup_outcome', 'UNAVAILABLE')}`",
         f"- Repository State: `{snapshot.get('reconciliation_evidence', {}).get('repository_state', 'UNAVAILABLE')}`",
         f"- Workspace State: `{snapshot.get('reconciliation_evidence', {}).get('workspace_state', 'UNAVAILABLE')}`",
@@ -1440,7 +1466,7 @@ def generate_terminal_report(
             *_runtime_projection(state, producer, runtime_provider, reported_model),
             "",
             "## Execution Receipt Projection",
-            *_execution_receipt_projection(state, producer),
+            *_execution_receipt_projection(root, state, producer),
             "",
             "## Decision Evidence Projection",
             *_decision_evidence_projection(producer),

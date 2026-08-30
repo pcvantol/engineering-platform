@@ -238,6 +238,7 @@ def terminal_snapshot(
     submission_id: str | None = None,
     lineage_available: bool = False,
     reviewer_records: tuple[dict[str, object], ...] = (),
+    execution_mode: str = "MANAGED",
     action_intent: str = "MUTATING_DELIVERY",
     persist: bool = False,
 ) -> dict[str, object]:
@@ -297,9 +298,20 @@ def terminal_snapshot(
         # Historical evidence has no persisted profile: do not promote it.
         required_state = "UNRESOLVED"
     authorities = [str(row[1]) for row in actions]
+    cleanup_attempted = any(
+        action == "CLEANUP" and authority == "AUTONOMOUS_EP_ACTION"
+        for action, authority in actions
+    )
+    cleanup_outcome = (
+        "COMPLETED" if cleanup_attempted and execution_outcome == "COMPLETE"
+        else "FAILED" if cleanup_attempted and execution_outcome in {"BLOCKED", "FAILED"}
+        else "NOT_REQUIRED" if action_intent == "VALIDATION_ONLY"
+        else "UNAVAILABLE"
+    )
     snapshot = {
         "run_id": run_id,
         "terminal_execution_state": execution_outcome,
+        "execution_mode": execution_mode,
         "managed_authority_profile": "OPERATOR_OWNED_PR_MERGE",
         "action_intent": action_intent,
         "fresh_submission": fresh,
@@ -322,6 +334,7 @@ def terminal_snapshot(
         "worktree_state": worktree_state,
         "active_blocking_predecessor": active_blocker,
         "recovery_required": recovery_required,
+        "cleanup_outcome": cleanup_outcome,
         "expected_operator_gate_count": len(gates),
         "autonomous_ep_action_count": authorities.count("AUTONOMOUS_EP_ACTION"),
         "external_platform_event_count": authorities.count("EXTERNAL_PLATFORM_EVENT"),
@@ -334,6 +347,19 @@ def terminal_snapshot(
         ),
         "observed_at": _now(),
     }
+    for role, pr_number in (("IMPLEMENTATION", implementation_pr), ("FINALIZATION", finalization_pr)):
+        check = pr_checks.get(role, {})
+        snapshot[f"{role.lower()}_delivery"] = (
+            "COMPLETE"
+            if isinstance(pr_number, int)
+            and check.get("pr_number") == pr_number
+            and check.get("pr_state") == "MERGED"
+            and check.get("merge_state") == "MERGED"
+            and isinstance(check.get("merge_commit"), str)
+            and len(check["merge_commit"]) == 40
+            and check.get("required_checks_state") == "PASS"
+            else "UNAVAILABLE"
+        )
     snapshot["run_qualification"], snapshot["qualification_failure_reasons"] = evaluate(snapshot)
     # Compatibility projection retained for existing consumers.  It has the
     # same run-scoped meaning and must never be mistaken for platform-wide
@@ -352,16 +378,6 @@ def terminal_snapshot(
             json.dumps(required_control_snapshot, sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest()
         snapshot["terminal_checkpoint_ref"] = f"terminal-checkpoint:{run_id}:{execution_outcome}"
-        cleanup_attempted = any(
-            action["action"] == "CLEANUP" and action["authority"] == "AUTONOMOUS_EP_ACTION"
-            for action in snapshot["actions"]
-        )
-        snapshot["cleanup_outcome"] = (
-            "COMPLETED" if cleanup_attempted and execution_outcome == "COMPLETE"
-            else "FAILED" if cleanup_attempted and execution_outcome in {"BLOCKED", "FAILED"}
-            else "NOT_REQUIRED" if action_intent == "VALIDATION_ONLY"
-            else "UNAVAILABLE"
-        )
         snapshot["reconciliation_evidence"] = {
             "repository_state": repository_state,
             "workspace_state": workspace_state,
@@ -412,6 +428,10 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         if isinstance(row, dict)
     }
     if not validation_only:
+        if snapshot.get("implementation_delivery") != "COMPLETE":
+            reasons.append("IMPLEMENTATION_DELIVERY_UNPROVEN")
+        if snapshot.get("finalization_delivery") != "COMPLETE":
+            reasons.append("FINALIZATION_DELIVERY_UNPROVEN")
         if gate.get("IMPLEMENTATION_MERGE_APPROVAL") != "SATISFIED":
             reasons.append("IMPLEMENTATION_MERGE_GATE_UNPROVEN")
         if gate.get("FINALIZATION_MERGE_APPROVAL") != "SATISFIED":
@@ -434,6 +454,8 @@ def evaluate(snapshot: dict[str, object]) -> tuple[str, list[str]]:
         reasons.append("EP_ACTION_AUTHORITY_UNPROVEN")
     if snapshot.get("required_validation_state") != "PASS":
         reasons.append("REQUIRED_VALIDATION_UNRESOLVED")
+    if snapshot.get("cleanup_outcome") not in {"COMPLETED", "NOT_REQUIRED"}:
+        reasons.append("CLEANUP_OUTCOME_UNPROVEN")
     if snapshot.get("validation_projection_conflict"):
         reasons.append("EVIDENCE_CONFLICT")
     if snapshot.get("pr_check_projection_conflict"):

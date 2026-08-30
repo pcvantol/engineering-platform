@@ -313,23 +313,25 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
     if checks:
         evidence.append(_reference("GITHUB", f"run:{run_id}:checks", max(str(item.get("observed_at", "")) for item in checks.values()), snapshot, "PR_CHECKS", "BOUNDARY_SENSITIVE"))
     terminal = checkpoint.get("terminal")
-    implementation = checks.get("IMPLEMENTATION", {})
-    finalization = checks.get("FINALIZATION", {})
+    qualification_source = qualification_snapshot if isinstance(qualification_snapshot, dict) else {}
+    action_intent = qualification_source.get("action_intent", checkpoint.get("action_intent"))
+    execution_mode = qualification_source.get("execution_mode", run[0] if run else checkpoint.get("execution_mode"))
+    snapshot_checks = qualification_source.get("pr_checks", {}) if qualification_source else {}
+    implementation = snapshot_checks.get("IMPLEMENTATION", {}) if qualification_source and isinstance(snapshot_checks, dict) else checks.get("IMPLEMENTATION", {})
+    finalization = snapshot_checks.get("FINALIZATION", {}) if qualification_source and isinstance(snapshot_checks, dict) else checks.get("FINALIZATION", {})
     objective = _safe_objective(submission[3] if submission else {})
-    validation_only = checkpoint.get("action_intent") == "VALIDATION_ONLY"
-    persisted_required_validation = (
-        qualification_snapshot.get("validation_profile", UNAVAILABLE)
-        if qualification_snapshot else qualification_validation or UNAVAILABLE
-    )
+    validation_only = action_intent == "VALIDATION_ONLY"
+    persisted_required_validation = qualification_source.get("validation_profile", UNAVAILABLE) if qualification_source else qualification_validation or UNAVAILABLE
+    lineage_source = qualification_source if qualification_source else qualification_lineage
     context: dict[str, object] = {
         "contract_name": "run_context", "contract_version": CONTRACT_VERSION, "generated_at": generated_at,
         "run_id": run_id, "evidence_version": snapshot, "projection_authority": PROJECTION_AUTHORITY,
-        "run": {"execution_mode": _value(run[0] if run else checkpoint.get("execution_mode")), "terminal": _value(terminal),
+        "run": {"execution_mode": _value(execution_mode), "terminal": _value(terminal),
                 "current_execution_state": _value(phase), "current_phase": _value(phase),
-                "fresh_submission_state": "AVAILABLE" if qualification_lineage else UNAVAILABLE,
-                "fresh_submission": qualification_lineage["fresh_submission"] if qualification_lineage else UNAVAILABLE,
-                "retry_parent": qualification_lineage["retry_parent"] if qualification_lineage else UNAVAILABLE,
-                "resume_parent": qualification_lineage["resume_parent"] if qualification_lineage else UNAVAILABLE,
+                "fresh_submission_state": "AVAILABLE" if lineage_source else UNAVAILABLE,
+                "fresh_submission": lineage_source["fresh_submission"] if lineage_source else UNAVAILABLE,
+                "retry_parent": lineage_source["retry_parent"] if lineage_source else UNAVAILABLE,
+                "resume_parent": lineage_source["resume_parent"] if lineage_source else UNAVAILABLE,
                 "producer": {"id": _value(submission[1] if submission else (run[1] if run else None)), "type": _value(submission[2] if submission else (run[2] if run else None))},
                 "execution_host": UNAVAILABLE, "lease_state": UNAVAILABLE, "recovery_required": False,
                 "active_blocking_predecessor": UNAVAILABLE},
@@ -340,14 +342,16 @@ def get_run_context(root: Path, run_id: str) -> dict[str, object]:
                     "summary_code": "WORKSPACE_OCCUPIED" if workspace["workspace_occupied"] is True else ("RUN_TERMINAL" if phase in {"BLOCKED", "FAILED"} else UNAVAILABLE),
                     "evidence_references": evidence, "blocking_run_id": workspace["active_owner_run_id"] if workspace["workspace_occupied"] is True else UNAVAILABLE, "blocking_pr": UNAVAILABLE,
                     "detected_at": _value(observed_at), "verified_at": _value(observed_at), "recoverability": UNAVAILABLE},
-        "delivery": {"action_intent": _value(checkpoint.get("action_intent")),
-                     "implementation_pr": "NOT_REQUIRED" if validation_only else _value(checkpoint.get("implementation_pull_request") or checkpoint.get("pull_request") or implementation.get("pr_number")),
+        "delivery": {"action_intent": _value(action_intent),
+                     "implementation_pr": "NOT_REQUIRED" if validation_only else _value(qualification_source.get("implementation_pr") if qualification_source else checkpoint.get("implementation_pull_request") or checkpoint.get("pull_request") or implementation.get("pr_number")),
                      "implementation_pr_current_state": "NOT_REQUIRED" if validation_only else _value(implementation.get("pr_state")), "implementation_merge_state": _value(implementation.get("merge_state")),
-                     "implementation_merge_commit": _value(checkpoint.get("implementation_merge_commit") or implementation.get("merge_commit")),
+                     "implementation_merge_commit": _value(implementation.get("merge_commit") if qualification_source else checkpoint.get("implementation_merge_commit") or implementation.get("merge_commit")),
                      "implementation_required_checks_state": _value(implementation.get("required_checks_state")), "implementation_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_OPERATOR_MERGE" else UNAVAILABLE,
-                     "finalization_pr": "NOT_REQUIRED" if validation_only else _value(checkpoint.get("finalization_pull_request") or finalization.get("pr_number")), "finalization_pr_current_state": "NOT_REQUIRED" if validation_only else _value(finalization.get("pr_state")),
-                     "finalization_merge_state": _value(finalization.get("merge_state")), "finalization_merge_commit": _value(checkpoint.get("finalization_merge_commit") or finalization.get("merge_commit")),
+                     "finalization_pr": "NOT_REQUIRED" if validation_only else _value(qualification_source.get("finalization_pr") if qualification_source else checkpoint.get("finalization_pull_request") or finalization.get("pr_number")), "finalization_pr_current_state": "NOT_REQUIRED" if validation_only else _value(finalization.get("pr_state")),
+                     "finalization_merge_state": _value(finalization.get("merge_state")), "finalization_merge_commit": _value(finalization.get("merge_commit") if qualification_source else checkpoint.get("finalization_merge_commit") or finalization.get("merge_commit")),
                      "finalization_required_checks_state": _value(finalization.get("required_checks_state")), "finalization_merge_gate": "EXPECTED_OPERATOR_GATE" if phase == "WAIT_FOR_FINALIZATION_MERGE" else UNAVAILABLE,
+                     "implementation_delivery": _value(qualification_source.get("implementation_delivery")),
+                     "finalization_delivery": _value(qualification_source.get("finalization_delivery")),
                      "run_delivery_commit": _value(checkpoint.get("implementation_head_sha") or checkpoint.get("last_verified_sha")), "current_repository_head": _value(checkpoint.get("last_verified_sha")), "delivery_commit_head_relationship": UNAVAILABLE},
         "validation": {"engineering_platform_qualification": UNAVAILABLE, "controls": validation_controls,
                        "required_validation": persisted_required_validation,

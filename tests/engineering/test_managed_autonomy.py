@@ -100,6 +100,26 @@ class ManagedAutonomyEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot["resume_parent"], "NONE")
         self.assertEqual(snapshot["pr_checks"]["IMPLEMENTATION"]["required_checks_state"], "PASS")
         self.assertEqual(snapshot["pr_checks"]["FINALIZATION"]["required_checks_state"], "PASS")
+        self.assertEqual(snapshot["implementation_delivery"], "COMPLETE")
+        self.assertEqual(snapshot["finalization_delivery"], "COMPLETE")
+        self.assertEqual(snapshot["execution_mode"], "MANAGED")
+
+    def test_mutating_delivery_requires_both_prs_and_authoritative_merges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._qualified(root)
+            snapshot = terminal_snapshot(
+                root, run_id="inbox-managed-proof", execution_outcome="COMPLETE",
+                implementation_pr=None, finalization_pr=None,
+                repository_state="MERGED_RECONCILED", workspace_state="WORKSPACE_READY",
+                main_origin_sync="YES", worktree_state="CLEAN", active_blocker="NONE",
+                recovery_required="NO", lineage_available=True,
+            )
+        self.assertEqual(snapshot["implementation_delivery"], "UNAVAILABLE")
+        self.assertEqual(snapshot["finalization_delivery"], "UNAVAILABLE")
+        self.assertEqual(snapshot["run_qualification"], "EVIDENCE_INSUFFICIENT")
+        self.assertIn("IMPLEMENTATION_DELIVERY_UNPROVEN", snapshot["qualification_failure_reasons"])
+        self.assertIn("FINALIZATION_DELIVERY_UNPROVEN", snapshot["qualification_failure_reasons"])
 
     def test_validation_only_qualifies_without_delivery_prs_when_required_controls_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

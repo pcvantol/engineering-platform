@@ -19,6 +19,7 @@ from tools.engineering.storage import (
     record_submission,
     record_validation_control_result,
     record_validation_profile,
+    record_run_qualification_snapshot,
     load_submission_for_run,
 )
 
@@ -112,6 +113,52 @@ class ContractProjectionTests(unittest.TestCase):
         self.assertEqual(required["required_validation_controls"], ["git_diff_check"])
         self.assertEqual(required["profile_reference"], "validation-profile-registry:DOCUMENTATION@1.0")
         self.assertEqual(required["control_bindings"][0]["validation_id"], "git_diff_check")
+
+    def test_persisted_qualification_snapshot_owns_delivery_contract_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = self._state(root)
+            StateStore(root / ".engineering" / "engineering-runs").save(
+                replace(state, execution_mode="GENESIS")
+            )
+            record_run_qualification_snapshot(
+                root,
+                {
+                    "run_id": state.run_id,
+                    "qualification_snapshot_id": "qualification:test",
+                    "required_control_snapshot_ref": "required-controls:test",
+                    "terminal_checkpoint_ref": "terminal-checkpoint:test",
+                    "persisted_at": "2026-08-30T00:00:00+00:00",
+                    "terminal_execution_state": "COMPLETE",
+                    "execution_mode": "MANAGED",
+                    "action_intent": "VALIDATION_ONLY",
+                    "fresh_submission": "YES",
+                    "retry_parent": "NONE",
+                    "resume_parent": "NONE",
+                    "required_validation_state": "PASS",
+                    "validation_profile": {"selected_validation_tier": "GENERIC"},
+                    "implementation_pr": None,
+                    "finalization_pr": None,
+                    "implementation_delivery": "NOT_REQUIRED",
+                    "finalization_delivery": "NOT_REQUIRED",
+                    "pr_checks": {},
+                    "cleanup_outcome": "COMPLETED",
+                    "reconciliation_evidence": {
+                        "repository_state": "MERGED_RECONCILED",
+                        "workspace_state": "WORKSPACE_READY",
+                        "main_origin_sync": "YES",
+                        "worktree_state": "CLEAN",
+                    },
+                    "projection_conflicts": [],
+                    "run_qualification": "QUALIFIED",
+                },
+            )
+            payload = get_run_context(root, state.run_id)
+        self.assertEqual(payload["run"]["execution_mode"], "MANAGED")
+        self.assertEqual(payload["delivery"]["action_intent"], "VALIDATION_ONLY")
+        self.assertEqual(payload["delivery"]["implementation_pr"], "NOT_REQUIRED")
+        self.assertEqual(payload["delivery"]["implementation_delivery"], "NOT_REQUIRED")
+        self.assertEqual(payload["delivery"]["finalization_delivery"], "NOT_REQUIRED")
 
     def test_report_exposes_the_persisted_producer_profile_without_prompt_inference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
