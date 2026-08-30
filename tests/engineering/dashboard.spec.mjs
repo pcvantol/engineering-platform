@@ -6455,7 +6455,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#phase")).toHaveText("Specialistenreview");
     await expect(page.locator("#action")).toHaveText("Documentatie voert een specialistenreview uit");
     await expect(page.locator("#action")).toHaveCSS("font-style", "italic");
-    await expect(page.locator("#workspaceProgressValue")).toHaveText("3 gewijzigd · 2 nieuw · 1 verwijderd · 17 primaire Codex-opdrachten uitgevoerd · 0 reviewer-Codex-opdrachten uitgevoerd");
+    await expect(page.locator("#workspaceProgressValue")).toHaveText("Live niet-gecommitte momentopname (vluchtig) · 3 gewijzigd · 2 nieuw · 1 verwijderd · 17 primaire Codex-opdrachten uitgevoerd · 0 reviewer-Codex-opdrachten uitgevoerd · 0 host-validatieopdrachten");
 
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",

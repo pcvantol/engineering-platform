@@ -26,6 +26,7 @@ from .qualification import latest_qualification
 from .recommendation_handoff import ForgeGovernanceHandoff, report_lines as recommendation_handoff_report_lines
 from .storage import EngineeringStorageError, load_readiness_evaluation, load_run_qualification_snapshot, load_submission_for_run, load_run_lineage, load_validation_context
 from .provider_usage import provider_usage_summary
+from .execution_activity import build_terminal_activity_summary, persist_terminal_activity_summary, terminal_activity_summary
 from .managed_autonomy import terminal_snapshot as managed_autonomy_snapshot
 from .validation_identity import is_canonical_dashboard_command
 from .execution_executor import load_validation_failure_diagnostic
@@ -264,7 +265,7 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
     baseline = _evidence_baseline(state, target, commit)
     root_genesis_commit = state.execution_mode == "GENESIS" and state.genesis_commit_sha == commit
     names = (
-        _git_output(target, "diff", "--name-status", baseline, commit)
+        _git_output(target, "diff", "--name-status", "-M", baseline, commit)
         if baseline
         else _git_output(target, "diff-tree", "--root", "--no-commit-id", "-r", "--name-status", commit)
         if root_genesis_commit
@@ -273,10 +274,16 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
     added: list[str] = []
     modified: list[str] = []
     removed: list[str] = []
+    renamed: list[tuple[str, str]] = []
     if names:
         for row in names.splitlines():
-            status_code, _, path = row.partition("\t")
-            if not path:
+            fields = row.split("\t")
+            status_code = fields[0] if fields else ""
+            if len(fields) < 2:
+                continue
+            path = fields[1]
+            if status_code.startswith("R") and len(fields) >= 3:
+                renamed.append((fields[1], fields[2]))
                 continue
             if status_code.startswith("A"):
                 added.append(path)
@@ -284,7 +291,7 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
                 removed.append(path)
             else:
                 modified.append(path)
-    changed = tuple(sorted(set(added + modified + removed)))
+    changed = tuple(sorted(set(added + modified + removed + [path for pair in renamed for path in pair])))
     diff = (
         _git_output(target, "diff", "--check", baseline, commit)
         if baseline
@@ -312,8 +319,10 @@ def collect_terminal_evidence(root: Path, state: TransactionState) -> TerminalEv
         files_added=tuple(added),
         files_modified=tuple(modified),
         files_removed=tuple(removed),
+        files_renamed=tuple(renamed),
         diff_check=diff_check,
         transaction_baseline="AVAILABLE" if baseline or root_genesis_commit else "UNAVAILABLE",
+        transaction_baseline_sha=baseline,
         resulting_commit=resulting_commit,
         lease=lease_history(root, state.run_id),
         readiness=load_readiness_evaluation(root, state.run_id),
@@ -685,6 +694,9 @@ def _execution_receipt_projection(root: Path, state: TransactionState, producer:
     except EngineeringStorageError:
         snapshot = {}
     conflicts = snapshot.get("projection_conflicts", [])
+    activity = terminal_activity_summary(root, state.run_id)
+    activity_total = activity.get("activity", {}).get("overall_activity_total", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
+    delivery_paths = activity.get("terminal_delivery_diff", {}).get("total_unique_changed_paths", "UNAVAILABLE") if isinstance(activity, dict) else "UNAVAILABLE"
     conflicts_text = ", ".join(conflicts) if isinstance(conflicts, list) and conflicts else "NONE"
     return (
         f"- Receipt ID: `{state.run_id}`",
@@ -702,6 +714,9 @@ def _execution_receipt_projection(root: Path, state: TransactionState, producer:
         f"- Workspace State: `{snapshot.get('reconciliation_evidence', {}).get('workspace_state', 'UNAVAILABLE')}`",
         f"- Run Qualification: `{snapshot.get('run_qualification', 'UNAVAILABLE')}`",
         f"- Projection Conflicts: `{conflicts_text}`",
+        f"- Execution Activity Summary: `{'v' + str(activity.get('summary_version')) if isinstance(activity, dict) else 'UNAVAILABLE'}`",
+        f"- Receipt Activity Total: `{activity_total}`",
+        f"- Receipt Terminal Delivery Paths: `{delivery_paths}`",
     )
 
 
@@ -1168,6 +1183,9 @@ def generate_terminal_report(
         if isinstance(value, int) and not isinstance(value, bool)
     }
     bundle = collect_terminal_evidence(root, state)
+    activity_summary = persist_terminal_activity_summary(
+        root, build_terminal_activity_summary(root, state, bundle)
+    )
     timing = timing_summary(root, state.run_id)
     provider_usage = provider_usage_summary(root, state.run_id)
     churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
@@ -1371,6 +1389,20 @@ def generate_terminal_report(
             f"- Provider-Stage Files Deleted: `{safe_execution_metadata.get('deleted', 0)}`",
             f"- Files Changed In Run Delivery Diff: `{len(bundle.changed_files)}`",
             f"- Codex Commands Executed: `{safe_execution_metadata.get('codex_commands_executed', 0)}`",
+            "",
+            "## Execution Activity Summary",
+            f"- Summary Version: `{activity_summary['summary_version']}`",
+            "- Scope: terminal persisted activity and repository delivery evidence; the live worktree snapshot is volatile and is not a terminal result.",
+            f"- Codex Command Definition: {activity_summary['activity']['codex_command_definition']}",
+            f"- Primary Codex Commands: `{activity_summary['activity']['primary_codex_commands_total']}`",
+            f"- Reviewer Codex Commands: `{activity_summary['activity']['reviewer_codex_commands_total']}`",
+            f"- Host Validation Commands: `{activity_summary['activity']['host_validation_commands_total']}`",
+            f"- Overall Activity Total: `{activity_summary['activity']['overall_activity_total']}`",
+            f"- Terminal Delivery Baseline SHA: `{activity_summary['terminal_delivery_diff']['transaction_baseline_sha']}`",
+            f"- Terminal Delivery Target SHA: `{activity_summary['terminal_delivery_diff']['terminal_target_sha']}`",
+            f"- Terminal Delivery Unique Changed Paths: `{activity_summary['terminal_delivery_diff']['total_unique_changed_paths']}`",
+            f"- Terminal Delivery Added / Modified / Removed / Renamed: `{len(activity_summary['terminal_delivery_diff']['added'])}` / `{len(activity_summary['terminal_delivery_diff']['modified'])}` / `{len(activity_summary['terminal_delivery_diff']['removed'])}` / `{len(activity_summary['terminal_delivery_diff']['renamed'])}`",
+            "- Per-PR Changed Files: GitHub evidence scoped to each pull request; never summed into the terminal run delivery diff.",
             "",
             "## Engineering Platform Qualification",
             qualification_summary,

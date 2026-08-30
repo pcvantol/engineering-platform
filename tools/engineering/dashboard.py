@@ -70,6 +70,7 @@ from .storage import (
     storage_activation_required,
 )
 from .provider_usage import provider_usage_summary
+from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
@@ -535,6 +536,7 @@ def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
         entry["execution_diagnostic"] = diagnostic
         if str(entry.get("status") or "").upper() in {"BLOCKED", "FAILED"}:
             entry["blocking_reason"] = diagnostic
+    entry["execution_activity_summary"] = terminal_activity_summary(root, run_id)
     return _project_prompt_history_detail(
         entry,
         execution=execution,

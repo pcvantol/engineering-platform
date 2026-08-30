@@ -2293,18 +2293,27 @@ function renderHealthStatus(x, snapshot = {}) {
   $("action").textContent = translate(
     x.current_action || t("ui.no_active_action"),
   );
-  const workspaceProgress = x.workspace_progress || {};
+  const legacyProgress = x.workspace_progress || {};
+  const liveSnapshot = x.live_worktree_snapshot || (x.workspace_progress ? {
+    uncommitted: { modified: legacyProgress.modified, added: legacyProgress.created, deleted: legacyProgress.deleted },
+  } : null);
+  const workspaceProgress = liveSnapshot?.uncommitted || {};
   const reviewerCommands = Array.isArray(x.reviewer_agents)
-    ? x.reviewer_agents.reduce((total, reviewer) =>
-      total + Math.max(0, Number(reviewer?.codex_commands_executed) || 0), 0)
+    ? x.reviewer_agents.reduce((total, reviewer) => total + Math.max(0, Number(reviewer?.codex_commands_executed) || 0), 0)
     : 0;
-  $("workspaceProgress").hidden = !x.workspace_progress;
+  const activity = x.cumulative_activity || {
+    primary_codex_commands_total: legacyProgress.codex_commands_executed,
+    reviewer_codex_commands_total: reviewerCommands,
+  };
+  $("workspaceProgress").hidden = !liveSnapshot;
   $("workspaceProgressValue").textContent = [
+    t("workspace_progress.live_snapshot"),
     t("workspace_progress.modified", { count: Number(workspaceProgress.modified) || 0 }),
-    t("workspace_progress.created", { count: Number(workspaceProgress.created) || 0 }),
+    t("workspace_progress.created", { count: Number(workspaceProgress.added) || 0 }),
     t("workspace_progress.deleted", { count: Number(workspaceProgress.deleted) || 0 }),
-    t("workspace_progress.primary_codex_commands", { count: Number(workspaceProgress.codex_commands_executed) || 0 }),
-    t("workspace_progress.reviewer_codex_commands", { count: reviewerCommands }),
+    t("workspace_progress.primary_codex_commands", { count: Number(activity.primary_codex_commands_total) || 0 }),
+    t("workspace_progress.reviewer_codex_commands", { count: Number(activity.reviewer_codex_commands_total) || 0 }),
+    t("workspace_progress.host_validation_commands", { count: Number(activity.host_validation_commands_total) || 0 }),
   ].join(" · ");
   const executionHost = snapshot.execution_host || {};
   $("executionHostName").textContent = executionHost.name || t("format.not_available");
@@ -5035,6 +5044,8 @@ function promptHistoryDetailMarkdown(payload, title) {
   const usage = payload?.usage && typeof payload.usage === "object" ? payload.usage : {};
   const metadata = history.execution_metadata && typeof history.execution_metadata === "object" ? history.execution_metadata : {};
   const context = history.execution_context && typeof history.execution_context === "object" ? history.execution_context : {};
+  const activity = history.execution_activity_summary && typeof history.execution_activity_summary === "object"
+    ? history.execution_activity_summary : null;
   const timestamp = Date.parse(String(history.executed_at || ""));
   const sections = [
     promptHistoryMarkdownSection(t("detail.execution"), [
@@ -5077,6 +5088,17 @@ function promptHistoryDetailMarkdown(payload, title) {
     promptHistoryMarkdownSection(t("detail.provider_usage"), Object.entries(usage)
       .filter(([, value]) => value !== null && typeof value !== "object")
       .map(([key, value]) => [promptHistoryMarkdownLabel(key), value])),
+    promptHistoryMarkdownSection(t("detail.execution_activity"), activity ? [
+      [t("detail.activity_definition"), activity.activity?.codex_command_definition],
+      [t("detail.primary_codex_commands"), activity.activity?.primary_codex_commands_total],
+      [t("detail.reviewer_codex_commands"), activity.activity?.reviewer_codex_commands_total],
+      [t("detail.host_validation_commands"), activity.activity?.host_validation_commands_total],
+      [t("detail.activity_total"), activity.activity?.overall_activity_total],
+      [t("detail.delivery_baseline"), activity.terminal_delivery_diff?.transaction_baseline_sha],
+      [t("detail.delivery_target"), activity.terminal_delivery_diff?.terminal_target_sha],
+      [t("detail.delivery_paths"), activity.terminal_delivery_diff?.total_unique_changed_paths],
+      [t("detail.delivery_renamed"), activity.terminal_delivery_diff?.renamed?.length],
+    ] : [[t("detail.activity_unavailable"), t("detail.activity_unavailable")]]),
     promptHistoryMarkdownSection(t("detail.git_commit"), Object.entries(payload?.commits || {})),
     promptHistoryMarkdownPullRequests(payload?.pull_requests),
     promptHistoryMarkdownCommitTimeline(payload?.commit_timeline),
@@ -7250,6 +7272,25 @@ function promptDetailUsageSection(usage) {
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
 }
+function promptDetailExecutionActivitySection(activity) {
+  if (!activity || typeof activity !== "object") {
+    return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))]);
+  }
+  const counters = activity.activity || {};
+  const diff = activity.terminal_delivery_diff || {};
+  return promptDetailCard(t("detail.execution_activity"), [
+    detailField(t("detail.activity_definition"), counters.codex_command_definition),
+    detailField(t("detail.primary_codex_commands"), counters.primary_codex_commands_total),
+    detailField(t("detail.reviewer_codex_commands"), counters.reviewer_codex_commands_total),
+    detailField(t("detail.host_validation_commands"), counters.host_validation_commands_total),
+    detailField(t("detail.activity_total"), counters.overall_activity_total),
+    detailField(t("detail.delivery_baseline"), diff.transaction_baseline_sha),
+    detailField(t("detail.delivery_target"), diff.terminal_target_sha),
+    detailField(t("detail.delivery_paths"), diff.total_unique_changed_paths),
+    detailField(t("detail.delivery_renamed"), Array.isArray(diff.renamed) ? diff.renamed.length : undefined),
+    detailField(t("detail.delivery_pr_scope"), diff.per_pr_changed_file_counts),
+  ]);
+}
 function commitTimelineKind(item) {
   const mergeKinds = {
     implementation_merge_verified: "implementation_merge",
@@ -7477,6 +7518,7 @@ function renderPromptHistoryDetail(payload) {
     commitTimeline = payload?.commit_timeline || [],
     evidence = Array.isArray(payload?.evidence) ? payload.evidence : [],
     reviewers = Array.isArray(payload?.reviewers) ? payload.reviewers : [],
+    activity = history.execution_activity_summary,
     recommendationHandoff = payload?.recommendation_handoff;
   const [executionSummary, executionContext] = promptDetailExecutionSections(history);
   if (typeof history.title === "string" && history.title.trim())
@@ -7497,6 +7539,7 @@ function renderPromptHistoryDetail(payload) {
       promptDetailRightbar([executionContext, promptDetailPullRequestsSection(pullRequests)]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
+      promptDetailExecutionActivitySection(activity),
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailRecommendationHandoff(recommendationHandoff),
     ].filter(Boolean),

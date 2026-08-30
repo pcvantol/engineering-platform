@@ -1940,6 +1940,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
             "modified": 3, "created": 2, "deleted": 1, "codex_commands_executed": 0,
         })
         self.assertNotIn("path", json.dumps(payload["workspace_progress"]))
+        self.assertTrue(payload["live_worktree_snapshot"]["volatile"])
+        self.assertEqual(payload["live_worktree_snapshot"]["kind"], "LIVE_WORKTREE_SNAPSHOT")
+        self.assertEqual(payload["cumulative_activity"]["overall_activity_total"], 0)
+
+        terminal = TransactionState("workspace-progress", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        write_live_status(self.root, terminal, "completed")
+        completed = json.loads((self.root / ".engineering" / "status" / "current.json").read_text())
+        self.assertIsNone(completed["live_worktree_snapshot"])
 
     def test_workspace_change_summary_counts_only_change_categories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

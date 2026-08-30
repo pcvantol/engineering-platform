@@ -12,6 +12,7 @@ from typing import Mapping
 from .agent_state import TransactionState, redact_diagnostic
 from .storage import EngineeringStorageError, load_execution_context_snapshot, load_forge_governance_handoff_snapshot, load_projection, open_storage, store_projection
 from .providers import GitProvider
+from .execution_activity import cumulative_activity, live_worktree_snapshot
 
 _REVIEWER_PROJECTION_PHASE = "CAPABILITY_REVIEW"
 
@@ -159,6 +160,10 @@ def write_live_status(
         ),
         "runtime_metadata": safe_runtime,
         "workspace_progress": safe_progress,
+        # This is intentionally absent from a terminal receipt/report.  It is
+        # a current dirty-worktree observation, not delivery evidence.
+        "live_worktree_snapshot": None if terminal_phase else live_worktree_snapshot(checkout),
+        "cumulative_activity": cumulative_activity(root, state.run_id),
         # A recovery baseline is captured once, after admission has proven the
         # workspace clean. It allows the emergency control to fail closed when
         # a run has commits, a pre-existing branch, or an unknown base.

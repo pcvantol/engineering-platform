@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 36
+ENGINEERING_STORAGE_SCHEMA_VERSION = 37
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -989,6 +989,27 @@ def _schema_v36(connection: sqlite3.Connection) -> None:
         )
 
 
+def _schema_v37(connection: sqlite3.Connection) -> None:
+    """Persist the forward-only canonical execution activity summary."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS execution_activity_summaries ("
+        "run_id TEXT PRIMARY KEY,"
+        "summary_version INTEGER NOT NULL,payload TEXT NOT NULL,persisted_at TEXT NOT NULL)"
+    )
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER IF NOT EXISTS execution_activity_summaries_immutable_{operation.casefold()} "
+            f"BEFORE {operation} ON execution_activity_summaries BEGIN "
+            "SELECT RAISE(ABORT, 'Execution activity summary is immutable.'); END"
+        )
+    # A historical test/store can retain migration 37 while replaying its
+    # early v24 shape; preserve v25's additive repair without rewriting rows.
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(provider_usage_snapshots)")}
+    for name in ("uncached_input_tokens", "uncached_input_delta"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE provider_usage_snapshots ADD COLUMN {name} INTEGER")
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1072,6 +1093,7 @@ MIGRATIONS: dict[int, Migration] = {
     34: _schema_v34,
     35: _schema_v35,
     36: _schema_v36,
+    37: _schema_v37,
 }
 
 
