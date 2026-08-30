@@ -527,6 +527,25 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn("T", items[0]["modified_at"])
         self.assertNotIn("Sensitive prompt body", str(items))
 
+    def test_titleless_structured_submission_uses_safe_queue_metadata(self) -> None:
+        prompt = self.inbox / "queued.json"
+        prompt.write_text(json.dumps({
+            "contract": {"name": "djconnect.producer_submission", "version": "1.0"},
+            "submission": {"id": "human-queue-title", "submitted_at": "2026-08-30T12:00:00Z"},
+            "producer": {"id": "human:operator", "type": "HUMAN"},
+            "prompt": {"text": "Sensitive prompt body must not reach the queue UI."},
+            "execution_context": {"context_version": "1.0", "action_intent": "MUTATING_DELIVERY"},
+        }), encoding="utf-8")
+
+        item = inbox_watcher._queue_items([(prompt, prompt.read_text(encoding="utf-8"))])[0]
+
+        self.assertEqual(item["title"], "Structured submission")
+        self.assertEqual(item["title_kind"], "producer_submission")
+        self.assertEqual(item["producer_type"], "HUMAN")
+        self.assertEqual(item["action_intent"], "MUTATING_DELIVERY")
+        self.assertNotIn("Sensitive prompt body", str(item))
+        self.assertNotIn('\"contract\"', str(item))
+
     def test_defer_queued_prompt_moves_only_the_selected_waiting_inbox_file(self) -> None:
         selected = self.inbox / "defer-me.md"
         selected.write_text("# Later uitvoeren\n", encoding="utf-8")

@@ -217,9 +217,12 @@ recoverability, failure origin and the recommended operator action without
 showing internal paths.
 
 The private status page shows the current unclaimed queue from this watcher
-projection, oldest first. Each bounded entry contains only its filename,
-Markdown title and File Date Modified timestamp; it never exposes prompt body
-content or absolute iCloud paths.
+projection, oldest first. Each bounded entry contains only its filename, a
+human-readable execution label and File Date Modified timestamp; it never
+exposes prompt body content or absolute iCloud paths. An explicit persisted
+submission title is preferred. For a legacy structured envelope without that
+title, the UI renders only localized producer and action-intent metadata, never
+the JSON envelope or prompt text.
 
 The Inbox is fail-closed across a sequence. When a run ends `BLOCKED` or
 `FAILED`, the watcher moves no later file from Inbox to Running. It publishes

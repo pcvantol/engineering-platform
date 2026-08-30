@@ -609,6 +609,22 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(notice).toHaveText("Maak de Inbox eerst leeg voordat je de locatie wijzigt.");
   });
 
+  test("formats titleless structured queue submissions from safe metadata", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await waitForDashboardReady(page);
+    await page.evaluate(() => window.queueItems([{
+      filename: "producer-human-ingress-private.json",
+      title: "Structured submission",
+      title_kind: "producer_submission",
+      producer_type: "HUMAN",
+      action_intent: "MUTATING_DELIVERY",
+    }], 1));
+    await expect(page.locator("#queueList .queue-item__title")).toHaveText(
+      "Inzending van menselijke operator · wijziging doorvoeren",
+    );
+    await expect(page.locator("#queueList")).not.toContainText("Structured submission");
+  });
+
   test("shows Inbox watcher confirmation progress and never shows success after a restart failure", async ({ page }) => {
     let completeRequest;
     const requestHeld = new Promise((resolve) => { completeRequest = resolve; });

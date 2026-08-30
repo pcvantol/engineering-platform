@@ -874,6 +874,15 @@ function queueItems(x, queueDepth) {
     container.append(empty);
     return;
   }
+  const queueItemTitle = (item, filename) => {
+    if (item.title_kind !== "producer_submission") return item.title || filename;
+    const producerType = String(item.producer_type || "UNKNOWN").trim().toLowerCase();
+    const actionIntent = String(item.action_intent || "UNSPECIFIED").trim().toLowerCase();
+    return t("queue.producer_submission", {
+      producer: t(`queue.producer.${producerType}`, {}, producerType),
+      intent: t(`queue.intent.${actionIntent}`, {}, actionIntent.replaceAll("_", " ")),
+    });
+  };
   items.forEach((item, index) => {
     const row = document.createElement("li"),
       number = document.createElement("span"),
@@ -881,17 +890,18 @@ function queueItems(x, queueDepth) {
       title = document.createElement("span"),
       meta = document.createElement("div"),
       modified = Date.parse(item.modified_at || ""),
-      filename = item.filename || t("format.not_available");
+      filename = item.filename || t("format.not_available"),
+      displayTitle = queueItemTitle(item, filename);
     row.className = "queue-item";
     row.setAttribute(
       "aria-label",
-      t("queue.position", { position: index + 1, title: item.title || filename }),
+      t("queue.position", { position: index + 1, title: displayTitle }),
     );
     number.className = "queue-item__number";
     number.textContent = String(index + 1);
     title.className = "queue-item__title";
     meta.className = "queue-item__meta";
-    title.textContent = item.title || filename;
+    title.textContent = displayTitle;
     meta.textContent = t("queue.filename", {
       filename,
       modified: Number.isFinite(modified)
@@ -917,9 +927,15 @@ function queueItems(x, queueDepth) {
 function deferQueueItem(item, button) {
   const filename = String(item?.filename || "");
   if (!filename) return;
+  const displayTitle = item.title_kind === "producer_submission"
+    ? t("queue.producer_submission", {
+      producer: t(`queue.producer.${String(item.producer_type || "UNKNOWN").trim().toLowerCase()}`, {}, String(item.producer_type || "UNKNOWN")),
+      intent: t(`queue.intent.${String(item.action_intent || "UNSPECIFIED").trim().toLowerCase()}`, {}, String(item.action_intent || "UNSPECIFIED").replaceAll("_", " ")),
+    })
+    : String(item.title || filename);
   confirmDashboardAction(
     t("queue.defer_title"),
-    t("queue.defer_description", { title: String(item.title || filename) }),
+    t("queue.defer_description", { title: displayTitle }),
     t("queue.defer_action"),
   ).then((confirmed) => {
     if (!confirmed) return;

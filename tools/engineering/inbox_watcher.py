@@ -485,6 +485,12 @@ def _prompt_title(content: str, filename: str) -> str:
         title = metadata.get("title") if isinstance(metadata, dict) else None
         if isinstance(title, str) and title.strip():
             return redact_diagnostic(title.strip(), limit=240)
+        # Older structured Producer Submission Envelopes did not require a
+        # title. Their first line is JSON, which must never become UI copy or
+        # disclose their private prompt. The queue projection below supplies
+        # the safe producer/intent metadata used by the dashboard instead.
+        if not submission.is_legacy:
+            return "Structured submission"
     except ProducerSubmissionError:
         pass
     lines = content.splitlines()
@@ -510,6 +516,30 @@ def _prompt_title(content: str, filename: str) -> str:
     return redact_diagnostic(filename, limit=240)
 
 
+def _queue_title_projection(content: str, filename: str) -> dict[str, str]:
+    """Return safe, presentation-neutral title metadata for one queue item."""
+    title = _prompt_title(content, filename)
+    try:
+        submission = parse_producer_submission(content)
+    except ProducerSubmissionError:
+        return {"title": title}
+    if submission.is_legacy:
+        return {"title": title}
+    prompt_payload = submission.envelope.get("prompt")
+    metadata = prompt_payload.get("metadata", {}) if isinstance(prompt_payload, dict) else {}
+    explicit_title = metadata.get("title") if isinstance(metadata, dict) else None
+    if isinstance(explicit_title, str) and explicit_title.strip():
+        return {"title": title}
+    context = submission.execution_context or {}
+    action_intent = context.get("action_intent")
+    return {
+        "title": title,
+        "title_kind": "producer_submission",
+        "producer_type": submission.producer.producer_type,
+        "action_intent": action_intent if isinstance(action_intent, str) else "UNSPECIFIED",
+    }
+
+
 def _queue_items(candidates: list[tuple[Path, str]], claimed: Path | None = None) -> list[dict[str, str]]:
     """Project bounded, title-only Inbox evidence for the private status page."""
     items: list[dict[str, str]] = []
@@ -520,13 +550,11 @@ def _queue_items(candidates: list[tuple[Path, str]], claimed: Path | None = None
             modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
         except OSError:
             continue
-        items.append(
-            {
-                "filename": redact_diagnostic(path.name, limit=240),
-                "title": _prompt_title(content, path.name),
-                "modified_at": modified_at,
-            }
-        )
+        items.append({
+            "filename": redact_diagnostic(path.name, limit=240),
+            **_queue_title_projection(content, path.name),
+            "modified_at": modified_at,
+        })
         if len(items) == 25:
             break
     return items
