@@ -31,8 +31,8 @@ The migration sequence and future extraction phases remain in the canonical
 
 The frozen baseline records its own candidate universe. The current result is
 the deterministic projection for the checked-out repository, so it advances
-when newly classified Engineering Platform candidates are added: 283
-candidates, 283 classified exactly once, 0 unclassified and 0 ambiguous.
+when newly classified Engineering Platform candidates are added: 285
+candidates, 285 classified exactly once, 0 unclassified and 0 ambiguous.
 Operations Console source/assets/tests account for 17 candidates, all
 classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
@@ -111,7 +111,8 @@ four-file rolling-record diff does not describe the full delivery.
 PASS — PHASE 0 COMPLETE
 ```
 
-The next authorized implementation is **Phase 1 / Increment 1 — Local
-Consumer API Contract Foundation**. It remains contract-only: no live HTTP or
-socket transport, credential issuance, credential persistence, OS secret-store
-integration, storage migration or consumer cutover is part of that increment.
+**Phase 1 / Increment 1 — Local Consumer API Contract Foundation** is
+complete. It remained contract-only: no live HTTP or socket transport,
+credential issuance, credential persistence, OS secret-store integration,
+storage migration or consumer cutover is part of that increment. Increment 2
+remains separately unauthorized.

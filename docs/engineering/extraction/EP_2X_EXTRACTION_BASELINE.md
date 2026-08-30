@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 complete; Phase 1 / Increment 1 authorized
+**Status:** Phase 0 complete; Phase 1 / Increment 1 complete
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -37,11 +37,11 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 283 candidate files from EP runtime,
+The audit independently discovers 285 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`cae40adf5d1b55b6576b265fcbb1ee6fe5f7867f43e5a92eaa07c7e5e584a5bf` and
+`c2a20e3f4db4378b1c3adcd418356dd9f9b50d4c83593fd1a57337922ed95c01` and
 semantic-manifest digest
 `4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee`.
 
@@ -51,7 +51,7 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `283 / 283` |
+| Candidate universe / exactly once | `285 / 285` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
 | EP product source / Python inspected | `95 / 76` |
@@ -73,10 +73,10 @@ overlap, deterministic file overrides and newly introduced EP files.
 ## Gate result
 
 The Phase-0 manifest, baseline tag and deterministic audit controls are all
-satisfied. The next authorized implementation is **Phase 1 / Increment 1 —
-Local Consumer API Contract Foundation**. It is contract-only: it introduces
-neither a live transport nor authentication, credential, storage or consumer
-cutover runtime.
+satisfied. **Phase 1 / Increment 1 — Local Consumer API Contract Foundation**
+is complete. It remained contract-only: it introduces neither a live transport
+nor authentication, credential, storage or consumer cutover runtime. Increment
+2 remains separately unauthorized.
 
 ```text
 PASS — PHASE 0 COMPLETE

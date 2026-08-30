@@ -57,6 +57,54 @@ database content. Any projection containing a prohibited secret-bearing field
 is rejected or redacted before it reaches logs, reports, Prompt History or the
 dashboard.
 
+### Local Consumer API v1 envelope schema
+
+The canonical machine-readable version representation is the string `"1.0"`.
+The v1 foundation accepts exactly one non-dispatching request identity,
+`"contract.foundation"`; it proves envelope compatibility only and performs no
+business operation. Every request is a JSON object with exactly these fields:
+
+```json
+{
+  "contract_version": "1.0",
+  "request_type": "contract.foundation",
+  "request_id": "request-123",
+  "project_id": "project-123",
+  "consumer": {"consumer_id": "workspace-client"},
+  "auth": {"scheme": "bearer", "credential": "opaque-carrier"},
+  "payload": {}
+}
+```
+
+`project_id`, `consumer_id` and `request_id` are 1–128-character canonical
+ASCII identifiers matching `[a-z][a-z0-9-]*`. They are lower-case, opaque
+identities; display labels, paths, repository names and prompts are never
+substitutes. `project_id` is mandatory. The authentication envelope defines
+only an opaque bearer-carrier shape: its `credential` is printable ASCII,
+non-empty and at most 4096 characters. It is not issued, verified, persisted,
+rotated or sent to a Keychain in this increment.
+
+The payload is a bounded JSON object (at most 8192 UTF-8 bytes, depth 4 and 64
+items per object/array). Payload strings and keys are NFC-normalized and have
+CRLF or CR newlines normalized to LF. Identifiers and credentials are not
+silently normalized: a non-canonical value is rejected. `null` remains distinct
+from an omitted field. Unknown fields in every envelope are rejected.
+
+Success responses contain exactly `contract_version`, `request_id`, `status`
+(`"success"`) and bounded `payload`. Error responses contain exactly
+`contract_version`, `request_id`, `status` (`"error"`) and `error`; `error`
+contains a stable `code`, safe fixed `message`, and optional bounded `field` and
+`path`. The v1 error codes are `INVALID_CONTRACT_VERSION`,
+`MISSING_PROJECT_ID`, `INVALID_PROJECT_ID`, `INVALID_CONSUMER_IDENTITY`,
+`INVALID_AUTH_ENVELOPE`, `UNKNOWN_FIELD`, `UNSUPPORTED_REQUEST_TYPE`,
+`INVALID_NORMALIZATION`, `VALUE_TOO_LARGE` and `MALFORMED_REQUEST`.
+
+Contract JSON is serialized with sorted keys, compact separators and UTF-8
+Unicode. Transport serialization preserves the credential carrier; safe
+rendering replaces it with `[REDACTED]`. Errors and safe rendering never echo
+submitted credential values, authorization headers, payload text or other
+secrets.
+
 ### Increment acceptance gate
 
 The subsequent implementation must test valid requests/responses/errors,

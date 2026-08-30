@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction and migration plan
 
-**Status:** Phase 0 complete; Phase 1 / Increment 1 authorized
+**Status:** Phase 0 complete; Phase 1 / Increment 1 complete
 **Scope:** Engineering Platform 2.x extraction from `pcvantol/djconnect` to a
 standalone, local-first Execution Operations Platform
 **Decision baseline:** [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md) and the
@@ -146,12 +146,12 @@ evaluation.
 
 ## Authorized Phase 1 increment sequence
 
-The Phase 1 sequence is deliberately bounded. Only Increment 1 is authorized
-for implementation at this time.
+The Phase 1 sequence is deliberately bounded. Increment 1 is complete;
+Increment 2 remains a separate architecture authorization gate.
 
 | Increment | Canonical name | Authorization |
 | --- | --- | --- |
-| Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Authorized, contract-only |
+| Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Complete, contract-only |
 | Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Not authorized |
 | Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Not authorized |
 
@@ -160,6 +160,14 @@ fail-closed validation only. It must not add an HTTP listener, Unix-socket
 server, bearer generation or verification runtime, Keychain integration,
 consumer cutover, storage migration, service-installation change or network
 exposure.
+
+**Increment 1 completion:** the repository now contains the provider- and
+consumer-neutral v1 envelope module, deterministic normalization and JSON
+serialization, stable safe errors, credential redaction and focused contract
+coverage. The extraction audit reports 285 candidates classified exactly once
+with no extraction-blocking imports. No runtime transport, authentication or
+credential authority, Keychain call, storage migration or consumer cutover was
+added. Increment 2 remains unauthorized.
 
 ### Phase 0 — Freeze the extraction baseline
 

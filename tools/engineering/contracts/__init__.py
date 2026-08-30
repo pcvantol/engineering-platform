@@ -5,14 +5,34 @@ deliberately downstream from lifecycle code and contains no action executor.
 """
 
 from .models import ActionAuditRecord, ActionPolicyDecision, AllowedAction, EvidenceReference
+from .local_consumer_api import (
+    AuthEnvelope,
+    ConsumerEnvelope,
+    ContractError,
+    ErrorCode,
+    ErrorEnvelope,
+    RequestEnvelope,
+    ResponseEnvelope,
+    deserialize_request,
+    serialize,
+)
 from .projection import evaluate_action, get_allowed_actions, get_run_context
 
 __all__ = (
     "ActionAuditRecord",
     "ActionPolicyDecision",
     "AllowedAction",
+    "AuthEnvelope",
+    "ConsumerEnvelope",
+    "ContractError",
+    "ErrorCode",
+    "ErrorEnvelope",
     "EvidenceReference",
+    "RequestEnvelope",
+    "ResponseEnvelope",
+    "deserialize_request",
     "evaluate_action",
     "get_allowed_actions",
     "get_run_context",
+    "serialize",
 )
