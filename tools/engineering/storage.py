@@ -1356,10 +1356,33 @@ def record_submission(
              correlation_id, mission_id, execution_run_id, received_at, encoded_context, context_version, engineering_action_id, encoded_handoff, handoff_version),
         )
         if link_run_id:
+            existing = connection.execute(
+                "SELECT run_id FROM execution_submission_links WHERE submission_id=?",
+                (submission_id,),
+            ).fetchone()
+            if existing is not None and existing[0] != link_run_id:
+                raise EngineeringStorageError("Execution submission is already bound to a different run.")
             connection.execute(
                 "INSERT INTO execution_submission_links(submission_id,run_id,linked_at) VALUES(?,?,?) ON CONFLICT(submission_id) DO NOTHING",
                 (submission_id, link_run_id, received_at),
             )
+            current = connection.execute(
+                "SELECT execution_run_id FROM execution_submissions WHERE submission_id=?",
+                (submission_id,),
+            ).fetchone()
+            if current is None:
+                raise EngineeringStorageError("Execution submission was not persisted.")
+            if current[0] not in (None, link_run_id):
+                raise EngineeringStorageError("Execution submission is already bound to a different run.")
+            # The link is the crash-safe admission-time binding. The FK-backed
+            # column is filled as soon as its execution-run row exists.
+            if current[0] is None and connection.execute(
+                "SELECT 1 FROM execution_runs WHERE run_id=?", (link_run_id,)
+            ).fetchone():
+                connection.execute(
+                    "UPDATE execution_submissions SET execution_run_id=? WHERE submission_id=? AND execution_run_id IS NULL",
+                    (link_run_id, submission_id),
+                )
     finally:
         connection.close()
 

@@ -71,6 +71,33 @@ class ProviderInterruptionRecoveryTests(unittest.TestCase):
         self.assertIsNone(terminalize_after_host_exit(self.root, self.state.run_id))
         self.assertFalse(self.store.load(self.state.run_id).terminal)
 
+    def test_interrupted_child_span_and_unavailable_usage_terminalize_without_jsonl_abort(self) -> None:
+        """A provider crash may lose its final JSONL event after cancelling a child command."""
+        provider = start_phase(self.root, self.state.run_id, "PROVIDER_EXECUTION")
+        child = start_phase(
+            self.root, self.state.run_id, "VALIDATION", parent_phase_id=provider.phase_id,
+        )
+        from tools.engineering.execution_timing import complete_phase
+
+        complete_phase(self.root, child, outcome="INTERRUPTED")
+        complete_phase(self.root, provider, outcome="FAILED")
+        persist_provider_invocation(
+            self.root,
+            ProviderInvocation(
+                run_id=self.state.run_id, ordinal=1, provider="codex_cli", model=None,
+                phase="QUALITY_CONTROL", role="QUALITY_REVIEW",
+                started_at="2026-08-30T08:00:00+00:00", completed_at="2026-08-30T08:00:01+00:00",
+                duration_ms=None, usage={}, churn={},
+            ),
+        )
+
+        terminal = terminalize_after_host_exit(self.root, self.state.run_id)
+
+        self.assertIsNotNone(terminal)
+        assert terminal is not None
+        self.assertEqual(terminal.terminal_condition, "provider_turn_interrupted")
+        self.assertIn("interrupted_child_span_without_provider_result", terminal.diagnostic or "")
+
     def test_lease_cleanup_failure_does_not_overwrite_terminal_checkpoint(self) -> None:
         self._interrupted_invocation()
         with patch("tools.engineering.provider_interruption.release_terminal_lease", side_effect=Exception("offline")):

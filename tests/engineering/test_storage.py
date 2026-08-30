@@ -121,12 +121,13 @@ class EngineeringStorageTest(unittest.TestCase):
             self.assertEqual(load_execution_context_snapshot(root, "inbox-42"), {
                 "context_version": "1.0", "mission_title": "Aurora", "future": {"value": True},
             })
-            record_submission(
-                root, submission_id="submission-42", producer_id="forge", producer_type="FORGE",
-                prompt_content="different", prompt_metadata={}, target_identity={},
-                original_envelope='{"different":true}', received_at="2026-08-07T08:01:00+00:00",
-                link_run_id="inbox-other", execution_context={"context_version": "2.0"},
-            )
+            with self.assertRaisesRegex(EngineeringStorageError, "different run"):
+                record_submission(
+                    root, submission_id="submission-42", producer_id="forge", producer_type="FORGE",
+                    prompt_content="different", prompt_metadata={}, target_identity={},
+                    original_envelope='{"different":true}', received_at="2026-08-07T08:01:00+00:00",
+                    link_run_id="inbox-other", execution_context={"context_version": "2.0"},
+                )
             self.assertEqual(load_execution_context_snapshot(root, "inbox-42")["context_version"], "1.0")
             with activate_storage_schema(root) as connection:
                 self.assertEqual(

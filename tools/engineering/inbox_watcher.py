@@ -46,7 +46,7 @@ from .prompt_history import backfill_prompt_history, execution_metadata_from_ter
 from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
-from .producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
+from .producer import ProducerMetadata, ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
 from .dependabot_admission import (
     configured_repository as dependabot_repository,
@@ -57,7 +57,7 @@ from .dependabot_admission import (
     publish_envelope as publish_dependabot_envelope,
     record_enqueued as record_dependabot_enqueued,
 )
-from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
+from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, load_submission_for_run, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
 from .provider_interruption import terminalize_after_host_exit
 from .dashboard_configuration import get as dashboard_configuration
@@ -116,6 +116,29 @@ def _source_revision(repo: Path) -> str | None:
         return None
     revision = completed.stdout.strip()
     return revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None
+
+
+def _persisted_producer_for_run(repo: Path, run_id: str, fallback_content: str) -> ProducerMetadata:
+    """Project producer provenance from the immutable submission, never its prompt.
+
+    Plain-text ingress has no structured submission and deliberately keeps the
+    legacy parser as its compatibility path.
+    """
+    try:
+        submission = load_submission_for_run(repo, run_id)
+    except EngineeringStorageError:
+        submission = None
+    if submission is None:
+        return parse_producer_metadata(fallback_content)
+    return ProducerMetadata(
+        producer_id=str(submission["producer_id"]),
+        producer_type=str(submission["producer_type"]),
+        producer_version=submission.get("producer_version") if isinstance(submission.get("producer_version"), str) else None,
+        correlation_id=submission.get("correlation_id") if isinstance(submission.get("correlation_id"), str) else None,
+        mission_id=submission.get("mission_id") if isinstance(submission.get("mission_id"), str) else None,
+        engineering_action_id=submission.get("engineering_action_id") if isinstance(submission.get("engineering_action_id"), str) else None,
+        execution_constraint_version=submission.get("contract_version") if isinstance(submission.get("contract_version"), str) else None,
+    )
 
 
 def publish_ready_record(repo: Path, root: Path) -> None:
@@ -2262,7 +2285,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
             execution_seconds, usage, repository = _telemetry_values(repo, run_id)
             lineage = retry_metadata(content)
             runtime_metadata = _report_runtime_metadata(delivered)
-            producer = parse_producer_metadata(content)
+            producer = _persisted_producer_for_run(repo, run_id, content)
             telemetry = ExecutionTelemetry(
                     run_id=run_id,
                     arrived_at=eligible_at,

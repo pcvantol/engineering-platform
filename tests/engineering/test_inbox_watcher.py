@@ -1271,14 +1271,22 @@ class InboxWatcherTest(unittest.TestCase):
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
+        wait_for_pending_telemetry()
+
         with open_storage(self.repo) as connection:
             row = connection.execute(
-                "SELECT producer_id,producer_type,contract_version,execution_context_snapshot FROM execution_submissions WHERE submission_id=?",
+                "SELECT producer_id,producer_type,contract_version,execution_context_snapshot,execution_run_id FROM execution_submissions WHERE submission_id=?",
                 ("human-watcher-001",),
+            ).fetchone()
+            run = connection.execute(
+                "SELECT producer_id,producer_type,execution_constraint_version FROM execution_runs WHERE run_id=?",
+                (run_id,),
             ).fetchone()
         self.assertEqual(row[:3], ("human:operator-peter", "HUMAN", "1.0"))
         self.assertEqual(json.loads(row[3])["action_intent"], "VALIDATION_ONLY")
         self.assertEqual(json.loads(row[3])["validation_profile"]["tier"], "DASHBOARD")
+        self.assertEqual(row[4], run_id)
+        self.assertEqual(run, ("human:operator-peter", "HUMAN", "1.0"))
 
     def test_queue_wait_uses_persisted_eligibility_and_ends_when_execution_is_claimed(self) -> None:
         prompt = self.inbox / "timed-job.txt"

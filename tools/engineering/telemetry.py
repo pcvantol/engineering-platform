@@ -438,6 +438,27 @@ def persist_execution(
                 telemetry.execution_host_version, _timestamp(finished), telemetry.terminal_state,
             ),
             )
+            # Admission reserves the immutable submission-to-run binding in
+            # execution_submission_links before any lifecycle work begins.
+            # The legacy FK column cannot be populated until this terminal
+            # execution_runs row exists, so complete it in this same atomic
+            # projection transaction without rewriting historical rows.
+            bound = connection.execute(
+                "SELECT submission_id FROM execution_submission_links WHERE run_id=?",
+                (telemetry.run_id,),
+            ).fetchone()
+            if bound is not None:
+                current = connection.execute(
+                    "SELECT execution_run_id FROM execution_submissions WHERE submission_id=?",
+                    (bound[0],),
+                ).fetchone()
+                if current is None or current[0] not in (None, telemetry.run_id):
+                    raise ValueError("Execution submission run binding is inconsistent.")
+                connection.execute(
+                    "UPDATE execution_submissions SET execution_run_id=? "
+                    "WHERE submission_id=? AND execution_run_id IS NULL",
+                    (telemetry.run_id, bound[0]),
+                )
             connection.execute(
             """
             INSERT OR REPLACE INTO daily_execution_statistics(

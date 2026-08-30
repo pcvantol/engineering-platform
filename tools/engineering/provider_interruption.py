@@ -21,13 +21,19 @@ TERMINAL_DIAGNOSTIC = (
 LOGGER = logging.getLogger(__name__)
 
 
-def _latest_interrupted_invocation(root: Path, run_id: str) -> str | None:
-    """Return only durable, allow-listed provider interruption evidence."""
+def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] | None:
+    """Return only durable, allow-listed provider interruption evidence.
+
+    Some providers terminate after streaming an interrupted child command but
+    before emitting their final JSONL ``turn_aborted`` event. That remains a
+    proven interruption only when usage is unavailable and a child span was
+    interrupted under the same provider boundary.
+    """
     try:
         connection = open_storage(root)
         try:
             row = connection.execute(
-                "SELECT invocation_id,churn FROM provider_invocations WHERE run_id=? "
+                "SELECT invocation_id,churn,usage_authority FROM provider_invocations WHERE run_id=? "
                 "ORDER BY ordinal DESC LIMIT 1",
                 (run_id,),
             ).fetchone()
@@ -37,15 +43,34 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> str | None:
         return None
     if row is None:
         return None
+    invocation_id = str(row[0]) if isinstance(row[0], str) else None
+    if invocation_id is None:
+        return None
     try:
         churn = json.loads(row[1])
     except (TypeError, json.JSONDecodeError):
+        churn = {}
+    if isinstance(churn, dict) and churn.get("interruption_classification") == INTERRUPTION_CLASSIFICATION:
+        return invocation_id, "provider_reported_abort"
+    if row[2] != "UNAVAILABLE":
         return None
-    if not isinstance(churn, dict):
+    try:
+        connection = open_storage(root)
+        try:
+            interrupted_child = connection.execute(
+                "SELECT 1 FROM execution_phase_spans AS child "
+                "JOIN execution_phase_spans AS provider ON provider.phase_id=child.parent_phase_id "
+                "WHERE child.run_id=? AND child.outcome='INTERRUPTED' "
+                "AND provider.phase_name='PROVIDER_EXECUTION' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+    except Exception:
         return None
-    if churn.get("interruption_classification") != INTERRUPTION_CLASSIFICATION:
+    if interrupted_child is None:
         return None
-    return str(row[0]) if isinstance(row[0], str) else None
+    return invocation_id, "interrupted_child_span_without_provider_result"
 
 
 def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
@@ -56,9 +81,10 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
     active provider work.  Generic stale leases remain recoverable and are not
     converted into failures here.
     """
-    invocation_id = _latest_interrupted_invocation(root, run_id)
-    if invocation_id is None:
+    evidence = _latest_interrupted_invocation(root, run_id)
+    if evidence is None:
         return None
+    invocation_id, classification = evidence
     store = StateStore(root / ".engineering" / "engineering-runs")
     try:
         state = store.load(run_id)
@@ -72,7 +98,10 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
         terminal=True,
         next_action="NONE",
         terminal_condition=INTERRUPTION_CLASSIFICATION,
-        diagnostic=f"{TERMINAL_DIAGNOSTIC} Provider invocation: {invocation_id}.",
+        diagnostic=(
+            f"{TERMINAL_DIAGNOSTIC} Provider invocation: {invocation_id}. "
+            f"Interruption evidence: {classification}."
+        ),
     )
     store.save(terminal)
     reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED")
