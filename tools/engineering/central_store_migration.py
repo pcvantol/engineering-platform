@@ -18,13 +18,14 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 import uuid
 
-from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path
+from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
 
 
-TOOL_VERSION = "2.0.0-phase2-increment2"
+TOOL_VERSION = "2.0.0-phase2-increment3"
 EXPECTED_SCHEMA = ENGINEERING_STORAGE_SCHEMA_VERSION
 REQUIRED_TABLES = frozenset({
     "engineering_schema_migrations", "engineering_metadata", "engineering_transactions",
@@ -41,6 +42,51 @@ FAILURE_CODES = frozenset({
     "SOURCE_INTEGRITY_FAILED", "BACKUP_NOT_READY", "TARGET_UNREADABLE",
     "PROJECT_SCOPE_UNRESOLVED", "AUTHORITY_HANDOFF_NOT_SAFE",
 })
+CONTROL_KEY = "admission_freeze.v1"
+STATE_KEY = "central_store_cutover.v1"
+POINTER_VERSION = 1
+STATES = (
+    "PRECHECK", "ADMISSION_FROZEN", "QUIESCENT", "BACKUP_VERIFIED",
+    "CENTRAL_STORE_CREATED", "TARGET_VERIFIED", "AUTHORITY_SWITCHED",
+    "SERVICES_RESTARTED", "POST_CUTOVER_VERIFIED",
+    "LEGACY_ROLLBACK_COMPATIBLE", "CENTRAL_STORE_ACTIVE_POST_WRITE",
+)
+SERVICE_STOP_ORDER = (
+    "com.djconnect.engineering-inbox", "com.djconnect.engineering-local-api",
+    "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-dashboard",
+)
+SERVICE_START_ORDER = (
+    "com.djconnect.engineering-local-api", "com.djconnect.engineering-dashboard",
+    "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-inbox",
+)
+
+
+class CutoverError(RuntimeError):
+    """Stable fail-closed cutover error."""
+
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(code if not detail else f"{code}: {detail}")
+        self.code = code
+
+
+class LaunchAgentServiceControl:
+    """Canonical macOS LaunchAgent adapter; invoked only by explicit cutover CLI."""
+
+    def __init__(self, uid: int | None = None) -> None:
+        self._domain = f"gui/{uid if uid is not None else os.getuid()}"
+
+    def stop(self, label: str) -> None:
+        result = subprocess.run(["launchctl", "kill", "SIGTERM", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise CutoverError("SERVICE_STOP_FAILED", label)
+
+    def start(self, label: str) -> None:
+        result = subprocess.run(["launchctl", "kickstart", "-k", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise CutoverError("SERVICE_RESTART_FAILED", label)
+
+    def stopped(self, label: str) -> bool:
+        return subprocess.run(["launchctl", "print", f"{self._domain}/{label}"], capture_output=True, text=True, check=False).returncode != 0
 
 
 @dataclass(frozen=True)
@@ -118,7 +164,7 @@ def discover_legacy_stores(repo: Path, *, extra_runtime_roots: tuple[Path, ...] 
     )
     grouped: dict[Path, set[str]] = {}
     for root, provenance in roots:
-        candidate = database_path(root).resolve()
+        candidate = legacy_database_path(root).resolve()
         if candidate.is_file():
             grouped.setdefault(candidate, set()).add(provenance)
     return tuple(
@@ -295,6 +341,244 @@ def validate_target_equivalence(source: Path, target: Path) -> dict[str, object]
     return result
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _metadata(path: Path, key: str) -> dict[str, object] | None:
+    with sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True) as connection:
+        row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return None
+    value = json.loads(str(row[0]))
+    if not isinstance(value, dict):
+        raise CutoverError("ADMISSION_FREEZE_FAILED", "metadata is malformed")
+    return value
+
+
+def admission_status(repo: Path) -> dict[str, object]:
+    path = database_path(repo)
+    if not path.is_file():
+        raise CutoverError("ADMISSION_FREEZE_FAILED", "authority is unresolved")
+    payload = _metadata(path, CONTROL_KEY)
+    return payload or {"state": "INACTIVE"}
+
+
+def set_admission_freeze(repo: Path, *, migration_id: str, reason: str, operator: str = "operator") -> dict[str, object]:
+    """Explicit control-plane mutation; no prompt/provider path calls this."""
+    candidates = discover_legacy_stores(repo)
+    if len(candidates) != 1 or not reason.strip():
+        raise CutoverError("ADMISSION_FREEZE_FAILED")
+    path = Path(candidates[0].resolved_path)
+    payload = {"version": 1, "migration_id": migration_id, "state": "ACTIVE", "reason": reason.strip(), "operator": operator, "created_at": _now()}
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONTROL_KEY, json.dumps(payload, sort_keys=True, separators=(",", ":"))))
+    return payload
+
+
+def thaw_admission(repo: Path, *, migration_id: str, operator: str = "operator") -> dict[str, object]:
+    state = admission_status(repo)
+    if state.get("state") != "ACTIVE" or state.get("migration_id") != migration_id:
+        raise CutoverError("THAW_FAILED")
+    path = database_path(repo)
+    payload = {"version": 1, "migration_id": migration_id, "state": "INACTIVE", "operator": operator, "thawed_at": _now()}
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE engineering_metadata SET value=? WHERE key=?", (json.dumps(payload, sort_keys=True, separators=(",", ":")), CONTROL_KEY))
+    return payload
+
+
+def _atomic_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def receipt_path(migration_id: str) -> Path:
+    return installation_data_root() / "migration" / f"{migration_id}.json"
+
+
+def load_receipt(migration_id: str) -> dict[str, object] | None:
+    path = receipt_path(migration_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CutoverError("AUTHORITY_SWITCH_FAILED", "receipt is malformed") from error
+    if not isinstance(payload, dict) or payload.get("migration_id") != migration_id:
+        raise CutoverError("AUTHORITY_SWITCH_FAILED", "receipt identity is invalid")
+    return payload
+
+
+def transition_receipt(receipt: dict[str, object], state: str, **details: object) -> dict[str, object]:
+    """Persist only adjacent forward transitions; state cannot be skipped/backtracked."""
+    if state not in STATES:
+        raise CutoverError("AUTHORITY_SWITCH_FAILED", "unknown state")
+    prior = receipt.get("state")
+    if prior is not None:
+        try:
+            expected = STATES[STATES.index(str(prior)) + 1]
+        except (ValueError, IndexError) as error:
+            raise CutoverError("AUTHORITY_SWITCH_FAILED", "terminal or invalid transition") from error
+        if state != expected:
+            raise CutoverError("AUTHORITY_SWITCH_FAILED", "non-monotonic transition")
+    receipt["state"] = state
+    receipt.setdefault("transitions", []).append({"state": state, "timestamp": _now()})
+    receipt.update(details)
+    _atomic_json(receipt_path(str(receipt["migration_id"])), receipt)
+    return receipt
+
+
+def authority_pointer_path() -> Path:
+    return installation_data_root() / "runtime" / "store-authority.json"
+
+
+def write_authority_pointer(*, migration_id: str, authority: Path, legacy: Path, state: str) -> dict[str, object]:
+    if state not in STATES or not authority.is_file():
+        raise CutoverError("AUTHORITY_SWITCH_FAILED")
+    payload = {"version": POINTER_VERSION, "migration_id": migration_id, "authoritative_path": str(authority.resolve()), "legacy_path": str(legacy.resolve()), "schema": EXPECTED_SCHEMA, "state": state, "timestamp": _now(), "fingerprint_sha256": _fingerprint(authority)}
+    _atomic_json(authority_pointer_path(), payload)
+    return payload
+
+
+def copy_snapshot(source: Path, destination: Path) -> None:
+    """Create an fsynced SQLite backup snapshot, never a raw file copy."""
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        with _readonly(source) as read_connection, sqlite3.connect(temporary) as write_connection:
+            read_connection.backup(write_connection)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    except (OSError, sqlite3.DatabaseError) as error:
+        raise CutoverError("BACKUP_FAILED", str(error)) from error
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def service_binding_proof(repo: Path, *, expected: Path, services: tuple[str, ...] = SERVICE_STOP_ORDER) -> dict[str, object]:
+    """All runtime surfaces share storage.database_path; mixed paths block."""
+    try:
+        resolved = database_path(repo).resolve()
+    except Exception as error:
+        raise CutoverError("CENTRAL_STORE_NOT_IN_USE") from error
+    consistent = resolved == expected.resolve()
+    return {"consistent": consistent, "authoritative_store": str(resolved), "services": {label: str(resolved) for label in services}}
+
+
+def controlled_cutover(repo: Path, *, operator: str = "operator", services: LaunchAgentServiceControl | None = None) -> dict[str, object]:
+    """Perform only after an explicit future operational invocation."""
+    candidate = discover_legacy_stores(repo)
+    if len(candidate) != 1:
+        raise CutoverError("QUIESCENCE_FAILED")
+    source = Path(candidate[0].resolved_path)
+    identity = source_identity(candidate[0])
+    migration_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ep-central-store:{identity.fingerprint_sha256}"))
+    receipt: dict[str, object] = {"receipt_version": 1, "migration_id": migration_id, "schema": EXPECTED_SCHEMA, "operator": operator, "source": asdict(identity), "legacy_path": str(source), "rollback_mode": "PRE_WRITE_DIRECT"}
+    transition_receipt(receipt, "PRECHECK")
+    freeze = admission_status(repo)
+    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+        raise CutoverError("ADMISSION_FREEZE_FAILED")
+    transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=freeze)
+    quiescence = inspect_quiescence(source)
+    if not quiescence["eligible"]:
+        raise CutoverError("QUIESCENCE_FAILED")
+    transition_receipt(receipt, "QUIESCENT", quiescence=quiescence)
+    if source_identity(candidate[0]) != identity:
+        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    if services is not None:
+        for label in SERVICE_STOP_ORDER:
+            services.stop(label)
+            if not services.stopped(label):
+                raise CutoverError("SERVICE_STOP_FAILED", label)
+    target = central_store_path()
+    if classify_target(target)["state"] != "ABSENT":
+        raise CutoverError("TARGET_CREATE_FAILED")
+    backup = installation_data_root() / "backups" / f"legacy-schema40-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{migration_id}.db"
+    copy_snapshot(source, backup)
+    if not validate_target_equivalence(source, backup)["equivalent"]:
+        raise CutoverError("BACKUP_FAILED")
+    transition_receipt(receipt, "BACKUP_VERIFIED", backup={"path": str(backup), "fingerprint_sha256": _fingerprint(backup)})
+    copy_snapshot(source, target)
+    transition_receipt(receipt, "CENTRAL_STORE_CREATED", target={"path": str(target)})
+    equivalent = validate_target_equivalence(source, target)
+    if not equivalent["equivalent"]:
+        raise CutoverError("TARGET_EQUIVALENCE_FAILED")
+    transition_receipt(receipt, "TARGET_VERIFIED", equivalence=equivalent)
+    pointer = write_authority_pointer(migration_id=migration_id, authority=target, legacy=source, state="AUTHORITY_SWITCHED")
+    transition_receipt(receipt, "AUTHORITY_SWITCHED", authority_pointer=pointer)
+    if services is not None:
+        for label in SERVICE_START_ORDER:
+            services.start(label)
+        transition_receipt(receipt, "SERVICES_RESTARTED", service_binding=service_binding_proof(repo, expected=target))
+    return receipt
+
+
+def rollback(repo: Path, *, migration_id: str, operator: str = "operator") -> dict[str, object]:
+    """Restore legacy authority only before the first central production write."""
+    receipt = load_receipt(migration_id)
+    if receipt is None or receipt.get("state") != "LEGACY_ROLLBACK_COMPATIBLE":
+        raise CutoverError("DIRECT_ROLLBACK_NOT_SAFE")
+    freeze = admission_status(repo)
+    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+        raise CutoverError("ROLLBACK_FAILED", "freeze is not active")
+    legacy = Path(str(receipt["legacy_path"]))
+    source = receipt.get("source")
+    if not legacy.is_file() or not isinstance(source, dict) or _fingerprint(legacy) != source.get("fingerprint_sha256"):
+        raise CutoverError("ROLLBACK_FAILED", "legacy identity changed")
+    target = central_store_path()
+    if not inspect_quiescence(target)["eligible"]:
+        raise CutoverError("ROLLBACK_FAILED", "central is not quiescent")
+    pointer = write_authority_pointer(migration_id=migration_id, authority=legacy, legacy=legacy, state="LEGACY_ROLLBACK_COMPATIBLE")
+    receipt["rollback"] = {"operator": operator, "timestamp": _now(), "authority_pointer": pointer}
+    _atomic_json(receipt_path(migration_id), receipt)
+    return receipt
+
+
+def complete_stage_a(repo: Path, *, migration_id: str) -> dict[str, object]:
+    """Record read-only qualification before an operator may thaw admission."""
+    receipt = load_receipt(migration_id)
+    if receipt is None or receipt.get("state") != "AUTHORITY_SWITCHED":
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+    target = central_store_path()
+    facts = inspect_source(StoreCandidate(str(target), str(target.resolve()), ("central_authority",)))
+    if facts["blocking_codes"] or database_path(repo).resolve() != target.resolve():
+        raise CutoverError("CENTRAL_STORE_NOT_IN_USE")
+    transition_receipt(receipt, "SERVICES_RESTARTED", service_binding={"consistent": True, "authoritative_store": str(target.resolve())})
+    transition_receipt(receipt, "POST_CUTOVER_VERIFIED", readonly_qualification="PASS")
+    return transition_receipt(receipt, "LEGACY_ROLLBACK_COMPATIBLE", rollback_mode="PRE_WRITE_DIRECT")
+
+
+def mark_central_post_write(repo: Path) -> None:
+    """One-way data-loss guard called only after an admitted central write."""
+    pointer_path = authority_pointer_path()
+    if not pointer_path.is_file():
+        return
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        migration_id = str(pointer["migration_id"])
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise CutoverError("CENTRAL_STORE_NOT_IN_USE") from error
+    receipt = load_receipt(migration_id)
+    if receipt is not None and receipt.get("state") == "LEGACY_ROLLBACK_COMPATIBLE":
+        transition_receipt(receipt, "CENTRAL_STORE_ACTIVE_POST_WRITE", rollback_mode="REVERSE_MIGRATION_REQUIRED")
+
+
 def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict[str, object]:
     """Compute the complete migration plan strictly read-only."""
     candidates = discover_legacy_stores(repo, extra_runtime_roots=extra_runtime_roots)
@@ -327,18 +611,50 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "thaw", "cutover", "rollback", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--migration-id")
+    parser.add_argument("--reason")
+    parser.add_argument("--operator", default="operator")
+    parser.add_argument("--execute", action="store_true", help="required for a mutating production operation")
     args = parser.parse_args(argv)
-    result = preflight(args.repo.resolve())
+    repo = args.repo.resolve()
+    try:
+        if args.command in {"preflight", "dry-run"}:
+            result = preflight(repo)
+        elif args.command == "freeze-status":
+            result = admission_status(repo)
+        elif args.command == "status":
+            result = {"admission_freeze": admission_status(repo), "authority_pointer": str(authority_pointer_path()), "authoritative_store": str(database_path(repo))}
+        elif not args.execute:
+            raise CutoverError("ADMISSION_FREEZE_FAILED", "--execute is required")
+        elif args.command == "freeze":
+            if not args.migration_id or not args.reason:
+                raise CutoverError("ADMISSION_FREEZE_FAILED")
+            result = set_admission_freeze(repo, migration_id=args.migration_id, reason=args.reason, operator=args.operator)
+        elif args.command == "thaw":
+            if not args.migration_id:
+                raise CutoverError("THAW_FAILED")
+            result = thaw_admission(repo, migration_id=args.migration_id, operator=args.operator)
+        elif args.command == "rollback":
+            if not args.migration_id:
+                raise CutoverError("ROLLBACK_FAILED")
+            result = rollback(repo, migration_id=args.migration_id, operator=args.operator)
+        else:
+            result = controlled_cutover(repo, operator=args.operator, services=LaunchAgentServiceControl())
+    except CutoverError as error:
+        result = {"ok": False, "code": error.code}
+        if args.json:
+            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        else:
+            print(error.code)
+        return 2
     if args.json:
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     else:
-        print(f"{result['mode']} eligible={result['eligible']} source_candidates={len(result['source_candidates'])}")
-        print("blocking_codes=" + ",".join(result["blocking_codes"]))
-        print("target=" + str(result["target_store"]["path"]))
-    return 0 if result["eligible"] else 2
+        print(json.dumps(result, sort_keys=True))
+    return 0 if args.command not in {"preflight", "dry-run"} or result["eligible"] else 2
 
 
 if __name__ == "__main__":

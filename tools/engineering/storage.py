@@ -17,11 +17,13 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
 ENGINEERING_STORAGE_SCHEMA_VERSION = 40
+STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -2043,8 +2045,39 @@ def import_legacy_projection_once(root: Path, name: str, path: Path) -> dict[str
 
 
 def database_path(root: Path) -> Path:
-    """Return the only persistent EP evidence path for a repository."""
+    """Resolve the sole EP authority; corrupt authority control fails closed."""
+    legacy = root.resolve() / WORKSPACE_DIRECTORY / DATABASE_FILENAME
+    pointer = _authority_pointer_path()
+    if not pointer.exists():
+        return legacy
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("invalid version")
+        path = Path(str(payload["authoritative_path"])).resolve()
+        schema = int(payload["schema"])
+        fingerprint = str(payload["fingerprint_sha256"])
+        if schema != ENGINEERING_STORAGE_SCHEMA_VERSION or not path.is_file() or len(fingerprint) != 64:
+            raise ValueError("invalid authority")
+        return path
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        raise EngineeringStorageError("Engineering store authority pointer is invalid.") from error
+
+
+def legacy_database_path(root: Path) -> Path:
+    """Return the pre-cutover path without interpreting authority control."""
     return root.resolve() / WORKSPACE_DIRECTORY / DATABASE_FILENAME
+
+
+def _authority_pointer_path() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = Path(base) / "Engineering Platform" if base else Path.home() / "AppData" / "Local" / "Engineering Platform"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support" / "Engineering Platform"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Engineering Platform"
+    return root / "runtime" / STORE_AUTHORITY_POINTER
 
 
 def storage_activation_required(root: Path) -> bool:

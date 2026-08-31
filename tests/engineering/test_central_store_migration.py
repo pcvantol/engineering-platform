@@ -128,3 +128,54 @@ class CentralStoreMigrationTests(unittest.TestCase):
         compared = migration.validate_target_equivalence(self.source, target)
         self.assertFalse(compared["equivalent"])
         self.assertIn("TARGET_STORE_CONFLICT", compared["blocking_codes"])
+
+    def test_operator_freeze_is_durable_and_snapshot_copy_is_equivalent(self) -> None:
+        candidate = migration.discover_legacy_stores(self.root)[0]
+        migration_id = migration.backup_readiness(migration.source_identity(candidate), Path(self.temporary.name) / "installation")["migration_id"]
+        frozen = migration.set_admission_freeze(self.root, migration_id=str(migration_id), reason="controlled test")
+        self.assertEqual(frozen["state"], "ACTIVE")
+        self.assertEqual(migration.admission_status(self.root)["migration_id"], migration_id)
+        copy = Path(self.temporary.name) / "copy.db"
+        migration.copy_snapshot(self.source, copy)
+        self.assertTrue(migration.validate_target_equivalence(self.source, copy)["equivalent"])
+        thawed = migration.thaw_admission(self.root, migration_id=str(migration_id))
+        self.assertEqual(thawed["state"], "INACTIVE")
+
+    def test_authority_pointer_is_atomic_and_bound_to_migration(self) -> None:
+        root = Path(self.temporary.name) / "installation"
+        with patch.object(migration, "installation_data_root", return_value=root):
+            pointer = migration.write_authority_pointer(
+                migration_id="migration-test", authority=self.source, legacy=self.source,
+                state="AUTHORITY_SWITCHED",
+            )
+            self.assertEqual(pointer["migration_id"], "migration-test")
+            loaded = __import__("json").loads((root / "runtime" / "store-authority.json").read_text())
+            self.assertEqual(loaded["authoritative_path"], str(self.source.resolve()))
+
+    def test_receipt_transitions_are_durable_monotonic_and_cannot_skip(self) -> None:
+        root = Path(self.temporary.name) / "installation"
+        receipt = {"migration_id": "migration-test"}
+        with patch.object(migration, "installation_data_root", return_value=root):
+            migration.transition_receipt(receipt, "PRECHECK")
+            migration.transition_receipt(receipt, "ADMISSION_FROZEN")
+            self.assertEqual(migration.load_receipt("migration-test")["state"], "ADMISSION_FROZEN")
+            with self.assertRaises(migration.CutoverError) as error:
+                migration.transition_receipt(receipt, "TARGET_VERIFIED")
+        self.assertEqual(error.exception.code, "AUTHORITY_SWITCH_FAILED")
+
+    def test_first_central_write_retires_direct_rollback(self) -> None:
+        root = Path(self.temporary.name) / "installation"
+        receipt = {"migration_id": "migration-test", "state": "LEGACY_ROLLBACK_COMPATIBLE"}
+        with patch.object(migration, "installation_data_root", return_value=root):
+            migration._atomic_json(migration.receipt_path("migration-test"), receipt)
+            migration.write_authority_pointer(
+                migration_id="migration-test", authority=self.source, legacy=self.source,
+                state="LEGACY_ROLLBACK_COMPATIBLE",
+            )
+            migration.mark_central_post_write(self.root)
+            self.assertEqual(migration.load_receipt("migration-test")["state"], "CENTRAL_STORE_ACTIVE_POST_WRITE")
+
+    def test_service_binding_proof_uses_the_single_resolver(self) -> None:
+        proof = migration.service_binding_proof(self.root, expected=self.source)
+        self.assertTrue(proof["consistent"])
+        self.assertEqual(set(proof["services"]), set(migration.SERVICE_STOP_ORDER))

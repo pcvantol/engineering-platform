@@ -1,6 +1,6 @@
 # Engineering Platform central-store migration guardrails
 
-**Status:** Phase 2 / Increment 3 — architecture authorized; not implemented
+**Status:** Phase 2 / Increment 3 — implemented; ready for controlled post-merge cutover
 **Date:** 2026-08-31
 **Authority:** [ADR-0024](../adr/0024-ep-controlled-central-store-cutover.md), [ADR-0023](../adr/0023-ep-central-store-migration-guardrails.md), [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md)
 
@@ -222,7 +222,7 @@ Existing discovery diagnostics remain stable. Increment 3 additionally authorize
 | --- | --- | --- |
 | Phase 2 / Increment 1 | Installation Data-Root Contract and Central-Store Migration Guardrails | Complete as documentation/control only |
 | Phase 2 / Increment 2 | Central-Store Migration Tooling + Dry-Run Qualification | Complete / dry-run qualified |
-| Phase 2 / Increment 3 | Controlled Central-Store Cutover | Authorized / not implemented |
+| Phase 2 / Increment 3 | Controlled Central-Store Cutover | Implemented / ready for controlled post-merge cutover; no production cutover executed |
 | Phase 2 / Increment 4 | Post-Cutover Qualification + Central-Store Active Baseline | Not authorized / not implemented |
 
 Macro-order is mandatory: Phase 2 central-store/project-scope migration, then Phase 3 physical extraction/package, then Phase 4 consumer cutover, then Phase 5 legacy removal. Phase 3 begins only after Phase 2 qualifies a stable installation-owned central store and authority/rollback state. Code ownership migration is distinct from data ownership migration.
