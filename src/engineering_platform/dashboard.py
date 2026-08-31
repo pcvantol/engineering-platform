@@ -1256,7 +1256,7 @@ def _registered_worktree_switch_target(root: Path, worktree_path: object, branch
     target = _registered_worktree_path(root, worktree_path, branch)
     if branch == PlatformConfiguration.load(root).workspace.default_branch:
         raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
-    if not target.is_dir() or not (target / "tools" / "engineering" / "dashboard.py").is_file() or not (target / "tools" / "engineering" / "inbox_watcher.py").is_file():
+    if not target.is_dir() or not (target / "src" / "engineering_platform" / "dashboard.py").is_file() or not (target / "src" / "engineering_platform" / "inbox_watcher.py").is_file():
         raise RuntimeError("De gekozen worktree bevat geen complete Engineering Platform-installatie.")
     provider = GitProvider()
     try:

@@ -1,0 +1,12 @@
+{
+  "name": "engineering-platform-browser-validation",
+  "private": true,
+  "version": "2.0.0",
+  "scripts": {
+    "test:engineering-dashboard": "PYTHONPATH=src python3 -m engineering_platform.dashboard_browser_validation",
+    "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0"
+  }
+}

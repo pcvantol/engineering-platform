@@ -7,6 +7,9 @@ on:
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'playwright.config.mjs'
       - 'pyproject.toml'
       - '.github/workflows/engineering-platform-validation.yml'
   push:
@@ -16,6 +19,9 @@ on:
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'playwright.config.mjs'
       - 'pyproject.toml'
 
 jobs:
@@ -36,14 +42,44 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
       - name: Build and install standalone Engineering Platform
-        run: python3 -m pip install build .
-      - name: Import and bytecode smoke
+        run: python3 -m pip install build coverage .
+      - name: Import, bytecode and qualification smoke
         run: |
           python3 -c "import engineering_platform, engineering_platform.execution_host"
           python3 -m compileall -q src/engineering_platform
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Enforce Engineering Platform coverage contract
+        run: |
+          coverage run --branch -m unittest discover -s tests/engineering
+          coverage json -o engineering-platform-coverage.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          # The platform quality bar is deliberately above 80%, while leaving
+          # a small, verified margin below the current dashboard evidence.
+          minimum = 80.20
+          targets = (
+              "src/engineering_platform/dashboard.py",
+              "src/engineering_platform/platform_bootstrap.py",
+              "src/engineering_platform/providers.py",
+              "src/engineering_platform/inbox_watcher.py",
+          )
+          report = json.loads(Path("engineering-platform-coverage.json").read_text())
+          files = report["files"]
+          failures = []
+          for target in targets:
+              covered = files.get(target, {}).get("summary", {}).get("percent_covered")
+              if covered is None or covered < minimum:
+                  failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum 80.20%)")
+              else:
+                  print(f"{target}: {covered:.2f}%")
+          if failures:
+              raise SystemExit("Engineering Platform coverage contract failed:\n" + "\n".join(failures))
+          PY
   browser-dashboard:
     needs: validation-profile
-    if: false # DJConnect Playwright harness is intentionally not part of Phase 3 extraction.
+    if: needs.validation-profile.outputs.tier != 'DOCUMENTATION'
     runs-on: ubuntu-latest
     strategy:
       # The dashboard regression is intentionally complete, but split into
@@ -66,7 +102,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
       - name: Install Engineering Platform runtime
-        run: python3 -m pip install -r requirements-dev.txt
+        run: python3 -m pip install .
       - name: Install browser validation dependencies
         run: npm ci
       - name: Install Chromium for browser validation

@@ -31,7 +31,7 @@ def run(root: Path, *, fail_phase: str | None = None) -> dict[str, object]:
             ("configuration", lambda: PlatformConfiguration.load(root)),
             ("providers", lambda: provider_registry(root)),
             ("runtime_execution_simulation", lambda: True),
-            ("qualification", lambda: execute_qualification(root)),
+            ("qualification", lambda: execute_qualification(root, ep_repository_root=root)),
             ("finalization_simulation", lambda: {"state": "MERGED_RECONCILED"}),
             ("repository_handoff_simulation", lambda: {"generated": True}),
         ):

@@ -143,6 +143,15 @@ def latest_qualification(root: Path) -> dict[str, object] | None:
 def _default_check(
     root: Path, capability: str, *, ep_repository_root: Path | None = None
 ) -> bool:
+    ep_source = (
+        ep_repository_root / "src" / "engineering_platform"
+        if ep_repository_root is not None
+        else None
+    )
+
+    def source_file(name: str) -> bool:
+        return bool(ep_source and (ep_source / name).is_file())
+
     def configuration_is_compatible() -> bool:
         try:
             return PlatformConfiguration.load(root).platform.version == EngineeringPlatformManifest.load(
@@ -152,38 +161,34 @@ def _default_check(
             return False
     contracts = {
         "Repository Initialization": bool(ep_repository_root and (ep_repository_root / "BOOTSTRAP.md").is_file()),
-        "Checkpoint Resume": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/agent_state.py").is_file()),
-        "Engineering Memory": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/execution_host.py").is_file()),
-        "Capability-aware Reviewers": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/capability_review.py").is_file()),
-        "Remote Status Model": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/status_model.py").is_file()),
-        "Private Dashboard": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/dashboard.py").is_file()),
-        "Repository Handoff": (root / "tools" / "engineering" / "repository_handoff.py").is_file(),
-        "Remote Engineering Readiness": (
-            root / "docs" / "engineering" / "runs" / "index.json"
-        ).is_file(),
+        "Checkpoint Resume": source_file("agent_state.py"),
+        "Engineering Memory": source_file("execution_host.py"),
+        "Capability-aware Reviewers": source_file("capability_review.py"),
+        "Remote Status Model": source_file("status_model.py"),
+        "Private Dashboard": source_file("dashboard.py"),
+        "Repository Handoff": source_file("repository_handoff.py"),
+        "Remote Engineering Readiness": source_file("execution_readiness.py"),
         "Platform Identity": configuration_is_compatible(),
         "Workspace Identity": configuration_is_compatible(),
         "Provider Registry": configuration_is_compatible(),
-        "Capability Registry": (root / "tools" / "engineering" / "platform_api.py").is_file(),
-        "Public Platform API": (root / "tools" / "engineering" / "platform_api.py").is_file(),
+        "Capability Registry": source_file("platform_api.py"),
+        "Public Platform API": source_file("platform_api.py"),
         "Configuration Hierarchy": configuration_is_compatible(),
         "Configuration Migration": configuration_is_compatible(),
         "Provider Compatibility": configuration_is_compatible(),
-        "Extraction Readiness Audit": (root / "docs" / "development" / "ENGINEERING_PLATFORM_EXTRACTION_AUDIT.md").is_file(),
-        "Repository Bootstrap": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
-        "Project Template": (root / "tools" / "engineering" / "templates" / "workspace-config.json").is_file(),
-        "Workspace Provisioning": (root / "tools" / "engineering" / "platform_bootstrap.py").is_file(),
-        "Genesis Lifecycle": (root / "tools" / "engineering" / "execution_host.py").is_file(),
-        "Strict Inbox Sequencing": (root / "tools" / "engineering" / "inbox_watcher.py").is_file(),
-        "Local Engineering Evidence Storage": (
-            root / "tools" / "engineering" / "ENGINEERING_INBOX_PROTOCOL.md"
-        ).is_file(),
-        "Component Logging and Read-only Advice": (
-            (root / "tools" / "engineering" / "component_logging.py").is_file()
-            and (root / "tools" / "engineering" / "codex_chat.py").is_file()
+        "Extraction Readiness Audit": bool(
+            ep_repository_root
+            and (ep_repository_root / "scripts" / "engineering" / "audit_ep_extraction_baseline.py").is_file()
         ),
+        "Repository Bootstrap": source_file("platform_bootstrap.py"),
+        "Project Template": bool(ep_source and (ep_source / "templates" / "workspace-config.json").is_file()),
+        "Workspace Provisioning": source_file("platform_bootstrap.py"),
+        "Genesis Lifecycle": source_file("execution_host.py"),
+        "Strict Inbox Sequencing": source_file("inbox_watcher.py"),
+        "Local Engineering Evidence Storage": bool(ep_source and (ep_source / "ENGINEERING_INBOX_PROTOCOL.md").is_file()),
+        "Component Logging and Read-only Advice": source_file("component_logging.py") and source_file("codex_chat.py"),
     }
-    return contracts.get(capability, (root / "tools" / "engineering" / "execution_host.py").is_file())
+    return contracts.get(capability, source_file("execution_host.py"))
 
 
 def _write_report(root: Path, report: dict[str, object]) -> None:

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -68,11 +68,6 @@ test.beforeAll(async () => {
   installationRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-authority-"));
   const isolatedHome = path.join(installationRoot, "home");
   mkdirSync(isolatedHome, { recursive: true });
-  const engineeringDirectory = path.join(dashboardRoot, "src/engineering_platform");
-  mkdirSync(engineeringDirectory, { recursive: true });
-  for (const filename of ["ENGINEERING_PLATFORM_CONFIG.json", "ENGINEERING_PLATFORM_VERSION.json"]) {
-    copyFileSync(path.join(repository, "src/engineering_platform", filename), path.join(engineeringDirectory, filename));
-  }
   const server = await startDashboard(dashboardRoot, {
     ...process.env,
     HOME: isolatedHome,
