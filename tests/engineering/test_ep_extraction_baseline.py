@@ -63,7 +63,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0)
         self.assertEqual(first.stdout, second.stdout)
         projection = json.loads(first.stdout)
-        self.assertEqual(projection["candidate_universe_count"], 226)
+        self.assertEqual(projection["candidate_universe_count"], 229)
         self.assertEqual(projection["manifest_semantic_digest"], self.manifest["manifest_semantic_digest"])
         self.assertEqual(projection["classified_exactly_once"], projection["candidate_universe_count"])
         self.assertEqual(projection["unclassified"], 0)
