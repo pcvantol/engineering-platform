@@ -146,14 +146,16 @@ evaluation.
 
 ## Authorized Phase 1 increment sequence
 
-The Phase 1 sequence is deliberately bounded. Increments 1 and 2 are complete;
-schema 39 activation remains a separate post-merge operator action.
+The Phase 1 sequence is deliberately bounded. Increments 1, 2 and 2a are
+complete; schema 39 is activated and the loopback runtime is post-merge
+qualified.
 
 | Increment | Canonical name | Authorization |
 | --- | --- | --- |
 | Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Complete, contract-only |
-| Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Implemented; schema activation pending |
-| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Not authorized |
+| Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Implemented and post-merge qualified; schema 39 active |
+| Phase 1 / Increment 2a | **Qualification Credential Boundary** | Complete, bounded qualification-only seam |
+| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Architecture authorized; not implemented |
 
 Increment 1 defines the versioned Local Consumer API v1 contract and
 fail-closed validation only. It must not add an HTTP listener, Unix-socket
@@ -183,8 +185,17 @@ service, unauthenticated bounded health, authenticated read-only capability
 projection, verifier-only schema-39 metadata, LaunchAgent/doctor/desired-state
 integration and focused regression coverage. It adds no credential issuance,
 Keychain use, consumer cutover, mutation endpoint or standalone repository.
-Shared storage remains deliberately unactivated until the separately governed
-post-merge quiescence procedure.
+Schema 39 was activated only through the separately governed post-merge
+quiescence procedure and is now active.
+
+**Increment 3 architecture authorization:** ADR-0022 authorizes an explicit
+EP-owned `(consumer_id, project_id)` registration authority, production
+credential lifecycle and macOS Keychain consumer adapter. It requires a
+minimal schema-40 registration table while preserving schema-39 verifier-only
+records and the existing bearer path. It authorizes no schema activation,
+Keychain call, credential issuance, Local API mutation, Forge/Workspace/
+DJConnect cutover or standalone repository extraction until a separate
+implementation increment.
 
 ### Phase 0 — Freeze the extraction baseline
 

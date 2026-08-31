@@ -212,6 +212,12 @@ against an ephemeral EP store. They never install a user host, manipulate EP
 SQLite, start LaunchAgents or authenticate Codex/GitHub in CI.
 The Local Consumer API is loopback-only.
 
+ADR-0022 authorizes the next, still-unimplemented consumer boundary: EP-owned
+registration for an exact `consumer_id` and `project_id`, production
+verifier-only credentials, and consumer-side macOS Keychain storage. It does
+not change this API's read-only surface, loopback bind, lifecycle authority or
+current Forge, Workspace and DJConnect integrations.
+
 ### Common lifecycle invariants
 
 Every run is admitted only after host, workspace and capability preflight.

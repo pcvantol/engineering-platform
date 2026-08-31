@@ -70,9 +70,31 @@ The transport accepts a credential only through `Authorization: Bearer
 or invalid credentials; `PROJECT_NOT_AUTHORIZED` is the stable 403-equivalent
 error for a valid credential outside the exact canonical `project_id` scope.
 The schema-39 EP-owned verifier record never stores plaintext bearer values;
-its activation remains a separately governed post-merge action. Issuance,
-registration, rotation/revocation workflows and Keychain integration remain
-Increment 3 work.
+its activation was a separately governed post-merge action and is complete.
+Issuance, registration, rotation/revocation workflows and Keychain integration
+remain Increment 3 work.
+
+### Increment 3 architecture authorization
+
+ADR-0022 authorizes, but does not implement, the production credential
+lifecycle. EP will persist one explicit active/disabled/revoked registration
+for each canonical `(consumer_id, project_id)` pair in schema 40, independently
+of schema-39 verifier records. Production credentials use purpose
+`PRODUCTION_CONSUMER`; the short-lived Increment-2a `QUALIFICATION` namespace
+remains separate. Registration never grants wildcard project scope.
+
+The future operator surface registers/disables consumers and issues, inspects,
+revokes and rotates credentials. Plaintext bearer material is disclosed once
+at issuance, stored by the consumer in Apple Keychain on macOS under service
+`Engineering Platform Local Consumer API` and account
+`<consumer_id>:<project_id>`, then cannot be recovered by EP. Keychain failure
+is fail-closed, with no file or environment fallback. Rotation keeps the old
+credential active until replacement Keychain storage and real bearer-path
+verification succeed, then revokes the old credential.
+
+This authorization preserves the v1 read-only API surface and ADR-0021 bearer
+middleware. It does not implement schema 40, Keychain access, a credential
+operator command, registration, consumer cutover or Engineering submission.
 
 ### Local Consumer API v1 envelope schema
 

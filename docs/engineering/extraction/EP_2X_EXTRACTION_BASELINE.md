@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 complete; Phase 1 / Increments 1-2 implemented; schema 39 activation pending
+**Status:** Phase 0 complete; Phase 1 / Increments 1-2a complete; schema 39 active; Increment 3 architecture authorized only
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -76,8 +76,10 @@ The Phase-0 manifest, baseline tag and deterministic audit controls are all
 satisfied. **Phase 1 / Increment 1 — Local Consumer API Contract Foundation**
 is complete. It remained contract-only: it introduces neither a live transport
 nor authentication, credential, storage or consumer cutover runtime. ADR-0021
-now records the implemented Increment 2 loopback runtime; schema 39 activation
-remains a separately governed post-merge operation.
+records the implemented and post-merge-qualified Increment 2 loopback runtime
+with schema 39 active. ADR-0022 authorizes Increment 3 architecture only; it
+adds no extraction, schema migration or runtime behavior in this baseline
+control.
 
 ```text
 PASS — PHASE 0 COMPLETE

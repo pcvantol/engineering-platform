@@ -112,7 +112,8 @@ PASS — PHASE 0 COMPLETE
 ```
 
 **Phase 1 / Increment 2 — Local API Transport + Authentication Runtime** is
-implemented and remains bounded to the EP-owned loopback read-only service.
-Its schema-39 verifier metadata requires separately governed post-merge
-activation. Credential issuance, OS secret-store integration, consumer cutover
-and mutation endpoints remain out of scope for Increment 3 and later work.
+implemented and post-merge qualified, remaining bounded to the EP-owned
+loopback read-only service with schema 39 active. ADR-0022 authorizes, but
+does not implement, Increment 3 registration and OS secret-store architecture;
+credential issuance, consumer cutover and mutation endpoints remain out of
+scope until its separate implementation increment.
