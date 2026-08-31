@@ -14,9 +14,10 @@ import {
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 let dashboard;
 let dashboardRoot;
+let installationRoot;
 let dashboardUrl;
 
-async function startDashboard(root) {
+async function startDashboard(root, environment) {
   return new Promise((resolve, reject) => {
     const process = spawn(
       "python3",
@@ -25,7 +26,7 @@ async function startDashboard(root) {
         "from pathlib import Path; import sys; from tools.engineering.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
-      { cwd: repository, stdio: ["ignore", "pipe", "ignore"] },
+      { cwd: repository, env: environment, stdio: ["ignore", "pipe", "ignore"] },
     );
     let output = "";
     const timeout = setTimeout(() => {
@@ -64,12 +65,20 @@ async function waitForDashboard() {
 
 test.beforeAll(async () => {
   dashboardRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-test-"));
+  installationRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-authority-"));
+  const isolatedHome = path.join(installationRoot, "home");
+  mkdirSync(isolatedHome, { recursive: true });
   const engineeringDirectory = path.join(dashboardRoot, "tools/engineering");
   mkdirSync(engineeringDirectory, { recursive: true });
   for (const filename of ["ENGINEERING_PLATFORM_CONFIG.json", "ENGINEERING_PLATFORM_VERSION.json"]) {
     copyFileSync(path.join(repository, "tools/engineering", filename), path.join(engineeringDirectory, filename));
   }
-  const server = await startDashboard(dashboardRoot);
+  const server = await startDashboard(dashboardRoot, {
+    ...process.env,
+    HOME: isolatedHome,
+    XDG_DATA_HOME: path.join(installationRoot, ".local", "share"),
+    DJCONNECT_EP_TEST_INSTALLATION_ROOT: installationRoot,
+  });
   dashboard = server.process;
   dashboardUrl = server.url;
   await waitForDashboard();
@@ -78,6 +87,7 @@ test.beforeAll(async () => {
 test.afterAll(() => {
   dashboard?.kill("SIGTERM");
   if (dashboardRoot) rmSync(dashboardRoot, { force: true, recursive: true });
+  if (installationRoot) rmSync(installationRoot, { force: true, recursive: true });
 });
 
 async function openTitlebarOptions(page) {

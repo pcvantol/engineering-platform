@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import unicodedata
 import uuid
 
 from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
@@ -28,6 +29,8 @@ from .providers import LaunchdProvider
 
 TOOL_VERSION = "2.0.0-phase2-increment3"
 EXPECTED_SCHEMA = ENGINEERING_STORAGE_SCHEMA_VERSION
+HISTORICAL_ATTESTATION_VERSION = 1
+HISTORICAL_ATTESTATION_CLASSIFIER_VERSION = 1
 REQUIRED_TABLES = frozenset({
     "engineering_schema_migrations", "engineering_metadata", "engineering_transactions",
     "execution_run_leases", "provider_recovery_attempts", "local_api_credentials",
@@ -42,6 +45,10 @@ FAILURE_CODES = frozenset({
     "ACTIVE_EXECUTION", "ACTIVE_LEASE", "SOURCE_SCHEMA_MISMATCH",
     "SOURCE_INTEGRITY_FAILED", "BACKUP_NOT_READY", "TARGET_UNREADABLE",
     "PROJECT_SCOPE_UNRESOLVED", "AUTHORITY_HANDOFF_NOT_SAFE", "ABORT_PRE_HANDOFF_FAILED",
+    "LEGITIMATE_CENTRAL_WRITE_PRESENT", "CONTAMINATION_PROVENANCE_UNRESOLVED",
+    "FORENSIC_CENTRAL_UNREADABLE", "LEGACY_BASELINE_MISMATCH",
+    "RECOVERY_SERVICE_QUIESCENCE_FAILED", "RECOVERY_AUTHORITY_SWITCH_FAILED",
+    "RECOVERY_SERVICE_RESTART_FAILED", "RECOVERY_MIXED_BINDING", "RECOVERY_POSTCHECK_FAILED",
 })
 CONTROL_KEY = "admission_freeze.v1"
 STATE_KEY = "central_store_cutover.v1"
@@ -51,6 +58,8 @@ STATES = (
     "CENTRAL_STORE_CREATED", "TARGET_VERIFIED", "AUTHORITY_SWITCHED",
     "SERVICES_RESTARTED", "POST_CUTOVER_VERIFIED",
     "LEGACY_ROLLBACK_COMPATIBLE", "CENTRAL_STORE_ACTIVE_POST_WRITE", "ABORTED_PRE_HANDOFF",
+    "CONTAMINATED_RECOVERY_PRECHECK", "RECOVERY_SERVICES_QUIESCED",
+    "RECOVERY_LEGACY_VERIFIED", "ROLLBACK_IN_PROGRESS", "ROLLBACK_COMPLETED",
 )
 ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_BASELINE"})
 ABORT_REASONS = frozenset({"CONTROLLER_VERSION_INCOMPATIBLE", "PRE_HANDOFF_CONTROLLER_DEFECT"})
@@ -221,6 +230,14 @@ def classify_target(path: Path) -> dict[str, object]:
     if not path.is_file():
         return {"state": "UNKNOWN", "path": str(path), "blocking_code": "TARGET_UNREADABLE"}
     try:
+        for receipt_file in (installation_data_root() / "migration").glob("*.json"):
+            try:
+                receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+                forensic = receipt.get("central_forensic") if isinstance(receipt, dict) else None
+                if isinstance(forensic, dict) and forensic.get("path") == str(path.resolve()) and forensic.get("classification") == "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE":
+                    return {"state": "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE", "path": str(path), "blocking_code": "TARGET_STORE_CONFLICT"}
+            except (OSError, json.JSONDecodeError):
+                continue
         if path.stat().st_size == 0:
             return {"state": "EMPTY_NEW", "path": str(path), "blocking_code": None}
         with _readonly(path) as connection:
@@ -527,6 +544,19 @@ def transition_receipt(receipt: dict[str, object], state: str, **details: object
         raise CutoverError("AUTHORITY_SWITCH_FAILED", "unknown state")
     prior = receipt.get("state")
     if prior is not None:
+        recovery_next = {
+            "SERVICES_RESTARTED": "CONTAMINATED_RECOVERY_PRECHECK",
+            "CONTAMINATED_RECOVERY_PRECHECK": "RECOVERY_SERVICES_QUIESCED",
+            "RECOVERY_SERVICES_QUIESCED": "RECOVERY_LEGACY_VERIFIED",
+            "RECOVERY_LEGACY_VERIFIED": "ROLLBACK_IN_PROGRESS",
+            "ROLLBACK_IN_PROGRESS": "ROLLBACK_COMPLETED",
+        }
+        if recovery_next.get(str(prior)) == state:
+            receipt["state"] = state
+            receipt.setdefault("transitions", []).append({"state": state, "timestamp": _now()})
+            receipt.update(details)
+            _atomic_json(receipt_path(str(receipt["migration_id"])), receipt)
+            return receipt
         if state == "ABORTED_PRE_HANDOFF":
             if prior not in ABORTABLE_STATES:
                 raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "migration is not pre-handoff")
@@ -542,6 +572,527 @@ def transition_receipt(receipt: dict[str, object], state: str, **details: object
     receipt.update(details)
     _atomic_json(receipt_path(str(receipt["migration_id"])), receipt)
     return receipt
+
+
+def _central_write_assessment(path: Path) -> dict[str, object]:
+    """Read only provenance assessment; unknown lineage blocks recovery."""
+    result: dict[str, object] = {"legitimate_write": False, "managed_legitimate_count": 0, "proven_contamination_count": 0, "unresolved_count": 0, "unknown_mutation": False, "signals": []}
+    try:
+        with _readonly(path) as connection:
+            tables = _tables(connection)
+            if "provider_invocation_receipts" in tables and _count(connection, "SELECT COUNT(*) FROM provider_invocation_receipts"):
+                # Receipts are evidence of a provider launch, not proof that its
+                # source was production.  Without a canonical submission lineage
+                # they must be explained by the contamination attestation below.
+                result["signals"].append("provider_receipts_without_submission_lineage")
+            if "backup_probe" in tables:
+                result["signals"].append("test_only_backup_probe")
+            schema = _schema(connection, tables)
+            if schema is not None and schema > EXPECTED_SCHEMA:
+                result["signals"].append("unsupported_schema_marker")
+            result["proven_contamination_count"] = len([signal for signal in result["signals"] if signal in {"test_only_backup_probe", "unsupported_schema_marker"}])
+    except (OSError, sqlite3.DatabaseError) as error:
+        raise CutoverError("FORENSIC_CENTRAL_UNREADABLE") from error
+    return result
+
+
+def _domain_digest(path: Path, table: str, columns: tuple[str, ...]) -> str:
+    """Hash a sorted, type-stable authority projection without secrets."""
+    with _readonly(path) as connection:
+        available = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        if not set(columns) <= available:
+            return "ABSENT"
+        rows = connection.execute(
+            f"SELECT {','.join(columns)} FROM {table} ORDER BY {','.join(columns)}"
+        ).fetchall()
+    normalized = []
+    for row in rows:
+        normalized.append([value.hex() if isinstance(value, bytes) else value for value in row])
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), sort_keys=False).encode("utf-8")).hexdigest()
+
+
+def authority_independent_baseline_attestation(baseline: Path, central: Path) -> dict[str, object]:
+    """ADR-0025 exact baseline-delta classifier; never invents row origin."""
+    domains = {
+        "credentials": ("local_api_credentials", ("credential_id", "consumer_id", "project_id", "verifier", "fingerprint", "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id")),
+        "registrations": ("local_api_consumer_registrations", ("consumer_id", "project_id", "status", "created_at", "updated_at", "disabled_at", "revoked_at")),
+        "project_scope": ("local_api_consumer_registrations", ("consumer_id", "project_id", "status")),
+    }
+    result: dict[str, object] = {"attestation_version": 1, "domains": {}, "credential_delta": False, "registration_delta": False, "project_scope_delta": False}
+    for name, (table, columns) in domains.items():
+        baseline_digest, central_digest = _domain_digest(baseline, table, columns), _domain_digest(central, table, columns)
+        delta = baseline_digest != central_digest
+        result["domains"][name] = {"baseline_digest": baseline_digest, "central_digest": central_digest, "classification": "CONTAMINATION_PROVENANCE_UNRESOLVED" if delta else "NO_POST_CUTOVER_MUTATION"}
+        result[f"{name[:-1] if name.endswith('s') else name}_delta"] = delta
+    return result
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "required forensic file is unreadable") from error
+
+
+def contamination_attestation_path(migration_id: str) -> Path:
+    """Return the external, immutable receipt path for one incident only."""
+    return installation_data_root() / "migration" / "contamination-attestations" / f"{migration_id}.json"
+
+
+def _authority_rows(path: Path, table: str, columns: tuple[str, ...], key: tuple[str, ...]) -> dict[tuple[object, ...], dict[str, object]]:
+    with _readonly(path) as connection:
+        available = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quote_identifier(table)})")}
+        if not set(columns) <= available:
+            raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", f"authority table shape is unavailable: {table}")
+        rows = connection.execute(f"SELECT {','.join(_quote_identifier(column) for column in columns)} FROM {_quote_identifier(table)}").fetchall()
+    result: dict[tuple[object, ...], dict[str, object]] = {}
+    for values in rows:
+        row = dict(zip(columns, values, strict=True))
+        identity = tuple(row[column] for column in key)
+        if identity in result:
+            raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", f"non-unique authority identity: {table}")
+        result[identity] = row
+    return result
+
+
+def _safe_authority_row(row: dict[str, object]) -> dict[str, object]:
+    """Project authority evidence without retaining verifier or fingerprint bytes."""
+    safe: dict[str, object] = {}
+    for key, value in sorted(row.items()):
+        if key in {"verifier", "fingerprint", "audit_metadata"}:
+            if value is None:
+                safe[f"{key}_digest"] = None
+            elif isinstance(value, bytes):
+                safe[f"{key}_digest"] = hashlib.sha256(value).hexdigest()
+            else:
+                safe[f"{key}_digest"] = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+        else:
+            safe[key] = value
+    return safe
+
+
+def _historical_fixture_components(baseline: Path, central: Path) -> list[dict[str, object]]:
+    """Mechanically recognize only the four authorized historical test subjects."""
+    credentials = ("credential_id", "consumer_id", "project_id", "verifier", "fingerprint", "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id")
+    registrations = ("consumer_id", "project_id", "status", "created_at", "updated_at", "disabled_at", "revoked_at", "audit_metadata")
+    old_credentials = _authority_rows(baseline, "local_api_credentials", credentials, ("credential_id",))
+    new_credentials = _authority_rows(central, "local_api_credentials", credentials, ("credential_id",))
+    old_registrations = _authority_rows(baseline, "local_api_consumer_registrations", registrations, ("consumer_id", "project_id"))
+    new_registrations = _authority_rows(central, "local_api_consumer_registrations", registrations, ("consumer_id", "project_id"))
+    if any(old_credentials[key] != new_credentials.get(key) for key in old_credentials) or any(old_registrations[key] != new_registrations.get(key) for key in old_registrations):
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "baseline authority rows changed")
+    if set(new_credentials) - set(old_credentials) and not set(old_credentials) <= set(new_credentials):
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "credential removal")
+    if set(new_registrations) - set(old_registrations) and not set(old_registrations) <= set(new_registrations):
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "registration removal")
+    added_credentials = [row for key, row in new_credentials.items() if key not in old_credentials]
+    added_registrations = [row for key, row in new_registrations.items() if key not in old_registrations]
+    groups: dict[tuple[str, str], dict[str, list[dict[str, object]]]] = {}
+    for row in added_credentials:
+        groups.setdefault((str(row["consumer_id"]), str(row["project_id"])), {"credentials": [], "registrations": []})["credentials"].append(row)
+    for row in added_registrations:
+        groups.setdefault((str(row["consumer_id"]), str(row["project_id"])), {"credentials": [], "registrations": []})["registrations"].append(row)
+    expected = {
+        ("workspace-client", "project-alpha"), ("consumer", "project"),
+        ("rotate", "project"), ("qualification-client", "qualification-project"),
+    }
+    if set(groups) != expected:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "authority components are not the authorized historical fixture set")
+    components: list[dict[str, object]] = []
+    for subject in sorted(groups):
+        consumer_id, project_id = subject
+        values = groups[subject]
+        credentials_for_subject = sorted(values["credentials"], key=lambda row: str(row["credential_id"]))
+        registrations_for_subject = values["registrations"]
+        signals: list[str]
+        writer: str
+        if subject == ("workspace-client", "project-alpha"):
+            credential = credentials_for_subject[0] if len(credentials_for_subject) == 1 else None
+            if (credential is None or len(registrations_for_subject) != 1
+                    or credential["credential_id"] != "credential-alpha" or credential["issued_at"] != "now"
+                    or not isinstance(credential["verifier"], bytes) or len(credential["verifier"]) != 32
+                    or not isinstance(credential["fingerprint"], bytes) or len(credential["fingerprint"]) != 32):
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "workspace fixture mismatch")
+            signals, writer = ["exact_fixture_literals", "fixture_blob_shape"], "tests/engineering/test_central_store_migration.py"
+        elif subject == ("consumer", "project"):
+            credential = credentials_for_subject[0] if len(credentials_for_subject) == 1 else None
+            registration = registrations_for_subject[0] if len(registrations_for_subject) == 1 else None
+            if (credential is None or registration is None or credential["credential_id"] != "production-consumer"
+                    or registration["status"] != "DISABLED" or credential["revoked_at"] is None
+                    or registration["disabled_at"] is None or registration["audit_metadata"] != '{"action":"DISABLE"}'):
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "consumer fixture mismatch")
+            signals, writer = ["exact_fixture_literals", "disable_revoke_lifecycle"], "tests/engineering/test_local_api_consumer_credentials.py"
+        elif subject == ("rotate", "project"):
+            credential_ids = {str(row["credential_id"]) for row in credentials_for_subject}
+            if (len(credentials_for_subject) != 2 or len(registrations_for_subject) != 1
+                    or credential_ids != {"production-rotate-old", "production-rotate-new"}
+                    or registrations_for_subject[0]["status"] != "ACTIVE"
+                    or sum(row["revoked_at"] is None for row in credentials_for_subject) != 1):
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "rotation fixture mismatch")
+            signals, writer = ["exact_fixture_literals", "rotation_lifecycle"], "tests/engineering/test_local_api_consumer_credentials.py"
+        else:
+            credential = credentials_for_subject[0] if len(credentials_for_subject) == 1 else None
+            try:
+                issued = datetime.strptime(str(credential["issued_at"]), "%Y-%m-%d %H:%M:%S") if credential else None
+                expires = datetime.strptime(str(credential["expires_at"]), "%Y-%m-%d %H:%M:%S") if credential else None
+            except ValueError as error:
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "qualification fixture timestamp mismatch") from error
+            if (credential is None or registrations_for_subject or credential["credential_id"] != "qualification-fixture"
+                    or issued is None or expires is None or expires - issued != timedelta(minutes=15)):
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "qualification fixture mismatch")
+            signals, writer = ["exact_fixture_literals", "qualification_prefix_and_ttl"], "tests/engineering/test_local_api_qualification_credentials.py"
+        components.append({"consumer_id": consumer_id, "project_id": project_id, "credentials": [_safe_authority_row(row) for row in credentials_for_subject], "registrations": [_safe_authority_row(row) for row in registrations_for_subject], "test_writer": writer, "signals": signals})
+    return components
+
+
+def _component_digest(components: list[dict[str, object]]) -> str:
+    return hashlib.sha256(json.dumps(components, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def create_contamination_attestation(repo: Path, *, migration_id: str, operator: str) -> dict[str, object]:
+    """Persist one operator-owned, immutable external attestation for this incident."""
+    receipt = load_receipt(migration_id)
+    if receipt is None or receipt.get("state") != "SERVICES_RESTARTED" or not operator:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "eligible incident state and operator are required")
+    pointer_path = authority_pointer_path()
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "authority pointer is unreadable") from error
+    legacy, central = Path(str(receipt.get("legacy_path", ""))), Path(str(pointer.get("authoritative_path", "")))
+    baseline = receipt.get("quiescent_source_baseline")
+    source = baseline.get("source") if isinstance(baseline, dict) else None
+    if not isinstance(source, dict) or _fingerprint(legacy) != source.get("fingerprint_sha256"):
+        raise CutoverError("LEGACY_BASELINE_MISMATCH")
+    components = _historical_fixture_components(legacy, central)
+    if any(len(component["signals"]) < 2 for component in components):
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "weak fixture evidence")
+    with _readonly(central) as connection:
+        schema = _schema(connection, _tables(connection))
+    binding = {"migration_id": migration_id, "legacy_fingerprint_sha256": _fingerprint(legacy), "central_fingerprint_sha256": _fingerprint(central), "authority_pointer_fingerprint_sha256": _file_digest(pointer_path), "central_schema": schema, "delta_digest": _component_digest(components)}
+    payload = {"attestation_id": f"historical-contamination-{migration_id}", "attestation_version": HISTORICAL_ATTESTATION_VERSION, "classifier_version": HISTORICAL_ATTESTATION_CLASSIFIER_VERSION, "origin_class": "OPERATOR_FORENSIC_CONTROL", "operator": operator, "created_at": _now(), "binding": binding, "components": components, "evidence_strength": "TWO_OR_MORE_DETERMINISTIC_SIGNALS_PER_COMPONENT", "eligibility": "PROVEN_NON_PRODUCTION_CONTAMINATION"}
+    path = contamination_attestation_path(migration_id)
+    if path.exists():
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "attestation is immutable and already exists")
+    _atomic_json(path, payload)
+    return payload
+
+
+def _valid_contamination_attestation(repo: Path, *, migration_id: str, legacy: Path, central: Path, pointer_path: Path) -> dict[str, object] | None:
+    path = contamination_attestation_path(migration_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("attestation_version") != HISTORICAL_ATTESTATION_VERSION or payload.get("classifier_version") != HISTORICAL_ATTESTATION_CLASSIFIER_VERSION:
+        return None
+    try:
+        components = _historical_fixture_components(legacy, central)
+        with _readonly(central) as connection:
+            schema = _schema(connection, _tables(connection))
+        expected = {"migration_id": migration_id, "legacy_fingerprint_sha256": _fingerprint(legacy), "central_fingerprint_sha256": _fingerprint(central), "authority_pointer_fingerprint_sha256": _file_digest(pointer_path), "central_schema": schema, "delta_digest": _component_digest(components)}
+    except CutoverError:
+        return None
+    return payload if payload.get("binding") == expected and payload.get("components") == components else None
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _normalized_value(value: object) -> object:
+    """Return a type-stable, deterministic representation of a SQLite value."""
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bytes):
+        return {"type": "bytes", "hex": value.hex()}
+    if isinstance(value, str):
+        text = unicodedata.normalize("NFC", value)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"type": "text", "value": text}
+        if isinstance(parsed, (dict, list)):
+            return {"type": "json", "value": parsed}
+        return {"type": "text", "value": text}
+    if isinstance(value, bool):
+        return {"type": "boolean", "value": value}
+    if isinstance(value, int):
+        return {"type": "integer", "value": value}
+    if isinstance(value, float):
+        return {"type": "real", "value": value}
+    return {"type": type(value).__name__, "value": str(value)}
+
+
+def _table_key(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    """Resolve a declared primary key or non-partial enforced unique key."""
+    quoted = _quote_identifier(table)
+    columns = connection.execute(f"PRAGMA table_info({quoted})").fetchall()
+    primary = tuple(str(row[1]) for row in sorted(columns, key=lambda row: int(row[5])) if int(row[5]))
+    if primary:
+        return primary
+    candidates: list[tuple[str, ...]] = []
+    for index in connection.execute(f"PRAGMA index_list({quoted})"):
+        # seq, name, unique, origin, partial
+        if not int(index[2]) or (len(index) > 4 and int(index[4])):
+            continue
+        index_name = _quote_identifier(str(index[1]))
+        key = tuple(str(row[2]) for row in connection.execute(f"PRAGMA index_info({index_name})"))
+        if key:
+            candidates.append(key)
+    if candidates:
+        return min(candidates, key=lambda key: (len(key), key))
+    raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", f"run-bound table has no deterministic key: {table}")
+
+
+def _row_map(connection: sqlite3.Connection, table: str, key: tuple[str, ...]) -> dict[str, dict[str, object]]:
+    quoted = _quote_identifier(table)
+    columns = tuple(str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted})"))
+    rows = connection.execute(f"SELECT * FROM {quoted}").fetchall()
+    result: dict[str, dict[str, object]] = {}
+    for row in rows:
+        raw = dict(zip(columns, row, strict=True))
+        key_value = [_normalized_value(raw[column]) for column in key]
+        encoded_key = json.dumps(key_value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if encoded_key in result:
+            raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", f"non-unique deterministic key: {table}")
+        result[encoded_key] = {column: _normalized_value(raw[column]) for column in sorted(raw)}
+    return result
+
+
+def _run_bound_tables(connection: sqlite3.Connection) -> tuple[str, ...]:
+    tables = _tables(connection)
+    result = []
+    for table in tables:
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quote_identifier(table)})")}
+        if "run_id" in columns or (table == "execution_submissions" and "execution_run_id" in columns):
+            result.append(table)
+    return tuple(sorted(result))
+
+
+def _row_deltas(baseline: Path, central: Path) -> dict[str, list[dict[str, object]]]:
+    """Compare all run-bound evidence rows by their declared stable identity."""
+    with _readonly(baseline) as baseline_connection, _readonly(central) as central_connection:
+        tables = set(_run_bound_tables(baseline_connection)) | set(_run_bound_tables(central_connection))
+        deltas: dict[str, list[dict[str, object]]] = {}
+        for table in sorted(tables):
+            baseline_present = table in _tables(baseline_connection)
+            central_present = table in _tables(central_connection)
+            key_connection = central_connection if central_present else baseline_connection
+            key = _table_key(key_connection, table)
+            baseline_rows = _row_map(baseline_connection, table, key) if baseline_present else {}
+            central_rows = _row_map(central_connection, table, key) if central_present else {}
+            changes: list[dict[str, object]] = []
+            for encoded_key in sorted(set(baseline_rows) | set(central_rows)):
+                before, after = baseline_rows.get(encoded_key), central_rows.get(encoded_key)
+                if before is None:
+                    changes.append({"change_type": "ADDED", "key": json.loads(encoded_key), "row": after})
+                elif after is None:
+                    changes.append({"change_type": "REMOVED", "key": json.loads(encoded_key), "row": before})
+                elif before != after:
+                    changes.append({"change_type": "MODIFIED", "key": json.loads(encoded_key), "before": before, "after": after})
+            if changes:
+                deltas[table] = changes
+    return deltas
+
+
+def _plain_value(value: object) -> object:
+    return value.get("value") if isinstance(value, dict) and "value" in value else None
+
+
+def _row_text(row: object, column: str) -> str | None:
+    value = _plain_value(row.get(column)) if isinstance(row, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _changed_run_ids(table: str, changes: list[dict[str, object]]) -> set[str]:
+    run_column = "execution_run_id" if table == "execution_submissions" else "run_id"
+    result: set[str] = set()
+    for change in changes:
+        rows = [change.get("row"), change.get("before"), change.get("after")]
+        for row in rows:
+            if isinstance(row, dict):
+                value = _plain_value(row.get(run_column))
+                if isinstance(value, str) and value:
+                    result.add(value)
+    return result
+
+
+def _lineage_category(table: str, change: dict[str, object]) -> str:
+    if table == "provider_recovery_attempts":
+        return "recovery"
+    if "provider" in table:
+        return "provider"
+    if "validation" in table:
+        return "validation"
+    if "qualification" in table:
+        return "qualification"
+    if table == "prompt_execution_history":
+        return "prompt_history"
+    if "reconciliation" in table:
+        return "reconciliation"
+    if table == "engineering_transactions":
+        rows = (change.get("row"), change.get("before"), change.get("after"))
+        for row in rows:
+            payload = _plain_value(row.get("payload")) if isinstance(row, dict) else None
+            if isinstance(payload, dict) and any("FINAL" in str(value).upper() for value in payload.values()):
+                return "finalization"
+    return "implementation"
+
+
+def managed_lineage_attestation(baseline: Path, central: Path) -> dict[str, object]:
+    """Classify only row-level post-baseline nodes by their persisted roots."""
+    deltas = _row_deltas(baseline, central)
+    categories = {name: 0 for name in ("provider", "recovery", "validation", "qualification", "implementation", "finalization", "reconciliation", "prompt_history")}
+    changed_runs: dict[str, set[str]] = {}
+    for table, changes in deltas.items():
+        runs = _changed_run_ids(table, changes)
+        if runs:
+            changed_runs[table] = runs
+        for change in changes:
+            categories[_lineage_category(table, change)] += 1
+    with _readonly(central) as connection:
+        tables = _tables(connection)
+        producers: dict[str, set[str]] = {}
+        if "execution_submissions" in tables:
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(execution_submissions)")}
+            if {"execution_run_id", "producer_type"} <= columns:
+                for run_id, producer_type in connection.execute("SELECT execution_run_id,producer_type FROM execution_submissions WHERE execution_run_id IS NOT NULL"):
+                    producers.setdefault(str(run_id), set()).add(str(producer_type))
+        if "execution_submission_links" in tables and "execution_submissions" in tables:
+            for run_id, producer_type in connection.execute("SELECT link.run_id,submission.producer_type FROM execution_submission_links AS link JOIN execution_submissions AS submission ON submission.submission_id=link.submission_id"):
+                producers.setdefault(str(run_id), set()).add(str(producer_type))
+    nodes = {(table, run_id) for table, runs in changed_runs.items() for run_id in runs}
+    # A new submission is itself a canonical root even before a run link has
+    # been written.  Treating it as invisible would permit a real post-cutover
+    # human submission to evade the recovery gate during its earliest phase.
+    submission_origins: dict[str, set[str]] = {}
+    for change in deltas.get("execution_submissions", []):
+        for row in (change.get("row"), change.get("before"), change.get("after")):
+            submission_id, producer_type = _row_text(row, "submission_id"), _row_text(row, "producer_type")
+            execution_run_id = _row_text(row, "execution_run_id")
+            if submission_id and producer_type and execution_run_id is None:
+                node = ("execution_submissions", f"submission:{submission_id}")
+                nodes.add(node)
+                submission_origins.setdefault(node[1], set()).add(producer_type)
+    production_origins = {"HUMAN", "MANAGED", "ICLOUD", "HUMAN_OPERATOR"}
+    test_origins = {"TEST_HARNESS"}
+    def origins(node: tuple[str, str]) -> set[str]:
+        return submission_origins.get(node[1], producers.get(node[1], set()))
+
+    production = {node for node in nodes if origins(node) & production_origins}
+    test = {node for node in nodes if not (origins(node) & production_origins) and origins(node) & test_origins}
+    unresolved = nodes - production - test
+
+    def components(node_set: set[tuple[str, str]]) -> set[str]:
+        return {node[1] for node in node_set}
+    return {
+        "row_delta_version": 1,
+        "changed_rows": {table: len(changes) for table, changes in deltas.items()},
+        "changed_run_nodes": {table: sorted(runs) for table, runs in changed_runs.items()},
+        "production_component_count": len(components(production)),
+        "production_node_count": len(production),
+        "unresolved_component_count": len(components(unresolved)),
+        "unresolved_node_count": len(unresolved),
+        "test_component_count": len(components(test)),
+        "test_node_count": len(test),
+        "categories": categories,
+    }
+
+
+def contaminated_prewrite_status(repo: Path, *, migration_id: str) -> dict[str, object]:
+    """Read-only eligibility for the narrowly bounded forensic recovery."""
+    receipt = load_receipt(migration_id)
+    if receipt is None or receipt.get("state") not in {"SERVICES_RESTARTED", "ROLLBACK_COMPLETED"}:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "legal predecessor is SERVICES_RESTARTED")
+    freeze = admission_status(repo)
+    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "matching active freeze is required")
+    pointer_path = authority_pointer_path()
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "central pointer is required") from error
+    central = Path(str(pointer.get("authoritative_path", "")))
+    legacy = Path(str(receipt.get("legacy_path", "")))
+    if receipt.get("state") == "ROLLBACK_COMPLETED":
+        return {"eligible": True, "idempotent": True, "state": "ROLLBACK_COMPLETED", "freeze": freeze, "authority": "LEGACY"}
+    if pointer.get("migration_id") != migration_id or not central.is_file() or database_path(repo).resolve() != central.resolve():
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "central authority does not match migration")
+    assessment = _central_write_assessment(central)
+    if assessment["legitimate_write"]:
+        raise CutoverError("LEGITIMATE_CENTRAL_WRITE_PRESENT")
+    with _readonly(central) as central_connection:
+        tables = _tables(central_connection)
+        central_schema = _schema(central_connection, tables)
+    provenance = "PROVEN_NON_PRODUCTION" if {"test_only_backup_probe", "unsupported_schema_marker"} & set(assessment["signals"]) and not assessment["unknown_mutation"] else "UNRESOLVED"
+    if provenance != "PROVEN_NON_PRODUCTION":
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED")
+    baseline = receipt.get("quiescent_source_baseline")
+    source = baseline.get("source") if isinstance(baseline, dict) else receipt.get("source")
+    if not legacy.is_file() or not isinstance(source, dict) or _fingerprint(legacy) != source.get("fingerprint_sha256"):
+        raise CutoverError("LEGACY_BASELINE_MISMATCH")
+    # Production and unresolved managed descendants always take precedence:
+    # an historical attestation may explain only the bounded authority rows.
+    lineage = managed_lineage_attestation(legacy, central)
+    if lineage["production_node_count"]:
+        raise CutoverError("LEGITIMATE_CENTRAL_WRITE_PRESENT")
+    if lineage["unresolved_node_count"]:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "orphan managed evidence")
+    domain_attestation = authority_independent_baseline_attestation(legacy, central)
+    historical_attestation = _valid_contamination_attestation(
+        repo, migration_id=migration_id, legacy=legacy, central=central, pointer_path=pointer_path,
+    )
+    if any((domain_attestation["credential_delta"], domain_attestation["registration_delta"], domain_attestation["project_scope_delta"])) and historical_attestation is None:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "authority-independent baseline delta")
+    facts = inspect_source(StoreCandidate(str(central), str(central.resolve()), ("forensic_central",)))
+    if facts.get("integrity") != "PASS":
+        raise CutoverError("FORENSIC_CENTRAL_UNREADABLE")
+    return {"eligible": True, "idempotent": False, "authority": "CENTRAL", "freeze": freeze, "central": {"path": str(central.resolve()), "fingerprint_sha256": _fingerprint(central), "schema": central_schema, "integrity": facts["integrity"], "critical_counts": _table_counts(central)}, "legacy": {"path": str(legacy.resolve()), "fingerprint_sha256": _fingerprint(legacy), "critical_counts": _table_counts(legacy), "project_scope": project_scope_inventory(legacy)}, "legitimate_write_assessment": assessment, "managed_lineage": lineage, "authority_independent_baseline": domain_attestation, "historical_contamination_attestation": historical_attestation, "contamination_provenance": provenance, "forensic_tables": sorted(tables)}
+
+
+def recover_contaminated_prewrite(repo: Path, *, migration_id: str, operator: str = "operator", services: LaunchAgentServiceControl | None = None) -> dict[str, object]:
+    """Operator-only CENTRAL-to-LEGACY forensic recovery; never copies data."""
+    status = contaminated_prewrite_status(repo, migration_id=migration_id)
+    if status["idempotent"]:
+        return load_receipt(migration_id) or status
+    receipt = load_receipt(migration_id)
+    assert receipt is not None
+    central = Path(str(status["central"]["path"]))
+    legacy = Path(str(status["legacy"]["path"]))
+    control = services or LaunchAgentServiceControl()
+    transition_receipt(receipt, "CONTAMINATED_RECOVERY_PRECHECK", recovery_class="CONTAMINATED_PRE_WRITE_CENTRAL_RECOVERY", recovery_precheck=status, operator=operator)
+    try:
+        for label in SERVICE_STOP_ORDER:
+            control.stop(label)
+            if not control.stopped(label):
+                raise CutoverError("RECOVERY_SERVICE_QUIESCENCE_FAILED", label)
+    except CutoverError as error:
+        raise CutoverError("RECOVERY_SERVICE_QUIESCENCE_FAILED", error.code) from error
+    transition_receipt(receipt, "RECOVERY_SERVICES_QUIESCED", service_quiescence={label: control.stopped(label) for label in SERVICE_STOP_ORDER})
+    if _fingerprint(legacy) != status["legacy"]["fingerprint_sha256"]:
+        raise CutoverError("LEGACY_BASELINE_MISMATCH")
+    transition_receipt(receipt, "RECOVERY_LEGACY_VERIFIED", legacy_baseline=status["legacy"])
+    transition_receipt(receipt, "ROLLBACK_IN_PROGRESS")
+    try:
+        pointer = write_authority_pointer(migration_id=migration_id, authority=legacy, legacy=legacy, state="ROLLBACK_COMPLETED")
+    except CutoverError as error:
+        raise CutoverError("RECOVERY_AUTHORITY_SWITCH_FAILED") from error
+    central_after = _fingerprint(central)
+    if central_after != status["central"]["fingerprint_sha256"]:
+        raise CutoverError("RECOVERY_POSTCHECK_FAILED", "central changed")
+    try:
+        for label in SERVICE_START_ORDER:
+            control.start(label)
+        binding = service_binding_proof(repo, expected=legacy, services=SERVICE_START_ORDER)
+    except CutoverError as error:
+        raise CutoverError("RECOVERY_SERVICE_RESTART_FAILED", error.code) from error
+    if not binding.get("consistent") or not all(control.running(label) for label in SERVICE_START_ORDER):
+        raise CutoverError("RECOVERY_MIXED_BINDING")
+    freeze = admission_status(repo)
+    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+        raise CutoverError("RECOVERY_POSTCHECK_FAILED", "freeze changed")
+    return transition_receipt(receipt, "ROLLBACK_COMPLETED", rollback={"operator": operator, "authority_pointer": pointer, "timestamp": _now()}, central_forensic={**status["central"], "classification": "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE", "contamination_provenance": status["contamination_provenance"], "legitimate_write_assessment": status["legitimate_write_assessment"], "fingerprint_after": central_after}, post_recovery_binding=binding, freeze_after=freeze)
 
 
 def abort_pre_handoff(
@@ -957,7 +1508,7 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "status"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "recover-contaminated-prewrite", "create-contamination-attestation", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--migration-id")
@@ -973,6 +1524,12 @@ def main(argv: list[str] | None = None) -> int:
             result = admission_status(repo)
         elif args.command == "status":
             result = {"admission_freeze": admission_status(repo), "authority_pointer": str(authority_pointer_path()), "authoritative_store": str(database_path(repo))}
+        elif args.command == "recover-contaminated-prewrite" and not args.execute:
+            if not args.migration_id:
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED")
+            result = contaminated_prewrite_status(repo, migration_id=args.migration_id)
+        elif args.command == "create-contamination-attestation" and not args.execute:
+            raise CutoverError("ADMISSION_FREEZE_FAILED", "--execute is required")
         elif not args.execute:
             raise CutoverError("ADMISSION_FREEZE_FAILED", "--execute is required")
         elif args.command == "freeze":
@@ -991,6 +1548,14 @@ def main(argv: list[str] | None = None) -> int:
             if not args.migration_id:
                 raise CutoverError("ROLLBACK_FAILED")
             result = rollback(repo, migration_id=args.migration_id, operator=args.operator)
+        elif args.command == "recover-contaminated-prewrite":
+            if not args.migration_id:
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED")
+            result = recover_contaminated_prewrite(repo, migration_id=args.migration_id, operator=args.operator, services=LaunchAgentServiceControl())
+        elif args.command == "create-contamination-attestation":
+            if not args.migration_id:
+                raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED")
+            result = create_contamination_attestation(repo, migration_id=args.migration_id, operator=args.operator)
         elif args.command == "stage-a":
             if not args.migration_id:
                 raise CutoverError("POST_CUTOVER_READINESS_FAILED")

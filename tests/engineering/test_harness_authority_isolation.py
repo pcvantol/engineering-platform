@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from tools.engineering import central_store_migration as migration
 from tools.engineering import storage
-from tests.engineering.harness_isolation import activate
+from tests.engineering.harness_isolation import activate, scoped_installation_root
 
 
 activate()
@@ -139,3 +139,20 @@ class EngineeringHarnessAuthorityIsolationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(storage.EngineeringStorageError, "test harness rejected"):
                 storage.open_storage(Path(temporary))
+
+    def test_nested_root_overrides_and_restores_external_suite_root(self) -> None:
+        outer_pointer = storage._authority_pointer_path()
+        external_before = _fingerprint(self.external_store)
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            with storage.open_storage(repository):
+                pass
+            self.assertTrue(storage._authority_pointer_path().resolve().is_relative_to(self.installation_root))
+            with scoped_installation_root() as inner:
+                self.assertTrue(storage._authority_pointer_path().resolve().is_relative_to(inner.resolve()))
+                with storage.open_storage(repository) as connection:
+                    connection.execute("CREATE TABLE nested_root_canary (value TEXT)")
+                self.assertTrue(storage.database_path(repository).is_relative_to(repository.resolve()))
+            self.assertEqual(storage._authority_pointer_path(), outer_pointer)
+            self.assertTrue(storage._authority_pointer_path().resolve().is_relative_to(self.installation_root))
+        self.assertEqual(_fingerprint(self.external_store), external_before)
