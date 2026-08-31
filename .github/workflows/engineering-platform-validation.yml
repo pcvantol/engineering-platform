@@ -60,16 +60,21 @@ jobs:
           # a small, verified margin below the current dashboard evidence.
           minimum = 80.20
           targets = (
-              "src/engineering_platform/dashboard.py",
-              "src/engineering_platform/platform_bootstrap.py",
-              "src/engineering_platform/providers.py",
-              "src/engineering_platform/inbox_watcher.py",
+              "engineering_platform/dashboard.py",
+              "engineering_platform/platform_bootstrap.py",
+              "engineering_platform/providers.py",
+              "engineering_platform/inbox_watcher.py",
           )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]
           failures = []
           for target in targets:
-              covered = files.get(target, {}).get("summary", {}).get("percent_covered")
+              matching_paths = [path for path in files if path.replace("\\\\", "/").endswith(target)]
+              covered = (
+                  files[matching_paths[0]]["summary"]["percent_covered"]
+                  if len(matching_paths) == 1
+                  else None
+              )
               if covered is None or covered < minimum:
                   failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum 80.20%)")
               else:
