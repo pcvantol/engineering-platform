@@ -212,7 +212,7 @@ projections; immutable historical evidence remains unchanged.
 | Increment | Canonical name | Authorization |
 | --- | --- | --- |
 | Phase 2 / Increment 1 | **Installation Data-Root Contract and Central-Store Migration Guardrails** | Complete; documentation/control only; no store moved |
-| Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Not authorized by Increment 1 |
+| Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Implemented / dry-run qualified; live preflight proves the current schema-40 source but is presently ineligible until the separately authorized admission freeze and service quiescence |
 | Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Not authorized by Increment 1 |
 | Phase 2 / Increment 4 | **Post-Cutover Qualification + Rollback-Compatible Baseline** | Not authorized by Increment 1 |
 

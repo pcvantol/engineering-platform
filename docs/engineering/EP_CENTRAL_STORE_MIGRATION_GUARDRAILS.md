@@ -34,7 +34,13 @@ The target is classified without creating it: absent is eligible only after all 
 
 ## Read-only preflight and migration receipt
 
-Increment 2 may implement a read-only `central-store-preflight` command. It reports source path/schema, target root/path/state, candidate counts, quiescence, backup readiness, integrity readiness, project-scope summary and eligibility. It opens stores read-only, creates neither directory nor database, takes no lock, checkpoints no WAL, starts/stops no service, and makes no SQLite or filesystem mutation.
+Increment 2 implements the read-only `central-store-preflight` command:
+
+```sh
+python3 -m tools.engineering.central_store_migration preflight --repo <repository> --json
+```
+
+`dry-run` is an explicit alias with the same read-only semantics. It reports source path/schema, target root/path/state, candidate counts, quiescence, backup readiness, integrity readiness, project-scope summary and eligibility. It opens stores read-only, creates neither directory nor database, takes no lock, checkpoints no WAL, starts/stops no service, and makes no SQLite or filesystem mutation. Its JSON receipt is deterministic except for its timestamp; its migration ID is deterministically derived from the source fingerprint.
 
 A later migration creates a bounded, redacted receipt in `<data-root>/migration/` and alongside its verified backup. It records migration ID; source path/store identity/schema/SHA-256 fingerprint; target root/store identity; timestamp; migration tool/version; project-scope baseline; backup reference; authority/rollback state; and verification result. It never contains a bearer, verifier, token, prompt, history payload, or plaintext secret.
 
@@ -90,3 +96,18 @@ Rollback requires an explicit decision: stop central services; prove central qui
 Macro-order is mandatory: Phase 2 central-store/project-scope migration, then Phase 3 physical extraction/package, then Phase 4 consumer cutover, then Phase 5 legacy removal. Phase 3 begins only after Phase 2 qualifies a stable installation-owned central store and authority/rollback state. Code ownership migration is distinct from data ownership migration.
 
 Phase 3 uses the frozen extraction manifest to copy/move EP product source, tests, documentation, workflows and release assets with history/provenance preserved. **REIMPLEMENTATION FROM SCRATCH IS FORBIDDEN.** Phase 3 must not silently perform another store migration.
+
+## Increment 2 dry-run qualification
+
+Phase 2 / Increment 2 is **IMPLEMENTED / DRY-RUN QUALIFIED**. Its real
+read-only preflight on 2026-08-31 discovered exactly one current schema-40
+legacy source, passed SQLite integrity, resolved the canonical macOS target,
+and found it absent. It reported one registered project, two consumer
+registrations and four credential verifier scopes without printing secret
+material. The source remained byte- and metadata-identical.
+
+Migration is currently ineligible by design: the watcher and dashboard locks
+are active and admission freeze is `FREEZE_NOT_ACTIVE`. Increment 2 did not
+stop services, freeze admission, create the target, copy a database, or change
+authority. **Phase 2 / Increment 3 — Controlled Central-Store Cutover** is
+next and not yet authorized.

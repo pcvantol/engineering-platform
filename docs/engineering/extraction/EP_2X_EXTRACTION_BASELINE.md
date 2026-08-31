@@ -37,7 +37,7 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 294 candidate files from EP runtime,
+The audit independently discovers 296 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
@@ -51,10 +51,10 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `294 / 294` |
+| Candidate universe / exactly once | `296 / 296` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
-| EP product source / Python inspected | `99 / 80` |
+| EP product source / Python inspected | `100 / 81` |
 | DJConnect, Home Assistant, repository-local blocking imports | `0 / 0 / 0` |
 
 ## Reproduction
