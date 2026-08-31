@@ -24,7 +24,9 @@ MAX_PAYLOAD_BYTES = 8192
 
 _IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9-]*\Z")
 _CREDENTIAL_PATTERN = re.compile(r"[\x21-\x7e]+\Z")
-_REQUEST_FIELDS = frozenset({"contract_version", "request_type", "request_id", "project_id", "consumer", "auth", "payload"})
+_REQUEST_FIELDS = frozenset(
+    {"contract_version", "request_type", "request_id", "project_id", "consumer", "auth", "payload"}
+)
 _CONSUMER_FIELDS = frozenset({"consumer_id"})
 _AUTH_FIELDS = frozenset({"scheme", "credential"})
 _RESPONSE_FIELDS = frozenset({"contract_version", "request_id", "status", "payload"})
@@ -45,6 +47,9 @@ class ErrorCode:
     INVALID_NORMALIZATION = "INVALID_NORMALIZATION"
     VALUE_TOO_LARGE = "VALUE_TOO_LARGE"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
+    UNAUTHENTICATED = "UNAUTHENTICATED"
+    PROJECT_NOT_AUTHORIZED = "PROJECT_NOT_AUTHORIZED"
+    SERVICE_NOT_READY = "SERVICE_NOT_READY"
 
 
 _MESSAGES = {
@@ -58,6 +63,9 @@ _MESSAGES = {
     ErrorCode.INVALID_NORMALIZATION: "The value is not in canonical normalized form.",
     ErrorCode.VALUE_TOO_LARGE: "The value exceeds the contract limit.",
     ErrorCode.MALFORMED_REQUEST: "The request is malformed.",
+    ErrorCode.UNAUTHENTICATED: "Authentication is required or invalid.",
+    ErrorCode.PROJECT_NOT_AUTHORIZED: "The credential is not authorized for this project.",
+    ErrorCode.SERVICE_NOT_READY: "The Local Consumer API is not ready.",
 }
 
 
@@ -81,7 +89,9 @@ class ContractError(ValueError):
         return self.message
 
     def to_error_envelope(self, request_id: str | None = None) -> "ErrorEnvelope":
-        return ErrorEnvelope(request_id=request_id, code=self.code, field=self.field, path=self.path)
+        return ErrorEnvelope(
+            request_id=request_id, code=self.code, field=self.field, path=self.path
+        )
 
 
 def _require_mapping(value: object, *, code: str, field: str) -> Mapping[str, Any]:
@@ -97,7 +107,9 @@ def _reject_unknown_fields(value: Mapping[str, Any], allowed: frozenset[str], *,
         raise ContractError(ErrorCode.UNKNOWN_FIELD, field=path, path=path)
 
 
-def _identifier(value: object, *, field: str, invalid_code: str, missing_code: str | None = None, limit: int) -> str:
+def _identifier(
+    value: object, *, field: str, invalid_code: str, missing_code: str | None = None, limit: int
+) -> str:
     if value is None and missing_code:
         raise ContractError(missing_code, field=field, path=field)
     if not isinstance(value, str) or not value:
@@ -121,16 +133,23 @@ def _normalize_payload(value: object, *, path: str = "payload", depth: int = 0) 
     if isinstance(value, list):
         if len(value) > 64:
             raise ContractError(ErrorCode.VALUE_TOO_LARGE, field="payload", path=path)
-        return [_normalize_payload(item, path=f"{path}[{index}]", depth=depth + 1) for index, item in enumerate(value)]
+        return [
+            _normalize_payload(item, path=f"{path}[{index}]", depth=depth + 1)
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
         if len(value) > 64:
             raise ContractError(ErrorCode.VALUE_TOO_LARGE, field="payload", path=path)
         normalized: dict[str, object] = {}
         for key in sorted(value):
-            normalized_key = unicodedata.normalize("NFC", key.replace("\r\n", "\n").replace("\r", "\n"))
+            normalized_key = unicodedata.normalize(
+                "NFC", key.replace("\r\n", "\n").replace("\r", "\n")
+            )
             if not normalized_key or normalized_key in normalized:
                 raise ContractError(ErrorCode.INVALID_NORMALIZATION, field="payload", path=path)
-            normalized[normalized_key] = _normalize_payload(value[key], path=f"{path}.{normalized_key}", depth=depth + 1)
+            normalized[normalized_key] = _normalize_payload(
+                value[key], path=f"{path}.{normalized_key}", depth=depth + 1
+            )
         return normalized
     raise ContractError(ErrorCode.MALFORMED_REQUEST, field="payload", path=path)
 
@@ -140,7 +159,9 @@ def _payload(value: object) -> dict[str, object]:
     normalized = _normalize_payload(payload)
     assert isinstance(normalized, dict)
     try:
-        encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        encoded = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
     except (TypeError, ValueError):
         raise ContractError(ErrorCode.MALFORMED_REQUEST, field="payload", path="payload") from None
     if len(encoded) > MAX_PAYLOAD_BYTES:
@@ -154,9 +175,18 @@ class ConsumerEnvelope:
 
     @classmethod
     def parse(cls, value: object) -> "ConsumerEnvelope":
-        consumer = _require_mapping(value, code=ErrorCode.INVALID_CONSUMER_IDENTITY, field="consumer")
+        consumer = _require_mapping(
+            value, code=ErrorCode.INVALID_CONSUMER_IDENTITY, field="consumer"
+        )
         _reject_unknown_fields(consumer, _CONSUMER_FIELDS, path="consumer")
-        return cls(consumer_id=_identifier(consumer.get("consumer_id"), field="consumer_id", invalid_code=ErrorCode.INVALID_CONSUMER_IDENTITY, limit=MAX_CONSUMER_ID_LENGTH))
+        return cls(
+            consumer_id=_identifier(
+                consumer.get("consumer_id"),
+                field="consumer_id",
+                invalid_code=ErrorCode.INVALID_CONSUMER_IDENTITY,
+                limit=MAX_CONSUMER_ID_LENGTH,
+            )
+        )
 
     def to_dict(self) -> dict[str, str]:
         return {"consumer_id": self.consumer_id}
@@ -175,9 +205,13 @@ class AuthEnvelope:
         if scheme != "bearer" or not isinstance(credential, str) or not credential:
             raise ContractError(ErrorCode.INVALID_AUTH_ENVELOPE, field="auth", path="auth")
         if len(credential) > MAX_CREDENTIAL_LENGTH:
-            raise ContractError(ErrorCode.VALUE_TOO_LARGE, field="credential", path="auth.credential")
+            raise ContractError(
+                ErrorCode.VALUE_TOO_LARGE, field="credential", path="auth.credential"
+            )
         if not _CREDENTIAL_PATTERN.fullmatch(credential):
-            raise ContractError(ErrorCode.INVALID_AUTH_ENVELOPE, field="credential", path="auth.credential")
+            raise ContractError(
+                ErrorCode.INVALID_AUTH_ENVELOPE, field="credential", path="auth.credential"
+            )
         return cls(scheme=scheme, credential=credential)
 
     def to_dict(self, *, safe: bool = False) -> dict[str, str]:
@@ -200,16 +234,33 @@ class RequestEnvelope:
         _reject_unknown_fields(request, _REQUEST_FIELDS, path="request")
         version = request.get("contract_version")
         if version != LOCAL_CONSUMER_API_CONTRACT_VERSION:
-            raise ContractError(ErrorCode.INVALID_CONTRACT_VERSION, field="contract_version", path="contract_version")
+            raise ContractError(
+                ErrorCode.INVALID_CONTRACT_VERSION,
+                field="contract_version",
+                path="contract_version",
+            )
         request_type = request.get("request_type")
         if request_type != LOCAL_CONSUMER_API_REQUEST_TYPE:
-            raise ContractError(ErrorCode.UNSUPPORTED_REQUEST_TYPE, field="request_type", path="request_type")
-        request_id = _identifier(request.get("request_id"), field="request_id", invalid_code=ErrorCode.MALFORMED_REQUEST, limit=MAX_REQUEST_ID_LENGTH)
+            raise ContractError(
+                ErrorCode.UNSUPPORTED_REQUEST_TYPE, field="request_type", path="request_type"
+            )
+        request_id = _identifier(
+            request.get("request_id"),
+            field="request_id",
+            invalid_code=ErrorCode.MALFORMED_REQUEST,
+            limit=MAX_REQUEST_ID_LENGTH,
+        )
         return cls(
             contract_version=version,
             request_type=request_type,
             request_id=request_id,
-            project_id=_identifier(request.get("project_id"), field="project_id", invalid_code=ErrorCode.INVALID_PROJECT_ID, missing_code=ErrorCode.MISSING_PROJECT_ID, limit=MAX_PROJECT_ID_LENGTH),
+            project_id=_identifier(
+                request.get("project_id"),
+                field="project_id",
+                invalid_code=ErrorCode.INVALID_PROJECT_ID,
+                missing_code=ErrorCode.MISSING_PROJECT_ID,
+                limit=MAX_PROJECT_ID_LENGTH,
+            ),
             consumer=ConsumerEnvelope.parse(request.get("consumer")),
             auth=AuthEnvelope.parse(request.get("auth")),
             payload=_payload(request.get("payload")),
@@ -243,11 +294,21 @@ class ResponseEnvelope:
     def __post_init__(self) -> None:
         if self.contract_version != LOCAL_CONSUMER_API_CONTRACT_VERSION or self.status != "success":
             raise ContractError(ErrorCode.INVALID_CONTRACT_VERSION, field="contract_version")
-        _identifier(self.request_id, field="request_id", invalid_code=ErrorCode.MALFORMED_REQUEST, limit=MAX_REQUEST_ID_LENGTH)
+        _identifier(
+            self.request_id,
+            field="request_id",
+            invalid_code=ErrorCode.MALFORMED_REQUEST,
+            limit=MAX_REQUEST_ID_LENGTH,
+        )
         object.__setattr__(self, "payload", _payload(self.payload))
 
     def to_dict(self) -> dict[str, object]:
-        return {"contract_version": self.contract_version, "request_id": self.request_id, "status": self.status, "payload": self.payload}
+        return {
+            "contract_version": self.contract_version,
+            "request_id": self.request_id,
+            "status": self.status,
+            "payload": self.payload,
+        }
 
     def serialize(self) -> str:
         return serialize(self.to_dict())
@@ -263,12 +324,25 @@ class ErrorEnvelope:
     status: str = "error"
 
     def __post_init__(self) -> None:
-        if self.contract_version != LOCAL_CONSUMER_API_CONTRACT_VERSION or self.status != "error" or self.code not in _MESSAGES:
+        if (
+            self.contract_version != LOCAL_CONSUMER_API_CONTRACT_VERSION
+            or self.status != "error"
+            or self.code not in _MESSAGES
+        ):
             raise ContractError(ErrorCode.MALFORMED_REQUEST)
         if self.request_id is not None:
-            _identifier(self.request_id, field="request_id", invalid_code=ErrorCode.MALFORMED_REQUEST, limit=MAX_REQUEST_ID_LENGTH)
+            _identifier(
+                self.request_id,
+                field="request_id",
+                invalid_code=ErrorCode.MALFORMED_REQUEST,
+                limit=MAX_REQUEST_ID_LENGTH,
+            )
         for value in (self.field, self.path):
-            if value is not None and (not isinstance(value, str) or len(value) > 128 or not re.fullmatch(r"[a-z][a-z0-9_.\[\]]*", value)):
+            if value is not None and (
+                not isinstance(value, str)
+                or len(value) > 128
+                or not re.fullmatch(r"[a-z][a-z0-9_.\[\]]*", value)
+            ):
                 raise ContractError(ErrorCode.MALFORMED_REQUEST)
 
     def to_dict(self) -> dict[str, object]:
@@ -277,7 +351,12 @@ class ErrorEnvelope:
             error["field"] = self.field
         if self.path is not None:
             error["path"] = self.path
-        return {"contract_version": self.contract_version, "request_id": self.request_id, "status": self.status, "error": error}
+        return {
+            "contract_version": self.contract_version,
+            "request_id": self.request_id,
+            "status": self.status,
+            "error": error,
+        }
 
     def serialize(self) -> str:
         return serialize(self.to_dict())
@@ -287,11 +366,14 @@ def serialize(value: object) -> str:
     """Return canonical JSON for an already validated contract value."""
     if isinstance(value, (RequestEnvelope, ResponseEnvelope, ErrorEnvelope)):
         value = value.to_dict()
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
 
 
 def deserialize_request(serialized: str | bytes | bytearray) -> RequestEnvelope:
     """Decode JSON without duplicate-key ambiguity, then validate the request."""
+
     def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, item in pairs:

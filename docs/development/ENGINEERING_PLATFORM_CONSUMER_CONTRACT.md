@@ -59,7 +59,7 @@ dashboard.
 
 ### Phase 1 / Increment 2 architecture authorization
 
-Increment 2 is authorized but not implemented. ADR-0021 fixes the later
+Increment 2 is implemented; ADR-0021 fixes the bounded
 runtime shape: a dedicated EP-owned, loopback-only service at `127.0.0.1` with
 default port `8766`; unauthenticated bounded `GET /health`; and one read-only,
 authenticated `POST /v1/capabilities` endpoint. It adds no consumer cutover or
@@ -69,9 +69,10 @@ The transport accepts a credential only through `Authorization: Bearer
 <credential>`. `UNAUTHENTICATED` is the stable 401-equivalent error for missing
 or invalid credentials; `PROJECT_NOT_AUTHORIZED` is the stable 403-equivalent
 error for a valid credential outside the exact canonical `project_id` scope.
-The future schema-39 EP-owned verifier record never stores plaintext bearer
-values. Issuance, registration, rotation/revocation workflows and Keychain
-integration remain Increment 3 work.
+The schema-39 EP-owned verifier record never stores plaintext bearer values;
+its activation remains a separately governed post-merge action. Issuance,
+registration, rotation/revocation workflows and Keychain integration remain
+Increment 3 work.
 
 ### Local Consumer API v1 envelope schema
 

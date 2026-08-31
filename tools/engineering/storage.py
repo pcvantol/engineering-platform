@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 38
+ENGINEERING_STORAGE_SCHEMA_VERSION = 39
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -1049,6 +1049,24 @@ def _schema_v38(connection: sqlite3.Connection) -> None:
             )
 
 
+def _schema_v39(connection: sqlite3.Connection) -> None:
+    """Add verifier-only Local Consumer API credential authority metadata."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS local_api_credentials ("
+        "credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128),"
+        "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
+        "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
+        "verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32),"
+        "fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32),"
+        "issued_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT,"
+        "replaced_by_credential_id TEXT REFERENCES local_api_credentials(credential_id))"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS local_api_credentials_scope_lookup "
+        "ON local_api_credentials(consumer_id,project_id,revoked_at)"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1134,6 +1152,7 @@ MIGRATIONS: dict[int, Migration] = {
     36: _schema_v36,
     37: _schema_v37,
     38: _schema_v38,
+    39: _schema_v39,
 }
 
 
