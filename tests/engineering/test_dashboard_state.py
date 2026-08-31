@@ -6,16 +6,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import dashboard_state
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_lease import acquire
-from tools.engineering.storage import record_submission
+from engineering_platform import dashboard_state
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_lease import acquire
+from engineering_platform.storage import record_submission
 
 
 class DashboardStateTest(unittest.TestCase):
-    @patch("tools.engineering.dashboard_state.latest_capability_preflight", return_value={})
-    @patch("tools.engineering.dashboard_state.latest_workspace_preflight")
-    @patch("tools.engineering.dashboard_state.latest_host_preflight", return_value={})
+    @patch("engineering_platform.dashboard_state.latest_capability_preflight", return_value={})
+    @patch("engineering_platform.dashboard_state.latest_workspace_preflight")
+    @patch("engineering_platform.dashboard_state.latest_host_preflight", return_value={})
     def test_snapshot_hides_drift_superseded_by_a_passing_preflight(
         self, _: object, workspace_preflight: object, __: object,
     ) -> None:
@@ -208,7 +208,7 @@ class DashboardStateTest(unittest.TestCase):
                 "recovery": {"kind": "status_reconciliation", "run_id": "blocked-run"},
             }
 
-            with patch("tools.engineering.dashboard_state.lifecycle_projection", return_value=predecessor_lifecycle):
+            with patch("engineering_platform.dashboard_state.lifecycle_projection", return_value=predecessor_lifecycle):
                 payload = json.loads(dashboard_state.status(root))
 
         self.assertIsNone(payload["run_id"])
@@ -217,8 +217,8 @@ class DashboardStateTest(unittest.TestCase):
         self.assertIsNone(payload["lifecycle"]["recovery"])
 
     def test_status_hides_a_stale_dismissed_predecessor_projection(self) -> None:
-        from tools.engineering.prompt_history import record_prompt_execution
-        from tools.engineering.storage import record_execution_dismissal
+        from engineering_platform.prompt_history import record_prompt_execution
+        from engineering_platform.storage import record_execution_dismissal
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -261,8 +261,8 @@ class DashboardStateTest(unittest.TestCase):
         self.assertEqual(payload["execution_liveness"]["state"], "STALE")
         self.assertNotEqual(payload["current_action"], "Engineeringuitvoering is actief.")
 
-    @patch("tools.engineering.dashboard_state.os.killpg")
-    @patch("tools.engineering.dashboard_state.os.getpgid", return_value=4321)
+    @patch("engineering_platform.dashboard_state.os.killpg")
+    @patch("engineering_platform.dashboard_state.os.getpgid", return_value=4321)
     def test_status_prefers_a_live_runner_checkpoint_over_a_stale_watcher_projection(
         self, _: object, __: object,
     ) -> None:

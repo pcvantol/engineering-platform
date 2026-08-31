@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 import json
 
-from tools.engineering.producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
-from tools.engineering.recommendation_handoff import ForgeGovernanceHandoff, report_lines
-from tools.engineering.execution_host import execution_mode_for
-from tools.engineering.validation_profile import producer_profile_payload
+from engineering_platform.producer import ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
+from engineering_platform.recommendation_handoff import ForgeGovernanceHandoff, report_lines
+from engineering_platform.execution_host import execution_mode_for
+from engineering_platform.validation_profile import producer_profile_payload
 
 
 class ProducerContractTest(unittest.TestCase):

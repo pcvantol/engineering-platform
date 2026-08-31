@@ -5,8 +5,8 @@ from tempfile import TemporaryDirectory
 import os
 import unittest
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.provider_recovery import (
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.provider_recovery import (
     ControlledInterruptionControlError,
     arm_controlled_interruption,
     controlled_interruption_status,
@@ -130,13 +130,13 @@ class ProviderRecoveryControllerTests(unittest.TestCase):
         self.assertEqual(state["replacement_invocation_id"], claim["invocation_id"])
 
     def test_watcher_does_not_resume_when_a_live_run_lease_exists(self) -> None:
-        from tools.engineering.execution_lease import acquire
+        from engineering_platform.execution_lease import acquire
 
         lease = acquire(self.root, self.run_id, identity="test", instance_id="live-host")
         try:
             self.assertIsNone(watcher_resume_action(self.root, self.run_id))
         finally:
-            from tools.engineering.execution_lease import release
+            from engineering_platform.execution_lease import release
             release(self.root, lease)
 
     def test_watcher_does_not_consume_recovered_result_after_phase_advanced(self) -> None:

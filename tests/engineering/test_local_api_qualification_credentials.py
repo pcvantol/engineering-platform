@@ -11,8 +11,8 @@ import tempfile
 from threading import Thread
 import unittest
 
-from tools.engineering.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from tools.engineering.local_api_credentials import (
+from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
+from engineering_platform.local_api_credentials import (
     CredentialAuthority,
     create_qualification_credential,
     main,
@@ -20,7 +20,7 @@ from tools.engineering.local_api_credentials import (
     revoke_qualification_credential,
     verifier,
 )
-from tools.engineering.storage import open_storage
+from engineering_platform.storage import open_storage
 
 
 ROOT = Path(__file__).resolve().parents[2]

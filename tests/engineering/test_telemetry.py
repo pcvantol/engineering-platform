@@ -8,8 +8,8 @@ from threading import Event
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
-from tools.engineering.telemetry import (
+from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform.telemetry import (
     ExecutionTelemetry,
     clear_telemetry,
     daily_statistics,
@@ -25,8 +25,8 @@ from tools.engineering.telemetry import (
     recover_terminal_telemetry,
     wait_for_pending_telemetry,
 )
-from tools.engineering.producer import ProducerMetadata
-from tools.engineering.execution_timing import record_phase
+from engineering_platform.producer import ProducerMetadata
+from engineering_platform.execution_timing import record_phase
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
@@ -158,7 +158,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             persist_execution(root, self._record("run-trend", "COMPLETE", datetime(2026, 8, 1, 10, tzinfo=timezone.utc)))
-            with patch("tools.engineering.telemetry.daily_timing_detail", side_effect=AssertionError("detail query")):
+            with patch("engineering_platform.telemetry.daily_timing_detail", side_effect=AssertionError("detail query")):
                 rows = daily_statistics(root)
         self.assertEqual(rows[0]["average_provider_execution_seconds"], None)
         self.assertEqual(rows[0]["average_validation_seconds"], None)
@@ -263,7 +263,7 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             def failure(_: Path, __: ExecutionTelemetry, **___: object) -> None:
                 raise RuntimeError("storage unavailable")
 
-            with patch("tools.engineering.telemetry.persist_execution", side_effect=failure):
+            with patch("engineering_platform.telemetry.persist_execution", side_effect=failure):
                 worker = persist_execution_async(
                     Path(temporary),
                     self._record("run-failed-telemetry", "FAILED", datetime.now(timezone.utc)),

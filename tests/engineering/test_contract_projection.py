@@ -8,12 +8,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.contracts import AllowedAction, evaluate_action, get_allowed_actions, get_run_context
-from tools.engineering.contracts.models import ContractVersionError, require_compatible_version
-from tools.engineering.execution_reporting import _producer_submission_contract_lines
-from tools.engineering.managed_autonomy import append_pr_check_observation
-from tools.engineering.storage import (
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.contracts import AllowedAction, evaluate_action, get_allowed_actions, get_run_context
+from engineering_platform.contracts.models import ContractVersionError, require_compatible_version
+from engineering_platform.execution_reporting import _producer_submission_contract_lines
+from engineering_platform.managed_autonomy import append_pr_check_observation
+from engineering_platform.storage import (
     open_storage,
     record_run_qualification_context,
     record_submission,

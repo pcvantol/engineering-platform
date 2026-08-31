@@ -33,7 +33,7 @@ class DependabotPullRequest:
 def configured_repository(repo: Path) -> str:
     """Read the configured GitHub repository without consulting prompt content."""
     try:
-        raw = json.loads((repo / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
+        raw = json.loads((repo / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
         source = raw["workspace"]["repository"]
         owner, name = source["owner"], source["name"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:

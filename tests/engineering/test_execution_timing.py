@@ -5,12 +5,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.execution_timing import (
+from engineering_platform.execution_timing import (
     complete_active_phase, complete_phase, phase_spans, reconcile_interrupted_phases, record_phase,
     start_phase, timing_summary,
 )
-from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
-from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
+from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
 
 
 class ExecutionPhaseTimingTest(unittest.TestCase):

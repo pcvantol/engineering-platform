@@ -8,7 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-from tools.engineering.evidence_projection import (
+from engineering_platform.evidence_projection import (
     FAILED_DIAGNOSTIC_LIMIT,
     PASSING_TEST_LIMIT,
     ToolProxyEnvironment,

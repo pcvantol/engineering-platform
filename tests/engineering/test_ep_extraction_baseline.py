@@ -48,7 +48,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture", encoding="utf-8")
-        product_fixture = root / "tools/engineering/fixture.py"
+        product_fixture = root / "src/engineering_platform/fixture.py"
         product_fixture.write_text("import homeassistant\n", encoding="utf-8")
         manifest = copy.deepcopy(self.manifest)
         manifest["candidate_universe_digest"] = AUDIT_MODULE.universe_digest(AUDIT_MODULE.candidate_universe(root))
@@ -93,10 +93,10 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
 
     def test_unclassified_and_missing_required_path_fail(self) -> None:
         unclassified = copy.deepcopy(self.manifest)
-        unclassified["path_rules"] = [rule for rule in unclassified["path_rules"] if rule["path"] != "tools/engineering"]
+        unclassified["path_rules"] = [rule for rule in unclassified["path_rules"] if rule["path"] != "src/engineering_platform"]
         self.assertTrue(any("unclassified candidates" in error for error in AUDIT_MODULE.validate(unclassified, ROOT)))
         missing = copy.deepcopy(self.manifest)
-        missing["path_rules"][0]["path"] = "tools/engineering/does-not-exist"
+        missing["path_rules"][0]["path"] = "src/engineering_platform/does-not-exist"
         self.assertTrue(any("missing required classified path" in error for error in AUDIT_MODULE.validate(missing, ROOT)))
 
     def test_valid_classification_change_requires_manifest_reconciliation(self) -> None:
@@ -116,7 +116,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         overlap = copy.deepcopy(self.manifest)
         overlap["path_rules"].append(copy.deepcopy(overlap["path_rules"][1]))
         self.assertTrue(any("ambiguous candidates" in error for error in AUDIT_MODULE.validate(overlap, ROOT)))
-        winner, candidates = AUDIT_MODULE.effective_rule("tools/engineering/ENGINEERING_PLATFORM_VERSION.json", self.manifest["path_rules"])
+        winner, candidates = AUDIT_MODULE.effective_rule("src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json", self.manifest["path_rules"])
         self.assertEqual(len(candidates), 1)
         self.assertIsNotNone(winner)
         self.assertEqual(winner["classification"], "EP_RELEASE_ASSET")
@@ -125,7 +125,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         temporary, root, manifest = self._fixture_root()
         with temporary:
             self.assertEqual(AUDIT_MODULE.validate(manifest, root), [])
-            new_file = root / "tools/engineering/new_ep_module.py"
+            new_file = root / "src/engineering_platform/new_ep_module.py"
             new_file.write_text("fixture", encoding="utf-8")
             errors = AUDIT_MODULE.validate(manifest, root)
             self.assertTrue(any("candidate universe drift" in error for error in errors))

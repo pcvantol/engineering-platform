@@ -5,8 +5,8 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.worktree_provenance import capture, verify_recovery
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.worktree_provenance import capture, verify_recovery
 
 
 class WorktreeProvenanceTests(unittest.TestCase):

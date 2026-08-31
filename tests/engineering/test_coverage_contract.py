@@ -34,7 +34,7 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
             "docs/engineering/LOCAL_DASHBOARD_SUPERVISOR.md"
         ).read_text(encoding="utf-8")
         design_system = Path(
-            "tools/engineering/OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
+            "src/engineering_platform/OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn("CI-pariteit en reproduceerbare browserfouten", supervisor)

@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_lease import LeaseConflictError, LeaseHeartbeat, acquire, heartbeat, history, liveness, reconcile_stale, release
-from tools.engineering.storage import open_storage
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_lease import LeaseConflictError, LeaseHeartbeat, acquire, heartbeat, history, liveness, reconcile_stale, release
+from engineering_platform.storage import open_storage
 
 
 class ExecutionLeaseTest(unittest.TestCase):
@@ -62,7 +62,7 @@ class ExecutionLeaseTest(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT phase FROM engineering_transactions WHERE run_id='inbox-lease'").fetchone()[0], "INITIALIZE")
 
     def test_verified_recovery_provider_retains_run_lease_after_host_expiry(self) -> None:
-        from tools.engineering.provider_recovery import (
+        from engineering_platform.provider_recovery import (
             claim_replacement_launch, create_recovery_available, record_provider_started,
             transition_recovery_state,
         )
@@ -94,7 +94,7 @@ class ExecutionLeaseTest(unittest.TestCase):
             acquire(self.root, "inbox-lease", identity="host", instance_id="competing-host")
 
     def test_ambiguous_recovery_process_also_retains_lease_for_operator_resolution(self) -> None:
-        from tools.engineering.provider_recovery import (
+        from engineering_platform.provider_recovery import (
             claim_replacement_launch, create_recovery_available, record_provider_started,
             transition_recovery_state,
         )
@@ -119,7 +119,7 @@ class ExecutionLeaseTest(unittest.TestCase):
                 "UPDATE execution_run_leases SET expires_at='2020-01-01T00:00:00+00:00' WHERE lease_id=?",
                 (lease.lease_id,),
             )
-        with patch("tools.engineering.execution_lease.verify_process_identity", return_value="MISMATCH"):
+        with patch("engineering_platform.execution_lease.verify_process_identity", return_value="MISMATCH"):
             outcomes = reconcile_stale(self.root)
         self.assertEqual(outcomes[0]["outcome"], "RECOVERY_PROVIDER_AMBIGUOUS")
         self.assertEqual(liveness(self.root, "inbox-lease")["state"], "LIVE")

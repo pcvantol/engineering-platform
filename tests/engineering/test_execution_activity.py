@@ -8,7 +8,7 @@ import os
 import subprocess
 import unittest
 
-from tools.engineering.execution_activity import (
+from engineering_platform.execution_activity import (
     CODEX_COMMAND_DEFINITION,
     cumulative_activity,
     live_worktree_snapshot,
@@ -16,13 +16,13 @@ from tools.engineering.execution_activity import (
     terminal_activity_summary,
     build_terminal_activity_summary,
 )
-from tools.engineering import dashboard
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_models import AgentResult
-from tools.engineering.prompt_history import record_prompt_execution
-from tools.engineering.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
-from tools.engineering.storage import open_storage
-from tools.engineering.provider_recovery import (
+from engineering_platform import dashboard
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_models import AgentResult
+from engineering_platform.prompt_history import record_prompt_execution
+from engineering_platform.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
+from engineering_platform.storage import open_storage
+from engineering_platform.provider_recovery import (
     claim_replacement_launch,
     create_recovery_available,
     load_recovery_state,

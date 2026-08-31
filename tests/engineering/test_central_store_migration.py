@@ -13,9 +13,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import central_store_migration as migration
-from tools.engineering import storage
-from tools.engineering.storage import open_storage
+from engineering_platform import central_store_migration as migration
+from engineering_platform import storage
+from engineering_platform.storage import open_storage
 
 
 class CentralStoreMigrationTests(unittest.TestCase):
@@ -210,7 +210,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
                 return True
 
         try:
-            with patch.object(migration, "_process_command", side_effect=lambda pid: "python -m tools.engineering.dashboard run" if pid == 101 else "python -m tools.engineering.inbox_watcher run"):
+            with patch.object(migration, "_process_command", side_effect=lambda pid: "python -m engineering_platform.dashboard run" if pid == 101 else "python -m engineering_platform.inbox_watcher run"):
                 facts = migration.inspect_quiescence(self.source, pre_stop=True, services=Services())
             self.assertTrue(facts["eligible"])
             self.assertEqual(facts["lock_classifications"]["dashboard.lock"], "EXPECTED_RUNNING_SERVICE_LOCK")
@@ -397,7 +397,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
                 return True
 
         try:
-            with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", return_value="python -m tools.engineering.dashboard run"):
+            with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", return_value="python -m engineering_platform.dashboard run"):
                 migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
                 with self.assertRaises(migration.CutoverError) as error:
                     migration.controlled_cutover(self.root, services=Services())
@@ -443,8 +443,8 @@ class CentralStoreMigrationTests(unittest.TestCase):
         try:
             def command(process_id: int) -> str:
                 if process_id == 101:
-                    return "python -m tools.engineering.dashboard run"
-                return "python -m tools.engineering.inbox_watcher run"
+                    return "python -m engineering_platform.dashboard run"
+                return "python -m engineering_platform.inbox_watcher run"
 
             with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", side_effect=command):
                 migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")

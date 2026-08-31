@@ -123,7 +123,7 @@ class ToolProxyEnvironment:
             launcher = directory / name
             target = "context_escalation_main" if name == "djconnect-context-escalate" else "proxy_main"
             launcher.write_text(
-                f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom tools.engineering.evidence_projection import {target}\n{target}({name!r})\n",
+                f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(repository_root)!r})\nfrom engineering_platform.evidence_projection import {target}\n{target}({name!r})\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o700)

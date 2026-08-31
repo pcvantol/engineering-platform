@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import unittest
-from tools.engineering.golden_scenario import run
+from engineering_platform.golden_scenario import run
 
 ROOT = Path(__file__).resolve().parents[2]
 

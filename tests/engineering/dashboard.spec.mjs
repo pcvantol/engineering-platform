@@ -9,7 +9,7 @@ import {
   DASHBOARD_MESSAGES,
   OPERATIONAL_TRANSLATION_KEYS,
   SUPPORTED_LOCALES,
-} from "../../tools/engineering/assets/dashboard_locales.mjs";
+} from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 let dashboard;
@@ -23,7 +23,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from pathlib import Path; import sys; from tools.engineering.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
+        "from pathlib import Path; import sys; from engineering_platform.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "ignore"] },
@@ -68,10 +68,10 @@ test.beforeAll(async () => {
   installationRoot = mkdtempSync(path.join(tmpdir(), "djconnect-dashboard-authority-"));
   const isolatedHome = path.join(installationRoot, "home");
   mkdirSync(isolatedHome, { recursive: true });
-  const engineeringDirectory = path.join(dashboardRoot, "tools/engineering");
+  const engineeringDirectory = path.join(dashboardRoot, "src/engineering_platform");
   mkdirSync(engineeringDirectory, { recursive: true });
   for (const filename of ["ENGINEERING_PLATFORM_CONFIG.json", "ENGINEERING_PLATFORM_VERSION.json"]) {
-    copyFileSync(path.join(repository, "tools/engineering", filename), path.join(engineeringDirectory, filename));
+    copyFileSync(path.join(repository, "src/engineering_platform", filename), path.join(engineeringDirectory, filename));
   }
   const server = await startDashboard(dashboardRoot, {
     ...process.env,
@@ -849,10 +849,10 @@ test.describe("Engineering Status browser smoke", () => {
 
     const remove = page.getByRole("button", { name: "Verwijder worktree" });
     await expect(remove).toHaveCSS("border-color", "rgb(240, 128, 149)");
-    expect(readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8")).toContain(
+    expect(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8")).toContain(
       ".workspace-worktrees .workspace-worktrees__remove:hover:not(:disabled){background:#ff718f!important;border-color:#ff718f!important;color:#23131a!important}",
     );
-    const dashboardScript = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8");
+    const dashboardScript = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8");
     expect(dashboardScript).toContain("void refreshAfterOperatorAction();");
     expect(dashboardScript).not.toContain("void refresh();");
     await dispatchDashboardPointerClick(remove);
@@ -936,7 +936,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#confirmationModalConfirm").click();
     await expect(page.locator("#workspaceBranchMainResultModal")).toBeVisible();
     await expect(switchMain).toBeHidden();
-    expect(readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8")).toContain(
+    expect(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8")).toContain(
       "workspaceMainSwitchScheduled || !workspaceGit.main_action_available",
     );
   });
@@ -1655,7 +1655,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => dispatched).toEqual({ method: "POST", body: "{}" });
     await expect.poll(() => refreshes).toBeGreaterThan(refreshesBeforeAuthorization);
-    expect(readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8"))
+    expect(readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8"))
       .toContain("for (const delay of [900, 2500, 6000, 12000])");
   });
 
@@ -1931,7 +1931,7 @@ test.describe("Engineering Status browser smoke", () => {
       json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
     }));
     const dashboardSource = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.js"),
       "utf8",
     );
     const staticallyRequestedKeys = [
@@ -2053,7 +2053,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("enforces the source-to-interface localization contract in all five languages", async ({ page }) => {
     const dashboardSource = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.js"),
       "utf8",
     );
     const staticPresentationLiterals = [
@@ -2532,11 +2532,11 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("prevents iOS long-press selection on prompt-history rows", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     const script = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.js"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.js"),
       "utf8",
     );
     expect(styles).toContain(".prompt-history-row,.prompt-history-row *{-webkit-touch-callout:none;-webkit-user-select:none;touch-action:manipulation;user-select:none}");
@@ -2546,7 +2546,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps sortable table headers opaque on iOS", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     expect(styles).toContain("#engineering-dashboard-content .log-table th{");
@@ -2555,7 +2555,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps execution context in one column at every viewport width", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     expect(styles).not.toMatch(/\.execution-context--primary\{columns:/);
@@ -3869,7 +3869,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps the site-wide scrollbar and action-size tokens explicit", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     expect(styles).toContain("::-webkit-scrollbar-thumb");
@@ -3881,7 +3881,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps direct-touch controls free from a shared glass gradient", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     expect(styles).toContain("@media (hover:none) and (pointer:coarse)");
@@ -4673,8 +4673,8 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("renders telemetry run IDs as text actions instead of round icon buttons", () => {
-    const script = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.js"), "utf8");
-    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    const script = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
     expect(script).toContain('id.className = "telemetry-run-link"');
     expect(script).not.toContain('id.className = "dashboard-action"; id.textContent = run.run_id');
     expect(stylesheet).toContain(".telemetry-run-link{");
@@ -4794,7 +4794,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("derives secondary modal tokens from the modal accent instead of a category-specific fallback", () => {
-    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
     expect(stylesheet).toContain("--modal-secondary-accent:color-mix(in srgb,var(--modal-accent) 62%,#fff)");
     expect(stylesheet).toContain("--modal-subcontainer-surface:color-mix(in srgb,var(--modal-accent) 8%,var(--modal-surface))");
     expect(stylesheet).toContain(".dashboard-modal-shell :is(.label,.field>.label){color:var(--modal-secondary-accent)}");
@@ -7789,7 +7789,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps title-bar switch housings free from shared mobile glass styling", () => {
     const styles = readFileSync(
-      path.join(repository, "tools/engineering/assets/dashboard.css"),
+      path.join(repository, "src/engineering_platform/assets/dashboard.css"),
       "utf8",
     );
     expect(styles).not.toContain("backdrop-filter:blur(12px)");
@@ -7940,7 +7940,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("uses one selected border for a selectable host component", () => {
-    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
     expect(stylesheet).toContain(".platform-health__component:is(:hover,:focus,:focus-visible){\n  border:1px solid var(--house-style)!important;\n  box-shadow:none!important;\n  outline:0!important;");
   });
 
@@ -7994,7 +7994,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("keeps title-bar switch focus on the compact track", () => {
-    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
     expect(stylesheet).toContain(".execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle");
     expect(stylesheet).toContain("Unified focus contract: one product-coloured, one-pixel edge.");
     expect(stylesheet).toContain("border-color:var(--house-style)!important;");
@@ -9460,7 +9460,7 @@ test.describe("Engineering Status browser smoke", () => {
     // makes native pointer hover non-deterministic in headless Chromium.
     // Verify the exact design-system rule while retaining the real recovery
     // interaction below as a separate behavioral assertion.
-    const stylesheet = readFileSync(path.join(repository, "tools/engineering/assets/dashboard.css"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
     expect(stylesheet).toContain(
       ".queue-blocker__repair:hover:not(:disabled){background:#f0b66a!important;border-color:#f0b66a!important;color:#201812!important}",
     );

@@ -6,10 +6,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_models import PullRequestEvidence
-from tools.engineering.pr_evidence_backfill import backfill
-from tools.engineering.storage import open_storage
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_models import PullRequestEvidence
+from engineering_platform.pr_evidence_backfill import backfill
+from engineering_platform.storage import open_storage
 
 
 class FakeGitHub:

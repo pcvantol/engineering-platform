@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import central_store_migration as migration
-from tools.engineering import storage
+from engineering_platform import central_store_migration as migration
+from engineering_platform import storage
 
 
 class _Services:

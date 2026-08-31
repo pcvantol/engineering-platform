@@ -6,7 +6,7 @@ import sys
 import time
 import unittest
 
-from tools.engineering.provider_process_identity import capture_process_identity, verify_process_identity
+from engineering_platform.provider_process_identity import capture_process_identity, verify_process_identity
 
 
 class ProviderProcessIdentityTests(unittest.TestCase):

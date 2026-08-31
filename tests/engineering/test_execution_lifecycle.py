@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_timing import complete_phase, start_phase
-from tools.engineering.execution_lifecycle import intended_path, projection
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_timing import complete_phase, start_phase
+from engineering_platform.execution_lifecycle import intended_path, projection
 
 
 class ExecutionLifecycleProjectionTests(unittest.TestCase):

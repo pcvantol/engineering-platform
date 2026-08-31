@@ -75,13 +75,13 @@ class WriterCandidate:
 # This is an index of APIs, not a classification rule: shared writers never
 # establish a row origin without a separate deterministic signal.
 _WRITER_CANDIDATES = (
-    WriterCandidate("execution_submissions", "storage.record_submission", ("tools/engineering/human_text_ingress.py", "tools/engineering/inbox_watcher.py"), ("tests/engineering",)),
-    WriterCandidate("execution_runs", "storage.record_execution_run", ("tools/engineering/inbox_watcher.py",), ("tests/engineering",)),
-    WriterCandidate("local_api_credentials", "local_api_credentials.issue_or_rotate", ("tools/engineering/local_api.py",), ("tests/engineering",), ("tools/engineering/dashboard.py",)),
-    WriterCandidate("local_api_consumer_registrations", "local_api_credentials.register_consumer", ("tools/engineering/local_api.py",), ("tests/engineering",), ("tools/engineering/dashboard.py",)),
-    WriterCandidate("engineering_component_logs", "component_logging.log_event", ("tools/engineering",), ("tests/engineering",), maintenance_callers=("tools/engineering/component_logging.py",)),
-    WriterCandidate("engineering_metadata", "dashboard_configuration.update / database_maintenance._record_attempt", ("tools/engineering/dashboard.py",), ("tests/engineering",), maintenance_callers=("tools/engineering/database_maintenance.py",)),
-    WriterCandidate("execution_projections", "storage.store_projection", ("tools/engineering",), ("tests/engineering",)),
+    WriterCandidate("execution_submissions", "storage.record_submission", ("src/engineering_platform/human_text_ingress.py", "src/engineering_platform/inbox_watcher.py"), ("tests/engineering",)),
+    WriterCandidate("execution_runs", "storage.record_execution_run", ("src/engineering_platform/inbox_watcher.py",), ("tests/engineering",)),
+    WriterCandidate("local_api_credentials", "local_api_credentials.issue_or_rotate", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
+    WriterCandidate("local_api_consumer_registrations", "local_api_credentials.register_consumer", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
+    WriterCandidate("engineering_component_logs", "component_logging.log_event", ("src/engineering_platform",), ("tests/engineering",), maintenance_callers=("src/engineering_platform/component_logging.py",)),
+    WriterCandidate("engineering_metadata", "dashboard_configuration.update / database_maintenance._record_attempt", ("src/engineering_platform/dashboard.py",), ("tests/engineering",), maintenance_callers=("src/engineering_platform/database_maintenance.py",)),
+    WriterCandidate("execution_projections", "storage.store_projection", ("src/engineering_platform",), ("tests/engineering",)),
 )
 
 
@@ -188,28 +188,28 @@ def _classify(change: dict[str, Any], literals: dict[str, list[str]]) -> dict[st
     if table == "engineering_component_logs" and change_type == "REMOVED":
         return {"ancestry_origin": "UNKNOWN", "writer_origin": "MAINTENANCE", "state_semantics": "RETENTION_STATE",
                 "evidence_status": "PROVEN", "rule_id": "COMPONENT_LOG_RETENTION",
-                "evidence": _evidence("COMPONENT_LOG_RETENTION", {"type": "repository_semantics", "source": "tools/engineering/component_logging.py", "signals": ["bounded_log_pruning_api", "removed_component_log"]})}
+                "evidence": _evidence("COMPONENT_LOG_RETENTION", {"type": "repository_semantics", "source": "src/engineering_platform/component_logging.py", "signals": ["bounded_log_pruning_api", "removed_component_log"]})}
     if table == "engineering_metadata":
         key = str(_canonical_key(change)[0]) if _canonical_key(change) else ""
         if key.startswith("dashboard_configuration."):
             return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "CONFIGURATION",
                     "evidence_status": "UNRESOLVED", "rule_id": "SHARED_CONFIGURATION_WRITER",
-                    "evidence": _evidence("SHARED_CONFIGURATION_WRITER", {"type": "writer_index", "source": "tools/engineering/dashboard_configuration.py", "signals": ["configuration_key", "shared_api_no_caller_receipt"]})}
+                    "evidence": _evidence("SHARED_CONFIGURATION_WRITER", {"type": "writer_index", "source": "src/engineering_platform/dashboard_configuration.py", "signals": ["configuration_key", "shared_api_no_caller_receipt"]})}
         if key == "database_maintenance.last_attempt_at":
             return {"ancestry_origin": "UNKNOWN", "writer_origin": "MAINTENANCE", "state_semantics": "RETENTION_STATE",
                     "evidence_status": "PROVEN", "rule_id": "DATABASE_MAINTENANCE_METADATA",
-                    "evidence": _evidence("DATABASE_MAINTENANCE_METADATA", {"type": "repository_semantics", "source": "tools/engineering/database_maintenance.py", "signals": ["reserved_maintenance_key", "maintenance_writer"]})}
+                    "evidence": _evidence("DATABASE_MAINTENANCE_METADATA", {"type": "repository_semantics", "source": "src/engineering_platform/database_maintenance.py", "signals": ["reserved_maintenance_key", "maintenance_writer"]})}
     if table == "execution_projections":
         return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "MUTABLE_PROJECTION",
                 "evidence_status": "UNRESOLVED", "rule_id": "SHARED_PROJECTION_WRITER",
-                "evidence": _evidence("SHARED_PROJECTION_WRITER", {"type": "writer_index", "source": "tools/engineering/storage.py", "signals": ["projection_table", "shared_api_no_caller_receipt"]})}
+                "evidence": _evidence("SHARED_PROJECTION_WRITER", {"type": "writer_index", "source": "src/engineering_platform/storage.py", "signals": ["projection_table", "shared_api_no_caller_receipt"]})}
     fixture = _fixture_evidence(change, literals)
     if fixture:
         return fixture
     if table == "execution_submissions" and submission_id and re.fullmatch(r"human-ingress-[0-9a-f]{32,64}", submission_id) and (_safe_string(change, "producer_id") or "").startswith("human:"):
         return {"ancestry_origin": "PRODUCTION", "writer_origin": "PRODUCTION_RUNTIME", "state_semantics": "IMMUTABLE_BUSINESS_STATE",
                 "evidence_status": "PROVEN", "rule_id": "CANONICAL_HUMAN_INGRESS_ENVELOPE",
-                "evidence": _evidence("CANONICAL_HUMAN_INGRESS_ENVELOPE", {"type": "canonical_ingress_structure", "source": "tools/engineering/human_text_ingress.py", "signals": ["canonical_human_ingress_id", "human_producer_binding", "immutable_submission_row"]})}
+                "evidence": _evidence("CANONICAL_HUMAN_INGRESS_ENVELOPE", {"type": "canonical_ingress_structure", "source": "src/engineering_platform/human_text_ingress.py", "signals": ["canonical_human_ingress_id", "human_producer_binding", "immutable_submission_row"]})}
     if table == "backup_probe":
         return {"ancestry_origin": "TEST_HARNESS", "writer_origin": "TEST_HARNESS", "state_semantics": "TEST_ONLY_STRUCTURE",
                 "evidence_status": "PROVEN", "rule_id": "TEST_ONLY_SCHEMA_STRUCTURE",

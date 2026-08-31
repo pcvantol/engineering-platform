@@ -198,7 +198,7 @@ def run(root: Path, *, port: int = DEFAULT_PORT) -> None:
 def launch_agent(repo: Path, port: int = DEFAULT_PORT) -> Path:
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>tools.engineering.local_api</string><string>run</string><string>--repo</string><string>{repo}</string><string>--port</string><string>{valid_port(port)}</string></array><key>WorkingDirectory</key><string>{repo}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
+        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{LABEL}</string><key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>engineering_platform.local_api</string><string>run</string><string>--repo</string><string>{repo}</string><string>--port</string><string>{valid_port(port)}</string></array><key>WorkingDirectory</key><string>{repo}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
         encoding="utf-8",
     )
     return destination

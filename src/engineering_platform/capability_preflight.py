@@ -144,7 +144,7 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
         )
     try:
         manifest = EngineeringPlatformManifest.load(
-            root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
+            root / "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"
         )
         runner = RunnerCompatibility()
     except EngineeringPlatformCompatibilityError as error:

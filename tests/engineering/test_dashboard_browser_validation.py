@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.engineering import dashboard_browser_validation
+from engineering_platform import dashboard_browser_validation
 
 
 class DashboardBrowserValidationTest(unittest.TestCase):
     def test_ci_delegates_a_single_requested_shard(self) -> None:
         completed = MagicMock(returncode=0)
-        with patch("tools.engineering.dashboard_browser_validation.subprocess.run", return_value=completed) as run:
+        with patch("engineering_platform.dashboard_browser_validation.subprocess.run", return_value=completed) as run:
             self.assertEqual(dashboard_browser_validation._run_ci(Path("/repository"), ("--shard=2/4",)), 0)
 
         self.assertEqual(
@@ -26,13 +26,13 @@ class DashboardBrowserValidationTest(unittest.TestCase):
         process.poll.return_value = 0
         process.wait.return_value = 0
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "tools.engineering.dashboard_browser_validation._common_git_directory",
+            "engineering_platform.dashboard_browser_validation._common_git_directory",
             return_value=Path(temporary),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.single_instance",
+            "engineering_platform.dashboard_browser_validation.single_instance",
             return_value=nullcontext(),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.subprocess.Popen",
+            "engineering_platform.dashboard_browser_validation.subprocess.Popen",
             side_effect=[process, process, process, process],
         ) as popen:
             self.assertEqual(dashboard_browser_validation._run_local_shards(Path(temporary)), 0)
@@ -50,18 +50,18 @@ class DashboardBrowserValidationTest(unittest.TestCase):
             process.wait.return_value = 0
             processes.append(process)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "tools.engineering.dashboard_browser_validation._common_git_directory",
+            "engineering_platform.dashboard_browser_validation._common_git_directory",
             return_value=Path(temporary),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.single_instance",
+            "engineering_platform.dashboard_browser_validation.single_instance",
             return_value=nullcontext(),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.subprocess.Popen",
+            "engineering_platform.dashboard_browser_validation.subprocess.Popen",
             side_effect=processes,
         ), patch(
-            "tools.engineering.dashboard_browser_validation.time.monotonic",
+            "engineering_platform.dashboard_browser_validation.time.monotonic",
             side_effect=[0, dashboard_browser_validation.LOCAL_BATCH_TIMEOUT_SECONDS + 1],
-        ), patch("tools.engineering.dashboard_browser_validation.os.killpg") as killpg:
+        ), patch("engineering_platform.dashboard_browser_validation.os.killpg") as killpg:
             self.assertEqual(dashboard_browser_validation._run_local_shards(Path(temporary)), 1)
 
         self.assertEqual(
@@ -79,15 +79,15 @@ class DashboardBrowserValidationTest(unittest.TestCase):
         process.poll.return_value = None
         process.wait.return_value = 0
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "tools.engineering.dashboard_browser_validation._common_git_directory",
+            "engineering_platform.dashboard_browser_validation._common_git_directory",
             return_value=Path(temporary),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.single_instance",
+            "engineering_platform.dashboard_browser_validation.single_instance",
             return_value=nullcontext(),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.subprocess.Popen",
+            "engineering_platform.dashboard_browser_validation.subprocess.Popen",
             side_effect=[process, OSError("spawn failed")],
-        ), patch("tools.engineering.dashboard_browser_validation.os.killpg") as killpg:
+        ), patch("engineering_platform.dashboard_browser_validation.os.killpg") as killpg:
             with self.assertRaisesRegex(OSError, "spawn failed"):
                 dashboard_browser_validation._run_local_shards(Path(temporary))
 
@@ -104,15 +104,15 @@ class DashboardBrowserValidationTest(unittest.TestCase):
             process.wait.return_value = 0
             running.append(process)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "tools.engineering.dashboard_browser_validation._common_git_directory",
+            "engineering_platform.dashboard_browser_validation._common_git_directory",
             return_value=Path(temporary),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.single_instance",
+            "engineering_platform.dashboard_browser_validation.single_instance",
             return_value=nullcontext(),
         ), patch(
-            "tools.engineering.dashboard_browser_validation.subprocess.Popen",
+            "engineering_platform.dashboard_browser_validation.subprocess.Popen",
             side_effect=[failed, *running],
-        ), patch("tools.engineering.dashboard_browser_validation.os.killpg") as killpg:
+        ), patch("engineering_platform.dashboard_browser_validation.os.killpg") as killpg:
             self.assertEqual(dashboard_browser_validation._run_local_shards(Path(temporary)), 1)
 
         killpg.assert_not_called()
@@ -122,19 +122,19 @@ class DashboardBrowserValidationTest(unittest.TestCase):
         process = MagicMock(pid=100)
         process.poll.return_value = None
         process.wait.return_value = 0
-        with patch("tools.engineering.dashboard_browser_validation.os.killpg", side_effect=PermissionError):
+        with patch("engineering_platform.dashboard_browser_validation.os.killpg", side_effect=PermissionError):
             dashboard_browser_validation._terminate_process_groups([("1/4", Path("result.log"), process)])
 
         process.wait.assert_called_once_with(timeout=dashboard_browser_validation.PROCESS_TERMINATION_TIMEOUT_SECONDS)
 
     def test_local_invocation_refuses_uncoordinated_playwright_arguments(self) -> None:
-        with patch.dict("tools.engineering.dashboard_browser_validation.os.environ", {}, clear=True):
+        with patch.dict("engineering_platform.dashboard_browser_validation.os.environ", {}, clear=True):
             with self.assertRaisesRegex(SystemExit, "coordinated four-shard"):
                 dashboard_browser_validation.main(("--workers=9",))
 
     def test_run_scoped_evidence_preserves_complete_four_shard_topology(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.dict(
-            "tools.engineering.dashboard_browser_validation.os.environ",
+            "engineering_platform.dashboard_browser_validation.os.environ",
             {dashboard_browser_validation.EVIDENCE_RUN_ID_ENV: "run-evidence-1"}, clear=True,
         ):
             root = Path(temporary)
@@ -150,7 +150,7 @@ class DashboardBrowserValidationTest(unittest.TestCase):
 
     def test_incomplete_shard_evidence_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.dict(
-            "tools.engineering.dashboard_browser_validation.os.environ",
+            "engineering_platform.dashboard_browser_validation.os.environ",
             {dashboard_browser_validation.EVIDENCE_RUN_ID_ENV: "run-evidence-2"}, clear=True,
         ):
             root = Path(temporary)

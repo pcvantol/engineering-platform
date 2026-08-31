@@ -13,16 +13,16 @@ import time
 import unittest
 from unittest.mock import ANY, patch
 
-from tools.engineering import inbox_watcher
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.host_preflight import HostPreflightCheck, HostPreflightResult
-from tools.engineering.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
-from tools.engineering.capability_preflight import CapabilityCheck, CapabilityPreflightResult
-from tools.engineering.execution_timing import phase_spans, timing_summary
-from tools.engineering.execution_models import PullRequestEvidence
-from tools.engineering.storage import open_storage, store_projection
-from tools.engineering.workspace_inbox_api import build_human_envelope
-from tools.engineering.telemetry import wait_for_pending_telemetry
+from engineering_platform import inbox_watcher
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.host_preflight import HostPreflightCheck, HostPreflightResult
+from engineering_platform.workspace_preflight import WorkspacePreflightCheck, WorkspacePreflightResult
+from engineering_platform.capability_preflight import CapabilityCheck, CapabilityPreflightResult
+from engineering_platform.execution_timing import phase_spans, timing_summary
+from engineering_platform.execution_models import PullRequestEvidence
+from engineering_platform.storage import open_storage, store_projection
+from engineering_platform.workspace_inbox_api import build_human_envelope
+from engineering_platform.telemetry import wait_for_pending_telemetry
 
 
 _INHERITED_RUNNER_ENVIRONMENT = (
@@ -45,8 +45,8 @@ class InboxWatcherTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "cloud"
         self.repo = Path(self.temp.name) / "repo"
-        (self.repo / "tools/engineering").mkdir(parents=True)
-        self.runtime = self.repo / "tools/engineering/engineering-execution-host"
+        (self.repo / "src/engineering_platform").mkdir(parents=True)
+        self.runtime = self.repo / "src/engineering_platform/engineering-execution-host"
         self.runtime.write_text("#!/bin/sh\n", encoding="utf-8")
         self.runtime.chmod(0o700)
         self.managed_runtime_prefix = self.repo / "managed-codex"
@@ -54,33 +54,33 @@ class InboxWatcherTest(unittest.TestCase):
         self.managed_runtime.parent.mkdir(parents=True)
         self.managed_runtime.write_text("#!/bin/sh\n", encoding="utf-8")
         self.managed_runtime.chmod(0o700)
-        (self.repo / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").write_text(
-            (Path(__file__).resolve().parents[2] / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
+        (self.repo / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").write_text(
+            (Path(__file__).resolve().parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         self.preflight = patch(
-            "tools.engineering.inbox_watcher.execute_host_preflight",
+            "engineering_platform.inbox_watcher.execute_host_preflight",
             return_value=HostPreflightResult(
                 "PASS", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
             ),
         )
         self.preflight.start()
         self.workspace_preflight = patch(
-            "tools.engineering.inbox_watcher.execute_workspace_preflight",
+            "engineering_platform.inbox_watcher.execute_workspace_preflight",
             return_value=WorkspacePreflightResult("PASS", "DJConnect", "repo", "main", "MANAGED", "now", 1, ()),
         )
         self.workspace_preflight.start()
         self.capability_preflight = patch(
-            "tools.engineering.inbox_watcher.execute_capability_preflight",
+            "engineering_platform.inbox_watcher.execute_capability_preflight",
             return_value=CapabilityPreflightResult("PASS", "now", 1, (), "RETRYABLE", None, "Capability admission passed."),
         )
         self.capability_preflight.start()
         self.dependabot_admission = patch(
-            "tools.engineering.inbox_watcher._admit_dependabot_pull_requests", return_value=0
+            "engineering_platform.inbox_watcher._admit_dependabot_pull_requests", return_value=0
         )
         self.dependabot_admission.start()
         self.managed_runtime_prefix_patch = patch(
-            "tools.engineering.platform_api.engineering_platform_codex_cli_prefix",
+            "engineering_platform.platform_api.engineering_platform_codex_cli_prefix",
             return_value=self.managed_runtime_prefix,
         )
         self.managed_runtime_prefix_patch.start()
@@ -137,9 +137,9 @@ class InboxWatcherTest(unittest.TestCase):
     def test_periodic_database_maintenance_logs_actual_work_and_active_run_skips(self) -> None:
         logger = logging.getLogger("test-periodic-database-maintenance")
         with patch(
-            "tools.engineering.inbox_watcher.run_periodic_database_maintenance",
+            "engineering_platform.inbox_watcher.run_periodic_database_maintenance",
             return_value={"state": "COMPACTED"},
-        ), patch("tools.engineering.inbox_watcher.log_event") as log_event:
+        ), patch("engineering_platform.inbox_watcher.log_event") as log_event:
             inbox_watcher._run_periodic_database_maintenance(self.repo, logger)
         log_event.assert_called_once_with(
             logger,
@@ -149,9 +149,9 @@ class InboxWatcherTest(unittest.TestCase):
         )
 
         with patch(
-            "tools.engineering.inbox_watcher.run_periodic_database_maintenance",
+            "engineering_platform.inbox_watcher.run_periodic_database_maintenance",
             return_value={"state": "SKIPPED_ACTIVE_RUN"},
-        ), patch("tools.engineering.inbox_watcher.log_event") as log_event:
+        ), patch("engineering_platform.inbox_watcher.log_event") as log_event:
             inbox_watcher._run_periodic_database_maintenance(self.repo, logger)
         log_event.assert_called_once_with(
             logger,
@@ -304,17 +304,17 @@ class InboxWatcherTest(unittest.TestCase):
             "launch_agent_path": "/tmp/inbox.plist",
         }
         with (
-            patch("tools.engineering.inbox_watcher.provision_workspace"),
-            patch("tools.engineering.inbox_watcher.cloud_root", return_value=self.root),
+            patch("engineering_platform.inbox_watcher.provision_workspace"),
+            patch("engineering_platform.inbox_watcher.cloud_root", return_value=self.root),
             patch(
-                "tools.engineering.inbox_watcher.component_logger",
+                "engineering_platform.inbox_watcher.component_logger",
                 return_value=logging.getLogger("test"),
             ) as logger,
-            patch("tools.engineering.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
-            patch("tools.engineering.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.single_instance", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.time.sleep", side_effect=KeyboardInterrupt),
-            patch("tools.engineering.inbox_watcher.log_event") as log_event,
+            patch("engineering_platform.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
+            patch("engineering_platform.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.single_instance", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.time.sleep", side_effect=KeyboardInterrupt),
+            patch("engineering_platform.inbox_watcher.log_event") as log_event,
         ):
             self.assertEqual(
                 inbox_watcher.main(["run", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
@@ -334,15 +334,15 @@ class InboxWatcherTest(unittest.TestCase):
             "launch_agent_path": "/tmp/inbox.plist",
         }
         with (
-            patch("tools.engineering.inbox_watcher.provision_workspace"),
-            patch("tools.engineering.inbox_watcher.cloud_root", return_value=self.root),
-            patch("tools.engineering.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
-            patch("tools.engineering.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
-            patch("tools.engineering.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.single_instance", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.once") as once,
-            patch("tools.engineering.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
-            patch("tools.engineering.inbox_watcher.log_event") as log_event,
+            patch("engineering_platform.inbox_watcher.provision_workspace"),
+            patch("engineering_platform.inbox_watcher.cloud_root", return_value=self.root),
+            patch("engineering_platform.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
+            patch("engineering_platform.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
+            patch("engineering_platform.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.single_instance", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.once") as once,
+            patch("engineering_platform.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
+            patch("engineering_platform.inbox_watcher.log_event") as log_event,
         ):
             self.assertEqual(
                 inbox_watcher.main(["run", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
@@ -363,17 +363,17 @@ class InboxWatcherTest(unittest.TestCase):
             "launch_agent_path": "/tmp/inbox.plist",
         }
         with (
-            patch("tools.engineering.inbox_watcher.provision_workspace"),
-            patch("tools.engineering.inbox_watcher.cloud_root", return_value=self.root),
-            patch("tools.engineering.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
-            patch("tools.engineering.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
-            patch("tools.engineering.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.single_instance", return_value=nullcontext()),
-            patch("tools.engineering.inbox_watcher.once"),
-            patch("tools.engineering.inbox_watcher._active_transaction", return_value=True),
-            patch("tools.engineering.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
-            patch("tools.engineering.inbox_watcher.time.sleep", side_effect=KeyboardInterrupt),
-            patch("tools.engineering.inbox_watcher.log_event") as log_event,
+            patch("engineering_platform.inbox_watcher.provision_workspace"),
+            patch("engineering_platform.inbox_watcher.cloud_root", return_value=self.root),
+            patch("engineering_platform.inbox_watcher.component_logger", return_value=logging.getLogger("test")),
+            patch("engineering_platform.inbox_watcher.component_lifecycle_context", return_value=lifecycle_context),
+            patch("engineering_platform.inbox_watcher.shutdown_signal_logging", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.single_instance", return_value=nullcontext()),
+            patch("engineering_platform.inbox_watcher.once"),
+            patch("engineering_platform.inbox_watcher._active_transaction", return_value=True),
+            patch("engineering_platform.inbox_watcher._source_revision", side_effect=["a" * 40, "b" * 40]),
+            patch("engineering_platform.inbox_watcher.time.sleep", side_effect=KeyboardInterrupt),
+            patch("engineering_platform.inbox_watcher.log_event") as log_event,
         ):
             self.assertEqual(
                 inbox_watcher.main(["run", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
@@ -394,10 +394,10 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(json.loads(row[0])["state"], "restart_pending_after_active_execution")
 
     def test_watcher_projects_dashboard_migration_block_instead_of_stale_merge_wait(self) -> None:
-        from tools.engineering.platform_bootstrap import WorkspaceMigrationBlockedError
+        from engineering_platform.platform_bootstrap import WorkspaceMigrationBlockedError
 
         with patch(
-            "tools.engineering.inbox_watcher.provision_workspace",
+            "engineering_platform.inbox_watcher.provision_workspace",
             side_effect=WorkspaceMigrationBlockedError("dashboard"),
         ):
             self.assertEqual(inbox_watcher.main(["once", "--repo", str(self.repo)]), 1)
@@ -408,7 +408,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIn("dashboardactiviteit", projected["diagnostic"])
 
     def test_launch_agent_uses_a_shell_exec_launcher_for_the_selected_runtime(self) -> None:
-        with patch("tools.engineering.inbox_watcher.Path.home", return_value=Path(self.temp.name)):
+        with patch("engineering_platform.inbox_watcher.Path.home", return_value=Path(self.temp.name)):
             agent = inbox_watcher.launch_agent(self.repo)
 
         rendered = agent.read_text(encoding="utf-8")
@@ -422,7 +422,7 @@ class InboxWatcherTest(unittest.TestCase):
 
     def test_launch_agent_keeps_the_persisted_log_level_over_an_inherited_value(self) -> None:
         with patch.dict(os.environ, {inbox_watcher.LOG_LEVEL_ENVIRONMENT: "DEBUG"}), patch(
-            "tools.engineering.inbox_watcher.Path.home", return_value=Path(self.temp.name)
+            "engineering_platform.inbox_watcher.Path.home", return_value=Path(self.temp.name)
         ):
             connection = open_storage(self.repo)
             try:
@@ -584,7 +584,7 @@ class InboxWatcherTest(unittest.TestCase):
                 inbox_watcher.defer_queued_prompt(self.repo, self.root, filename)
 
     def test_launch_path_preserves_codex_location(self) -> None:
-        with patch("tools.engineering.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
+        with patch("engineering_platform.inbox_watcher.shutil.which", return_value="/opt/homebrew/bin/codex"):
             self.assertEqual(inbox_watcher.launch_path().split(":")[0], "/opt/homebrew/bin")
 
     def test_terminal_checkpoint_overrides_stale_live_status(self) -> None:
@@ -609,7 +609,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
     def test_operator_merge_wait_holds_inbox_and_can_be_explicitly_aborted(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-wait"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-wait__prompt.md"
@@ -693,8 +693,8 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["current_action"], "review_capabilities")
 
     def test_dismissed_stale_checkpoint_does_not_reclaim_live_projection(self) -> None:
-        from tools.engineering.prompt_history import record_prompt_execution
-        from tools.engineering.storage import record_execution_dismissal
+        from engineering_platform.prompt_history import record_prompt_execution
+        from engineering_platform.storage import record_execution_dismissal
 
         run_id = "inbox-dismissed-stale-checkpoint"
         record_prompt_execution(
@@ -730,7 +730,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNone(snapshot["run_id"])
 
     def test_operator_merge_wait_is_rate_limited_and_projects_prior_job_context(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-poll"
         state = TransactionState(
@@ -788,7 +788,7 @@ class InboxWatcherTest(unittest.TestCase):
         StateStore(self.repo / ".engineering" / "engineering-runs").save(waiting)
         inbox_watcher._publish_operator_merge_wait(self.repo, waiting)
         open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
-        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+        with patch("engineering_platform.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = open_pr
             outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
         self.assertFalse(outcome["verified"])
@@ -797,8 +797,8 @@ class InboxWatcherTest(unittest.TestCase):
 
         merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
         with (
-            patch("tools.engineering.inbox_watcher.GhCliClient") as github,
-            patch("tools.engineering.inbox_watcher.SubprocessRepositoryClient") as repository,
+            patch("engineering_platform.inbox_watcher.GhCliClient") as github,
+            patch("engineering_platform.inbox_watcher.SubprocessRepositoryClient") as repository,
         ):
             github.return_value.pull_request.return_value = merged_pr
             repository.return_value.remote_main_contains.return_value = True
@@ -842,7 +842,7 @@ class InboxWatcherTest(unittest.TestCase):
             run_id=run_id, repository="pcvantol/djconnect", prompt_path=str(source),
             phase="WAIT_FOR_OPERATOR_MERGE", implementation_pull_request=832,
         ))
-        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+        with patch("engineering_platform.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.side_effect = RuntimeError("GitHub unavailable")
             outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
         self.assertFalse(outcome["verified"])
@@ -850,7 +850,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(outcome["pull_request"], 832)
 
         missing_commit = PullRequestEvidence(832, "MERGED", True, True, None)
-        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+        with patch("engineering_platform.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = missing_commit
             self.assertEqual(
                 inbox_watcher.check_operator_merge_status(self.repo, run_id),
@@ -860,8 +860,8 @@ class InboxWatcherTest(unittest.TestCase):
 
         merged_pr = PullRequestEvidence(832, "MERGED", True, True, "a" * 40)
         with (
-            patch("tools.engineering.inbox_watcher.GhCliClient") as github,
-            patch("tools.engineering.inbox_watcher.SubprocessRepositoryClient") as repository,
+            patch("engineering_platform.inbox_watcher.GhCliClient") as github,
+            patch("engineering_platform.inbox_watcher.SubprocessRepositoryClient") as repository,
         ):
             github.return_value.pull_request.return_value = merged_pr
             repository.return_value.remote_main_contains.return_value = False
@@ -888,10 +888,10 @@ class InboxWatcherTest(unittest.TestCase):
         StateStore(self.repo / ".engineering" / "engineering-runs").save(state)
         inbox_watcher._publish_operator_merge_wait(self.repo, state)
         open_pr = PullRequestEvidence(832, "OPEN", True, True, "a" * 40)
-        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+        with patch("engineering_platform.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.return_value = open_pr
             inbox_watcher.check_operator_merge_status(self.repo, run_id)
-        with patch("tools.engineering.inbox_watcher.GhCliClient") as github:
+        with patch("engineering_platform.inbox_watcher.GhCliClient") as github:
             github.return_value.pull_request.side_effect = RuntimeError("authentication required")
             outcome = inbox_watcher.check_operator_merge_status(self.repo, run_id)
         self.assertEqual(outcome["reason"], "github_authentication_unavailable")
@@ -901,7 +901,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsInstance(watcher["merge_status_check"]["last_successful_github_check_at"], str)
 
     def test_operator_merge_wait_finalization_archives_completed_prompt_and_report(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-complete"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-complete__prompt.md"
@@ -965,7 +965,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_title"], "Durable merge title")
 
     def test_operator_merge_wait_remains_queue_owner_until_its_poll_is_due(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-held"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-held__prompt.md"
@@ -988,7 +988,7 @@ class InboxWatcherTest(unittest.TestCase):
             queue_items=[],
         )
 
-        with patch("tools.engineering.inbox_watcher._execute_runner_command") as execute_runner:
+        with patch("engineering_platform.inbox_watcher._execute_runner_command") as execute_runner:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
         execute_runner.assert_not_called()
@@ -996,7 +996,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(source.exists())
 
     def test_operator_merge_wait_poll_resumes_and_finalizes_the_merged_run(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-resumed"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-resumed__prompt.md"
@@ -1032,7 +1032,7 @@ class InboxWatcherTest(unittest.TestCase):
         def mark_complete(*_: object) -> None:
             store.save(replace(waiting, phase="COMPLETE", terminal=True))
 
-        with patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=mark_complete) as execute_runner:
+        with patch("engineering_platform.inbox_watcher._execute_runner_command", side_effect=mark_complete) as execute_runner:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
         execute_runner.assert_called_once_with(self.repo, source, run_id)
@@ -1041,7 +1041,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(json_status(self.repo)["watcher_state"], "JOB_COMPLETED")
 
     def test_verified_merge_resumes_before_inbox_scan(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-verified-merge-first"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "verified-merge.md"
@@ -1066,8 +1066,8 @@ class InboxWatcherTest(unittest.TestCase):
             ))
 
         with (
-            patch("tools.engineering.inbox_watcher._scan_queue", side_effect=AssertionError("Inbox scan must wait")),
-            patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=begin_finalization) as execute_runner,
+            patch("engineering_platform.inbox_watcher._scan_queue", side_effect=AssertionError("Inbox scan must wait")),
+            patch("engineering_platform.inbox_watcher._execute_runner_command", side_effect=begin_finalization) as execute_runner,
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
@@ -1077,7 +1077,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(published["current_phase"], "FINALIZE_AGENT")
 
     def test_operator_merge_wait_replaces_its_status_after_merge_starts_finalization(self) -> None:
-        from tools.engineering.agent_state import StateStore, TransactionState
+        from engineering_platform.agent_state import StateStore, TransactionState
 
         run_id = "inbox-merge-finalizing"
         source = inbox_watcher.local_folders(self.repo)["Running"] / "merge-finalizing__prompt.md"
@@ -1119,7 +1119,7 @@ class InboxWatcherTest(unittest.TestCase):
                 waiting_for_merge_since=None,
             ))
 
-        with patch("tools.engineering.inbox_watcher._execute_runner_command", side_effect=begin_finalization):
+        with patch("engineering_platform.inbox_watcher._execute_runner_command", side_effect=begin_finalization):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
         published = json_status(self.repo)
@@ -1153,13 +1153,13 @@ class InboxWatcherTest(unittest.TestCase):
         finally:
             connection.close()
 
-        with patch("tools.engineering.inbox_watcher.os.kill", side_effect=ProcessLookupError):
+        with patch("engineering_platform.inbox_watcher.os.kill", side_effect=ProcessLookupError):
             self.assertFalse(inbox_watcher._active_transaction(self.repo))
 
     def test_exited_detached_runner_is_reaped_and_does_not_hold_the_inbox(self) -> None:
         with (
-            patch("tools.engineering.inbox_watcher.os.waitpid", return_value=(12345, 0)),
-            patch("tools.engineering.inbox_watcher.os.kill") as kill,
+            patch("engineering_platform.inbox_watcher.os.waitpid", return_value=(12345, 0)),
+            patch("engineering_platform.inbox_watcher.os.kill") as kill,
         ):
             self.assertFalse(inbox_watcher._detached_runner_is_alive({"runner_pid": 12345}))
         kill.assert_not_called()
@@ -1203,7 +1203,7 @@ class InboxWatcherTest(unittest.TestCase):
         )
         files = subprocess.CompletedProcess(("git",), 0, b"README.md\0src/app.py\0", b"")
         branch = subprocess.CompletedProcess(("git",), 0, "forge-phase-e", "")
-        with patch("tools.engineering.inbox_watcher.subprocess.run", side_effect=(files, branch)):
+        with patch("engineering_platform.inbox_watcher.subprocess.run", side_effect=(files, branch)):
             checkout, tracked_files, target_branch = inbox_watcher._terminal_workspace_snapshot(
                 self.repo, "inbox-snapshot"
             )
@@ -1248,7 +1248,7 @@ class InboxWatcherTest(unittest.TestCase):
 
         self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
-        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        history = __import__("engineering_platform.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
         entry = next(item for item in history if item["run_id"] == "inbox-schema-skew")
         self.assertEqual(entry["status"], "FAILED")
         self.assertTrue(entry["report_available"])
@@ -1265,7 +1265,7 @@ class InboxWatcherTest(unittest.TestCase):
         old_log = self.repo / ".engineering/logs/codex" / f"{run_id}.log"
         old_log.parent.mkdir(parents=True)
         old_log.write_text("previous attempt", encoding="utf-8")
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             run.return_value = __import__("subprocess").CompletedProcess((), 0)
             code = inbox_watcher.once(self.repo, self.root, 0)
         self.assertEqual(code, 0)
@@ -1303,8 +1303,8 @@ class InboxWatcherTest(unittest.TestCase):
         checkpoint.parent.mkdir(parents=True)
         checkpoint.write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
 
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "tools.engineering.inbox_watcher.subprocess.run", return_value=subprocess.CompletedProcess((), 0)
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "engineering_platform.inbox_watcher.subprocess.run", return_value=subprocess.CompletedProcess((), 0)
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
@@ -1346,9 +1346,9 @@ class InboxWatcherTest(unittest.TestCase):
                 "PASS", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
             )
 
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "tools.engineering.inbox_watcher.execute_host_preflight", side_effect=host_preflight
-        ), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "engineering_platform.inbox_watcher.execute_host_preflight", side_effect=host_preflight
+        ), patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess((), 0)
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
@@ -1363,14 +1363,14 @@ class InboxWatcherTest(unittest.TestCase):
     def test_background_watcher_detaches_runner_and_keeps_admission_active(self) -> None:
         (self.inbox / "job.md").write_text("# prompt", encoding="utf-8")
         run_id = "inbox-detached-run"
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "tools.engineering.inbox_watcher.subprocess.Popen"
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "engineering_platform.inbox_watcher.subprocess.Popen"
         ) as popen:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
 
         command = popen.call_args.args[0]
         environment = popen.call_args.kwargs["env"]
-        self.assertIn("tools.engineering.inbox_watcher", command)
+        self.assertIn("engineering_platform.inbox_watcher", command)
         self.assertIn("once", command)
         self.assertEqual(environment[inbox_watcher.BACKGROUND_RUN_ID_ENVIRONMENT], run_id)
         self.assertTrue(environment[inbox_watcher.BACKGROUND_JOB_ID_ENVIRONMENT])
@@ -1383,8 +1383,8 @@ class InboxWatcherTest(unittest.TestCase):
     def test_active_detached_runner_keeps_scanning_and_publishes_later_inbox_prompts(self) -> None:
         (self.inbox / "running.md").write_text("# Running prompt", encoding="utf-8")
         run_id = "inbox-detached-run"
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "tools.engineering.inbox_watcher.subprocess.Popen"
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "engineering_platform.inbox_watcher.subprocess.Popen"
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
 
@@ -1450,9 +1450,9 @@ class InboxWatcherTest(unittest.TestCase):
             return object()
 
         with (
-            patch("tools.engineering.inbox_watcher._allocate_run_id", return_value="inbox-detached-run"),
-            patch("tools.engineering.inbox_watcher.subprocess.Popen", side_effect=detach_runner),
-            patch("tools.engineering.inbox_watcher.subprocess.run", side_effect=run_command),
+            patch("engineering_platform.inbox_watcher._allocate_run_id", return_value="inbox-detached-run"),
+            patch("engineering_platform.inbox_watcher.subprocess.Popen", side_effect=detach_runner),
+            patch("engineering_platform.inbox_watcher.subprocess.run", side_effect=run_command),
         ):
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0, background=True), 0)
             self.assertTrue(runner_started.wait(timeout=5))
@@ -1489,9 +1489,9 @@ class InboxWatcherTest(unittest.TestCase):
         prompt = self.inbox / "preflight.md"
         prompt.write_text("# Preflight prompt", encoding="utf-8")
         _, run_id, _ = inbox_watcher._job_id(prompt, prompt.read_text(encoding="utf-8"))
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "tools.engineering.inbox_watcher.terminalize_after_host_exit", return_value=None
-        ) as reconcile, patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
+            "engineering_platform.inbox_watcher.terminalize_after_host_exit", return_value=None
+        ) as reconcile, patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(
                 ("engineering-execution-host",), 2, "", "Engineering Platform upgrade required."
             )
@@ -1521,8 +1521,8 @@ class InboxWatcherTest(unittest.TestCase):
         failed = HostPreflightResult(
             "FAIL", "Engineering Platform", "2.0.0", "2026.12", None, None, "now", 1, ()
         )
-        with patch("tools.engineering.inbox_watcher.execute_host_preflight", return_value=failed), patch(
-            "tools.engineering.inbox_watcher.subprocess.run"
+        with patch("engineering_platform.inbox_watcher.execute_host_preflight", return_value=failed), patch(
+            "engineering_platform.inbox_watcher.subprocess.run"
         ) as run:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
         self.assertTrue(prompt.exists())
@@ -1550,9 +1550,9 @@ class InboxWatcherTest(unittest.TestCase):
                 ),
             ),
         )
-        with patch("tools.engineering.inbox_watcher.execute_workspace_preflight", return_value=failed), patch(
-            "tools.engineering.inbox_watcher.subprocess.run"
-        ) as run, patch("tools.engineering.inbox_watcher.log_event") as log_event:
+        with patch("engineering_platform.inbox_watcher.execute_workspace_preflight", return_value=failed), patch(
+            "engineering_platform.inbox_watcher.subprocess.run"
+        ) as run, patch("engineering_platform.inbox_watcher.log_event") as log_event:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
         self.assertTrue(prompt.exists())
         self.assertFalse(list(inbox_watcher.local_folders(self.repo)["Running"].iterdir()))
@@ -1574,8 +1574,8 @@ class InboxWatcherTest(unittest.TestCase):
         prompt = self.inbox / "capability-failure.md"
         prompt.write_text("# Capability failure", encoding="utf-8")
         failed = CapabilityPreflightResult("FAIL", "now", 1, (), "RETRYABLE_AFTER_HOST_REPAIR", "CAPABILITY", "Repair host.")
-        with patch("tools.engineering.inbox_watcher.execute_capability_preflight", return_value=failed), patch(
-            "tools.engineering.inbox_watcher.subprocess.run"
+        with patch("engineering_platform.inbox_watcher.execute_capability_preflight", return_value=failed), patch(
+            "engineering_platform.inbox_watcher.subprocess.run"
         ) as run:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 1)
         self.assertTrue(prompt.exists())
@@ -1650,10 +1650,10 @@ class InboxWatcherTest(unittest.TestCase):
         )
         self.assertEqual(inbox_watcher._runner_result(self.repo, "inbox-evidence"), ("FAILED", "bounded"))
 
-    @patch("tools.engineering.inbox_watcher.LaunchdProvider")
+    @patch("engineering_platform.inbox_watcher.LaunchdProvider")
     def test_main_install_uninstall_status_and_doctor_are_local_only(self, launchd: object) -> None:
         with tempfile.TemporaryDirectory() as home, patch(
-            "tools.engineering.inbox_watcher.Path.home", return_value=Path(home)
+            "engineering_platform.inbox_watcher.Path.home", return_value=Path(home)
         ):
             (self.repo / ".gitignore").write_text(".engineering/\n", encoding="utf-8")
             self.assertEqual(
@@ -1691,7 +1691,7 @@ class InboxWatcherTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
         snapshot = json_status(self.repo)
@@ -1706,8 +1706,8 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["queue_items"][0]["title"], "Later prompt")
 
     def test_dismissed_blocked_predecessor_does_not_block_unrelated_admission(self) -> None:
-        from tools.engineering.prompt_history import record_prompt_execution
-        from tools.engineering.storage import record_execution_dismissal
+        from engineering_platform.prompt_history import record_prompt_execution
+        from engineering_platform.storage import record_execution_dismissal
 
         run_id = "inbox-dismissed-blocked"
         record_prompt_execution(
@@ -1739,14 +1739,14 @@ class InboxWatcherTest(unittest.TestCase):
             inbox_watcher._corrected_terminal_report(admitted_run_id, "COMPLETE", None),
             encoding="utf-8",
         )
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=admitted_run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=admitted_run_id), patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess((), 0)
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
         self.assertTrue(run.called)
         snapshot = json_status(self.repo)
         self.assertIsNone(snapshot["blocking_predecessor_run"])
-        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        history = __import__("engineering_platform.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
         historical = next(item for item in history if item["run_id"] == run_id)
         self.assertEqual(historical["status"], "BLOCKED")
         self.assertTrue(historical["dismissed"])
@@ -1756,8 +1756,8 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(inbox_watcher.is_active_blocking_predecessor(self.repo, "inbox-unresolved", "BLOCKED"))
 
     def test_status_publication_reconciles_stale_dismissed_blocker_fields(self) -> None:
-        from tools.engineering.prompt_history import record_prompt_execution
-        from tools.engineering.storage import record_execution_dismissal
+        from engineering_platform.prompt_history import record_prompt_execution
+        from engineering_platform.storage import record_execution_dismissal
 
         run_id = "inbox-dismissed-status"
         inbox_watcher.status(
@@ -1835,7 +1835,7 @@ class InboxWatcherTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with patch("tools.engineering.inbox_watcher._allocate_run_id", return_value=retry_run_id), patch("tools.engineering.inbox_watcher.subprocess.run") as run:
+        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=retry_run_id), patch("engineering_platform.inbox_watcher.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess((), 0)
             self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
 
@@ -1947,7 +1947,7 @@ class InboxWatcherTest(unittest.TestCase):
             ),),
         )
 
-        with patch("tools.engineering.inbox_watcher.execute_workspace_preflight", return_value=failed):
+        with patch("engineering_platform.inbox_watcher.execute_workspace_preflight", return_value=failed):
             with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Preflight mislukt.*index lock"):
                 inbox_watcher.retry_admission_preflight(self.repo, run_id)
 
@@ -1968,10 +1968,10 @@ class InboxWatcherTest(unittest.TestCase):
             (CapabilityCheck("provider", "FAIL", "Required provider is unavailable.", "Repair the provider."),),
             "RETRYABLE_AFTER_HOST_REPAIR", "CAPABILITY", "Repair the provider.",
         )
-        with patch("tools.engineering.inbox_watcher.execute_host_preflight", return_value=host_failure):
+        with patch("engineering_platform.inbox_watcher.execute_host_preflight", return_value=host_failure):
             with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Git metadata is read-only"):
                 inbox_watcher.retry_admission_preflight(self.repo, run_id)
-        with patch("tools.engineering.inbox_watcher.execute_capability_preflight", return_value=capability_failure):
+        with patch("engineering_platform.inbox_watcher.execute_capability_preflight", return_value=capability_failure):
             with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "Required provider is unavailable"):
                 inbox_watcher.retry_admission_preflight(self.repo, run_id)
         self.assertFalse(list(self.inbox.iterdir()))
@@ -1981,8 +1981,8 @@ class InboxWatcherTest(unittest.TestCase):
             inbox_watcher.predecessor_retry_admission_preflight(self.repo)
         predecessor = {"run_id": "inbox-blocked"}
         with (
-            patch("tools.engineering.inbox_watcher._blocking_predecessor", return_value=predecessor),
-            patch("tools.engineering.inbox_watcher.retry_admission_preflight") as preflight,
+            patch("engineering_platform.inbox_watcher._blocking_predecessor", return_value=predecessor),
+            patch("engineering_platform.inbox_watcher.retry_admission_preflight") as preflight,
         ):
             self.assertEqual(inbox_watcher.predecessor_retry_admission_preflight(self.repo), "inbox-blocked")
             preflight.assert_called_once_with(self.repo, "inbox-blocked")
@@ -2020,12 +2020,12 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(outcome["handling_state"], "DISMISSED")
         with self.assertRaisesRegex(inbox_watcher.RetrySubmissionError, "al afgesloten"):
             inbox_watcher.submit_execution_retry(self.repo, self.root, run_id)
-        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        history = __import__("engineering_platform.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
         self.assertTrue(history[0]["dismissed"])
         self.assertEqual(history[0]["status"], "BLOCKED")
 
     def test_dismisses_an_older_terminal_execution_without_erasing_newer_status(self) -> None:
-        from tools.engineering.prompt_history import record_prompt_execution
+        from engineering_platform.prompt_history import record_prompt_execution
 
         older_run = "inbox-historical-failed"
         newer_run = "inbox-newer-complete"
@@ -2054,7 +2054,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertTrue(outcome["dismissed"])
         snapshot = json_status(self.repo)
         self.assertEqual(snapshot["last_executed_run"], newer_run)
-        history = __import__("tools.engineering.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
+        history = __import__("engineering_platform.prompt_history", fromlist=["prompt_history"]).prompt_history(self.repo)
         older = next(item for item in history if item["run_id"] == older_run)
         self.assertTrue(older["dismissed"])
         self.assertFalse(older["can_retry"])

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tools.engineering.codex_capacity import normalize_rate_limits, remaining_percent
+from engineering_platform.codex_capacity import normalize_rate_limits, remaining_percent
 
 
 class CodexCapacityTest(unittest.TestCase):

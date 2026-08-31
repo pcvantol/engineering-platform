@@ -5,16 +5,16 @@ from tempfile import TemporaryDirectory
 import os
 import unittest
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_errors import CodexInvocationError
-from tools.engineering.execution_host import EngineeringRunner
-from tools.engineering.execution_lease import acquire
-from tools.engineering.execution_models import AgentResult, RepositoryEvidence
-from tools.engineering.provider_recovery import (
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_errors import CodexInvocationError
+from engineering_platform.execution_host import EngineeringRunner
+from engineering_platform.execution_lease import acquire
+from engineering_platform.execution_models import AgentResult, RepositoryEvidence
+from engineering_platform.provider_recovery import (
     claim_replacement_launch, create_recovery_available, persist_recovery_agent_result,
     record_provider_started, record_replacement_terminal, transition_recovery_state,
 )
-from tools.engineering.storage import load_submission_for_run, open_storage, record_submission
+from engineering_platform.storage import load_submission_for_run, open_storage, record_submission
 
 
 class _Repository:

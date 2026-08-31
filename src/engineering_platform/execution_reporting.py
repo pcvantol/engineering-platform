@@ -96,13 +96,13 @@ def _component_inventory(bundle: TerminalEvidenceBundle) -> tuple[tuple[str, tup
         if path.startswith("tests/") or path.endswith(".md"):
             continue
         lower = path.casefold()
-        if path == "tools/engineering/execution_host.py":
+        if path == "src/engineering_platform/execution_host.py":
             name = "Engineering Report Generator"
-        elif path.startswith("tools/engineering/assets/") or path == "tools/engineering/dashboard.py":
+        elif path.startswith("src/engineering_platform/assets/") or path == "src/engineering_platform/dashboard.py":
             name = "Engineering Evidence Dashboard"
         elif "report_analysis" in lower:
             name = "Engineering Report Analysis"
-        elif path.startswith("tools/engineering/"):
+        elif path.startswith("src/engineering_platform/"):
             name = Path(path).stem.replace("_", " ").title()
         else:
             name = Path(path).stem.replace("_", " ").title()
@@ -340,7 +340,7 @@ def _implementation_evidence(bundle: TerminalEvidenceBundle) -> str:
     """Classify file-level evidence without inferring unrecorded implementation intent."""
     changed = bundle.changed_files
     groups = {
-        "Implemented components": tuple(path for path in changed if path.startswith("tools/engineering/")),
+        "Implemented components": tuple(path for path in changed if path.startswith("src/engineering_platform/")),
         "Updated models": tuple(path for path in changed if "model" in path.casefold() or "state" in path.casefold()),
         "Updated documentation": tuple(path for path in changed if path.endswith(".md")),
         "Updated tests": tuple(path for path in changed if path.startswith("tests/") or "/test_" in path),
@@ -626,7 +626,7 @@ def _deliverable_projection(
     delivered = bundle.changed_files if state.phase == "COMPLETE" else ()
     documentation = tuple(path for path in delivered if path.endswith(".md"))
     validation = tuple(path for path in delivered if path.startswith("tests/"))
-    runtime = tuple(path for path in delivered if path.startswith("tools/engineering/"))
+    runtime = tuple(path for path in delivered if path.startswith("src/engineering_platform/"))
     projection = (
         "### Requested Deliverables",
         *(f"- Requested: {item}" for item in requested),

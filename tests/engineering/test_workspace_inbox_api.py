@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.producer import ENVELOPE_CONTRACT_NAME, ENVELOPE_CONTRACT_VERSION
-from tools.engineering.workspace_inbox_api import (
+from engineering_platform.producer import ENVELOPE_CONTRACT_NAME, ENVELOPE_CONTRACT_VERSION
+from engineering_platform.workspace_inbox_api import (
     WorkspaceInboxSubmissionError,
     build_human_envelope,
     canonical_human_producer_id,
@@ -18,9 +18,9 @@ from tools.engineering.workspace_inbox_api import (
     preview,
     submit_human,
 )
-from tools.engineering.producer import parse_producer_submission
-from tools.engineering.storage import open_storage
-from tools.engineering.validation_profile import producer_profile_payload
+from engineering_platform.producer import parse_producer_submission
+from engineering_platform.storage import open_storage
+from engineering_platform.validation_profile import producer_profile_payload
 
 
 class WorkspaceInboxApiTest(unittest.TestCase):

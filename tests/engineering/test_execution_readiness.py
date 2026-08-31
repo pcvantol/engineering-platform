@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
-from tools.engineering.execution_readiness import ReadinessFacts, Requirement, decide, evaluate, selected_profile
+from engineering_platform.execution_readiness import ReadinessFacts, Requirement, decide, evaluate, selected_profile
 
 
 class ExecutionReadinessTest(unittest.TestCase):

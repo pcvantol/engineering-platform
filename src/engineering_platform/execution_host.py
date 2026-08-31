@@ -2725,7 +2725,7 @@ Mandatory autonomous refactor and quality-control stage:
             f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory "
             "governance-only Finalization: reconcile the four rolling records and immutable Prompt "
             f"History, then create a draft Finalization PR on exactly `{expected_branch}`. After GitHub assigns its number, run "
-            f"`python3 -m tools.engineering.repository_handoff --run-id {finalization.run_id} "
+            f"`python3 -m engineering_platform.repository_handoff --run-id {finalization.run_id} "
             f"--platform-version {self.platform_manifest.platform_version if self.platform_manifest else 'unknown'} "
             f"--implementation-pr {implementation_pr} --finalization-pr <PR_NUMBER>`, commit the "
             "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "

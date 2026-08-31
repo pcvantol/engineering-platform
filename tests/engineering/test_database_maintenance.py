@@ -5,10 +5,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.database_maintenance import run_periodic_database_maintenance
-from tools.engineering.dashboard_configuration import update as update_dashboard_configuration
-from tools.engineering.execution_lease import acquire, host_identity, host_instance_id, release
-from tools.engineering.storage import open_storage
+from engineering_platform.database_maintenance import run_periodic_database_maintenance
+from engineering_platform.dashboard_configuration import update as update_dashboard_configuration
+from engineering_platform.execution_lease import acquire, host_identity, host_instance_id, release
+from engineering_platform.storage import open_storage
 
 
 class DatabaseMaintenanceTest(unittest.TestCase):

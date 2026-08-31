@@ -10,8 +10,8 @@ import sqlite3
 import tempfile
 import unittest
 
-from tools.engineering.forensic_delta import canonical_report_json, export_forensic_delta
-from tools.engineering.central_store_migration import main
+from engineering_platform.forensic_delta import canonical_report_json, export_forensic_delta
+from engineering_platform.central_store_migration import main
 
 
 class ForensicDeltaTests(unittest.TestCase):

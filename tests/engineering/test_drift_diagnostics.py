@@ -5,9 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering import dashboard_state
-from tools.engineering.drift_diagnostics import DRIFT_CATEGORIES, evidence_for_checks, guidance, persist, summary
-from tools.engineering.host_preflight import HostPreflightCheck
+from engineering_platform import dashboard_state
+from engineering_platform.drift_diagnostics import DRIFT_CATEGORIES, evidence_for_checks, guidance, persist, summary
+from engineering_platform.host_preflight import HostPreflightCheck
 
 
 class DriftDiagnosticsTest(unittest.TestCase):

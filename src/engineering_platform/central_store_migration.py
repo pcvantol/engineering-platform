@@ -75,8 +75,8 @@ SERVICE_START_ORDER = (
     "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-inbox",
 )
 EXPECTED_RUNNING_LOCKS = {
-    "dashboard.lock": ("dashboard", "tools.engineering.dashboard", "com.djconnect.engineering-dashboard"),
-    "inbox-watcher.lock": ("inbox-watcher", "tools.engineering.inbox_watcher", "com.djconnect.engineering-inbox"),
+    "dashboard.lock": ("dashboard", "engineering_platform.dashboard", "com.djconnect.engineering-dashboard"),
+    "inbox-watcher.lock": ("inbox-watcher", "engineering_platform.inbox_watcher", "com.djconnect.engineering-inbox"),
 }
 
 

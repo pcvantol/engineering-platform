@@ -21,8 +21,8 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
 
     def test_onboarding_installs_watcher_and_dashboard_together(self) -> None:
         script = (ROOT / "onboarding" / "dev_onboarding_macos.sh").read_text(encoding="utf-8")
-        self.assertIn("tools.engineering.inbox_watcher install", script)
-        self.assertIn("tools.engineering.dashboard install", script)
+        self.assertIn("engineering_platform.inbox_watcher install", script)
+        self.assertIn("engineering_platform.dashboard install", script)
         self.assertIn("iCloud is transport only; prompts, reports and status", script)
         self.assertNotIn("Reports: iCloud Drive/DJConnect Engineering/Reports", script)
 

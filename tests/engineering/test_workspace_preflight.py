@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.engineering import workspace_preflight
+from engineering_platform import workspace_preflight
 
 
 ROOT = Path(__file__).resolve().parents[2]
