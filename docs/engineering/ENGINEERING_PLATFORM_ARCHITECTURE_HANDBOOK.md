@@ -210,6 +210,7 @@ then validates the selected checkout and project Inbox route. Consumers pin the
 wheel and use the Local Consumer API, while their CI exercises that adapter
 against an ephemeral EP store. They never install a user host, manipulate EP
 SQLite, start LaunchAgents or authenticate Codex/GitHub in CI.
+The Local Consumer API is loopback-only.
 
 ### Common lifecycle invariants
 
