@@ -20,6 +20,7 @@ from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
 from .platform_version import EngineeringPlatformManifest
+from .resources import package_path
 from .producer import ProducerMetadata, parse_producer_metadata
 from .providers import GitProvider
 from .qualification import latest_qualification
@@ -1169,7 +1170,7 @@ def generate_terminal_report(
     raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
     handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
     manifest = manifest or EngineeringPlatformManifest.load(
-        root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
     )
     qualification = latest_qualification(root)
     qualification_summary = (

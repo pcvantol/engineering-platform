@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 
 from .platform_version import EngineeringPlatformManifest
+from .resources import package_path
 from .platform_api import PlatformConfiguration
 from .providers import CodexCliProvider, GitProvider
 
@@ -68,16 +69,24 @@ SCENARIOS = tuple(
 )
 
 
-def execute_qualification(root: Path, checks: dict[str, bool] | None = None) -> dict[str, object]:
+def execute_qualification(
+    root: Path,
+    checks: dict[str, bool] | None = None,
+    *,
+    ep_repository_root: Path | None = None,
+) -> dict[str, object]:
     """Execute all registered local scenarios and write immutable local evidence."""
     started = time.monotonic()
     manifest = EngineeringPlatformManifest.load(
-        root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
     )
     supplied = checks or {}
     results = []
     for scenario in SCENARIOS:
-        passed = supplied.get(scenario.capability, _default_check(root, scenario.capability))
+        passed = supplied.get(
+            scenario.capability,
+            _default_check(root, scenario.capability, ep_repository_root=ep_repository_root),
+        )
         results.append(
             {
                 "capability": scenario.capability,
@@ -131,23 +140,23 @@ def latest_qualification(root: Path) -> dict[str, object] | None:
         return None
 
 
-def _default_check(root: Path, capability: str) -> bool:
+def _default_check(
+    root: Path, capability: str, *, ep_repository_root: Path | None = None
+) -> bool:
     def configuration_is_compatible() -> bool:
         try:
             return PlatformConfiguration.load(root).platform.version == EngineeringPlatformManifest.load(
-                root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+                package_path("ENGINEERING_PLATFORM_VERSION.json")
             ).platform_version
         except (OSError, ValueError):
             return False
     contracts = {
-        "Repository Initialization": (root / "BOOTSTRAP.md").is_file(),
-        "Checkpoint Resume": (root / "tools" / "engineering" / "agent_state.py").is_file(),
-        "Engineering Memory": (root / "tools" / "engineering" / "execution_host.py").is_file(),
-        "Capability-aware Reviewers": (
-            root / "tools" / "engineering" / "capability_review.py"
-        ).is_file(),
-        "Remote Status Model": (root / "tools" / "engineering" / "status_model.py").is_file(),
-        "Private Dashboard": (root / "tools" / "engineering" / "dashboard.py").is_file(),
+        "Repository Initialization": bool(ep_repository_root and (ep_repository_root / "BOOTSTRAP.md").is_file()),
+        "Checkpoint Resume": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/agent_state.py").is_file()),
+        "Engineering Memory": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/execution_host.py").is_file()),
+        "Capability-aware Reviewers": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/capability_review.py").is_file()),
+        "Remote Status Model": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/status_model.py").is_file()),
+        "Private Dashboard": bool(ep_repository_root and (ep_repository_root / "src/engineering_platform/dashboard.py").is_file()),
         "Repository Handoff": (root / "tools" / "engineering" / "repository_handoff.py").is_file(),
         "Remote Engineering Readiness": (
             root / "docs" / "engineering" / "runs" / "index.json"

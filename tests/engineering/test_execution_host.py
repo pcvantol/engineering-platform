@@ -2575,12 +2575,6 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(additional_workspace_write_roots(self.root), ())
 
     def test_additional_workspace_roots_reject_invalid_and_filesystem_root_configuration(self) -> None:
-        configuration = self.root / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json"
-        configuration.parent.mkdir(parents=True, exist_ok=True)
-        configuration.write_text(
-            (Path(__file__).resolve().parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
         local = self.root / ".engineering"
         local.mkdir()
         (local / "engineering-platform.local.json").write_text(
@@ -2856,10 +2850,6 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(set(captured["properties"]), set(captured["required"]))
 
     def test_cli_adds_configured_sibling_project_root(self) -> None:
-        source = Path(__file__).resolve().parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json"
-        configuration = self.root / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json"
-        configuration.parent.mkdir(parents=True, exist_ok=True)
-        configuration.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         local = self.root / ".engineering"
         local.mkdir(exist_ok=True)
         workspace_root = self.root.parent.resolve()
