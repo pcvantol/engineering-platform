@@ -155,6 +155,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         if scope is None:
             _error(self, 401, envelope.request_id, ErrorCode.UNAUTHENTICATED)
             return
+        if not self.server.authority.authorized(scope):
+            _error(self, 403, envelope.request_id, ErrorCode.PROJECT_NOT_AUTHORIZED)
+            return
         if (
             scope.consumer_id != envelope.consumer.consumer_id
             or scope.project_id != envelope.project_id

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from http.client import HTTPConnection
+import json
+from threading import Thread
 import unittest
+from tools.engineering.local_api import LOOPBACK_ADDRESS, LocalApiServer
 from tools.engineering.local_api_credentials import CredentialAuthority, disable_consumer, issue_credential, register_consumer, revoke_credential, rotate_credential
 from tools.engineering.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
 
@@ -24,11 +28,35 @@ class ConsumerCredentialTests(unittest.TestCase):
             issue_credential(self.root, consumer_id="consumer", project_id="project")
         self.assertIsNotNone(CredentialAuthority(self.root).authenticate(first.credential))
         self.assertTrue(disable_consumer(self.root, consumer_id="consumer", project_id="project"))
-        self.assertIsNone(CredentialAuthority(self.root).authenticate(first.credential))
+        self.assertIsNotNone(CredentialAuthority(self.root).authenticate(first.credential))
         self.assertFalse(disable_consumer(self.root, consumer_id="consumer", project_id="project"))
         self.assertTrue(revoke_credential(self.root, second.credential_id))
         self.assertFalse(revoke_credential(self.root, second.credential_id))
-        self.assertFalse(revoke_credential(self.root, second.credential_id))
+
+    def test_disabled_registration_is_authorization_denied_not_unauthenticated(self) -> None:
+        register_consumer(self.root, consumer_id="consumer", project_id="project")
+        credential = issue_credential(self.root, consumer_id="consumer", project_id="project")
+        server = LocalApiServer(self.root, 0)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            def request(token: str, project_id: str = "project") -> int:
+                connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=3)
+                body = json.dumps({"contract_version":"1.0","request_type":"contract.foundation","request_id":"authz-state","project_id":project_id,"consumer":{"consumer_id":"consumer"},"auth":{"scheme":"bearer","credential":"carrier"},"payload":{}})
+                connection.request("POST", "/v1/capabilities", body=body, headers={"Content-Type":"application/json","Authorization":f"Bearer {token}"})
+                status = connection.getresponse().status
+                connection.close()
+                return status
+            self.assertEqual(request(credential.credential), 200)
+            self.assertEqual(request("invalid"), 401)
+            self.assertEqual(request(credential.credential, "other-project"), 403)
+            disable_consumer(self.root, consumer_id="consumer", project_id="project")
+            self.assertEqual(request(credential.credential), 403)
+            revoke_credential(self.root, credential.credential_id)
+            self.assertEqual(request(credential.credential), 401)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_keychain_fails_closed_without_secret_echo(self) -> None:
         store = MacOSKeychainCredentialStore(executable="missing-security")

@@ -402,15 +402,28 @@ class CredentialAuthority:
             return None
         if row is None or not hmac.compare_digest(bytes(row[3]), candidate):
             return None
-        if str(row[0]).startswith(PRODUCTION_PREFIX):
-            registration = connection = None
-            try:
-                registration = _registration(self.root, str(row[1]), str(row[2]))
-            except Exception:
-                return None
-            if registration is None or registration[2] != "ACTIVE":
-                return None
         return CredentialScope(str(row[1]), str(row[2]), bytes(row[3]))
+
+    def authorized(self, scope: CredentialScope) -> bool:
+        """Evaluate current registration state after bearer authentication."""
+
+        if self.root is None or self.record is not None:
+            return True
+        try:
+            connection = open_storage(self.root)
+            try:
+                row = connection.execute(
+                    "SELECT credential_id FROM local_api_credentials WHERE verifier=?",
+                    (scope.verifier_value,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is None or not str(row[0]).startswith(PRODUCTION_PREFIX):
+                return True
+            registration = _registration(self.root, scope.consumer_id, scope.project_id)
+            return registration is not None and registration[2] == "ACTIVE"
+        except Exception:
+            return False
 
 
 def main(argv: list[str] | None = None) -> int:
