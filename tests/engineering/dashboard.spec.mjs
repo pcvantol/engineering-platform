@@ -1749,7 +1749,30 @@ test.describe("Engineering Status browser smoke", () => {
       }]);
     });
     await page.locator("#workspaceOpenPullRequestsRefresh").click();
+    await expect(page.locator("#copyToast")).toHaveText(
+      DASHBOARD_MESSAGES.nl["workspace.open_pull_requests_refreshing"],
+    );
     await expect(page.locator("#workspaceOpenPullRequests a")).toHaveText("PR #940 — Last known pull request ↗");
+  });
+
+  test("shows a toast when refreshing the worktree analysis", async ({ page }) => {
+    await page.route("**/api/worktree-removal-analysis", (route) => route.fulfill({ json: {
+      available: true, worktrees: [],
+    } }));
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: {
+      workspace_worktrees: { available: true, worktrees: [{ path: "/workspace", branch: "main", commit: "123456789abc" }] },
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
+    await page.evaluate(() => window.renderWorkspaceWorktrees({
+      available: true, worktrees: [{ path: "/workspace", branch: "main", commit: "123456789abc" }],
+    }));
+
+    await dispatchDashboardPointerClick(page.locator(".workspace-worktrees__refresh"));
+    await expect(page.locator("#copyToast")).toHaveText(
+      DASHBOARD_MESSAGES.nl["workspace.worktree_analysis_refreshing"],
+    );
   });
 
   test("translates every operational phase and status in every supported locale", () => {
@@ -1797,6 +1820,7 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator("#phase")).toHaveText(
         DASHBOARD_MESSAGES[language]["lifecycle.step.reconcile_agent"],
       );
+      expect(DASHBOARD_MESSAGES[language]["state.RECONCILE_AGENT"]).toBeTruthy();
     }
   });
 
@@ -1806,6 +1830,40 @@ test.describe("Engineering Status browser smoke", () => {
       "workspace.open_pull_request.authorize_owner_confirmation",
       "workspace.open_pull_request.owner_authorization_queued",
       "workspace.open_pull_request.owner_authorization_qualification_pending",
+    ];
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const key of keys) expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
+    }
+  });
+
+  test("translates every verified commit-timeline code in every supported locale", () => {
+    const keys = [
+      "state.EXECUTE_AGENT",
+      "state.LOCAL_REPOSITORY_VALIDATION",
+      "state.QUALITY_CONTROL_AGENT",
+      "state.REPAIR_AGENT",
+      "state.FINALIZE_AGENT",
+      "state.RECONCILE_AGENT",
+      "state.WAIT_FOR_OPERATOR_MERGE",
+      "detail.commit_type.implementation",
+      "detail.commit_type.validation",
+      "detail.commit_type.quality",
+      "detail.commit_type.repair",
+      "detail.commit_type.finalization",
+      "detail.commit_type.reconciliation",
+      "detail.commit_type.implementation_merge",
+      "detail.commit_type.finalization_merge",
+      "detail.commit_type.reconciliation_merge",
+      "detail.commit_description.implementation_agent_commit_verified",
+      "detail.commit_description.genesis_implementation_commit_verified",
+      "detail.commit_description.local_repository_validation_commit_verified",
+      "detail.commit_description.quality_control_commit_verified",
+      "detail.commit_description.pull_request_repair_commit_verified",
+      "detail.commit_description.finalization_commit_verified",
+      "detail.commit_description.end_reconciliation_commit_verified",
+      "detail.commit_description.implementation_merge_verified",
+      "detail.commit_description.finalization_merge_verified",
+      "detail.commit_description.reconciliation_merge_verified",
     ];
     for (const locale of SUPPORTED_LOCALES) {
       for (const key of keys) expect(DASHBOARD_MESSAGES[locale][key], `${locale}:${key}`).toBeTruthy();
@@ -3457,9 +3515,14 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#currentRun").evaluate((element) => { element.open = true; });
     const pullRequests = page.locator("#activeRunPullRequests");
     await expect(pullRequests).toBeVisible();
+    await expect(pullRequests).toHaveClass(/card/);
+    expect(await pullRequests.evaluate((element) =>
+      getComputedStyle(element).backgroundColor !== "rgba(0, 0, 0, 0)",
+    )).toBeTruthy();
     await expect(pullRequests.locator("a")).toHaveCount(2);
     await expect(pullRequests.locator("a").nth(0)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/990");
     await expect(pullRequests.locator("a").nth(1)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/991");
+    await expect(pullRequests.locator("a").nth(0)).toHaveCSS("outline-style", "none");
     await page.locator(".execution-lifecycle__item--active .execution-lifecycle__node").click();
     await expect(page.locator("#lifecycleDetailModal")).toBeVisible();
   });
@@ -4117,8 +4180,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(card.locator("a")).toHaveCount(2);
     await expect(card.locator("a").nth(0)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/948");
     await expect(card.locator("a").nth(0)).toHaveText("#948 ↗");
+    await expect(card).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await card.locator("a").nth(0).hover();
     await expect(card.locator("a").nth(0)).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(card.locator("a").nth(0)).toHaveCSS("outline-style", "none");
     await expect(card.locator("a").nth(1)).toHaveAttribute("href", "https://github.com/pcvantol/djconnect/pull/949");
     const [contextBounds, cardBounds] = await Promise.all([
       page.locator("#promptHistoryDetailContent .prompt-detail-card--execution-context").boundingBox(),
@@ -8924,6 +8989,33 @@ test.describe("Engineering Status browser smoke", () => {
     });
     expect(sizes.container).toBeGreaterThan(200);
     expect(sizes.message).toBeLessThan(100);
+  });
+
+  test("caps long user and assistant chat bubbles and scrolls their bodies", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#promptHistoryChatModal").evaluate((modal) => {
+      const body = "Lange chatinhoud<br>".repeat(240);
+      document.querySelector("#chatMessages").innerHTML = ["user", "assistant"].map((role) =>
+        `<article class="chat-message chat-message--${role}"><span class="chat-message__role">${role}</span><time class="chat-message__timestamp">nu</time><div class="chat-message__body">${body}</div></article>`,
+      ).join("");
+      modal.showModal();
+    });
+    const measurements = await page.locator("#chatMessages").evaluate((container) => ({
+      available: container.clientHeight,
+      bubbles: [...container.querySelectorAll(".chat-message")].map((bubble) => {
+        const body = bubble.querySelector(".chat-message__body");
+        return {
+          height: bubble.getBoundingClientRect().height,
+          bodyScrollable: body.scrollHeight > body.clientHeight,
+        };
+      }),
+    }));
+    expect(measurements.available).toBeGreaterThan(0);
+    for (const bubble of measurements.bubbles) {
+      expect(bubble.height).toBeLessThanOrEqual(measurements.available * (2 / 3) + 2);
+      expect(bubble.bodyScrollable).toBe(true);
+    }
   });
 
   test("retains terminal status colours in the light prompt-history table", async ({ page }) => {

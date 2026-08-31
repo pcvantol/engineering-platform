@@ -77,6 +77,9 @@ The Execution Host continues to publish stable machine enum values such as
 contract. The dashboard translates those values only at the presentation
 boundary through the same locale catalog, so the operator sees a human-friendly
 label in the selected language while API and storage values remain stable.
+This also applies to every phase, commit type and verified description in the
+commit timeline; an unrecognized future value remains visible as its stable
+machine value instead of being guessed or mutated.
 
 The dashboard assets also own the presentation contract: the sticky title bar
 uses the same `18px` outer corner radius as the top-level categories, while
@@ -96,6 +99,14 @@ state, scheduling or evidence. Its accessible name is supplied by the
 five-language dashboard catalogue. On iPhone and iPad, `touch-action:
 manipulation` prevents accidental double-tap zoom; the dashboard viewport is
 also held at its initial scale while handling text input.
+
+Manual refresh controls for **Open pull requests** and **Local worktrees and
+branches** acknowledge a click with a short, localized toast. Their scheduled,
+read-only refreshes remain silent. Pull-request evidence in a running execution
+uses the same filled card surface as neighbouring operational cards; immutable
+historical-execution detail intentionally keeps its flat evidence card.
+Pull-request links use an underline on hover without a rectangular hover
+outline. Keyboard focus retains its visible focus ring.
 
 Top-level dashboard categories are separated by a `24px` rhythm and do not
 use elevation shadows; their coloured borders and spacing provide hierarchy.
@@ -335,6 +346,9 @@ can be downloaded without duplicating their content in the detail dialog.
 The dashboard has no separate or hidden **Laatst uitgevoerde prompt** card;
 the selected Promptgeschiedenis row is the canonical presentation of a
 terminal execution.
+For managed Inbox executions, the displayed title is the persisted submission
+title. The terminal report's Objective is non-authoritative trace context and
+must not replace that title during completion or later report reconciliation.
 The adjacent AI-chat glyph opens a separate near-fullscreen, read-only
 question-and-answer context for that same Run ID. It receives only the selected
 run's bounded evidence and cannot start engineering work or alter repository

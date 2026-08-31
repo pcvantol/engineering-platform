@@ -2105,6 +2105,9 @@ function renderActivePullRequests(execution, lifecycle) {
   const card = promptDetailCard(
     t("detail.pull_requests"), fields, false, "active-run-pull-requests",
   );
+  // In the active execution this is an operational card, not a modal detail
+  // panel. Reuse the current-run card surface while historic detail cards stay flat.
+  card.classList.add("card");
   card.id = "activeRunPullRequests";
   if (lifecycle?.parentElement === current) lifecycle.after(card);
   else current.append(card);
@@ -2567,6 +2570,7 @@ async function openWorktreeFolder(worktreePath) {
   }
 }
 async function refreshWorktreeRemovalAnalysis(button) {
+  showDashboardToast(t("workspace.worktree_analysis_refreshing"));
   button.disabled = true;
   try {
     const response = await fetch("/api/worktree-removal-analysis", {
@@ -2710,8 +2714,9 @@ function scheduleOpenPullRequestMonitor(pullRequests) {
     openPullRequestMonitorTimer = setTimeout(() => void refreshOpenPullRequests(), openPullRequestMonitorIntervalMs);
   }
 }
-async function refreshOpenPullRequests() {
+async function refreshOpenPullRequests({ announce = false } = {}) {
   if (openPullRequestMonitorInFlight) return;
+  if (announce) showDashboardToast(t("workspace.open_pull_requests_refreshing"));
   openPullRequestMonitorInFlight = true;
   const refreshButton = $("workspaceOpenPullRequestsRefresh");
   if (refreshButton) refreshButton.disabled = true;
@@ -2815,7 +2820,7 @@ document.addEventListener("click", (event) => {
   const authorize = event.target.closest("[data-open-pull-request-owner-authorization]");
   if (authorize) void requestOpenPullRequestOwnerAuthorization(authorize);
   else if (event.target.closest("[data-open-pull-request-check-repair]")) void requestOpenPullRequestCheckRepair(event.target.closest("[data-open-pull-request-check-repair]"));
-  else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests();
+  else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests({ announce: true });
 });
 let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
@@ -5099,7 +5104,7 @@ function promptHistoryDetailMarkdown(payload, title) {
       .filter(([, value]) => value !== null && typeof value !== "object")
       .map(([key, value]) => [promptHistoryMarkdownLabel(key), value])),
     promptHistoryMarkdownSection(t("detail.execution_activity"), activity ? [
-      [t("detail.activity_definition"), activity.activity?.codex_command_definition],
+      [t("detail.activity_definition"), executionActivityDisplayValue(activity.activity?.codex_command_definition)],
       [t("detail.primary_codex_commands"), activity.activity?.primary_codex_commands_total],
       [t("detail.reviewer_codex_commands"), activity.activity?.reviewer_codex_commands_total],
       [t("detail.host_validation_commands"), activity.activity?.host_validation_commands_total],
@@ -7282,6 +7287,14 @@ function promptDetailUsageSection(usage) {
   );
   return fields.length ? promptDetailCard(t("detail.provider_usage"), fields) : null;
 }
+const EXECUTION_ACTIVITY_DISPLAY_KEYS = Object.freeze({
+  "One persisted Codex CLI provider invocation. It is not a shell command, tool call, prompt, token count, or GitHub API request.": "detail.activity_definition_value",
+  "GitHub evidence scoped to each PR; never summed into this run total.": "detail.delivery_pr_scope_value",
+});
+function executionActivityDisplayValue(value) {
+  const key = EXECUTION_ACTIVITY_DISPLAY_KEYS[String(value || "")];
+  return key ? t(key) : value;
+}
 function promptDetailExecutionActivitySection(activity) {
   if (!activity || typeof activity !== "object") {
     return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))]);
@@ -7289,7 +7302,7 @@ function promptDetailExecutionActivitySection(activity) {
   const counters = activity.activity || {};
   const diff = activity.terminal_delivery_diff || {};
   return promptDetailCard(t("detail.execution_activity"), [
-    detailField(t("detail.activity_definition"), counters.codex_command_definition),
+    detailField(t("detail.activity_definition"), executionActivityDisplayValue(counters.codex_command_definition)),
     detailField(t("detail.primary_codex_commands"), counters.primary_codex_commands_total),
     detailField(t("detail.reviewer_codex_commands"), counters.reviewer_codex_commands_total),
     detailField(t("detail.host_validation_commands"), counters.host_validation_commands_total),
@@ -7298,7 +7311,7 @@ function promptDetailExecutionActivitySection(activity) {
     detailField(t("detail.delivery_target"), diff.terminal_target_sha),
     detailField(t("detail.delivery_paths"), diff.total_unique_changed_paths),
     detailField(t("detail.delivery_renamed"), Array.isArray(diff.renamed) ? diff.renamed.length : undefined),
-    detailField(t("detail.delivery_pr_scope"), diff.per_pr_changed_file_counts),
+    detailField(t("detail.delivery_pr_scope"), executionActivityDisplayValue(diff.per_pr_changed_file_counts)),
   ]);
 }
 function commitTimelineKind(item) {

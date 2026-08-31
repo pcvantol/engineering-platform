@@ -146,6 +146,7 @@ def _run_local_shards(root: Path) -> int:
             failed = False
             timed_out = False
             cleaned_up = False
+            cleanup_attempted = False
             deadline = time.monotonic() + LOCAL_BATCH_TIMEOUT_SECONDS
             try:
                 for index, shard in enumerate(SHARDS, start=1):
@@ -168,7 +169,6 @@ def _run_local_shards(root: Path) -> int:
                     try:
                         if process.wait(timeout=remaining) != 0:
                             failed = True
-                            break
                     except subprocess.TimeoutExpired:
                         timed_out = True
                         break
@@ -177,10 +177,11 @@ def _run_local_shards(root: Path) -> int:
                 cleaned_up = True
                 raise
             finally:
-                if not cleaned_up and (timed_out or failed or any(process.poll() is None for _, _, process in processes)):
+                if not cleaned_up and (timed_out or any(process.poll() is None for _, _, process in processes)):
                     _terminate_process_groups(processes)
+                    cleanup_attempted = True
             results = _read_results(processes)
-    _write_evidence(root, results, cleanup="ATTEMPTED" if (timed_out or failed) else "NOT_REQUIRED")
+    _write_evidence(root, results, cleanup="ATTEMPTED" if cleanup_attempted else "NOT_REQUIRED")
     for shard, output, _ in results:
         print(f"\n=== Dashboard browser shard {shard} ===")
         print(output, end="" if output.endswith("\n") else "\n")

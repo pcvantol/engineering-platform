@@ -93,14 +93,14 @@ class DashboardBrowserValidationTest(unittest.TestCase):
 
         killpg.assert_called_once_with(100, signal.SIGTERM)
 
-    def test_local_batch_cleans_up_the_exited_failed_shard_group(self) -> None:
+    def test_local_batch_allows_sibling_shards_to_finish_after_a_failed_shard(self) -> None:
         failed = MagicMock(pid=100)
         failed.poll.return_value = 1
         failed.wait.return_value = 1
         running = []
         for pid in range(101, 104):
             process = MagicMock(pid=pid)
-            process.poll.return_value = None
+            process.poll.return_value = 0
             process.wait.return_value = 0
             running.append(process)
         with tempfile.TemporaryDirectory() as temporary, patch(
@@ -115,15 +115,8 @@ class DashboardBrowserValidationTest(unittest.TestCase):
         ), patch("tools.engineering.dashboard_browser_validation.os.killpg") as killpg:
             self.assertEqual(dashboard_browser_validation._run_local_shards(Path(temporary)), 1)
 
-        self.assertEqual(
-            killpg.call_args_list,
-            [
-                ((100, signal.SIGTERM),),
-                ((101, signal.SIGTERM),),
-                ((102, signal.SIGTERM),),
-                ((103, signal.SIGTERM),),
-            ],
-        )
+        killpg.assert_not_called()
+        self.assertTrue(all(process.wait.called for process in running))
 
     def test_cleanup_does_not_mask_a_shard_result_when_macos_rejects_group_signal(self) -> None:
         process = MagicMock(pid=100)

@@ -276,7 +276,11 @@ def record_terminal_report(root: Path, report: Path) -> None:
     if record is None:
         raise ValueError("terminal report cannot be projected into prompt history")
     submitted_title = submission_prompt_title(root, str(record["run_id"]))
-    if submitted_title and record["prompt_title"] in {record["run_id"], "Engineering Report"}:
+    # A managed Inbox submission owns its title. The terminal report's
+    # Objective is deliberately non-authoritative input context and must never
+    # replace the title already recorded at submission, including when the
+    # report supplies a non-generic placeholder for that Objective.
+    if submitted_title:
         record["prompt_title"] = submitted_title
     record_prompt_execution(root, **record)
 

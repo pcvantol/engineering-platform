@@ -368,6 +368,37 @@ class PromptHistoryTest(unittest.TestCase):
                 "Forge Governance Handoff Reporting & Projection Gap",
             )
 
+    def test_terminal_report_preserves_the_submission_title_over_a_non_authoritative_objective(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_submission(
+                root,
+                submission_id="managed-e2e-title",
+                producer_id="human:operator-peter",
+                producer_type="HUMAN_OPERATOR",
+                prompt_content="# Managed E2E title\n",
+                prompt_metadata={"title": "Managed E2E title"},
+                target_identity={},
+                original_envelope="{}",
+                received_at="2026-08-31T07:00:00Z",
+                link_run_id="inbox-managed-e2e-title",
+            )
+            report = root / ".engineering" / "reports" / "managed-e2e-title.md"
+            report.parent.mkdir(parents=True)
+            report.write_text(
+                "\n".join((
+                    "# Engineering Report",
+                    "- Objective: Submitted runtime prompt retained at the supplied prompt path; non-authoritative input.",
+                    "- Run ID: `inbox-managed-e2e-title`",
+                    "- Terminal state: `COMPLETE`",
+                )) + "\n",
+                encoding="utf-8",
+            )
+
+            record_terminal_report(root, report)
+
+            self.assertEqual(prompt_history(root)[0]["title"], "Managed E2E title")
+
     def test_rejects_non_terminal_or_invalid_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
