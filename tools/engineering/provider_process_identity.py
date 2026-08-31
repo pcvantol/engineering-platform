@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import os
+from pathlib import Path
 import subprocess
 
 
@@ -18,6 +19,21 @@ class ProcessIdentity:
     process_group: int
     start_fingerprint: str
     executable_identity: str
+
+
+def _canonical_executable_identity(value: str) -> str:
+    """Normalize equivalent macOS Python framework executable spellings."""
+    path = Path(value).resolve()
+    parts = path.parts
+    try:
+        framework = parts.index("Python.framework")
+    except ValueError:
+        return str(path)
+    version_root = Path(*parts[: framework + 3])
+    suffix = parts[framework + 3 :]
+    if suffix == ("bin", path.name) or suffix == ("Resources", "Python.app", "Contents", "MacOS", "Python"):
+        return str(version_root / "python-runtime")
+    return str(path)
 
 
 def capture_process_identity(pid: int, process_group: int | None = None) -> ProcessIdentity | None:
@@ -46,7 +62,7 @@ def capture_process_identity(pid: int, process_group: int | None = None) -> Proc
     if len(parts) != 6:
         return None
     birth = " ".join(parts[:5])
-    executable = parts[5][:512]
+    executable = _canonical_executable_identity(parts[5][:512])
     fingerprint = hashlib.sha256(f"{pid}|{observed_group}|{birth}".encode("utf-8")).hexdigest()
     return ProcessIdentity(pid, observed_group, fingerprint, executable)
 

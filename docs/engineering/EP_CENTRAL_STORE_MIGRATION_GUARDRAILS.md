@@ -8,6 +8,25 @@
 
 This document authorizes, but does not implement or execute, the deterministic Engineering Platform (EP) central-store cutover. It does not move a database, create a target store, change a service identity, activate schema 41, or start a second EP writer. Until a later qualified cutover is executed by explicit operator tooling, the DJConnect-hosted schema-40 store is the sole lifecycle, watcher, provider, recovery, qualification and SQLite writer authority.
 
+## Ordinary test isolation
+
+Ordinary Engineering Platform unittest runs establish a fresh, isolated
+installation authority before test modules import storage or migration code. A
+temporary repository is fixture/project context only; it is not an installation
+root and must never be treated as proof that an installed authority pointer is
+safe.
+
+The harness isolates `HOME` and platform-data inputs, so authority pointers,
+central stores, migration receipts, admission-freeze control state, and backups
+resolve beneath a temporary installation root. A fail-closed guard rejects an
+authority pointer or authority target outside that root. Tests use synthetic
+fixtures or explicitly read-only copies, never a live central or legacy DB.
+
+For the active `ISOLATED_RECOVERY_DEVELOPMENT` incident, qualification uses
+`/opt/homebrew/bin/python3.12` consistently. Browser tests may retain the
+canonical Playwright browser cache through `PLAYWRIGHT_BROWSERS_PATH`; that
+cache is binary/cache only and is separate from EP authority/data isolation.
+
 ## Installation data-root and store contract
 
 EP resolves its installation-owned root with `platformdirs.user_data_dir("Engineering Platform")` (the approved `user_data_dir("Engineering Platform")` abstraction). The resolved directory is per user and machine, independent of checkout and consumer repository path, portable across supported operating systems, and deterministic for one installed EP identity. Consumers never construct or write this path.
