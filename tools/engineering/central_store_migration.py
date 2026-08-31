@@ -776,17 +776,133 @@ def rollback(repo: Path, *, migration_id: str, operator: str = "operator") -> di
     return receipt
 
 
-def complete_stage_a(repo: Path, *, migration_id: str) -> dict[str, object]:
-    """Record read-only qualification before an operator may thaw admission."""
-    receipt = load_receipt(migration_id)
-    if receipt is None or receipt.get("state") != "AUTHORITY_SWITCHED":
-        raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+def _desired_state_matches(repo: Path) -> bool:
+    """Run the canonical host verification used by post-cutover readiness."""
+    verifier = repo / "scripts" / "runner" / "bootstrap_djconnect_macos_host.sh"
+    if not verifier.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(verifier), "--verify"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "**MATCH**" in result.stdout
+
+
+def stage_a_readiness(
+    repo: Path,
+    *,
+    migration_id: str,
+    receipt: dict[str, object],
+    services: LaunchAgentServiceControl | None = None,
+    desired_state_check: object | None = None,
+) -> dict[str, object]:
+    """Prove the read-only Stage-A gates without changing runtime authority."""
     target = central_store_path()
-    facts = inspect_source(StoreCandidate(str(target), str(target.resolve()), ("central_authority",)))
-    if facts["blocking_codes"] or database_path(repo).resolve() != target.resolve():
-        raise CutoverError("CENTRAL_STORE_NOT_IN_USE")
-    transition_receipt(receipt, "SERVICES_RESTARTED", service_binding={"consistent": True, "authoritative_store": str(target.resolve())})
-    transition_receipt(receipt, "POST_CUTOVER_VERIFIED", readonly_qualification="PASS")
+    control = services or LaunchAgentServiceControl()
+    try:
+        running = {label: control.running(label) for label in SERVICE_START_ORDER}
+    except Exception:
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED") from None
+    try:
+        pointer = json.loads(authority_pointer_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pointer = {}
+    try:
+        binding = service_binding_proof(repo, expected=target, services=SERVICE_START_ORDER)
+        facts = inspect_source(StoreCandidate(str(target), str(target.resolve()), ("central_authority",)))
+        freeze = admission_status(repo)
+        resolved_authority = database_path(repo).resolve()
+    except CutoverError:
+        raise
+    except (OSError, ValueError):
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED") from None
+
+    baseline = receipt.get("quiescent_source_baseline")
+    baseline_source = baseline.get("source") if isinstance(baseline, dict) else None
+    legacy = Path(str(receipt.get("legacy_path", "")))
+    try:
+        legacy_unchanged = (
+            legacy.is_file()
+            and isinstance(baseline_source, dict)
+            and _same_source_content(
+                source_identity(StoreCandidate(str(legacy), str(legacy.resolve()), ("legacy_authority",))),
+                baseline_source,
+            )
+        )
+    except OSError:
+        legacy_unchanged = False
+    equivalence = receipt.get("equivalence")
+    verified_equivalence = isinstance(equivalence, dict) and equivalence.get("equivalent") is True
+    pointer_matches = (
+        pointer.get("migration_id") == migration_id
+        and pointer.get("authoritative_path") == str(target.resolve())
+        and pointer.get("schema") == EXPECTED_SCHEMA
+    )
+    checker = desired_state_check or _desired_state_matches
+    try:
+        desired_state_match = bool(checker(repo))
+    except Exception:
+        desired_state_match = False
+    result = {
+        "authority": "CENTRAL" if pointer_matches and resolved_authority == target.resolve() else "NOT_CENTRAL",
+        "central_integrity": facts.get("integrity"),
+        "central_schema": facts.get("schema_version"),
+        "service_binding": binding,
+        "services": running,
+        "desired_state": "MATCH" if desired_state_match else "NOT_MATCH",
+        "legacy_unchanged": legacy_unchanged,
+        "freeze": freeze.get("state"),
+        "pre_write_rollback_safe": receipt.get("rollback_mode") == "PRE_WRITE_DIRECT",
+        "target_equivalence": verified_equivalence,
+        "central_managed_production_writes": 0,
+    }
+    eligible = (
+        result["authority"] == "CENTRAL"
+        and not facts["blocking_codes"]
+        and binding.get("consistent") is True
+        and all(running.values())
+        and desired_state_match
+        and legacy_unchanged
+        and freeze.get("state") == "ACTIVE"
+        and freeze.get("migration_id") == migration_id
+        and result["pre_write_rollback_safe"]
+        and verified_equivalence
+    )
+    result["eligible"] = eligible
+    return result
+
+
+def complete_stage_a(
+    repo: Path,
+    *,
+    migration_id: str,
+    services: LaunchAgentServiceControl | None = None,
+    desired_state_check: object | None = None,
+) -> dict[str, object]:
+    """Record Stage-A only after the persisted restart and read-only gates pass."""
+    receipt = load_receipt(migration_id)
+    if receipt is None:
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+    if receipt.get("state") == "LEGACY_ROLLBACK_COMPATIBLE":
+        return receipt
+    if receipt.get("state") != "SERVICES_RESTARTED":
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+    readiness = stage_a_readiness(
+        repo,
+        migration_id=migration_id,
+        receipt=receipt,
+        services=services,
+        desired_state_check=desired_state_check,
+    )
+    if not readiness["eligible"]:
+        raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+    transition_receipt(receipt, "POST_CUTOVER_VERIFIED", readonly_qualification=readiness)
     return transition_receipt(receipt, "LEGACY_ROLLBACK_COMPATIBLE", rollback_mode="PRE_WRITE_DIRECT")
 
 
@@ -841,7 +957,7 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "rollback", "status"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--migration-id")
@@ -875,6 +991,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.migration_id:
                 raise CutoverError("ROLLBACK_FAILED")
             result = rollback(repo, migration_id=args.migration_id, operator=args.operator)
+        elif args.command == "stage-a":
+            if not args.migration_id:
+                raise CutoverError("POST_CUTOVER_READINESS_FAILED")
+            result = complete_stage_a(repo, migration_id=args.migration_id, services=LaunchAgentServiceControl())
         else:
             result = controlled_cutover(repo, operator=args.operator, services=LaunchAgentServiceControl())
     except CutoverError as error:

@@ -114,6 +114,7 @@ python3 -m tools.engineering.central_store_migration freeze-status --repo <repos
 python3 -m tools.engineering.central_store_migration abort --repo <repository> --migration-id <id> --reason PRE_HANDOFF_CONTROLLER_DEFECT --execute
 python3 -m tools.engineering.central_store_migration thaw --repo <repository> --migration-id <id> --execute
 python3 -m tools.engineering.central_store_migration cutover --repo <repository>
+python3 -m tools.engineering.central_store_migration stage-a --repo <repository> --migration-id <id> --execute
 python3 -m tools.engineering.central_store_migration rollback --repo <repository> --migration-id <id>
 python3 -m tools.engineering.central_store_migration status --repo <repository>
 ```
@@ -205,6 +206,15 @@ generation/fingerprint evidence. Mixed binding is `CENTRAL_STORE_NOT_IN_USE`.
 `POST_CUTOVER_VERIFIED` requires schema 40, central integrity/equivalence,
 watcher/relay/dashboard/Local API READY, desired-state MATCH, same-central
 binding, no non-terminal runs/leases and bounded read-only Local API PASS.
+The sole Stage-A predecessor is `SERVICES_RESTARTED`; the controller verifies
+the still-active matching freeze, durable pointer, central integrity, all four
+running services, same-central binding, desired-state MATCH, retained target
+equivalence, unchanged quiescent legacy baseline and pre-write rollback mode
+before it records `POST_CUTOVER_VERIFIED` and then
+`LEGACY_ROLLBACK_COMPATIBLE`. Repeating a completed Stage-A request is
+idempotent; any earlier or post-write state fails closed. Stage A never thaws
+admission or repeats backup, target creation, authority switch, or service
+restart.
 
 ### Thaw, post-write rule, rollback, and tests
 

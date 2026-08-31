@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import fcntl
 import json
@@ -13,12 +14,16 @@ import unittest
 from unittest.mock import patch
 
 from tools.engineering import central_store_migration as migration
+from tools.engineering import storage
 from tools.engineering.storage import open_storage
 
 
 class CentralStoreMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self._authority_pointer = Path(self.temporary.name) / "authority" / "store-authority.json"
+        self._authority_pointer_patch = patch.object(storage, "_authority_pointer_path", return_value=self._authority_pointer)
+        self._authority_pointer_patch.start()
         self.root = Path(self.temporary.name) / "repo"
         self.root.mkdir()
         self.source = self.root / ".engineering" / "engineering.db"
@@ -27,6 +32,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
             connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", ("credential-alpha", "workspace-client", "project-alpha", b"v" * 32, b"f" * 32, "now"))
 
     def tearDown(self) -> None:
+        self._authority_pointer_patch.stop()
         self.temporary.cleanup()
 
     def _preflight(self) -> dict[str, object]:
@@ -55,6 +61,33 @@ class CentralStoreMigrationTests(unittest.TestCase):
         json.dump({"component": component, "pid": process_id if process_id is not None else os.getpid()}, handle)
         handle.flush()
         return handle
+
+    @contextmanager
+    def _services_restarted_receipt(self):
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+
+        class Services:
+            def __init__(self) -> None:
+                self.ready = True
+
+            def running(self, _label: str) -> bool:
+                return self.ready
+
+            def stop(self, _label: str) -> None:
+                pass
+
+            def stopped(self, _label: str) -> bool:
+                return True
+
+            def start(self, _label: str) -> None:
+                pass
+
+        services = Services()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            receipt = migration.controlled_cutover(self.root, services=services)
+            self.assertEqual(receipt["state"], "SERVICES_RESTARTED")
+            yield data_root, services, receipt
 
     def test_data_root_is_portable_and_central_path_is_deterministic(self) -> None:
         self.assertEqual(migration.installation_data_root().name, "Engineering Platform")
@@ -426,6 +459,101 @@ class CentralStoreMigrationTests(unittest.TestCase):
                 dashboard.close()
             if not watcher.closed:
                 watcher.close()
+
+    def test_stage_a_advances_from_services_restarted_only_after_all_readiness_gates(self) -> None:
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            completed = migration.complete_stage_a(
+                self.root,
+                migration_id="migration-a",
+                services=services,
+                desired_state_check=lambda _repo: True,
+            )
+        self.assertEqual(completed["state"], "LEGACY_ROLLBACK_COMPATIBLE")
+        self.assertEqual(completed["readonly_qualification"]["authority"], "CENTRAL")
+        self.assertEqual(completed["readonly_qualification"]["freeze"], "ACTIVE")
+        self.assertEqual(completed["readonly_qualification"]["desired_state"], "MATCH")
+        self.assertEqual(completed["readonly_qualification"]["central_managed_production_writes"], 0)
+
+    def test_stage_a_readiness_failure_does_not_advance_the_receipt(self) -> None:
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            services.ready = False
+            with self.assertRaises(migration.CutoverError) as error:
+                migration.complete_stage_a(
+                    self.root,
+                    migration_id="migration-a",
+                    services=services,
+                    desired_state_check=lambda _repo: True,
+                )
+            self.assertEqual(error.exception.code, "POST_CUTOVER_READINESS_FAILED")
+            self.assertEqual(migration.load_receipt("migration-a")["state"], "SERVICES_RESTARTED")
+
+    def test_stage_a_mixed_binding_or_legacy_drift_fails_closed(self) -> None:
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            with patch.object(migration, "service_binding_proof", return_value={"consistent": False}):
+                with self.assertRaises(migration.CutoverError) as binding:
+                    migration.complete_stage_a(
+                        self.root,
+                        migration_id="migration-a",
+                        services=services,
+                        desired_state_check=lambda _repo: True,
+                    )
+            self.assertEqual(binding.exception.code, "POST_CUTOVER_READINESS_FAILED")
+            with sqlite3.connect(self.source) as connection:
+                connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("legacy-drift", "{}", "COMPLETE", "now"))
+            with self.assertRaises(migration.CutoverError) as drift:
+                migration.complete_stage_a(
+                    self.root,
+                    migration_id="migration-a",
+                    services=services,
+                    desired_state_check=lambda _repo: True,
+                )
+        self.assertEqual(drift.exception.code, "POST_CUTOVER_READINESS_FAILED")
+
+    def test_stage_a_requires_active_freeze(self) -> None:
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            migration.thaw_admission(self.root, migration_id="migration-a")
+            with self.assertRaises(migration.CutoverError) as frozen:
+                migration.complete_stage_a(
+                    self.root,
+                    migration_id="migration-a",
+                    services=services,
+                    desired_state_check=lambda _repo: True,
+                )
+            self.assertEqual(frozen.exception.code, "POST_CUTOVER_READINESS_FAILED")
+
+    def test_stage_a_is_idempotent_after_completion(self) -> None:
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            completed = migration.complete_stage_a(
+                self.root,
+                migration_id="migration-a",
+                services=services,
+                desired_state_check=lambda _repo: True,
+            )
+            transitions = list(completed["transitions"])
+            self.assertEqual(
+                migration.complete_stage_a(self.root, migration_id="migration-a"),
+                completed,
+            )
+            self.assertEqual(migration.load_receipt("migration-a")["transitions"], transitions)
+
+    def test_stage_a_rejects_earlier_and_post_write_states(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            with self.assertRaises(migration.CutoverError) as earlier:
+                migration.complete_stage_a(self.root, migration_id="migration-a", desired_state_check=lambda _repo: True)
+            self.assertEqual(earlier.exception.code, "POST_CUTOVER_READINESS_FAILED")
+        with self._services_restarted_receipt() as (_data_root, services, _receipt):
+            migration.complete_stage_a(
+                self.root,
+                migration_id="migration-a",
+                services=services,
+                desired_state_check=lambda _repo: True,
+            )
+            migration.mark_central_post_write(self.root)
+            with self.assertRaises(migration.CutoverError) as post_write:
+                migration.complete_stage_a(self.root, migration_id="migration-a")
+        self.assertEqual(post_write.exception.code, "POST_CUTOVER_READINESS_FAILED")
 
     def test_authority_pointer_is_atomic_and_bound_to_migration(self) -> None:
         root = Path(self.temporary.name) / "installation"

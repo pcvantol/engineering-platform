@@ -65,3 +65,5 @@ class CentralStoreMigrationGuardrailTests(unittest.TestCase):
         self.assertIn("direct legacy rollback is no longer permitted", contents)
         self.assertIn("Prompt content, watcher payloads, Local Consumer API input", contents)
         self.assertIn("schema `40`", decision)
+        self.assertIn("central_store_migration stage-a", contents)
+        self.assertIn("The sole Stage-A predecessor is `SERVICES_RESTARTED`", contents)
