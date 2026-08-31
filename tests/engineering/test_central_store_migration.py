@@ -235,6 +235,58 @@ class CentralStoreMigrationTests(unittest.TestCase):
                 migration.set_admission_freeze(self.root, migration_id="migration-b", reason="conflict")
         self.assertEqual(error.exception.code, "ADMISSION_FREEZE_FAILED")
 
+    def test_abort_pre_handoff_preserves_freeze_evidence_and_thaws_separately(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            aborted = migration.abort_pre_handoff(
+                self.root,
+                migration_id="migration-a",
+                reason="PRE_HANDOFF_CONTROLLER_DEFECT",
+                operator="operator-test",
+            )
+            self.assertEqual(aborted["state"], "ABORTED_PRE_HANDOFF")
+            self.assertEqual(migration.admission_status(self.root)["state"], "ACTIVE")
+            self.assertEqual(aborted["historical_freeze"]["migration_id"], "migration-a")
+            self.assertEqual(aborted["abort"]["reason"], "PRE_HANDOFF_CONTROLLER_DEFECT")
+            self.assertTrue(migration.abort_pre_handoff(self.root, migration_id="migration-a", reason="PRE_HANDOFF_CONTROLLER_DEFECT")["already_aborted"])
+            thawed = migration.thaw_admission(self.root, migration_id="migration-a", operator="operator-test")
+            self.assertEqual(thawed["state"], "INACTIVE")
+            historical = migration.load_receipt("migration-a")
+            self.assertEqual(historical["state"], "ABORTED_PRE_HANDOFF")
+            self.assertEqual(historical["thaw"]["state"], "INACTIVE")
+            self.assertFalse((data_root / "engineering.db").exists())
+            self.assertFalse((data_root / "runtime" / "store-authority.json").exists())
+
+    def test_abort_rejects_wrong_migration_and_post_handoff_state(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            with self.assertRaises(migration.CutoverError) as wrong:
+                migration.abort_pre_handoff(self.root, migration_id="migration-b", reason="PRE_HANDOFF_CONTROLLER_DEFECT")
+            self.assertEqual(wrong.exception.code, "ABORT_PRE_HANDOFF_FAILED")
+            migration.write_authority_pointer(
+                migration_id="migration-a", authority=self.source, legacy=self.source, state="AUTHORITY_SWITCHED"
+            )
+            with self.assertRaises(migration.CutoverError) as handoff:
+                migration.abort_pre_handoff(self.root, migration_id="migration-a", reason="PRE_HANDOFF_CONTROLLER_DEFECT")
+            self.assertEqual(handoff.exception.code, "ABORT_PRE_HANDOFF_FAILED")
+
+    def test_abort_cli_requires_explicit_execute_and_cannot_be_prompt_driven(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            self.assertEqual(
+                migration.main(["abort", "--repo", str(self.root), "--migration-id", "migration-a", "--reason", "PRE_HANDOFF_CONTROLLER_DEFECT"]),
+                2,
+            )
+            self.assertEqual(migration.admission_status(self.root)["state"], "ACTIVE")
+            self.assertEqual(
+                migration.main(["abort", "--repo", str(self.root), "--migration-id", "migration-a", "--reason", "PRE_HANDOFF_CONTROLLER_DEFECT", "--execute", "--json"]),
+                0,
+            )
+            self.assertEqual(migration.load_receipt("migration-a")["state"], "ABORTED_PRE_HANDOFF")
+
     def test_post_stop_remaining_lock_blocks_before_backup_or_authority_switch(self) -> None:
         dashboard = self._held_lock("dashboard.lock", "dashboard", process_id=101)
         data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()

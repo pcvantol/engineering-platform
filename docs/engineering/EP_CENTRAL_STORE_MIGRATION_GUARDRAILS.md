@@ -102,9 +102,10 @@ Failure states are `CUTOVER_BLOCKED` before authority switch and
 The future operator-only surface is:
 
 ```sh
-python3 -m tools.engineering.central_store_migration admission freeze --repo <repository> --reason <reason>
-python3 -m tools.engineering.central_store_migration admission status --repo <repository>
-python3 -m tools.engineering.central_store_migration admission thaw --repo <repository> --migration-id <id>
+python3 -m tools.engineering.central_store_migration freeze --repo <repository> --reason <reason> --execute
+python3 -m tools.engineering.central_store_migration freeze-status --repo <repository>
+python3 -m tools.engineering.central_store_migration abort --repo <repository> --migration-id <id> --reason PRE_HANDOFF_CONTROLLER_DEFECT --execute
+python3 -m tools.engineering.central_store_migration thaw --repo <repository> --migration-id <id> --execute
 python3 -m tools.engineering.central_store_migration cutover --repo <repository>
 python3 -m tools.engineering.central_store_migration rollback --repo <repository> --migration-id <id>
 python3 -m tools.engineering.central_store_migration status --repo <repository>
@@ -118,6 +119,18 @@ reports `ACTIVE`/`INACTIVE` plus bounded reason/owner/timestamp. `thaw` is
 explicit and audited, never automatic before Stage-A qualification. Freeze
 blocks new iCloud/HUMAN admission, new Managed runs and mutable execution
 ownership, but never kills/terminalizes an active run or changes history.
+
+Before any backup, target creation or authority switch, an operator may use
+the explicit `abort` control only for a matching active frozen migration whose
+authority is still legacy, central target and authority pointer are absent,
+and execution state is quiescent. It records `ABORTED_PRE_HANDOFF` with a
+bounded reason and preserves the original freeze record in the
+installation-owned receipt. Abort never thaws admission, deletes a target or
+backup, changes service state, or acts as rollback. It is idempotent. Any
+target, backup, pointer, active execution, or post-handoff receipt state
+blocks it fail-closed; those states require distinct rollback or
+reverse-migration controls. A later explicit `thaw` records its event beside
+the retained abort receipt.
 
 Prompt content, watcher payloads, Local Consumer API input and provider/LLM
 output cannot freeze/thaw, start cutover, switch authority, roll back or delete

@@ -40,7 +40,7 @@ FAILURE_CODES = frozenset({
     "LEGACY_STORE_NOT_FOUND", "LEGACY_STORE_AMBIGUOUS", "TARGET_STORE_CONFLICT",
     "ACTIVE_EXECUTION", "ACTIVE_LEASE", "SOURCE_SCHEMA_MISMATCH",
     "SOURCE_INTEGRITY_FAILED", "BACKUP_NOT_READY", "TARGET_UNREADABLE",
-    "PROJECT_SCOPE_UNRESOLVED", "AUTHORITY_HANDOFF_NOT_SAFE",
+    "PROJECT_SCOPE_UNRESOLVED", "AUTHORITY_HANDOFF_NOT_SAFE", "ABORT_PRE_HANDOFF_FAILED",
 })
 CONTROL_KEY = "admission_freeze.v1"
 STATE_KEY = "central_store_cutover.v1"
@@ -49,8 +49,10 @@ STATES = (
     "PRECHECK", "ADMISSION_FROZEN", "QUIESCENT", "BACKUP_VERIFIED",
     "CENTRAL_STORE_CREATED", "TARGET_VERIFIED", "AUTHORITY_SWITCHED",
     "SERVICES_RESTARTED", "POST_CUTOVER_VERIFIED",
-    "LEGACY_ROLLBACK_COMPATIBLE", "CENTRAL_STORE_ACTIVE_POST_WRITE",
+    "LEGACY_ROLLBACK_COMPATIBLE", "CENTRAL_STORE_ACTIVE_POST_WRITE", "ABORTED_PRE_HANDOFF",
 )
+ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT"})
+ABORT_REASONS = frozenset({"CONTROLLER_VERSION_INCOMPATIBLE", "PRE_HANDOFF_CONTROLLER_DEFECT"})
 SERVICE_STOP_ORDER = (
     "com.djconnect.engineering-inbox", "com.djconnect.engineering-local-api",
     "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-dashboard",
@@ -463,6 +465,10 @@ def thaw_admission(repo: Path, *, migration_id: str, operator: str = "operator")
     payload = {"version": 1, "migration_id": migration_id, "state": "INACTIVE", "operator": operator, "thawed_at": _now()}
     with sqlite3.connect(path) as connection:
         connection.execute("UPDATE engineering_metadata SET value=? WHERE key=?", (json.dumps(payload, sort_keys=True, separators=(",", ":")), CONTROL_KEY))
+    receipt = load_receipt(migration_id)
+    if receipt is not None and receipt.get("state") == "ABORTED_PRE_HANDOFF":
+        receipt["thaw"] = {"operator": operator, "timestamp": payload["thawed_at"], "state": "INACTIVE"}
+        _atomic_json(receipt_path(migration_id), receipt)
     return payload
 
 
@@ -508,17 +514,89 @@ def transition_receipt(receipt: dict[str, object], state: str, **details: object
         raise CutoverError("AUTHORITY_SWITCH_FAILED", "unknown state")
     prior = receipt.get("state")
     if prior is not None:
-        try:
-            expected = STATES[STATES.index(str(prior)) + 1]
-        except (ValueError, IndexError) as error:
-            raise CutoverError("AUTHORITY_SWITCH_FAILED", "terminal or invalid transition") from error
-        if state != expected:
-            raise CutoverError("AUTHORITY_SWITCH_FAILED", "non-monotonic transition")
+        if state == "ABORTED_PRE_HANDOFF":
+            if prior not in ABORTABLE_STATES:
+                raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "migration is not pre-handoff")
+        else:
+            try:
+                expected = STATES[STATES.index(str(prior)) + 1]
+            except (ValueError, IndexError) as error:
+                raise CutoverError("AUTHORITY_SWITCH_FAILED", "terminal or invalid transition") from error
+            if state != expected:
+                raise CutoverError("AUTHORITY_SWITCH_FAILED", "non-monotonic transition")
     receipt["state"] = state
     receipt.setdefault("transitions", []).append({"state": state, "timestamp": _now()})
     receipt.update(details)
     _atomic_json(receipt_path(str(receipt["migration_id"])), receipt)
     return receipt
+
+
+def abort_pre_handoff(
+    repo: Path,
+    *,
+    migration_id: str,
+    reason: str,
+    operator: str = "operator",
+    services: LaunchAgentServiceControl | None = None,
+) -> dict[str, object]:
+    """Retire one frozen migration before any backup, target, or authority handoff."""
+    if reason not in ABORT_REASONS:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "reason is not allowed")
+    try:
+        freeze = admission_status(repo)
+    except CutoverError as error:
+        if authority_pointer_path().exists():
+            raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "authority handoff is present") from error
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "freeze authority is unresolved") from error
+    receipt = load_receipt(migration_id)
+    if freeze.get("state") == "ACTIVE" and freeze.get("migration_id") != migration_id:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "active freeze belongs to another migration")
+    if receipt is not None and receipt.get("state") == "ABORTED_PRE_HANDOFF":
+        return {"migration_id": migration_id, "state": "ABORTED_PRE_HANDOFF", "already_aborted": True}
+    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "matching active freeze is required")
+    candidates = discover_legacy_stores(repo)
+    if len(candidates) != 1:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "legacy authority is unresolved")
+    source = Path(candidates[0].resolved_path)
+    if database_path(repo).resolve() != source.resolve() or authority_pointer_path().exists():
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "authority handoff is present")
+    target_state = classify_target(central_store_path())["state"]
+    backups = installation_data_root() / "backups"
+    if target_state != "ABSENT" or (backups.exists() and any(backups.glob(f"*{migration_id}*"))):
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "target or backup is present")
+    if receipt is not None and receipt.get("state") not in ABORTABLE_STATES:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "migration is beyond the abort boundary")
+    quiescence = inspect_quiescence(source, pre_stop=True, services=services or LaunchAgentServiceControl())
+    if not quiescence["eligible"]:
+        raise CutoverError("ABORT_PRE_HANDOFF_FAILED", "active execution state is unsafe")
+    if receipt is None:
+        receipt = {
+            "receipt_version": 1,
+            "migration_id": migration_id,
+            "schema": EXPECTED_SCHEMA,
+            "legacy_path": str(source),
+            "historical_freeze": freeze,
+            "pre_stop_source": asdict(source_identity(candidates[0])),
+            "rollback_mode": "NOT_REQUIRED_PRE_HANDOFF",
+        }
+        transition_receipt(receipt, "PRECHECK")
+        transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=freeze)
+    receipt.setdefault("historical_freeze", freeze)
+    return transition_receipt(
+        receipt,
+        "ABORTED_PRE_HANDOFF",
+        abort={
+            "reason": reason,
+            "operator": operator,
+            "timestamp": _now(),
+            "authority": "LEGACY",
+            "central_target_state": target_state,
+            "authority_pointer": "ABSENT",
+            "quiescence": quiescence,
+            "tool_version": TOOL_VERSION,
+        },
+    )
 
 
 def authority_pointer_path() -> Path:
@@ -724,7 +802,7 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "thaw", "cutover", "rollback", "status"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "rollback", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--migration-id")
@@ -746,6 +824,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.reason:
                 raise CutoverError("ADMISSION_FREEZE_FAILED")
             result = set_admission_freeze(repo, migration_id=args.migration_id, reason=args.reason, operator=args.operator)
+        elif args.command == "abort":
+            if not args.migration_id or not args.reason:
+                raise CutoverError("ABORT_PRE_HANDOFF_FAILED")
+            result = abort_pre_handoff(repo, migration_id=args.migration_id, reason=args.reason, operator=args.operator)
         elif args.command == "thaw":
             if not args.migration_id:
                 raise CutoverError("THAW_FAILED")
