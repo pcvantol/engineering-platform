@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 complete; Phase 1 / Increments 1-2a complete; schema 39 active; Increment 3 architecture authorized only
+**Status:** Phase 0 complete; Phase 1 / Increments 1-3 implemented; schema 40 activation deferred
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -37,7 +37,7 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 289 candidate files from EP runtime,
+The audit independently discovers 291 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
@@ -51,7 +51,7 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `289 / 289` |
+| Candidate universe / exactly once | `291 / 291` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
 | EP product source / Python inspected | `95 / 76` |
@@ -77,9 +77,9 @@ satisfied. **Phase 1 / Increment 1 — Local Consumer API Contract Foundation**
 is complete. It remained contract-only: it introduces neither a live transport
 nor authentication, credential, storage or consumer cutover runtime. ADR-0021
 records the implemented and post-merge-qualified Increment 2 loopback runtime
-with schema 39 active. ADR-0022 authorizes Increment 3 architecture only; it
-adds no extraction, schema migration or runtime behavior in this baseline
-control.
+with schema 39 active. Increment 3 adds EP-owned registration lifecycle and a
+consumer-side Keychain adapter under deferred schema-40 activation; it adds no
+consumer cutover or Local API mutation.
 
 ```text
 PASS — PHASE 0 COMPLETE

@@ -155,7 +155,7 @@ qualified.
 | Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Complete, contract-only |
 | Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Implemented and post-merge qualified; schema 39 active |
 | Phase 1 / Increment 2a | **Qualification Credential Boundary** | Complete, bounded qualification-only seam |
-| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Architecture authorized; not implemented |
+| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Implemented; ready for post-merge qualification; schema 40 activation deferred |
 
 Increment 1 defines the versioned Local Consumer API v1 contract and
 fail-closed validation only. It must not add an HTTP listener, Unix-socket

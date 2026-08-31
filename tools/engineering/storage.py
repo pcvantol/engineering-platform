@@ -21,7 +21,7 @@ import sqlite3
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 39
+ENGINEERING_STORAGE_SCHEMA_VERSION = 40
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
@@ -1067,6 +1067,23 @@ def _schema_v39(connection: sqlite3.Connection) -> None:
     )
 
 
+def _schema_v40(connection: sqlite3.Connection) -> None:
+    """Add the non-secret Local Consumer API registration authority."""
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS local_api_consumer_registrations ("
+        "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
+        "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
+        "status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')),"
+        "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,disabled_at TEXT,revoked_at TEXT,"
+        "audit_metadata TEXT NOT NULL DEFAULT '{}',"
+        "PRIMARY KEY(consumer_id,project_id))"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS local_api_consumer_registrations_status_lookup "
+        "ON local_api_consumer_registrations(consumer_id,project_id,status)"
+    )
+
+
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
     """Copy valid legacy dismissal evidence into the canonical datastore.
 
@@ -1153,6 +1170,7 @@ MIGRATIONS: dict[int, Migration] = {
     37: _schema_v37,
     38: _schema_v38,
     39: _schema_v39,
+    40: _schema_v40,
 }
 
 

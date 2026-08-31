@@ -31,8 +31,8 @@ The migration sequence and future extraction phases remain in the canonical
 
 The frozen baseline records its own candidate universe. The current result is
 the deterministic projection for the checked-out repository, so it advances
-when newly classified Engineering Platform candidates are added: 289
-candidates, 289 classified exactly once, 0 unclassified and 0 ambiguous.
+when newly classified Engineering Platform candidates are added: 291
+candidates, 291 classified exactly once, 0 unclassified and 0 ambiguous.
 Operations Console source/assets/tests account for 17 candidates, all
 classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
@@ -114,6 +114,6 @@ PASS — PHASE 0 COMPLETE
 **Phase 1 / Increment 2 — Local API Transport + Authentication Runtime** is
 implemented and post-merge qualified, remaining bounded to the EP-owned
 loopback read-only service with schema 39 active. ADR-0022 authorizes, but
-does not implement, Increment 3 registration and OS secret-store architecture;
-credential issuance, consumer cutover and mutation endpoints remain out of
-scope until its separate implementation increment.
+implements Increment 3 registration and OS secret-store architecture; schema
+40 activation, consumer cutover and mutation endpoints remain out of scope
+until separately authorized.

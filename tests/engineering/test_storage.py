@@ -428,6 +428,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=37")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=38")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=39")
+                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=40")
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
