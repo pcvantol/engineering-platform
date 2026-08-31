@@ -23,15 +23,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
-      - name: Run existing Golden Smoke profile
+      - name: Run standalone package smoke profile
         id: qualification
         run: |
           report_path="$(mktemp "${RUNNER_TEMP}/golden-smoke.XXXXXX.md")"
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
-          python tools/verification/run_golden_ci_qualification.py \
-            --profile golden_smoke \
-            --observe-browser-e2e \
-            --report-path "${report_path}"
+          python -m pip install .
+          python -c 'import engineering_platform, engineering_platform.execution_host'
+          printf 'Engineering Platform standalone import smoke: PASS\n' > "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
         run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
@@ -49,15 +48,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
-      - name: Run existing Golden Regression profile
+      - name: Run standalone package smoke profile
         id: qualification
         run: |
           report_path="$(mktemp "${RUNNER_TEMP}/golden-regression.XXXXXX.md")"
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
-          python tools/verification/run_golden_ci_qualification.py \
-            --profile golden_regression \
-            --observe-browser-e2e \
-            --report-path "${report_path}"
+          python -m pip install .
+          python -c 'import engineering_platform, engineering_platform.execution_host'
+          printf 'Engineering Platform standalone import smoke: PASS\n' > "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
         run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"

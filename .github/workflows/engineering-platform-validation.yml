@@ -3,26 +3,20 @@ name: Engineering Platform validation
 on:
   pull_request:
     paths:
-      - 'tools/engineering/**'
+      - 'src/engineering_platform/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
-      - 'onboarding/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'BOOTSTRAP.md'
+      - 'pyproject.toml'
       - '.github/workflows/engineering-platform-validation.yml'
   push:
     branches: [main]
     paths:
-      - 'tools/engineering/**'
+      - 'src/engineering_platform/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
-      - 'onboarding/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'BOOTSTRAP.md'
+      - 'pyproject.toml'
 
 jobs:
   validation-profile:
@@ -33,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with: {fetch-depth: 0}
       - id: profile
-        run: python3 -m tools.engineering.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
+        run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
   validate:
     needs: validation-profile
     runs-on: ubuntu-latest
