@@ -47,12 +47,12 @@ CONTROL_KEY = "admission_freeze.v1"
 STATE_KEY = "central_store_cutover.v1"
 POINTER_VERSION = 1
 STATES = (
-    "PRECHECK", "ADMISSION_FROZEN", "QUIESCENT", "BACKUP_VERIFIED",
+    "PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_BASELINE", "BACKUP_VERIFIED",
     "CENTRAL_STORE_CREATED", "TARGET_VERIFIED", "AUTHORITY_SWITCHED",
     "SERVICES_RESTARTED", "POST_CUTOVER_VERIFIED",
     "LEGACY_ROLLBACK_COMPATIBLE", "CENTRAL_STORE_ACTIVE_POST_WRITE", "ABORTED_PRE_HANDOFF",
 )
-ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT"})
+ABORTABLE_STATES = frozenset({"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_BASELINE"})
 ABORT_REASONS = frozenset({"CONTROLLER_VERSION_INCOMPATIBLE", "PRE_HANDOFF_CONTROLLER_DEFECT"})
 SERVICE_STOP_ORDER = (
     "com.djconnect.engineering-inbox", "com.djconnect.engineering-local-api",
@@ -451,8 +451,9 @@ def set_admission_freeze(repo: Path, *, migration_id: str | None = None, reason:
     payload = {"version": 1, "migration_id": migration_id, "state": "ACTIVE", "reason": reason.strip(), "operator": operator, "created_at": _now()}
     with sqlite3.connect(path) as connection:
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONTROL_KEY, json.dumps(payload, sort_keys=True, separators=(",", ":"))))
-    # Persist cutover identity outside the source database after the only
-    # expected source control-plane write.  This is the pre-stop drift guard.
+    # This identity documents the pre-stop source only.  Service shutdown is
+    # allowed to write bounded lifecycle evidence, so it is never the copy
+    # baseline or a source-drift gate.
     receipt = load_receipt(migration_id)
     if receipt is None:
         receipt = {
@@ -461,7 +462,7 @@ def set_admission_freeze(repo: Path, *, migration_id: str | None = None, reason:
             "schema": EXPECTED_SCHEMA,
             "operator": operator,
             "legacy_path": str(path),
-            "pre_stop_source": asdict(source_identity(candidates[0])),
+            "pre_stop_source_identity": asdict(source_identity(candidates[0])),
             "rollback_mode": "PRE_WRITE_DIRECT",
         }
         transition_receipt(receipt, "PRECHECK")
@@ -650,6 +651,30 @@ def service_binding_proof(repo: Path, *, expected: Path, services: tuple[str, ..
     return {"consistent": consistent, "authoritative_store": str(resolved), "services": {label: str(resolved) for label in services}}
 
 
+def quiescent_source_baseline(candidate: StoreCandidate) -> dict[str, object]:
+    """Capture the one authoritative source identity after strict quiescence."""
+    source = Path(candidate.resolved_path)
+    facts = inspect_source(candidate)
+    scope = project_scope_inventory(source)
+    if facts["blocking_codes"] or scope["blocking_codes"]:
+        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    return {
+        "state": "QUIESCENT_SOURCE_BASELINE",
+        "captured_at": _now(),
+        "source": asdict(source_identity(candidate)),
+        "integrity": facts["integrity"],
+        "critical_table_counts": _table_counts(source),
+        "project_scope": scope,
+    }
+
+
+def _require_quiescent_source_stable(candidate: StoreCandidate, baseline: dict[str, object]) -> StoreIdentity:
+    identity = baseline.get("source")
+    if not isinstance(identity, dict) or not _same_source_content(source_identity(candidate), identity):
+        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    return source_identity(candidate)
+
+
 def controlled_cutover(repo: Path, *, operator: str = "operator", services: LaunchAgentServiceControl | None = None) -> dict[str, object]:
     """Perform one frozen cutover transaction through staged handoff gates."""
     candidate = discover_legacy_stores(repo)
@@ -661,53 +686,55 @@ def controlled_cutover(repo: Path, *, operator: str = "operator", services: Laun
     if freeze.get("state") != "ACTIVE" or not isinstance(migration_id, str) or not migration_id:
         raise CutoverError("ADMISSION_FREEZE_FAILED")
     existing = load_receipt(migration_id)
-    if existing is not None and existing.get("state") not in {"PRECHECK", "ADMISSION_FROZEN"}:
+    if existing is not None and existing.get("state") not in {"PRECHECK", "ADMISSION_FROZEN", "QUIESCENT_SOURCE_BASELINE"}:
         if existing.get("state") in STATES:
             return existing
         raise CutoverError("AUTHORITY_SWITCH_FAILED", "migration receipt is invalid")
-    # A live watcher/dashboard lock is expected only at this stage, and only
-    # when both its JSON owner and the process/service identity agree.
-    pre_stop = inspect_quiescence(source, pre_stop=True, services=services)
-    if not pre_stop["eligible"]:
-        raise CutoverError("QUIESCENCE_FAILED")
-    # This catches an application/evidence write made after the durable freeze
-    # but before services have been brought down.
-    pre_stop_identity = source_identity(candidate[0])
-    if existing is not None and isinstance(existing.get("pre_stop_source"), dict):
-        if not _same_source_content(pre_stop_identity, existing["pre_stop_source"]):
-            raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
-    if services is not None:
-        for label in SERVICE_STOP_ORDER:
-            services.stop(label)
-            if not services.stopped(label):
-                raise CutoverError("SERVICE_STOP_FAILED", label)
-    quiescence = inspect_quiescence(source, services=services)
-    if not quiescence["eligible"]:
-        raise CutoverError("QUIESCENCE_FAILED")
-    identity = source_identity(candidate[0])
-    if not _same_source_content(identity, pre_stop_identity):
-        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
-    # The authoritative copy/equivalence baseline begins only after the
-    # controller's expected freeze write and strict service quiescence.
     receipt: dict[str, object] = existing or {
-        "receipt_version": 1,
-        "migration_id": migration_id,
-        "schema": EXPECTED_SCHEMA,
-        "operator": operator,
-        "source": asdict(identity),
-        "source_baseline_stage": "POST_FREEZE_QUIESCENT_SOURCE_IDENTITY",
-        "legacy_path": str(source),
-        "rollback_mode": "PRE_WRITE_DIRECT",
+        "receipt_version": 1, "migration_id": migration_id, "schema": EXPECTED_SCHEMA,
+        "operator": operator, "legacy_path": str(source), "rollback_mode": "PRE_WRITE_DIRECT",
     }
-    if existing is None:
-        transition_receipt(receipt, "PRECHECK")
-        transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=freeze)
-    transition_receipt(receipt, "QUIESCENT", quiescence=quiescence, source=asdict(identity), source_baseline_stage="POST_FREEZE_QUIESCENT_SOURCE_IDENTITY")
-    if not _same_source_content(source_identity(candidate[0]), identity):
-        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    if receipt.get("state") != "QUIESCENT_SOURCE_BASELINE":
+        # A live watcher/dashboard lock is expected before maintenance, but a
+        # failed pre-baseline attempt may already have durably unloaded every
+        # owned LaunchAgent.  That bounded state is safe to resume only when
+        # the strict post-stop gate proves every service is still stopped.
+        pre_stop = inspect_quiescence(source, pre_stop=True, services=services)
+        already_quiesced = False
+        if not pre_stop["eligible"]:
+            post_stop = inspect_quiescence(source, services=services)
+            services_stopped = services is not None and all(services.stopped(label) for label in SERVICE_STOP_ORDER)
+            already_quiesced = existing is not None and post_stop["eligible"] and services_stopped
+            if not already_quiesced:
+                raise CutoverError("QUIESCENCE_FAILED")
+        if services is not None and not already_quiesced:
+            for label in SERVICE_STOP_ORDER:
+                services.stop(label)
+                if not services.stopped(label):
+                    raise CutoverError("SERVICE_STOP_FAILED", label)
+        quiescence = inspect_quiescence(source, services=services)
+        if not quiescence["eligible"]:
+            raise CutoverError("QUIESCENCE_FAILED")
+        baseline = quiescent_source_baseline(candidate[0])
+        transition_receipt(
+            receipt,
+            "QUIESCENT_SOURCE_BASELINE",
+            quiescence=quiescence,
+            source=baseline["source"],
+            quiescent_source_baseline=baseline,
+        )
+    else:
+        quiescence = inspect_quiescence(source, services=services)
+        if not quiescence["eligible"]:
+            raise CutoverError("QUIESCENCE_FAILED")
+    baseline = receipt.get("quiescent_source_baseline")
+    if not isinstance(baseline, dict):
+        raise CutoverError("AUTHORITY_SWITCH_FAILED", "quiescent source baseline is missing")
+    _require_quiescent_source_stable(candidate[0], baseline)
     target = central_store_path()
     if classify_target(target)["state"] != "ABSENT":
         raise CutoverError("TARGET_CREATE_FAILED")
+    _require_quiescent_source_stable(candidate[0], baseline)
     backup = installation_data_root() / "backups" / f"legacy-schema40-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{migration_id}.db"
     copy_snapshot(source, backup)
     if not validate_target_equivalence(source, backup)["equivalent"]:

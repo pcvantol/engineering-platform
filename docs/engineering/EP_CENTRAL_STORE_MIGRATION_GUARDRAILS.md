@@ -89,11 +89,18 @@ and bounded diagnostic in a redacted migration receipt. Normal states are
 monotonic:
 
 ```text
-PRECHECK -> ADMISSION_FROZEN -> QUIESCENT -> BACKUP_VERIFIED
+PRECHECK -> ADMISSION_FROZEN -> QUIESCENT_SOURCE_BASELINE -> BACKUP_VERIFIED
 -> CENTRAL_STORE_CREATED -> TARGET_VERIFIED -> AUTHORITY_SWITCHED
 -> SERVICES_RESTARTED -> POST_CUTOVER_VERIFIED
 -> LEGACY_ROLLBACK_COMPATIBLE -> CENTRAL_STORE_ACTIVE_POST_WRITE
 ```
+
+`PRE_STOP_SOURCE_IDENTITY` is optional audit provenance only. The controller
+captures `QUIESCENT_SOURCE_BASELINE` only after every owned writer is durably
+stopped and the strict post-stop gate passes; that baseline alone controls
+backup and authority-handoff drift checks. A pre-baseline interruption may
+resume from an already proven quiescent state, but an existing quiescent
+baseline is never silently recomputed.
 
 Failure states are `CUTOVER_BLOCKED` before authority switch and
 `ROLLBACK_IN_PROGRESS -> ROLLBACK_COMPLETED` only from

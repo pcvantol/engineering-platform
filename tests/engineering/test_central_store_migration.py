@@ -215,17 +215,81 @@ class CentralStoreMigrationTests(unittest.TestCase):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             lock.close()
 
-    def test_freeze_identity_is_stable_and_unexpected_source_write_blocks_resume(self) -> None:
+    def test_pre_stop_identity_is_informational_and_not_the_copy_baseline(self) -> None:
         data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
         with root_patch, target_patch, resolver_patch:
             migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
             self.assertEqual(migration.admission_status(self.root)["migration_id"], "migration-a")
             with sqlite3.connect(self.source) as connection:
                 connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("unexpected", "{}", "COMPLETE", "now"))
+            receipt = migration.controlled_cutover(self.root)
+            self.assertEqual(receipt["state"], "AUTHORITY_SWITCHED")
+            self.assertIn("pre_stop_source_identity", receipt)
+            self.assertEqual(receipt["quiescent_source_baseline"]["state"], "QUIESCENT_SOURCE_BASELINE")
+
+    def test_shutdown_write_precedes_the_authoritative_quiescent_baseline(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+
+        class Services:
+            def __init__(self, source: Path) -> None:
+                self.source = source
+            def running(self, _label: str) -> bool:
+                return True
+            def stop(self, _label: str) -> None:
+                with sqlite3.connect(self.source) as connection:
+                    connection.execute(
+                        "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                        ("inbox", '{"event":"watcher_shutdown_completed"}', "now"),
+                    )
+            def stopped(self, _label: str) -> bool:
+                return True
+            def start(self, _label: str) -> None:
+                pass
+
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            before = migration.load_receipt("migration-a")["pre_stop_source_identity"]["fingerprint_sha256"]
+            receipt = migration.controlled_cutover(self.root, services=Services(self.source))
+            baseline = receipt["quiescent_source_baseline"]
+            self.assertEqual(receipt["state"], "SERVICES_RESTARTED")
+            self.assertNotEqual(before, baseline["source"]["fingerprint_sha256"])
+            self.assertEqual(baseline["state"], "QUIESCENT_SOURCE_BASELINE")
+            self.assertIn("critical_table_counts", baseline)
+            self.assertEqual(baseline["project_scope"]["consumer_registrations"], 1)
+
+    def test_post_baseline_mutation_blocks_before_backup(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        original_target_state = migration.classify_target
+
+        def mutate_before_backup(path: Path) -> dict[str, object]:
+            with sqlite3.connect(self.source) as connection:
+                connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("rogue", "{}", "COMPLETE", "now"))
+            return original_target_state(path)
+
+        with root_patch, target_patch, resolver_patch, patch.object(migration, "classify_target", side_effect=mutate_before_backup):
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
             with self.assertRaises(migration.CutoverError) as error:
                 migration.controlled_cutover(self.root)
             self.assertEqual(error.exception.code, "SOURCE_CHANGED_AFTER_PREFLIGHT")
-            self.assertEqual(migration.load_receipt("migration-a")["migration_id"], "migration-a")
+            self.assertEqual(migration.load_receipt("migration-a")["state"], "QUIESCENT_SOURCE_BASELINE")
+            self.assertFalse((data_root / "backups").exists())
+
+    def test_resume_reuses_persisted_quiescent_baseline_without_rebaselining(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            receipt = migration.load_receipt("migration-a")
+            baseline = migration.quiescent_source_baseline(migration.discover_legacy_stores(self.root)[0])
+            migration.transition_receipt(receipt, "QUIESCENT_SOURCE_BASELINE", source=baseline["source"], quiescent_source_baseline=baseline)
+            with sqlite3.connect(self.source) as connection:
+                connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("rogue", "{}", "COMPLETE", "now"))
+            with self.assertRaises(migration.CutoverError) as error:
+                migration.controlled_cutover(self.root)
+            self.assertEqual(error.exception.code, "SOURCE_CHANGED_AFTER_PREFLIGHT")
+            self.assertEqual(
+                migration.load_receipt("migration-a")["quiescent_source_baseline"]["source"]["fingerprint_sha256"],
+                baseline["source"]["fingerprint_sha256"],
+            )
 
     def test_conflicting_freeze_is_rejected(self) -> None:
         data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
