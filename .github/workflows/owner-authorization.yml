@@ -51,7 +51,7 @@ jobs:
           TARGET_REPOSITORY: ${{ inputs.repository }}
         run: |
           case "$TARGET_REPOSITORY" in
-            pcvantol/djconnect|pcvantol/djconnect-api|pcvantol/djconnect-app|pcvantol/djconnect-app-releases|pcvantol/djconnect-esp32|pcvantol/djconnect-firmware|pcvantol/djconnect-pi|pcvantol/djconnect-pi-releases|pcvantol/djconnect-website|pcvantol/djconnect-windows)
+            pcvantol/engineering-platform)
               echo "repository_name=${TARGET_REPOSITORY#pcvantol/}" >> "$GITHUB_OUTPUT"
               ;;
             *)
