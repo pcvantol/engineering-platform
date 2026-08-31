@@ -23,6 +23,7 @@ import sys
 import uuid
 
 from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
+from .providers import LaunchdProvider
 
 
 TOOL_VERSION = "2.0.0-phase2-increment3"
@@ -80,19 +81,30 @@ class LaunchAgentServiceControl:
 
     def __init__(self, uid: int | None = None) -> None:
         self._domain = f"gui/{uid if uid is not None else os.getuid()}"
+        self._launchd = LaunchdProvider()
+
+    @staticmethod
+    def _plist(label: str) -> Path:
+        return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
     def stop(self, label: str) -> None:
-        result = subprocess.run(["launchctl", "kill", "SIGTERM", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)
-        if result.returncode:
+        try:
+            self._launchd.quiesce(label, self._plist(label))
+        except OSError as error:
+            raise CutoverError("SERVICE_STOP_FAILED", label) from error
+        if not self.stopped(label):
             raise CutoverError("SERVICE_STOP_FAILED", label)
 
     def start(self, label: str) -> None:
-        result = subprocess.run(["launchctl", "kickstart", "-k", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)
-        if result.returncode:
+        try:
+            self._launchd.resume(label, self._plist(label))
+        except OSError as error:
+            raise CutoverError("SERVICE_RESTART_FAILED", label) from error
+        if not self.running(label):
             raise CutoverError("SERVICE_RESTART_FAILED", label)
 
     def stopped(self, label: str) -> bool:
-        return subprocess.run(["launchctl", "print", f"{self._domain}/{label}"], capture_output=True, text=True, check=False).returncode != 0
+        return not self._launchd.inspect(label)
 
     def running(self, label: str) -> bool:
         result = subprocess.run(["launchctl", "print", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)

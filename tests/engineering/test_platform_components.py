@@ -134,6 +134,23 @@ class ProviderContractTest(unittest.TestCase):
         self.assertTrue(running.qualified)
         self.assertIn("active", running.detail)
 
+    @patch("tools.engineering.providers.LaunchdProvider.restart")
+    @patch("tools.engineering.providers.LaunchdProvider.inspect", return_value=False)
+    @patch("tools.engineering.providers.shutil.which", return_value="/bin/launchctl")
+    @patch("tools.engineering.providers.subprocess.run")
+    def test_launchd_maintenance_quiesce_boots_out_and_resume_bootstraps(
+        self, run: object, _: object, inspect: object, restart: object
+    ) -> None:
+        run.return_value = __import__("subprocess").CompletedProcess(("launchctl",), 0, "", "")
+        provider = LaunchdProvider()
+        plist = Path("/tmp/com.example.plist")
+        provider.quiesce("com.example", plist)
+        self.assertEqual(inspect.call_count, 2)
+        self.assertIn("bootout", run.call_args_list[0].args[0])
+        provider.resume("com.example", plist)
+        self.assertIn("bootstrap", run.call_args_list[1].args[0])
+        restart.assert_called_once_with("com.example")
+
     @patch("tools.engineering.providers.TailscaleProvider.status")
     @patch("tools.engineering.providers.LaunchdProvider.status")
     @patch("tools.engineering.providers.GitHubProvider.status")

@@ -291,6 +291,39 @@ class LaunchdProvider:
         if completed.returncode:
             raise OSError(completed.stderr.strip() or "launchd restart failed")
 
+    def quiesce(self, label: str, plist: Path) -> None:
+        """Temporarily unload one owned LaunchAgent for bounded maintenance."""
+        executable = shutil.which("launchctl")
+        if not executable:
+            raise OSError("launchctl unavailable")
+        completed = subprocess.run(
+            (executable, "bootout", f"gui/{os.getuid()}", str(plist)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise OSError(completed.stderr.strip() or "launchd quiesce failed")
+        # A process signal is not enough: both observations must prove launchd
+        # no longer owns a runnable job, preventing KeepAlive replacement.
+        if self.inspect(label) or self.inspect(label):
+            raise OSError("LaunchAgent remained loaded after maintenance quiesce")
+
+    def resume(self, label: str, plist: Path) -> None:
+        """Reload a temporarily quiesced owned LaunchAgent and start it."""
+        executable = shutil.which("launchctl")
+        if not executable:
+            raise OSError("launchctl unavailable")
+        completed = subprocess.run(
+            (executable, "bootstrap", f"gui/{os.getuid()}", str(plist)),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise OSError(completed.stderr.strip() or "launchd resume failed")
+        self.restart(label)
+
 
 class ICloudInboxProvider:
     def status(self) -> ProviderStatus:
