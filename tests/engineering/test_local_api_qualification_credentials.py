@@ -23,6 +23,9 @@ from tools.engineering.local_api_credentials import (
 from tools.engineering.storage import open_storage
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 class QualificationCredentialTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -145,3 +148,18 @@ class QualificationCredentialTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_migration_plan_records_the_post_merge_qualification_boundary(self) -> None:
+        plan = (ROOT / "docs/development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "**Consumer Registration + OS Credential Integration** | "
+            "Implemented and post-merge qualified; schema 40 activation deferred",
+            plan,
+        )
+        self.assertIn("**Increment 3 post-merge qualification:**", plan)
+        self.assertIn("under an `ACTIVE` exact registration succeeds", plan)
+        self.assertIn("under a `DISABLED` registration is denied as authorization (`403`)", plan)
+        self.assertIn("revoked credential is denied as authentication (`401`)", plan)
