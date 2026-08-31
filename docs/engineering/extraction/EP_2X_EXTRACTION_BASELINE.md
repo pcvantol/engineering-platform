@@ -37,7 +37,7 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 297 candidate files from EP runtime,
+The audit independently discovers 304 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest

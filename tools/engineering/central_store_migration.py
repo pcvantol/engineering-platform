@@ -25,6 +25,7 @@ import uuid
 
 from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
 from .providers import LaunchdProvider
+from .forensic_delta import ForensicDeltaError, canonical_report_json, export_forensic_delta
 
 
 TOOL_VERSION = "2.0.0-phase2-increment3"
@@ -1508,16 +1509,31 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "recover-contaminated-prewrite", "create-contamination-attestation", "status"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "recover-contaminated-prewrite", "create-contamination-attestation", "forensic-delta", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--migration-id")
+    parser.add_argument("--baseline", type=Path, help="read-only baseline SQLite database for forensic-delta")
+    parser.add_argument("--candidate", type=Path, help="read-only candidate SQLite database for forensic-delta")
+    parser.add_argument("--output", type=Path, help="optional JSON output file for forensic-delta")
+    parser.add_argument("--strict", action="store_true", help="fail forensic-delta when a table has no deterministic key")
     parser.add_argument("--reason")
     parser.add_argument("--operator", default="operator")
     parser.add_argument("--execute", action="store_true", help="required for a mutating production operation")
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
     try:
+        if args.command == "forensic-delta":
+            if not args.baseline or not args.candidate or not args.migration_id:
+                parser.error("forensic-delta requires --baseline, --candidate, and --migration-id")
+            result = export_forensic_delta(args.baseline, args.candidate, migration_id=args.migration_id)
+            if args.output:
+                args.output.write_text(canonical_report_json(result) + "\n", encoding="utf-8")
+            if args.json:
+                print(canonical_report_json(result))
+            else:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            return 2 if args.strict and result["summary"]["tables_key_unresolved"] else 0
         if args.command in {"preflight", "dry-run"}:
             result = preflight(repo)
         elif args.command == "freeze-status":
@@ -1562,7 +1578,7 @@ def main(argv: list[str] | None = None) -> int:
             result = complete_stage_a(repo, migration_id=args.migration_id, services=LaunchAgentServiceControl())
         else:
             result = controlled_cutover(repo, operator=args.operator, services=LaunchAgentServiceControl())
-    except CutoverError as error:
+    except (CutoverError, ForensicDeltaError) as error:
         result = {"ok": False, "code": error.code}
         if args.json:
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))

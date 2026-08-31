@@ -31,8 +31,8 @@ The migration sequence and future extraction phases remain in the canonical
 
 The frozen baseline records its own candidate universe. The current result is
 the deterministic projection for the checked-out repository, so it advances
-when newly classified Engineering Platform candidates are added: 297
-candidates, 297 classified exactly once, 0 unclassified and 0 ambiguous.
+when newly classified Engineering Platform candidates are added: 304
+candidates, 304 classified exactly once, 0 unclassified and 0 ambiguous.
 Operations Console source/assets/tests account for 17 candidates, all
 classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
@@ -56,13 +56,13 @@ and dashboard launchers, dashboard commands, Inbox watcher, runner/bootstrap
 scripts and workflow invocation. Each is within a candidate root and has an
 effective classification; unclassified entry points: 0.
 
-Ownership coverage is whole-set rather than sample-based: 66 EP test candidates
+Ownership coverage is whole-set rather than sample-based: 71 EP test candidates
 (including browser/contract/migration/consumer-integration tests), 24 workflow
-candidates (5 EP workflow, 19 DJConnect retained), 37 EP documentation
+candidates (5 EP workflow, 19 DJConnect retained), 38 EP documentation
 candidates, 0 historical/generated-evidence candidates (immutable generated
 run evidence is deliberately excluded from the candidate universe) and 66 consumer
 adapter files. Qualification registry/assets are classified as EP release
-assets. Unknown ownership: 0.
+assets; 101 candidates are EP product source. Unknown ownership: 0.
 
 ## Extraction blocker matrix
 
