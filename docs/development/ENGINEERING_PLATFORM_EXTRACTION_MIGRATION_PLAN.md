@@ -213,10 +213,10 @@ projections; immutable historical evidence remains unchanged.
 | --- | --- | --- |
 | Phase 2 / Increment 1 | **Installation Data-Root Contract and Central-Store Migration Guardrails** | Complete; documentation/control only; no store moved |
 | Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Implemented / dry-run qualified; live preflight proves the current schema-40 source but is presently ineligible until the separately authorized admission freeze and service quiescence |
-| Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Not authorized by Increment 1 |
-| Phase 2 / Increment 4 | **Post-Cutover Qualification + Rollback-Compatible Baseline** | Not authorized by Increment 1 |
+| Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Architecture authorized / not implemented; ADR-0024 defines the operator-only schema-40, one-writer procedure |
+| Phase 2 / Increment 4 | **Post-Cutover Qualification + Central-Store Active Baseline** | Not authorized / not implemented; follows the qualified central-write proof |
 
-The canonical implementation control is [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md). Phase 2 completes central-store/project-scope migration before Phase 3 physical extraction/package, Phase 4 consumer cutover, and Phase 5 legacy removal. Phase 3 may begin only after the installation-owned central store and its authority/rollback state are qualified.
+The canonical implementation control is [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md). Increment 3 authorizes no implementation or production cutover: it requires a durable admission freeze, quiescence, SQLite backup/API snapshot, equivalence gate, atomically controlled authority pointer and consistent service binding. Direct legacy rollback exists only before the first central production write; the controlled Managed E2E transitions to `CENTRAL_STORE_ACTIVE_POST_WRITE`, after which reverse migration is required. Phase 2 completes central-store/project-scope migration before Phase 3 physical extraction/package, Phase 4 consumer cutover, and Phase 5 legacy removal. Phase 3 may begin only after the central store is authoritative, service binding is consistent, state/rollback semantics are proven and a clean Managed E2E on central is qualified.
 
 ### Phase 0 — Freeze the extraction baseline
 

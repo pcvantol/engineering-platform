@@ -142,6 +142,10 @@ growth. No Forge-specific planning capability belongs in Engineering Platform.
 > Engineering Platform runtime. The EP 2.x extraction changes deployment,
 > package and storage topology; it preserves the execution authority,
 > admission, lifecycle, evidence and operator-merge semantics described here.
+> ADR-0024 authorizes a future data-only schema-40 cutover to the
+> installation-owned store. It preserves those semantics and permits exactly
+> one writable authority; the current repository-local store remains active
+> until explicit operator tooling completes the authorized procedure.
 
 EP is an execution operating system, not a script that merely starts an AI
 provider. Its current runtime accepts an Engineering Action through either a

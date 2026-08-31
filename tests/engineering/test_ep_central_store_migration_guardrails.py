@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 GUARDRAILS = ROOT / "docs/engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md"
 ADR = ROOT / "docs/adr/0023-ep-central-store-migration-guardrails.md"
+CUTOVER_ADR = ROOT / "docs/adr/0024-ep-controlled-central-store-cutover.md"
 
 
 class CentralStoreMigrationGuardrailTests(unittest.TestCase):
@@ -46,3 +47,21 @@ class CentralStoreMigrationGuardrailTests(unittest.TestCase):
         self.assertIn("REIMPLEMENTATION FROM SCRATCH IS FORBIDDEN", contents)
         self.assertIn("Phase 5 legacy removal", contents)
         self.assertIn("authorizes no database relocation", ADR.read_text(encoding="utf-8"))
+
+    def test_increment_three_authorization_remains_operator_only_and_post_write_safe(self) -> None:
+        contents = GUARDRAILS.read_text(encoding="utf-8")
+        decision = CUTOVER_ADR.read_text(encoding="utf-8")
+        for value in (
+            "ADMISSION_FROZEN",
+            "CENTRAL_STORE_ACTIVE_POST_WRITE",
+            "admission_freeze.v1",
+            "store-authority.json",
+            "SOURCE_CHANGED_AFTER_PREFLIGHT",
+            "TARGET_EQUIVALENCE_FAILED",
+            "CENTRAL_STORE_NOT_IN_USE",
+            "ROLLBACK_FAILED",
+        ):
+            self.assertIn(value, contents)
+        self.assertIn("direct legacy rollback is no longer permitted", contents)
+        self.assertIn("Prompt content, watcher payloads, Local Consumer API input", contents)
+        self.assertIn("schema `40`", decision)

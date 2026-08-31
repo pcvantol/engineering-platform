@@ -31,8 +31,8 @@ The migration sequence and future extraction phases remain in the canonical
 
 The frozen baseline records its own candidate universe. The current result is
 the deterministic projection for the checked-out repository, so it advances
-when newly classified Engineering Platform candidates are added: 296
-candidates, 296 classified exactly once, 0 unclassified and 0 ambiguous.
+when newly classified Engineering Platform candidates are added: 297
+candidates, 297 classified exactly once, 0 unclassified and 0 ambiguous.
 Operations Console source/assets/tests account for 17 candidates, all
 classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and
@@ -58,7 +58,7 @@ effective classification; unclassified entry points: 0.
 
 Ownership coverage is whole-set rather than sample-based: 66 EP test candidates
 (including browser/contract/migration/consumer-integration tests), 24 workflow
-candidates (5 EP workflow, 19 DJConnect retained), 36 EP documentation
+candidates (5 EP workflow, 19 DJConnect retained), 37 EP documentation
 candidates, 0 historical/generated-evidence candidates (immutable generated
 run evidence is deliberately excluded from the candidate universe) and 66 consumer
 adapter files. Qualification registry/assets are classified as EP release
@@ -116,3 +116,9 @@ qualified: the loopback read-only service is ready, schema 40 is active, and
 consumer registration plus credential lifecycle are qualified. Phase 2 /
 Increment 1 defines migration guardrails only; it changes no runtime authority,
 schema, consumer cutover, or mutation endpoint.
+
+**Phase 2 / Increment 3 — Controlled Central-Store Cutover** is architecture
+authorized only by ADR-0024. It neither creates a target nor changes runtime
+authority in this repository state. Phase 3 extraction remains blocked until
+central-store authority, consistent service binding and a qualified clean
+Managed E2E are proven.

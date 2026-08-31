@@ -37,13 +37,13 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 296 candidate files from EP runtime,
+The audit independently discovers 297 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`1d5583613ff90b42ba0d829dc643e0225e9a3440f132d2667c927f620908b224` and
+`b4e70811afbcd41c5537f42ea46ba254a56e0a688501f33f7d9e87553d6a6fec` and
 semantic-manifest digest
-`6829c770ec6d5da77b39647cb5929504cced79dd981e874c13d72400fe352773`.
+`02820842f946990a2e65f4302b3fd55c7d2a0f143a77b944ae389a502a502ecf`.
 
 Rules resolve by **most-specific path wins**. Equal-specificity overlap is an
 error. Every candidate must resolve exactly once; an added candidate changes
