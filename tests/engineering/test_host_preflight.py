@@ -12,19 +12,10 @@ from engineering_platform import host_preflight
 from engineering_platform.platform_api import PlatformConfigurationError
 
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
 class HostPreflightTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        target = self.root / "tools" / "engineering"
-        target.mkdir(parents=True)
-        (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
-            (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
         for name in ("status", "reports", "logs", "inbox-processing"):
             (self.root / ".engineering" / name).mkdir(parents=True)
 

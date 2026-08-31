@@ -16,6 +16,8 @@ from engineering_platform.platform_api import (
     provider_registry,
 )
 from engineering_platform.dashboard_configuration import update_inbox_root
+from engineering_platform.platform_version import EngineeringPlatformManifest
+from engineering_platform.resources import PackageResourceError, package_path, package_text
 from unittest.mock import patch
 from engineering_platform.platform_bootstrap import (
     _discard_inactive_component_locks,
@@ -59,12 +61,6 @@ class PlatformProductizationTest(unittest.TestCase):
     def test_execution_host_configuration_resolves_capabilities_deterministically(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            target = root / "tools" / "engineering"
-            target.mkdir(parents=True)
-            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
-                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
             executable = root / "managed-codex" / "bin" / "codex"
             executable.parent.mkdir(parents=True)
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -84,12 +80,6 @@ class PlatformProductizationTest(unittest.TestCase):
     def test_execution_host_uses_validated_local_inbox_override(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            target = root / "tools" / "engineering"
-            target.mkdir(parents=True)
-            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
-                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
             transport = root / "transport"
             (transport / "Inbox").mkdir(parents=True)
             update_inbox_root(root, str(transport))
@@ -101,12 +91,6 @@ class PlatformProductizationTest(unittest.TestCase):
     def test_runtime_environment_pins_the_resolved_launcher_for_child_processes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            target = root / "tools" / "engineering"
-            target.mkdir(parents=True)
-            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(
-                (ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
             executable = root / "managed-codex" / "bin" / "codex"
             executable.parent.mkdir(parents=True)
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -120,13 +104,53 @@ class PlatformProductizationTest(unittest.TestCase):
     def test_execution_host_configuration_fails_closed_for_missing_or_invalid_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            local = root / ".engineering"
+            local.mkdir()
+            (local / "engineering-platform.local.json").write_text(
+                json.dumps({"providers": {"runtime": "other"}}), encoding="utf-8"
+            )
             with self.assertRaises(PlatformConfigurationError):
                 execution_host_configuration(root)
-            target = root / "tools" / "engineering"
-            target.mkdir(parents=True)
-            (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text("{}", encoding="utf-8")
-            with self.assertRaises(PlatformConfigurationError):
-                execution_host_configuration(root)
+
+    def test_package_default_configuration_does_not_require_a_project_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            configuration = PlatformConfiguration.load(root)
+
+            self.assertEqual(configuration.platform.id, "engineering-platform")
+            self.assertFalse((root / "tools" / "engineering").exists())
+            self.assertFalse((root / "src" / "engineering_platform").exists())
+
+    def test_package_default_configuration_preserves_explicit_local_workspace_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provisioning_root = root / "projects"
+            (root / ".engineering").mkdir()
+            (root / ".engineering" / "engineering-platform.local.json").write_text(
+                json.dumps({"workspace": {"provisioning_root": str(provisioning_root)}}),
+                encoding="utf-8",
+            )
+
+            configuration = PlatformConfiguration.load(root)
+
+            self.assertEqual(configuration.workspace.provisioning_root, str(provisioning_root))
+
+    def test_missing_package_resource_fails_without_project_or_checkout_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "engineering_platform.resources.files",
+            side_effect=lambda _: (_ for _ in ()).throw(PackageResourceError("missing package resource")),
+        ):
+            with self.assertRaises(PackageResourceError):
+                package_text("ENGINEERING_PLATFORM_CONFIG.json")
+
+    def test_package_version_resource_is_available_without_project_source_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))
+
+            self.assertEqual(manifest.platform_version, "2.0.0")
+            self.assertFalse((root / "src" / "engineering_platform").exists())
 
     def test_workspace_provisioning_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

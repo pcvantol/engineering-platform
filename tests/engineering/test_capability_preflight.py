@@ -12,15 +12,6 @@ class CapabilityPreflightTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        target = self.root / "src/engineering_platform"
-        target.mkdir(parents=True)
-        source = (
-            Path(__file__).resolve().parents[2]
-            / "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"
-        )
-        (target / "ENGINEERING_PLATFORM_VERSION.json").write_text(
-            source.read_text(encoding="utf-8"), encoding="utf-8"
-        )
         (self.root / ".engineering/status").mkdir(parents=True)
 
     def tearDown(self) -> None:

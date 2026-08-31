@@ -1862,7 +1862,9 @@ def _execute_runner_command(
     phase, _ = _runner_result(repo, run_id)
     _clear_prior_codex_log(repo, run_id)
     arguments = [
-        str(repo / "src/engineering_platform/engineering-execution-host"),
+        sys.executable,
+        "-m",
+        "engineering_platform",
         str(prompt.relative_to(repo)),
         "--owner-authorized",
         "--run-id",
@@ -2408,7 +2410,7 @@ def doctor(repo: Path, root: Path) -> int:
     areas = local_folders(repo)
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     checks = {
-        "repository_runner": (repo / "src/engineering_platform/engineering-execution-host").is_file(),
+        "repository_runner": Path(sys.executable).is_file(),
         "inbox_writable": os.access(transport["Inbox"], os.W_OK),
         "local_archives_writable": os.access(areas["Completed"], os.W_OK),
         "launch_agent": agent.is_file(),

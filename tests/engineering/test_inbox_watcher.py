@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -45,19 +46,13 @@ class InboxWatcherTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "cloud"
         self.repo = Path(self.temp.name) / "repo"
-        (self.repo / "src/engineering_platform").mkdir(parents=True)
-        self.runtime = self.repo / "src/engineering_platform/engineering-execution-host"
-        self.runtime.write_text("#!/bin/sh\n", encoding="utf-8")
-        self.runtime.chmod(0o700)
+        self.repo.mkdir(parents=True)
+        self.runtime = self.repo / "managed-codex" / "bin" / "codex"
         self.managed_runtime_prefix = self.repo / "managed-codex"
         self.managed_runtime = self.managed_runtime_prefix / "bin" / "codex"
         self.managed_runtime.parent.mkdir(parents=True)
         self.managed_runtime.write_text("#!/bin/sh\n", encoding="utf-8")
         self.managed_runtime.chmod(0o700)
-        (self.repo / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").write_text(
-            (Path(__file__).resolve().parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
         self.preflight = patch(
             "engineering_platform.inbox_watcher.execute_host_preflight",
             return_value=HostPreflightResult(
@@ -122,6 +117,7 @@ class InboxWatcherTest(unittest.TestCase):
             inbox_watcher._execute_runner_command(self.repo, prompt, "inbox-reconciliation")
 
         arguments = execute.call_args.args[1]
+        self.assertEqual(arguments[:3], [sys.executable, "-m", "engineering_platform"])
         self.assertIn("--transaction-kind", arguments)
         self.assertEqual(arguments[arguments.index("--transaction-kind") + 1], "RECONCILIATION")
 

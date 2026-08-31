@@ -11,6 +11,7 @@ import uuid
 
 from .producer import ENVELOPE_CONTRACT_NAME, ENVELOPE_CONTRACT_VERSION
 from .providers import GitHubProvider
+from .resources import package_text
 from .storage import EngineeringStorageError, open_storage
 
 
@@ -33,7 +34,7 @@ class DependabotPullRequest:
 def configured_repository(repo: Path) -> str:
     """Read the configured GitHub repository without consulting prompt content."""
     try:
-        raw = json.loads((repo / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
+        raw = json.loads(package_text("ENGINEERING_PLATFORM_CONFIG.json"))
         source = raw["workspace"]["repository"]
         owner, name = source["owner"], source["name"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:

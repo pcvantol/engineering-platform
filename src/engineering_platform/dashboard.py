@@ -74,6 +74,7 @@ from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
+from .resources import package_path
 from .dashboard_configuration import (
     DashboardConfigurationConflict,
     get as dashboard_configuration,
@@ -2969,7 +2970,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
     workspace_location = str(root)
     tracked_files = _tracked_file_count(root)
     platform_version = EngineeringPlatformManifest.load(
-        root / "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json"
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
     ).platform_version
     logger = logger or component_logger(root, "dashboard")
     class DashboardHandler(BaseHTTPRequestHandler):
@@ -4113,13 +4114,15 @@ def relay_binary(repo: Path) -> Path:
 
 
 def build_relay(repo: Path) -> Path:
-    """Compile the repository-owned private Tailnet-to-loopback relay."""
+    """Compile the package-owned private Tailnet-to-loopback relay."""
     compiler = shutil.which("swiftc")
     if compiler is None:
         raise RuntimeError("Swift compiler ontbreekt; de private dashboardrelay kan niet starten.")
     binary = relay_binary(repo)
     binary.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    compiled = LocalProcessProvider().execute(repo, (compiler, str(repo / "src/engineering_platform/dashboard_supervisor.swift"), "-o", str(binary)))
+    compiled = LocalProcessProvider().execute(
+        repo, (compiler, str(package_path("dashboard_supervisor.swift")), "-o", str(binary))
+    )
     if compiled.returncode:
         raise RuntimeError("Dashboardrelay compilation failed.")
     binary.chmod(0o700)

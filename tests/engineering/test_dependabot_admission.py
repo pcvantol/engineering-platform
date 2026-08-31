@@ -26,11 +26,7 @@ class DependabotAdmissionTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.repo = Path(self.temporary.name) / "repo"
         self.root = Path(self.temporary.name) / "cloud"
-        (self.repo / "src/engineering_platform").mkdir(parents=True)
-        (self.repo / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json").write_text(
-            json.dumps({"workspace": {"repository": {"owner": "pcvantol", "name": "djconnect"}}}),
-            encoding="utf-8",
-        )
+        self.repo.mkdir(parents=True)
         self.pull_request = DependabotPullRequest(
             42, "Bump example from 1.0 to 1.1", "https://github.com/pcvantol/djconnect/pull/42",
             "dependabot/pip/example-1.1", "a" * 40,
