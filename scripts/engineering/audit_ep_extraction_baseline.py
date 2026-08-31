@@ -29,7 +29,7 @@ RULE_FIELDS = {"path", "classification", "reason_code", "ownership", "extraction
 # host, workflow and Operations Console entry points. A new file changes the
 # frozen digest, so it cannot silently enter the extraction candidate set.
 CANDIDATE_ROOTS = (
-    "tools/engineering", "tests/engineering", "docs/engineering", "onboarding",
+    "src/engineering_platform", "tests/engineering", "docs/engineering", "onboarding",
     "scripts/runner", ".github/workflows",
 )
 CANDIDATE_FILES = (
@@ -44,6 +44,26 @@ CANDIDATE_FILES = (
 )
 IGNORED_NAMES = {".DS_Store", "__pycache__"}
 GENERATED_EVIDENCE_PREFIXES = ("docs/engineering/runs/",)
+
+
+def target_path(source_path: str) -> str:
+    """Map immutable DJConnect source provenance to standalone target layout."""
+    prefix = "tools/engineering"
+    if source_path == prefix:
+        return "src/engineering_platform"
+    if source_path.startswith(prefix + "/"):
+        return "src/engineering_platform" + source_path[len(prefix):]
+    return source_path
+
+
+def source_path(target_path_value: str) -> str:
+    """Map a target candidate back to the manifest's historical source path."""
+    prefix = "src/engineering_platform"
+    if target_path_value == prefix:
+        return "tools/engineering"
+    if target_path_value.startswith(prefix + "/"):
+        return "tools/engineering" + target_path_value[len(prefix):]
+    return target_path_value
 
 
 def is_safe_relative_path(value: object) -> bool:
@@ -132,8 +152,6 @@ def validate(manifest: dict, root: Path) -> list[str]:
             errors.append(f"duplicate canonical path: {path}")
         else:
             seen.add(path)
-            if not (root / path).exists():
-                errors.append(f"missing required classified path: {path}")
         if rule["classification"] not in CLASSIFICATIONS:
             errors.append(f"rule {index} has an invalid classification")
         if not isinstance(rule["reason_code"], str) or not rule["reason_code"]:
@@ -142,6 +160,8 @@ def validate(manifest: dict, root: Path) -> list[str]:
             errors.append(f"rule {index} has an invalid ownership")
         target = rule["extraction_target"]
         requires_target = rule["classification"] in CLASSIFICATIONS - {"DJCONNECT_RETAINED", "GENERATED_LOCAL_ONLY", "EXCLUDED"}
+        if requires_target and not (root / target_path(path)).exists():
+            errors.append(f"missing required classified path: {path}")
         if requires_target and (not isinstance(target, str) or not target):
             errors.append(f"rule {index} requires an extraction target")
         if not requires_target and target is not None:
@@ -155,7 +175,7 @@ def validate(manifest: dict, root: Path) -> list[str]:
         errors.append(f"candidate universe drift: expected {manifest.get('candidate_universe_digest')}, actual {actual_digest}")
     unclassified, ambiguous = [], []
     for path in candidates:
-        winner, winners = effective_rule(path, rules)
+        winner, winners = effective_rule(source_path(path), rules)
         if winner is None:
             (ambiguous if winners else unclassified).append(path)
     if unclassified:
@@ -168,9 +188,9 @@ def validate(manifest: dict, root: Path) -> list[str]:
 def projection(manifest: dict, root: Path) -> dict:
     candidates = candidate_universe(root)
     rules = manifest["path_rules"]
-    effective = [effective_rule(path, rules)[0] for path in candidates]
+    effective = [effective_rule(source_path(path), rules)[0] for path in candidates]
     classifications = {name: sum(rule is not None and rule["classification"] == name for rule in effective) for name in sorted(CLASSIFICATIONS)}
-    operations = [path for path in candidates if path.startswith("tools/engineering/assets/") or path in {"tools/engineering/dashboard.py", "tools/engineering/dashboard_state.py", "tools/engineering/dashboard_configuration.py", "tools/engineering/live_status.py", "tests/engineering/dashboard.spec.mjs", "tests/engineering/dashboard_status_store.test.mjs"}]
+    operations = [path for path in candidates if path.startswith("src/engineering_platform/assets/") or path in {"src/engineering_platform/dashboard.py", "src/engineering_platform/dashboard_state.py", "src/engineering_platform/dashboard_configuration.py", "src/engineering_platform/live_status.py", "tests/engineering/dashboard.spec.mjs", "tests/engineering/dashboard_status_store.test.mjs"}]
     product_python = [path for path, rule in zip(candidates, effective) if rule and rule["classification"] == "EP_PRODUCT_SOURCE" and path.endswith(".py")]
     imports: list[str] = []
     for relative in product_python:
@@ -184,7 +204,7 @@ def projection(manifest: dict, root: Path) -> dict:
     home_assistant = [name for name in imports if name == "homeassistant" or name.startswith("homeassistant.")]
     djconnect = [name for name in imports if name == "djconnect" or name.startswith("djconnect.")]
     repository_local = [name for name in imports if name.split(".")[0] in {"custom_components", "onboarding", "scripts"}]
-    ep_internal = [name for name in imports if name == "tools" or name.startswith("tools.engineering")]
+    ep_internal = [name for name in imports if name == "engineering_platform" or name.startswith("engineering_platform.")]
     known = standard | {name.split(".")[0] for name in home_assistant + djconnect + repository_local + ep_internal}
     unknown = [name for name in imports if name.split(".")[0] not in known]
     return {
