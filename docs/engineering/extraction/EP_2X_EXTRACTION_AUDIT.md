@@ -31,8 +31,8 @@ The migration sequence and future extraction phases remain in the canonical
 
 The frozen baseline records its own candidate universe. The current result is
 the deterministic projection for the checked-out repository, so it advances
-when newly classified Engineering Platform candidates are added: 288
-candidates, 288 classified exactly once, 0 unclassified and 0 ambiguous.
+when newly classified Engineering Platform candidates are added: 289
+candidates, 289 classified exactly once, 0 unclassified and 0 ambiguous.
 Operations Console source/assets/tests account for 17 candidates, all
 classified exactly once. This includes the current dashboard presentation,
 history navigation, status/configuration assets, five-language locale asset and

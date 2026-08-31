@@ -37,11 +37,11 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 288 candidate files from EP runtime,
+The audit independently discovers 289 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`3fc84651e82f86f9aa715d19353872d3bcc30d42422f7d52e7e1967e103ebce6` and
+`7911939c6176064fc1c45854d5fa5ccb136dae962d081367d44ef3043e33eb8d` and
 semantic-manifest digest
 `4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee`.
 
@@ -51,7 +51,7 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `288 / 288` |
+| Candidate universe / exactly once | `289 / 289` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
 | EP product source / Python inspected | `95 / 76` |
