@@ -1,8 +1,14 @@
 # Engineering Platform central-store migration guardrails
 
-**Status:** Phase 2 / Increment 3 — implemented; ready for controlled post-merge cutover
+**Status:** Historical Phase-2 control; current migration retired by ADR-0026
 **Date:** 2026-08-31
 **Authority:** [ADR-0024](../adr/0024-ep-controlled-central-store-cutover.md), [ADR-0023](../adr/0023-ep-central-store-migration-guardrails.md), [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md)
+
+> **Historical-control notice:** For migration
+> `41feb31e-2e25-42c4-bca1-bbfc97dde6f4`, these controls are retained as
+> forensic and future compatibility evidence only. ADR-0026 classifies that
+> migration `RETIRED_FOR_CLEAN_SLATE_EXTRACTION`; no Stage A, thaw, recovery,
+> reverse reconciliation or authority action is authorized.
 
 ## Scope and invariant
 

@@ -1,9 +1,13 @@
 # ADR-0024 — EP controlled central-store cutover
 
-**Status:** Accepted for Phase 2 / Increment 3 architecture authorization; not implemented
+**Status:** Superseded for migration `41feb31e-2e25-42c4-bca1-bbfc97dde6f4` by ADR-0026
 **Date:** 2026-08-31
 
 ## Context
+
+**Supersession note:** ADR-0026 retires this incident's legacy-to-CENTRAL
+procedure in favor of a clean standalone store. This historical procedure is
+preserved as Phase-2 control evidence and does not authorize an operation.
 
 ADR-0019 and ADR-0023 establish one installation-owned Engineering Platform
 (EP) store and the read-only schema-40 migration controls. Increment 2 proved

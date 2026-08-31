@@ -11,8 +11,8 @@
     "operations_console_version": "2.0.0"
   },
   "classifications": ["CONSUMER_ADAPTER", "DJCONNECT_RETAINED", "EP_DOCUMENTATION", "EP_PRODUCT_SOURCE", "EP_RELEASE_ASSET", "EP_TEST", "EP_WORKFLOW", "EXCLUDED", "GENERATED_LOCAL_ONLY"],
-  "candidate_universe_digest": "b3aa7ef509f21f69cf87eb4ed080964cffb3cad636b4ff88a0493479700c7234",
-  "manifest_semantic_digest": "02820842f946990a2e65f4302b3fd55c7d2a0f143a77b944ae389a502a502ecf",
+  "candidate_universe_digest": "1128c5a49f29a56977f834de2bcc3f1b9e2d03960646eaf20a70a7a260e83f2a",
+  "manifest_semantic_digest": "da38fb9bb1715fff3345c2a7aace2b7d5cc183b2d61c5a2e91c71af4e54f9025",
   "path_rules": [
     {"path":"tools/engineering","classification":"EP_PRODUCT_SOURCE","reason_code":"EP_RUNTIME","ownership":"EP","extraction_target":"engineering_platform","dependency_notes":"Runtime, providers, watcher, reporting and Operations Console source move only after later boundary work."},
     {"path":"tools/engineering/ENGINEERING_PLATFORM_VERSION.json","classification":"EP_RELEASE_ASSET","reason_code":"VERSION_MANIFEST","ownership":"EP","extraction_target":"package_data","dependency_notes":"Canonical EP version and compatibility metadata."},
@@ -28,6 +28,7 @@
     {"path":"docs/adr/0019-engineering-platform-central-installation-store.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Central-store decision constraining later phases."},
     {"path":"docs/adr/0023-ep-central-store-migration-guardrails.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Fail-closed central-store migration guardrail decision."},
     {"path":"docs/adr/0024-ep-controlled-central-store-cutover.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Operator-only schema-40 central-store cutover authorization."},
+    {"path":"docs/adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Clean standalone-store bootstrap and current migration retirement decision."},
     {"path":"scripts/engineering/audit_ep_extraction_baseline.py","classification":"EP_RELEASE_ASSET","reason_code":"BASELINE_AUDIT_TOOL","ownership":"EP","extraction_target":"tools","dependency_notes":"Read-only extraction control audit."},
     {"path":"onboarding","classification":"CONSUMER_ADAPTER","reason_code":"DJCONNECT_HOST_BOOTSTRAP","ownership":"DJCONNECT","extraction_target":"djconnect_adapter","dependency_notes":"DJConnect developer-host setup and package assets."},
     {"path":"scripts/runner","classification":"CONSUMER_ADAPTER","reason_code":"DJCONNECT_HOST_BOOTSTRAP","ownership":"DJCONNECT","extraction_target":"djconnect_adapter","dependency_notes":"Repository-specific launchd and host desired-state integration."},

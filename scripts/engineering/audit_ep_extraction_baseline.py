@@ -40,6 +40,7 @@ CANDIDATE_FILES = (
     "docs/adr/0019-engineering-platform-central-installation-store.md",
     "docs/adr/0023-ep-central-store-migration-guardrails.md",
     "docs/adr/0024-ep-controlled-central-store-cutover.md",
+    "docs/adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md",
 )
 IGNORED_NAMES = {".DS_Store", "__pycache__"}
 GENERATED_EVIDENCE_PREFIXES = ("docs/engineering/runs/",)

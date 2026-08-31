@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction and migration plan
 
-**Status:** Phase 0 complete; Phase 1 complete / qualified; Phase 2 / Increment 1 complete
+**Status:** Phase 0 complete; Phase 1 complete / qualified; Phase 2 closed / retired clean-slate decision; Phase 3 authorized for history-preserving physical extraction
 **Scope:** Engineering Platform 2.x extraction from `pcvantol/djconnect` to a
 standalone, local-first Execution Operations Platform
 **Decision baseline:** [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md) and the
@@ -207,16 +207,16 @@ the Local Consumer API is ready; and consumer registration plus credential
 lifecycle are qualified. This rolling plan supersedes earlier deferred-schema
 projections; immutable historical evidence remains unchanged.
 
-## Authorized Phase 2 increment sequence
+## Phase 2 closure and Phase 3 entry
 
 | Increment | Canonical name | Authorization |
 | --- | --- | --- |
 | Phase 2 / Increment 1 | **Installation Data-Root Contract and Central-Store Migration Guardrails** | Complete; documentation/control only; no store moved |
-| Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Implemented / dry-run qualified; live preflight proves the current schema-40 source but is presently ineligible until the separately authorized admission freeze and service quiescence |
-| Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Implemented / ready for controlled post-merge cutover; ADR-0024 procedure is available but no production action has occurred |
-| Phase 2 / Increment 4 | **Post-Cutover Qualification + Central-Store Active Baseline** | Not authorized / not implemented; follows the qualified central-write proof |
+| Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Durable control/forensic capability retained; current live migration retired |
+| Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Retired for migration `41feb31e-2e25-42c4-bca1-bbfc97dde6f4`; no Stage A, thaw, recovery or reverse reconciliation |
+| Phase 2 / Increment 4 | **Post-Cutover Qualification + Central-Store Active Baseline** | Retired for the current migration; not an extraction prerequisite |
 
-The canonical implementation control is [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md). Increment 3 authorizes no implementation or production cutover: it requires a durable admission freeze, quiescence, SQLite backup/API snapshot, equivalence gate, atomically controlled authority pointer and consistent service binding. Direct legacy rollback exists only before the first central production write; the controlled Managed E2E transitions to `CENTRAL_STORE_ACTIVE_POST_WRITE`, after which reverse migration is required. Phase 2 completes central-store/project-scope migration before Phase 3 physical extraction/package, Phase 4 consumer cutover, and Phase 5 legacy removal. Phase 3 may begin only after the central store is authoritative, service binding is consistent, state/rollback semantics are proven and a clean Managed E2E on central is qualified.
+The canonical implementation controls remain [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md), hermetic authority isolation and generic forensic tooling. Under [ADR-0026](../adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md), the current migration is `RETIRED_FOR_CLEAN_SLATE_EXTRACTION`; its LEGACY/CENTRAL stores are read-only forensic evidence and not a standalone seed. Phase 3 may begin after this documentation/governance reconciliation. It performs history-preserving physical extraction before standalone package/import qualification, official schema-41 fresh-store bootstrap, standalone service qualification, and later consumer cutover.
 
 ### Phase 0 — Freeze the extraction baseline
 
@@ -311,7 +311,15 @@ reserved for later increments.
 
 ### Phase 2 — Central-store and project-scope migration
 
-**Purpose:** build the 2.x data model before consumer cutover.
+**Status:** **CLOSED / RETIRED CLEAN-SLATE DECISION.** The data-root,
+single-writer, quiescence, migration-control, hermetic and forensic foundations
+are durable Phase-2 deliverables. Migration
+`41feb31e-2e25-42c4-bca1-bbfc97dde6f4` is
+`RETIRED_FOR_CLEAN_SLATE_EXTRACTION`; its historical stores and reports are
+read-only evidence, not a standalone seed. See [ADR-0026](../adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md).
+
+**Purpose:** establish the reusable 2.x data model and controls; not migrate
+the current DJConnect-hosted database into standalone EP.
 
 1. Introduce the installation-owned EP data root and one SQLite database.
 2. Add a `projects` registration table keyed by `project_id`, storing the
@@ -336,17 +344,11 @@ reserved for later increments.
    project identity. Repository location is not evidence. Multiple identities,
    ambiguous evidence or a failed proof stop migration for explicit operator
    resolution; no heuristic selection or history merging is permitted.
-9. Make the legacy-to-central cutover explicit: stop/admission-freeze the
-   legacy writer; verify it; back up and verify; register its canonical
-   Workspace project; migrate schema and backfill atomically; verify referential
-   integrity, Inbox ownership and evidence continuity; disable the legacy
-   writer; start one installation writer; then verify health, routing and no
-   competing writer.
-10. Govern rollback by explicit **LEGACY_ROLLBACK_COMPATIBLE** and
-    **LEGACY_ROLLBACK_RETIRED** states. Schema/data compatibility is
-    authoritative, with one complete EP minor-release window as the default
-    support target unless an earlier evidenced irreversible boundary retires
-    legacy startup.
+9. Preserve the historic legacy-to-central controls and forensic artifacts;
+   do not invoke the retired incident migration as a standalone bootstrap.
+10. Define fresh schema-41 bootstrap independently from future legitimate clean
+    schema-40-to-41 compatibility support. Neither path copies current
+    DJConnect-hosted data, credentials, registrations or project scope.
 
 **Exit evidence**
 
@@ -396,7 +398,12 @@ lifecycle domain, not one per transport.
 ### Phase 3 — Productise the EP repository and package
 
 **Purpose:** create `pcvantol/engineering-platform` with relevant history and
-an independently releasable package.
+an independently releasable package plus a clean standalone store.
+
+The required order is physical code extraction, standalone package/import
+qualification, official schema-41 fresh-store bootstrap, standalone service
+qualification, then consumer registration/cutover. No service identity or
+authority transition is implied by repository extraction alone.
 
 1. Create the new repository using a history-preserving filtered export of the
    audited EP source paths. Do not rewrite DJConnect history or cosmetically
@@ -691,7 +698,7 @@ packaged path is proven.
 | Gate | Required before proceeding |
 | --- | --- |
 | Contract gate | Versioned consumer API, project identity semantics and error/redaction rules approved. |
-| Data gate | Transactional central-store migration, backup/restore and no-dual-writer proof pass. |
+| Data gate | Clean standalone schema-41 bootstrap, backup/restore and no-dual-writer proof pass; current LEGACY/CENTRAL archive is not a seed. |
 | Package gate | A clean-environment, production-release-mode wheel passes install/smoke checks; its allowlisted contents exclude tests, debug/development assets and development-only dependencies; dedicated EP CI, required security gates and supply-chain evidence pass. |
 | Consumer gate | DJConnect and Forge/Workspace use only the pinned wheel and complete registration. |
 | Retirement gate | Supported upgrade, rollback and launch-service cutover are proven; source removal is then safe. |
@@ -714,8 +721,8 @@ Remaining later-phase decisions are:
    repository.
 2. Confirm the target per-user data-root conventions for macOS and the
    portability contract for other operating systems.
-3. Confirm the schema/data compatibility decision record that retires
-   LEGACY_ROLLBACK_COMPATIBLE into LEGACY_ROLLBACK_RETIRED.
+3. Confirm the fresh schema-41 bootstrap and legitimate clean schema-40-to-41
+   compatibility decision; current contaminated CENTRAL is excluded.
 4. Confirm the installation scheduler policy separately from per-project FIFO
    semantics, and confirm that EP validates future Forge dependency metadata
    without deriving or scheduling dependencies itself.
