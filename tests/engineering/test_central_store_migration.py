@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
+import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -30,6 +33,28 @@ class CentralStoreMigrationTests(unittest.TestCase):
         data_root = Path(self.temporary.name) / "installation"
         with patch.object(migration, "installation_data_root", return_value=data_root), patch.object(migration, "central_store_path", return_value=data_root / "engineering.db"):
             return migration.preflight(self.root)
+
+    def _cutover_environment(self):
+        data_root = Path(self.temporary.name) / "installation"
+        pointer = data_root / "runtime" / "store-authority.json"
+
+        def resolve(_repo: Path) -> Path:
+            if pointer.exists():
+                return data_root / "engineering.db"
+            return self.source
+
+        return data_root, patch.object(migration, "installation_data_root", return_value=data_root), patch.object(
+            migration, "central_store_path", return_value=data_root / "engineering.db"
+        ), patch.object(migration, "database_path", side_effect=resolve)
+
+    def _held_lock(self, name: str, component: str, *, process_id: int | None = None):
+        path = self.source.parent / "locks" / name
+        path.parent.mkdir(exist_ok=True)
+        handle = path.open("w+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        json.dump({"component": component, "pid": process_id if process_id is not None else os.getpid()}, handle)
+        handle.flush()
+        return handle
 
     def test_data_root_is_portable_and_central_path_is_deterministic(self) -> None:
         self.assertEqual(migration.installation_data_root().name, "Engineering Platform")
@@ -117,7 +142,7 @@ class CentralStoreMigrationTests(unittest.TestCase):
         after = (hashlib.sha256(self.source.read_bytes()).hexdigest(), self.source.stat().st_mtime_ns)
         self.assertTrue(result["eligible"])
         self.assertFalse((Path(self.temporary.name) / "installation" / "engineering.db").exists())
-        self.assertEqual(result["migration_id"], self._preflight()["migration_id"])
+        self.assertNotIn("migration_id", result)
         self.assertEqual(before, after)
         target = Path(self.temporary.name) / "candidate.db"
         with sqlite3.connect(self.source) as source, sqlite3.connect(target) as copied:
@@ -130,16 +155,153 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertIn("TARGET_STORE_CONFLICT", compared["blocking_codes"])
 
     def test_operator_freeze_is_durable_and_snapshot_copy_is_equivalent(self) -> None:
-        candidate = migration.discover_legacy_stores(self.root)[0]
-        migration_id = migration.backup_readiness(migration.source_identity(candidate), Path(self.temporary.name) / "installation")["migration_id"]
-        frozen = migration.set_admission_freeze(self.root, migration_id=str(migration_id), reason="controlled test")
-        self.assertEqual(frozen["state"], "ACTIVE")
-        self.assertEqual(migration.admission_status(self.root)["migration_id"], migration_id)
+        migration_id = "migration-test"
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            frozen = migration.set_admission_freeze(self.root, migration_id=str(migration_id), reason="controlled test")
+            self.assertEqual(frozen["state"], "ACTIVE")
+            self.assertEqual(migration.admission_status(self.root)["migration_id"], migration_id)
+            self.assertEqual(migration.load_receipt(str(migration_id))["state"], "ADMISSION_FROZEN")
         copy = Path(self.temporary.name) / "copy.db"
         migration.copy_snapshot(self.source, copy)
         self.assertTrue(migration.validate_target_equivalence(self.source, copy)["equivalent"])
         thawed = migration.thaw_admission(self.root, migration_id=str(migration_id))
         self.assertEqual(thawed["state"], "INACTIVE")
+
+    def test_pre_stop_allows_only_verified_running_dashboard_and_watcher_locks(self) -> None:
+        dashboard = self._held_lock("dashboard.lock", "dashboard", process_id=101)
+        watcher = self._held_lock("inbox-watcher.lock", "inbox-watcher", process_id=102)
+
+        class Services:
+            def running(self, _label: str) -> bool:
+                return True
+
+        try:
+            with patch.object(migration, "_process_command", side_effect=lambda pid: "python -m tools.engineering.dashboard run" if pid == 101 else "python -m tools.engineering.inbox_watcher run"):
+                facts = migration.inspect_quiescence(self.source, pre_stop=True, services=Services())
+            self.assertTrue(facts["eligible"])
+            self.assertEqual(facts["lock_classifications"]["dashboard.lock"], "EXPECTED_RUNNING_SERVICE_LOCK")
+            self.assertEqual(facts["lock_classifications"]["inbox-watcher.lock"], "EXPECTED_RUNNING_SERVICE_LOCK")
+        finally:
+            fcntl.flock(dashboard.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(watcher.fileno(), fcntl.LOCK_UN)
+            dashboard.close()
+            watcher.close()
+
+    def test_unexpected_pre_stop_lock_blocks_without_cutover_mutation(self) -> None:
+        lock = self._held_lock("execution-host.lock", "execution-host")
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+
+        class Services:
+            stopped_labels: list[str] = []
+            def running(self, _label: str) -> bool:
+                return True
+            def stop(self, label: str) -> None:
+                self.stopped_labels.append(label)
+            def stopped(self, _label: str) -> bool:
+                return True
+
+        try:
+            with root_patch, target_patch, resolver_patch:
+                migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+                services = Services()
+                with self.assertRaises(migration.CutoverError) as error:
+                    migration.controlled_cutover(self.root, services=services)
+                self.assertEqual(error.exception.code, "QUIESCENCE_FAILED")
+                self.assertEqual(services.stopped_labels, [])
+                self.assertFalse((data_root / "engineering.db").exists())
+                self.assertFalse((data_root / "runtime" / "store-authority.json").exists())
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+
+    def test_freeze_identity_is_stable_and_unexpected_source_write_blocks_resume(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            self.assertEqual(migration.admission_status(self.root)["migration_id"], "migration-a")
+            with sqlite3.connect(self.source) as connection:
+                connection.execute("INSERT INTO engineering_transactions(run_id,payload,phase,updated_at) VALUES(?,?,?,?)", ("unexpected", "{}", "COMPLETE", "now"))
+            with self.assertRaises(migration.CutoverError) as error:
+                migration.controlled_cutover(self.root)
+            self.assertEqual(error.exception.code, "SOURCE_CHANGED_AFTER_PREFLIGHT")
+            self.assertEqual(migration.load_receipt("migration-a")["migration_id"], "migration-a")
+
+    def test_conflicting_freeze_is_rejected(self) -> None:
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+        with root_patch, target_patch, resolver_patch:
+            migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+            with self.assertRaises(migration.CutoverError) as error:
+                migration.set_admission_freeze(self.root, migration_id="migration-b", reason="conflict")
+        self.assertEqual(error.exception.code, "ADMISSION_FREEZE_FAILED")
+
+    def test_post_stop_remaining_lock_blocks_before_backup_or_authority_switch(self) -> None:
+        dashboard = self._held_lock("dashboard.lock", "dashboard", process_id=101)
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+
+        class Services:
+            def running(self, _label: str) -> bool:
+                return True
+            def stop(self, _label: str) -> None:
+                pass
+            def stopped(self, _label: str) -> bool:
+                return True
+
+        try:
+            with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", return_value="python -m tools.engineering.dashboard run"):
+                migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+                with self.assertRaises(migration.CutoverError) as error:
+                    migration.controlled_cutover(self.root, services=Services())
+                self.assertEqual(error.exception.code, "QUIESCENCE_FAILED")
+                self.assertFalse((data_root / "backups").exists())
+                self.assertFalse((data_root / "engineering.db").exists())
+                self.assertFalse((data_root / "runtime" / "store-authority.json").exists())
+        finally:
+            fcntl.flock(dashboard.fileno(), fcntl.LOCK_UN)
+            dashboard.close()
+
+    def test_happy_path_reuses_freeze_migration_id_and_allows_expected_pre_stop_locks(self) -> None:
+        dashboard = self._held_lock("dashboard.lock", "dashboard", process_id=101)
+        watcher = self._held_lock("inbox-watcher.lock", "inbox-watcher", process_id=102)
+        data_root, root_patch, target_patch, resolver_patch = self._cutover_environment()
+
+        class Services:
+            def __init__(self) -> None:
+                self.handles = {
+                    "com.djconnect.engineering-dashboard": dashboard,
+                    "com.djconnect.engineering-inbox": watcher,
+                }
+                self.stopped_labels: list[str] = []
+                self.started_labels: list[str] = []
+            def running(self, _label: str) -> bool:
+                return True
+            def stop(self, label: str) -> None:
+                self.stopped_labels.append(label)
+                handle = self.handles.get(label)
+                if handle is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            def stopped(self, _label: str) -> bool:
+                return True
+            def start(self, label: str) -> None:
+                self.started_labels.append(label)
+
+        try:
+            def command(process_id: int) -> str:
+                if process_id == 101:
+                    return "python -m tools.engineering.dashboard run"
+                return "python -m tools.engineering.inbox_watcher run"
+
+            with root_patch, target_patch, resolver_patch, patch.object(migration, "_process_command", side_effect=command):
+                migration.set_admission_freeze(self.root, migration_id="migration-a", reason="test")
+                services = Services()
+                receipt = migration.controlled_cutover(self.root, services=services)
+                self.assertEqual(receipt["migration_id"], "migration-a")
+                self.assertEqual(receipt["state"], "SERVICES_RESTARTED")
+                self.assertTrue((data_root / "engineering.db").is_file())
+                self.assertEqual(migration.controlled_cutover(self.root, services=services)["migration_id"], "migration-a")
+        finally:
+            dashboard.close()
+            watcher.close()
 
     def test_authority_pointer_is_atomic_and_bound_to_migration(self) -> None:
         root = Path(self.temporary.name) / "installation"

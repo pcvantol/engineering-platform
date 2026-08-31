@@ -59,6 +59,10 @@ SERVICE_START_ORDER = (
     "com.djconnect.engineering-local-api", "com.djconnect.engineering-dashboard",
     "com.djconnect.engineering-dashboard-relay", "com.djconnect.engineering-inbox",
 )
+EXPECTED_RUNNING_LOCKS = {
+    "dashboard.lock": ("dashboard", "tools.engineering.dashboard", "com.djconnect.engineering-dashboard"),
+    "inbox-watcher.lock": ("inbox-watcher", "tools.engineering.inbox_watcher", "com.djconnect.engineering-inbox"),
+}
 
 
 class CutoverError(RuntimeError):
@@ -87,6 +91,10 @@ class LaunchAgentServiceControl:
 
     def stopped(self, label: str) -> bool:
         return subprocess.run(["launchctl", "print", f"{self._domain}/{label}"], capture_output=True, text=True, check=False).returncode != 0
+
+    def running(self, label: str) -> bool:
+        result = subprocess.run(["launchctl", "print", f"{self._domain}/{label}"], capture_output=True, text=True, check=False)
+        return result.returncode == 0 and "state = running" in result.stdout
 
 
 @dataclass(frozen=True)
@@ -185,6 +193,13 @@ def source_identity(candidate: StoreCandidate) -> StoreIdentity:
     return StoreIdentity(candidate.path, candidate.resolved_path, stat.st_size, stat.st_mtime_ns, _fingerprint(path), schema, candidate.provenance)
 
 
+def _same_source_content(left: StoreIdentity, right: StoreIdentity | dict[str, object]) -> bool:
+    """Compare source authority content; filesystem timestamps are not evidence writes."""
+    values = asdict(left)
+    other = asdict(right) if isinstance(right, StoreIdentity) else right
+    return all(values.get(key) == other.get(key) for key in ("resolved_path", "size_bytes", "fingerprint_sha256", "schema_version"))
+
+
 def classify_target(path: Path) -> dict[str, object]:
     """Classify a target without creating, modifying, or repairing it."""
     if not path.exists():
@@ -232,9 +247,60 @@ def _count(connection: sqlite3.Connection, query: str, params: tuple[object, ...
     return int(connection.execute(query, params).fetchone()[0])
 
 
-def inspect_quiescence(path: Path) -> dict[str, object]:
-    """Report future handoff blockers without stopping a process or taking ownership."""
-    facts: dict[str, object] = {"non_terminal_transactions": 0, "active_leases": 0, "active_recovery": 0, "unsafe_locks": [], "watcher_admission": "FREEZE_NOT_ACTIVE", "blocking_codes": []}
+def _lock_owner(lock: Path) -> tuple[str, int] | None:
+    try:
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+        component = payload.get("component") if isinstance(payload, dict) else None
+        process_id = payload.get("pid") if isinstance(payload, dict) else None
+        if isinstance(component, str) and isinstance(process_id, int) and process_id > 0:
+            return component, process_id
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _process_command(process_id: int) -> str | None:
+    result = subprocess.run(["ps", "-p", str(process_id), "-o", "command="], capture_output=True, text=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _classify_lock(lock: Path, *, pre_stop: bool, services: LaunchAgentServiceControl | None) -> str:
+    """Classify a held component lock without treating its filename as ownership."""
+    try:
+        with lock.open("r", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                owner = _lock_owner(lock)
+                expected = EXPECTED_RUNNING_LOCKS.get(lock.name)
+                if owner is not None and expected is not None and owner[0] == expected[0]:
+                    try:
+                        os.kill(owner[1], 0)
+                    except ProcessLookupError:
+                        return "INACTIVE_EXPECTED_SERVICE_LOCK"
+                    except PermissionError:
+                        return "UNKNOWN_LOCK"
+                return "STALE_UNOWNED_LOCK"
+    except OSError:
+        return "UNKNOWN_LOCK"
+    owner = _lock_owner(lock)
+    expected = EXPECTED_RUNNING_LOCKS.get(lock.name)
+    if not pre_stop or owner is None or expected is None or services is None:
+        return "UNKNOWN_LOCK"
+    component, process_id = owner
+    expected_component, expected_module, expected_service = expected
+    command = _process_command(process_id)
+    if component == expected_component and command is not None and expected_module in command and services.running(expected_service):
+        return "EXPECTED_RUNNING_SERVICE_LOCK"
+    return "UNEXPECTED_LIVE_LOCK"
+
+
+def inspect_quiescence(path: Path, *, pre_stop: bool = False, services: LaunchAgentServiceControl | None = None) -> dict[str, object]:
+    """Inspect lifecycle blockers; only verified canonical service locks are allowed pre-stop."""
+    facts: dict[str, object] = {"non_terminal_transactions": 0, "active_leases": 0, "active_recovery": 0, "unsafe_locks": [], "lock_classifications": {}, "blocking_codes": []}
     try:
         with _readonly(path) as connection:
             tables = _tables(connection)
@@ -250,15 +316,10 @@ def inspect_quiescence(path: Path) -> dict[str, object]:
     locks = path.parent / "locks"
     if locks.is_dir():
         for lock in sorted(locks.glob("*.lock")):
-            try:
-                with lock.open("r", encoding="utf-8") as handle:
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        facts["unsafe_locks"].append(lock.name)
-                    else:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
+            classification = _classify_lock(lock, pre_stop=pre_stop, services=services)
+            facts["lock_classifications"][lock.name] = classification
+            allowed = {"EXPECTED_RUNNING_SERVICE_LOCK"} if pre_stop else {"INACTIVE_EXPECTED_SERVICE_LOCK"}
+            if classification not in allowed:
                 facts["unsafe_locks"].append(lock.name)
     if facts["non_terminal_transactions"]:
         facts["blocking_codes"].append("ACTIVE_EXECUTION")
@@ -297,15 +358,14 @@ def project_scope_inventory(path: Path) -> dict[str, object]:
 
 
 def backup_readiness(identity: StoreIdentity, root: Path) -> dict[str, object]:
-    migration_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ep-central-store:{identity.fingerprint_sha256}"))
-    backup = root / "backups" / f"legacy-schema40-{identity.fingerprint_sha256[:16]}-{migration_id}.db"
+    backup = root / "backups" / f"legacy-schema40-{identity.fingerprint_sha256[:16]}-<migration-id>.db"
     ancestor = root
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent
     writable = os.access(ancestor, os.W_OK | os.X_OK)
     available = shutil.disk_usage(ancestor).free if ancestor.exists() else 0
     ready = writable and available >= identity.size_bytes
-    return {"backup_path": str(backup), "migration_id": migration_id, "root_exists": root.exists(), "writable_ancestor": str(ancestor), "available_bytes": available, "required_bytes": identity.size_bytes, "integrity_method": "PRAGMA integrity_check", "ready": ready, "blocking_code": None if ready else "BACKUP_NOT_READY"}
+    return {"backup_path": str(backup), "root_exists": root.exists(), "writable_ancestor": str(ancestor), "available_bytes": available, "required_bytes": identity.size_bytes, "integrity_method": "PRAGMA integrity_check", "ready": ready, "blocking_code": None if ready else "BACKUP_NOT_READY"}
 
 
 def snapshot_plan(source: dict[str, object]) -> dict[str, object]:
@@ -364,15 +424,34 @@ def admission_status(repo: Path) -> dict[str, object]:
     return payload or {"state": "INACTIVE"}
 
 
-def set_admission_freeze(repo: Path, *, migration_id: str, reason: str, operator: str = "operator") -> dict[str, object]:
+def set_admission_freeze(repo: Path, *, migration_id: str | None = None, reason: str, operator: str = "operator") -> dict[str, object]:
     """Explicit control-plane mutation; no prompt/provider path calls this."""
     candidates = discover_legacy_stores(repo)
     if len(candidates) != 1 or not reason.strip():
         raise CutoverError("ADMISSION_FREEZE_FAILED")
+    migration_id = migration_id or str(uuid.uuid4())
+    active = admission_status(repo)
+    if active.get("state") == "ACTIVE" and active.get("migration_id") != migration_id:
+        raise CutoverError("ADMISSION_FREEZE_FAILED", "conflicting active migration")
     path = Path(candidates[0].resolved_path)
     payload = {"version": 1, "migration_id": migration_id, "state": "ACTIVE", "reason": reason.strip(), "operator": operator, "created_at": _now()}
     with sqlite3.connect(path) as connection:
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (CONTROL_KEY, json.dumps(payload, sort_keys=True, separators=(",", ":"))))
+    # Persist cutover identity outside the source database after the only
+    # expected source control-plane write.  This is the pre-stop drift guard.
+    receipt = load_receipt(migration_id)
+    if receipt is None:
+        receipt = {
+            "receipt_version": 1,
+            "migration_id": migration_id,
+            "schema": EXPECTED_SCHEMA,
+            "operator": operator,
+            "legacy_path": str(path),
+            "pre_stop_source": asdict(source_identity(candidates[0])),
+            "rollback_mode": "PRE_WRITE_DIRECT",
+        }
+        transition_receipt(receipt, "PRECHECK")
+        transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=payload)
     return payload
 
 
@@ -482,30 +561,60 @@ def service_binding_proof(repo: Path, *, expected: Path, services: tuple[str, ..
 
 
 def controlled_cutover(repo: Path, *, operator: str = "operator", services: LaunchAgentServiceControl | None = None) -> dict[str, object]:
-    """Perform only after an explicit future operational invocation."""
+    """Perform one frozen cutover transaction through staged handoff gates."""
     candidate = discover_legacy_stores(repo)
     if len(candidate) != 1:
         raise CutoverError("QUIESCENCE_FAILED")
     source = Path(candidate[0].resolved_path)
-    identity = source_identity(candidate[0])
-    migration_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ep-central-store:{identity.fingerprint_sha256}"))
-    receipt: dict[str, object] = {"receipt_version": 1, "migration_id": migration_id, "schema": EXPECTED_SCHEMA, "operator": operator, "source": asdict(identity), "legacy_path": str(source), "rollback_mode": "PRE_WRITE_DIRECT"}
-    transition_receipt(receipt, "PRECHECK")
     freeze = admission_status(repo)
-    if freeze.get("state") != "ACTIVE" or freeze.get("migration_id") != migration_id:
+    migration_id = freeze.get("migration_id")
+    if freeze.get("state") != "ACTIVE" or not isinstance(migration_id, str) or not migration_id:
         raise CutoverError("ADMISSION_FREEZE_FAILED")
-    transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=freeze)
-    quiescence = inspect_quiescence(source)
-    if not quiescence["eligible"]:
+    existing = load_receipt(migration_id)
+    if existing is not None and existing.get("state") not in {"PRECHECK", "ADMISSION_FROZEN"}:
+        if existing.get("state") in STATES:
+            return existing
+        raise CutoverError("AUTHORITY_SWITCH_FAILED", "migration receipt is invalid")
+    # A live watcher/dashboard lock is expected only at this stage, and only
+    # when both its JSON owner and the process/service identity agree.
+    pre_stop = inspect_quiescence(source, pre_stop=True, services=services)
+    if not pre_stop["eligible"]:
         raise CutoverError("QUIESCENCE_FAILED")
-    transition_receipt(receipt, "QUIESCENT", quiescence=quiescence)
-    if source_identity(candidate[0]) != identity:
-        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    # This catches an application/evidence write made after the durable freeze
+    # but before services have been brought down.
+    pre_stop_identity = source_identity(candidate[0])
+    if existing is not None and isinstance(existing.get("pre_stop_source"), dict):
+        if not _same_source_content(pre_stop_identity, existing["pre_stop_source"]):
+            raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
     if services is not None:
         for label in SERVICE_STOP_ORDER:
             services.stop(label)
             if not services.stopped(label):
                 raise CutoverError("SERVICE_STOP_FAILED", label)
+    quiescence = inspect_quiescence(source, services=services)
+    if not quiescence["eligible"]:
+        raise CutoverError("QUIESCENCE_FAILED")
+    identity = source_identity(candidate[0])
+    if not _same_source_content(identity, pre_stop_identity):
+        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
+    # The authoritative copy/equivalence baseline begins only after the
+    # controller's expected freeze write and strict service quiescence.
+    receipt: dict[str, object] = existing or {
+        "receipt_version": 1,
+        "migration_id": migration_id,
+        "schema": EXPECTED_SCHEMA,
+        "operator": operator,
+        "source": asdict(identity),
+        "source_baseline_stage": "POST_FREEZE_QUIESCENT_SOURCE_IDENTITY",
+        "legacy_path": str(source),
+        "rollback_mode": "PRE_WRITE_DIRECT",
+    }
+    if existing is None:
+        transition_receipt(receipt, "PRECHECK")
+        transition_receipt(receipt, "ADMISSION_FROZEN", admission_freeze=freeze)
+    transition_receipt(receipt, "QUIESCENT", quiescence=quiescence, source=asdict(identity), source_baseline_stage="POST_FREEZE_QUIESCENT_SOURCE_IDENTITY")
+    if not _same_source_content(source_identity(candidate[0]), identity):
+        raise CutoverError("SOURCE_CHANGED_AFTER_PREFLIGHT")
     target = central_store_path()
     if classify_target(target)["state"] != "ABSENT":
         raise CutoverError("TARGET_CREATE_FAILED")
@@ -582,7 +691,11 @@ def mark_central_post_write(repo: Path) -> None:
 def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict[str, object]:
     """Compute the complete migration plan strictly read-only."""
     candidates = discover_legacy_stores(repo, extra_runtime_roots=extra_runtime_roots)
-    receipt: dict[str, object] = {"receipt_version": 1, "mode": "DRY_RUN", "timestamp": datetime.now(timezone.utc).isoformat(), "tool_version": TOOL_VERSION, "target_data_root": str(installation_data_root()), "target_store": classify_target(central_store_path()), "source_candidates": [asdict(item) for item in candidates], "blocking_codes": [], "service_stop_plan": ["inbox_watcher", "separately_managed_execution_service", "local_consumer_api", "dashboard_relay", "dashboard"], "admission_freeze": {"state": "FREEZE_NOT_ACTIVE", "required": "explicit operator-recorded freeze before Increment 3"}}
+    try:
+        freeze = admission_status(repo)
+    except CutoverError:
+        freeze = {"state": "UNRESOLVED"}
+    receipt: dict[str, object] = {"receipt_version": 1, "mode": "DRY_RUN", "timestamp": datetime.now(timezone.utc).isoformat(), "tool_version": TOOL_VERSION, "target_data_root": str(installation_data_root()), "target_store": classify_target(central_store_path()), "source_candidates": [asdict(item) for item in candidates], "blocking_codes": [], "service_stop_plan": ["inbox_watcher", "separately_managed_execution_service", "local_consumer_api", "dashboard_relay", "dashboard"], "admission_freeze": freeze}
     if not candidates:
         receipt["blocking_codes"].append("LEGACY_STORE_NOT_FOUND")
         receipt["eligible"] = False
@@ -597,7 +710,7 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
     quiescence = inspect_quiescence(Path(candidate.resolved_path))
     inventory = project_scope_inventory(Path(candidate.resolved_path))
     backup = backup_readiness(identity, installation_data_root())
-    receipt.update({"migration_id": backup["migration_id"], "source": source, "quiescence": quiescence, "backup_readiness": backup, "snapshot_strategy": snapshot_plan(source), "project_scope": inventory, "critical_table_counts": _table_counts(Path(candidate.resolved_path))})
+    receipt.update({"source": source, "quiescence": quiescence, "backup_readiness": backup, "snapshot_strategy": snapshot_plan(source), "project_scope": inventory, "critical_table_counts": _table_counts(Path(candidate.resolved_path))})
     codes = list(source["blocking_codes"]) + list(quiescence["blocking_codes"]) + list(inventory["blocking_codes"])
     if backup["blocking_code"]:
         codes.append(backup["blocking_code"])
@@ -630,7 +743,7 @@ def main(argv: list[str] | None = None) -> int:
         elif not args.execute:
             raise CutoverError("ADMISSION_FREEZE_FAILED", "--execute is required")
         elif args.command == "freeze":
-            if not args.migration_id or not args.reason:
+            if not args.reason:
                 raise CutoverError("ADMISSION_FREEZE_FAILED")
             result = set_admission_freeze(repo, migration_id=args.migration_id, reason=args.reason, operator=args.operator)
         elif args.command == "thaw":
