@@ -38,6 +38,7 @@ CANDIDATE_FILES = (
     "docs/development/ENGINEERING_PLATFORM_CONSUMER_CONTRACT.md",
     "docs/development/ENGINEERING_PLATFORM_MIGRATION_REPORT.md",
     "docs/adr/0019-engineering-platform-central-installation-store.md",
+    "docs/adr/0023-ep-central-store-migration-guardrails.md",
 )
 IGNORED_NAMES = {".DS_Store", "__pycache__"}
 GENERATED_EVIDENCE_PREFIXES = ("docs/engineering/runs/",)

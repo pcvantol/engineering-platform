@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction baseline
 
-**Status:** Phase 0 complete; Phase 1 / Increments 1-3 implemented; schema 40 activation deferred
+**Status:** Phase 0 complete; Phase 1 complete / qualified; schema 40 active
 
 **Manifest:** `EP_2X_EXTRACTION_MANIFEST.json` (version `2`)
 
@@ -37,13 +37,13 @@ rollback reference required by the Phase-0 roadmap.
 
 ## Candidate universe and precedence
 
-The audit independently discovers 291 candidate files from EP runtime,
+The audit independently discovers 294 candidate files from EP runtime,
 Operations Console assets/tests, EP documentation/ADR, extraction tooling,
 onboarding/runner adapters and every workflow. The manifest does not define
 this discovery set. It freezes discovery digest
-`7911939c6176064fc1c45854d5fa5ccb136dae962d081367d44ef3043e33eb8d` and
+`1d5583613ff90b42ba0d829dc643e0225e9a3440f132d2667c927f620908b224` and
 semantic-manifest digest
-`4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee`.
+`6829c770ec6d5da77b39647cb5929504cced79dd981e874c13d72400fe352773`.
 
 Rules resolve by **most-specific path wins**. Equal-specificity overlap is an
 error. Every candidate must resolve exactly once; an added candidate changes
@@ -51,10 +51,10 @@ the digest and fails the audit until consciously reconciled.
 
 | Control | Result |
 | --- | --- |
-| Candidate universe / exactly once | `291 / 291` |
+| Candidate universe / exactly once | `294 / 294` |
 | Unclassified / ambiguous | `0 / 0` |
 | Operations Console candidates / classified | `17 / 17` |
-| EP product source / Python inspected | `95 / 76` |
+| EP product source / Python inspected | `99 / 80` |
 | DJConnect, Home Assistant, repository-local blocking imports | `0 / 0 / 0` |
 
 ## Reproduction
@@ -77,9 +77,9 @@ satisfied. **Phase 1 / Increment 1 — Local Consumer API Contract Foundation**
 is complete. It remained contract-only: it introduces neither a live transport
 nor authentication, credential, storage or consumer cutover runtime. ADR-0021
 records the implemented and post-merge-qualified Increment 2 loopback runtime
-with schema 39 active. Increment 3 adds EP-owned registration lifecycle and a
-consumer-side Keychain adapter under deferred schema-40 activation; it adds no
-consumer cutover or Local API mutation.
+with schema 39 active. Increment 3 is complete / qualified: its EP-owned
+registration lifecycle, consumer-side Keychain adapter and schema-40 activation
+are current repository truth. It adds no consumer cutover or Local API mutation.
 
 ```text
 PASS — PHASE 0 COMPLETE

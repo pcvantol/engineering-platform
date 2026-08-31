@@ -156,7 +156,7 @@ class QualificationCredentialTests(unittest.TestCase):
 
         self.assertIn(
             "**Consumer Registration + OS Credential Integration** | "
-            "Implemented and post-merge qualified; schema 40 activation deferred",
+            "Complete / qualified; schema 40 active",
             plan,
         )
         self.assertIn("**Increment 3 post-merge qualification:**", plan)

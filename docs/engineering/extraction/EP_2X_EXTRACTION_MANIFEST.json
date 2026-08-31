@@ -11,8 +11,8 @@
     "operations_console_version": "2.0.0"
   },
   "classifications": ["CONSUMER_ADAPTER", "DJCONNECT_RETAINED", "EP_DOCUMENTATION", "EP_PRODUCT_SOURCE", "EP_RELEASE_ASSET", "EP_TEST", "EP_WORKFLOW", "EXCLUDED", "GENERATED_LOCAL_ONLY"],
-  "candidate_universe_digest": "42f07693dd55919ecdf8020ab13cb1910c8098f6e2f1c996de3a410ef33439bf",
-  "manifest_semantic_digest": "4dc3d56a05333888015e03ed731be3e810b35a7afe38f3c4fad03f20ab4c78ee",
+  "candidate_universe_digest": "1d5583613ff90b42ba0d829dc643e0225e9a3440f132d2667c927f620908b224",
+  "manifest_semantic_digest": "6829c770ec6d5da77b39647cb5929504cced79dd981e874c13d72400fe352773",
   "path_rules": [
     {"path":"tools/engineering","classification":"EP_PRODUCT_SOURCE","reason_code":"EP_RUNTIME","ownership":"EP","extraction_target":"engineering_platform","dependency_notes":"Runtime, providers, watcher, reporting and Operations Console source move only after later boundary work."},
     {"path":"tools/engineering/ENGINEERING_PLATFORM_VERSION.json","classification":"EP_RELEASE_ASSET","reason_code":"VERSION_MANIFEST","ownership":"EP","extraction_target":"package_data","dependency_notes":"Canonical EP version and compatibility metadata."},
@@ -26,6 +26,7 @@
     {"path":"docs/development/ENGINEERING_PLATFORM_CONSUMER_CONTRACT.md","classification":"EP_DOCUMENTATION","reason_code":"CONSUMER_CONTRACT","ownership":"EP","extraction_target":"docs/contracts","dependency_notes":"Consumer boundary input to Phase 1."},
     {"path":"docs/development/ENGINEERING_PLATFORM_MIGRATION_REPORT.md","classification":"EP_DOCUMENTATION","reason_code":"MIGRATION_REPORT","ownership":"EP","extraction_target":"docs/migration","dependency_notes":"Current platform migration evidence."},
     {"path":"docs/adr/0019-engineering-platform-central-installation-store.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Central-store decision constraining later phases."},
+    {"path":"docs/adr/0023-ep-central-store-migration-guardrails.md","classification":"EP_DOCUMENTATION","reason_code":"EP_ARCHITECTURE_ADR","ownership":"EP","extraction_target":"docs/adr","dependency_notes":"Fail-closed central-store migration guardrail decision."},
     {"path":"scripts/engineering/audit_ep_extraction_baseline.py","classification":"EP_RELEASE_ASSET","reason_code":"BASELINE_AUDIT_TOOL","ownership":"EP","extraction_target":"tools","dependency_notes":"Read-only extraction control audit."},
     {"path":"onboarding","classification":"CONSUMER_ADAPTER","reason_code":"DJCONNECT_HOST_BOOTSTRAP","ownership":"DJCONNECT","extraction_target":"djconnect_adapter","dependency_notes":"DJConnect developer-host setup and package assets."},
     {"path":"scripts/runner","classification":"CONSUMER_ADAPTER","reason_code":"DJCONNECT_HOST_BOOTSTRAP","ownership":"DJCONNECT","extraction_target":"djconnect_adapter","dependency_notes":"Repository-specific launchd and host desired-state integration."},

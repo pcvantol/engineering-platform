@@ -1,6 +1,6 @@
 # Engineering Platform 2.x extraction and migration plan
 
-**Status:** Phase 0 complete; Phase 1 / Increment 1 complete
+**Status:** Phase 0 complete; Phase 1 complete / qualified; Phase 2 / Increment 1 complete
 **Scope:** Engineering Platform 2.x extraction from `pcvantol/djconnect` to a
 standalone, local-first Execution Operations Platform
 **Decision baseline:** [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md) and the
@@ -155,7 +155,7 @@ qualified.
 | Phase 1 / Increment 1 | **Local Consumer API Contract Foundation** | Complete, contract-only |
 | Phase 1 / Increment 2 | **Local API Transport + Authentication Runtime** | Implemented and post-merge qualified; schema 39 active |
 | Phase 1 / Increment 2a | **Qualification Credential Boundary** | Complete, bounded qualification-only seam |
-| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Implemented and post-merge qualified; schema 40 activation deferred |
+| Phase 1 / Increment 3 | **Consumer Registration + OS Credential Integration** | Complete / qualified; schema 40 active |
 
 Increment 1 defines the versioned Local Consumer API v1 contract and
 fail-closed validation only. It must not add an HTTP listener, Unix-socket
@@ -201,6 +201,22 @@ implementation increment.
 credential under an `ACTIVE` exact registration succeeds; the same credential
 under a `DISABLED` registration is denied as authorization (`403`); and a
 revoked credential is denied as authentication (`401`).
+
+**Phase 1 closure:** Phase 1 is **COMPLETE / QUALIFIED**. Schema 40 is active;
+the Local Consumer API is ready; and consumer registration plus credential
+lifecycle are qualified. This rolling plan supersedes earlier deferred-schema
+projections; immutable historical evidence remains unchanged.
+
+## Authorized Phase 2 increment sequence
+
+| Increment | Canonical name | Authorization |
+| --- | --- | --- |
+| Phase 2 / Increment 1 | **Installation Data-Root Contract and Central-Store Migration Guardrails** | Complete; documentation/control only; no store moved |
+| Phase 2 / Increment 2 | **Central-Store Migration Tooling + Dry-Run Qualification** | Not authorized by Increment 1 |
+| Phase 2 / Increment 3 | **Controlled Central-Store Cutover** | Not authorized by Increment 1 |
+| Phase 2 / Increment 4 | **Post-Cutover Qualification + Rollback-Compatible Baseline** | Not authorized by Increment 1 |
+
+The canonical implementation control is [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md). Phase 2 completes central-store/project-scope migration before Phase 3 physical extraction/package, Phase 4 consumer cutover, and Phase 5 legacy removal. Phase 3 may begin only after the installation-owned central store and its authority/rollback state are qualified.
 
 ### Phase 0 — Freeze the extraction baseline
 
