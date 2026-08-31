@@ -79,3 +79,25 @@ JSON and digest.
 The result is forensic evidence only. It contains no recovery approval,
 rollback instruction, attestation approval or provenance guess. Unresolved
 state remains unresolved for a separately governed recovery decision.
+
+## V2 unresolved-only enrichment
+
+V2 consumes an existing V1 attribution report; it does not reopen the source
+delta report or any database. It verifies the V1 report digest before writing a
+separate `forensic-attribution-v2.json` bound to the V1 digest, underlying
+forensic digest, repository revision and attribution-rules version.
+
+```sh
+python3 -m tools.engineering.central_store_migration forensic-attribution-v2 \
+  --repo /path/to/djconnect \
+  --report forensic-attribution.json \
+  --expected-report-digest <v1-sha256> \
+  --json --output forensic-attribution-v2.json
+```
+
+The only V2 enrichment rule is `EXACT_TEST_COMPONENT_FIXTURE`: an unresolved
+row must directly name a run or submission component whose full value occurs
+as an exact literal in a committed EP test fixture. It marks that row as
+`TEST_HARNESS` writer and ancestry while preserving its existing state
+semantics. Generated identifiers, timestamps, test-like names, shared writer
+APIs and production-shaped ancestry do not match this rule.

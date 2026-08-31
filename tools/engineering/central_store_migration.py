@@ -26,6 +26,7 @@ import uuid
 from .storage import DATABASE_FILENAME, ENGINEERING_STORAGE_SCHEMA_VERSION, database_path, legacy_database_path
 from .providers import LaunchdProvider
 from .forensic_attribution import ForensicAttributionError, canonical_attribution_json, load_and_attribute
+from .forensic_attribution_v2 import ForensicAttributionV2Error, canonical_attribution_v2_json, load_and_enrich_v2
 from .forensic_delta import ForensicDeltaError, canonical_report_json, export_forensic_delta
 
 
@@ -1510,7 +1511,7 @@ def preflight(repo: Path, *, extra_runtime_roots: tuple[Path, ...] = ()) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="engineering-central-store-migration")
-    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "recover-contaminated-prewrite", "create-contamination-attestation", "forensic-delta", "forensic-attribution", "status"))
+    parser.add_argument("command", choices=("preflight", "dry-run", "freeze", "freeze-status", "abort", "thaw", "cutover", "stage-a", "rollback", "recover-contaminated-prewrite", "create-contamination-attestation", "forensic-delta", "forensic-attribution", "forensic-attribution-v2", "status"))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--migration-id")
@@ -1551,6 +1552,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output.write_text(canonical_attribution_json(result) + "\n", encoding="utf-8")
             if args.json:
                 print(canonical_attribution_json(result))
+            else:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "forensic-attribution-v2":
+            if not args.report or not args.expected_report_digest:
+                parser.error("forensic-attribution-v2 requires --report and --expected-report-digest")
+            result = load_and_enrich_v2(args.report, repository_root=repo, expected_attribution_digest=args.expected_report_digest)
+            if args.output:
+                args.output.write_text(canonical_attribution_v2_json(result) + "\n", encoding="utf-8")
+            if args.json:
+                print(canonical_attribution_v2_json(result))
             else:
                 print(json.dumps(result, indent=2, sort_keys=True))
             return 0
@@ -1598,7 +1610,7 @@ def main(argv: list[str] | None = None) -> int:
             result = complete_stage_a(repo, migration_id=args.migration_id, services=LaunchAgentServiceControl())
         else:
             result = controlled_cutover(repo, operator=args.operator, services=LaunchAgentServiceControl())
-    except (CutoverError, ForensicDeltaError, ForensicAttributionError) as error:
+    except (CutoverError, ForensicDeltaError, ForensicAttributionError, ForensicAttributionV2Error) as error:
         result = {"ok": False, "code": error.code}
         if args.json:
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
