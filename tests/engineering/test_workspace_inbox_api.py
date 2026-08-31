@@ -26,9 +26,9 @@ from engineering_platform.validation_profile import producer_profile_payload
 class WorkspaceInboxApiTest(unittest.TestCase):
     def _root(self, directory: str) -> Path:
         root = Path(directory)
-        target = root / "tools" / "engineering"
+        target = root / "src" / "engineering_platform"
         target.mkdir(parents=True)
-        source = Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json"
+        source = Path(__file__).resolve().parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json"
         (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         return root
 

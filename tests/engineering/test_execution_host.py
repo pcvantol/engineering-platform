@@ -395,7 +395,7 @@ class ClientContractTest(unittest.TestCase):
             _, checkout = self._managed_sync_fixture(temporary)
             prompt = checkout / "prompt.md"
             prompt.write_text("# bounded objective\n", encoding="utf-8")
-            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest = checkout / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(
                 '{"platform_version":"2.0.0","runner_version":"2.0.0",'
@@ -516,7 +516,7 @@ class ClientContractTest(unittest.TestCase):
             _, checkout = self._managed_sync_fixture(temporary)
             prompt = checkout / "prompt.md"
             prompt.write_text("# bounded objective\n", encoding="utf-8")
-            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest = checkout / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(
                 '{"platform_version":"2.0.0","runner_version":"2.0.0",'
@@ -616,7 +616,7 @@ class ClientContractTest(unittest.TestCase):
             _, checkout = self._managed_sync_fixture(temporary)
             prompt = checkout / "prompt.md"
             prompt.write_text("# bounded objective\n", encoding="utf-8")
-            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest = checkout / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(
                 '{"platform_version":"2.0.0","runner_version":"2.0.0",'
@@ -744,7 +744,7 @@ class ClientContractTest(unittest.TestCase):
             _, checkout = self._managed_sync_fixture(temporary)
             prompt = checkout / "prompt.md"
             prompt.write_text("# bounded objective\n", encoding="utf-8")
-            manifest = checkout / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            manifest = checkout / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(
                 '{"platform_version":"2.0.0","runner_version":"2.0.0",'
@@ -1463,7 +1463,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.prompt = self.root / "prompt.md"
         self.prompt.write_text("# bounded objective\n", encoding="utf-8")
-        manifest = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+        manifest = self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
             '{"platform_version":"2.0.0","runner_version":"2.0.0","bootstrap_contract":"2026.12","checkpoint_format":1,"memory_format":2,"report_format":2,"minimum_codex_cli":"0.146.0","watcher_version":"2.0.0","inbox_protocol":1,"dashboard_version":"2.0.0","handoff_protocol":1,"status_model":1,"storage_schema":29}\n',
@@ -3432,20 +3432,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(agent.prompts, [])
 
     def test_engineering_platform_accepts_newer_compatible_runner(self) -> None:
-        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        manifest = EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")
         validate_compatibility(manifest, RunnerCompatibility(runner_version="2.1.0"), "0.146.0")
 
     def test_default_runner_compatibility_accepts_the_repository_manifest(self) -> None:
         root = Path(__file__).parents[2]
         manifest = EngineeringPlatformManifest.load(
-            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         validate_compatibility(manifest, RunnerCompatibility(), "0.146.0")
 
     def test_current_storage_schema_is_admitted_for_retry_children(self) -> None:
         root = Path(__file__).parents[2]
         manifest = EngineeringPlatformManifest.load(
-            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
         validate_compatibility(
@@ -3478,12 +3478,12 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse((self.root / ".engineering" / "engineering.db").exists())
 
     def test_engineering_platform_rejects_incompatible_platform_version(self) -> None:
-        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        manifest = EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")
         with self.assertRaisesRegex(EngineeringPlatformCompatibilityError, "Engineering Platform mismatch"):
             validate_compatibility(manifest, RunnerCompatibility(platform_version="0.9.0"), "0.146.0")
 
     def test_engineering_platform_rejects_bootstrap_checkpoint_memory_and_report_mismatches(self) -> None:
-        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        manifest = EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")
         cases = (
             (RunnerCompatibility(bootstrap_contract="2026.06"), "Bootstrap contract mismatch"),
             (RunnerCompatibility(checkpoint_formats=frozenset({2})), "Checkpoint format mismatch"),
@@ -3496,7 +3496,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 validate_compatibility(manifest, compatibility, "0.146.0")
 
     def test_engineering_platform_rejects_older_runner(self) -> None:
-        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        manifest = EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")
         with self.assertRaisesRegex(EngineeringPlatformCompatibilityError, "Runner version mismatch"):
             validate_compatibility(manifest, RunnerCompatibility(runner_version="0.9.0"), "0.146.0")
 
@@ -3505,7 +3505,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         report = generate_terminal_report(
             self.root,
             state,
-            EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"),
+            EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"),
             "0.146.0",
             runtime_metadata={
                 "runtime_provider": "codex_cli",
@@ -3726,7 +3726,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.root,
             state,
             EngineeringPlatformManifest.load(
-                self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+                self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
             ),
             "0.146.0",
             records,
@@ -3872,7 +3872,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         subprocess.run(("git", "init", "-b", "main", str(self.root)), check=True, capture_output=True)
         subprocess.run(("git", "-C", str(self.root), "config", "user.email", "report@example.invalid"), check=True)
         subprocess.run(("git", "-C", str(self.root), "config", "user.name", "Report Test"), check=True)
-        implementation = self.root / "tools" / "engineering" / "execution_host.py"
+        implementation = self.root / "src" / "engineering_platform" / "execution_host.py"
         implementation.parent.mkdir(parents=True, exist_ok=True)
         implementation.write_text("before\n", encoding="utf-8")
         subprocess.run(("git", "-C", str(self.root), "add", "."), check=True)
@@ -4016,7 +4016,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("resume is not appropriate", body)
 
     def test_blocked_and_failed_reports_match_the_terminal_checkpoint(self) -> None:
-        manifest = EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")
+        manifest = EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")
         for phase, expected in (
             ("BLOCKED", "BLOCKED — no engineering changes were executed or delivered."),
             ("FAILED", "FAILED — the engineering transaction did not complete successfully."),
@@ -4205,7 +4205,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
     def test_terminal_report_records_selected_reviewers(self) -> None:
         state = TransactionState("review-report", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         records = ({"reviewer": "documentation", "selected_because": "documentation-oriented objective", "contribution": "Navigation checked.", "accepted_recommendations": 3, "rejected_recommendations": 1, "failed": False},)
-        report = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0", records)
+        report = generate_terminal_report(self.root, state, EngineeringPlatformManifest.load(self.root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"), "0.146.0", records)
         self.assertIn("Reviewer: documentation", report.read_text(encoding="utf-8"))
 
     def test_product_capability_reviewers_are_selected_from_repository_evidence(self) -> None:
@@ -4297,7 +4297,7 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         )
         report = generate_terminal_report(
             self.root, TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True),
-            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"),
+            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"),
         ).read_text(encoding="utf-8")
         self.assertIn("Failure Diagnostic Evidence: `" + reference + "`.", report)
         self.assertIn("tests.engineering.test_retry.TestRetry.test_retry", report)
@@ -4371,7 +4371,7 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         self.assertEqual(control["diagnostic_evidence_ref"], reference)
         report = generate_terminal_report(
             self.root, TransactionState(self.run_id, "pcvantol/djconnect", "prompt.md", "BLOCKED", terminal=True),
-            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"),
+            EngineeringPlatformManifest.load(Path(__file__).resolve().parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"),
         ).read_text(encoding="utf-8")
         self.assertIn("Failure Diagnostic Evidence: `" + reference + "`.", report)
         self.assertIn("Failure Diagnostic Capture: `UNAVAILABLE`", report)

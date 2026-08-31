@@ -150,7 +150,7 @@ class RecoveredRunCrossSurfaceTests(unittest.TestCase):
         receipt = "\n".join(_execution_receipt_projection(
             self.root, state, ProducerMetadata(self.producer_id, "HUMAN", "1.0"),
         ))
-        report = generate_terminal_report(self.root, state, manifest=EngineeringPlatformManifest.load(Path(__file__).parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")).read_text(encoding="utf-8")
+        report = generate_terminal_report(self.root, state, manifest=EngineeringPlatformManifest.load(Path(__file__).parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")).read_text(encoding="utf-8")
         dashboard_payload = json.loads(dashboard_state.status(self.root))
         history = json.loads(dashboard._prompt_history_detail(self.root, self.run_id))
         self.assertIn("- Recovery State: `RECOVERED`", receipt)

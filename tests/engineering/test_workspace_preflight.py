@@ -16,9 +16,9 @@ class WorkspacePreflightTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "host"
-        engineering = self.root / "tools" / "engineering"
+        engineering = self.root / "src" / "engineering_platform"
         engineering.mkdir(parents=True)
-        (engineering / "ENGINEERING_PLATFORM_CONFIG.json").write_text((ROOT / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"), encoding="utf-8")
+        (engineering / "ENGINEERING_PLATFORM_CONFIG.json").write_text((ROOT / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"), encoding="utf-8")
         (self.root / ".engineering" / "status").mkdir(parents=True)
         self._initialize(self.root)
 
@@ -152,11 +152,9 @@ class WorkspacePreflightTest(unittest.TestCase):
         self.assertIn("WORKSPACE_TARGET_AUTHORIZED", self._failed(workspace_preflight.execute(self.root, f"Execution Mode: Genesis\nTarget repository: {link / target.name}\n")))
 
     def _set_workspace_root(self, root: Path) -> None:
-        configuration = json.loads((self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").read_text(encoding="utf-8"))
-        configuration["schema_version"] = 1
-        configuration["workspace"].pop("workspace_authorization", None)
-        (self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json").write_text(json.dumps(configuration), encoding="utf-8")
-        (self.root / ".engineering" / "engineering-platform.local.json").write_text(json.dumps({"workspace": {"provisioning_root": str(root)}}), encoding="utf-8")
+        self._set_workspace_authorization(
+            [{"path": str(root), "repository_scope": "direct_children"}]
+        )
 
     def _set_workspace_authorization(self, roots: list[dict[str, str]], *, allowed: list[str] | None = None, denied: list[str] | None = None) -> None:
         authorization = {

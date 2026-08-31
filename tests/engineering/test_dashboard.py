@@ -1149,9 +1149,9 @@ class DashboardStatusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "root"
             target = Path(temporary) / "target"
-            (target / "tools" / "engineering").mkdir(parents=True)
-            (target / "tools" / "engineering" / "dashboard.py").touch()
-            (target / "tools" / "engineering" / "inbox_watcher.py").touch()
+            (target / "src" / "engineering_platform").mkdir(parents=True)
+            (target / "src" / "engineering_platform" / "dashboard.py").touch()
+            (target / "src" / "engineering_platform" / "inbox_watcher.py").touch()
             configuration.return_value.workspace.default_branch = "main"
             worktrees.return_value = {"worktrees": [
                 {"path": str(root), "branch": "main"},
@@ -1184,10 +1184,10 @@ class DashboardStatusTest(unittest.TestCase):
                 dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
 
             worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "codex/selected"}]}
-            (target / "tools" / "engineering" / "inbox_watcher.py").unlink()
+            (target / "src" / "engineering_platform" / "inbox_watcher.py").unlink()
             with self.assertRaisesRegex(RuntimeError, "complete Engineering Platform-installatie"):
                 dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
-            (target / "tools" / "engineering" / "inbox_watcher.py").touch()
+            (target / "src" / "engineering_platform" / "inbox_watcher.py").touch()
 
             git_provider.return_value.execute.side_effect = OSError("git unavailable")
             with self.assertRaisesRegex(RuntimeError, "kon niet worden gecontroleerd"):
@@ -1812,7 +1812,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("#promptHistory .log-table th:first-child", stylesheet)
 
     def test_execution_context_keeps_host_verified_target_details(self) -> None:
-        script = (Path(__file__).parents[2] / "tools" / "engineering" / "assets" / "dashboard.js").read_text()
+        script = (Path(__file__).parents[2] / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text()
         self.assertIn("function renderExecutionContext(context, execution = {})", script)
         self.assertIn('[t("field.repository"), execution.target_repository]', script)
         self.assertIn('[t("detail.target_checkout"), execution.checkout_path]', script)
@@ -3122,7 +3122,7 @@ class DashboardStatusTest(unittest.TestCase):
     def _dashboard_http_connection(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            configuration = root / "tools" / "engineering"
+            configuration = root / "src" / "engineering_platform"
             configuration.mkdir(parents=True)
             shutil.copyfile(
                 Path(__file__).parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json",

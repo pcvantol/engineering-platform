@@ -160,7 +160,7 @@ class EngineeringStorageTest(unittest.TestCase):
     def test_platform_manifest_tracks_the_current_storage_schema(self) -> None:
         root = Path(__file__).parents[2]
         manifest = EngineeringPlatformManifest.load(
-            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
 
