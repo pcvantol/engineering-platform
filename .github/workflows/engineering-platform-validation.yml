@@ -128,3 +128,17 @@ jobs:
             test-results/**
             tests/engineering/dashboard.spec.mjs-snapshots/**
           if-no-files-found: warn
+  trusted-delivery-evidence:
+    name: Qualify trusted delivery evidence
+    needs: [validate, browser-dashboard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - name: Verify standalone qualification evidence
+        run: |
+          python -m pip install build .
+          python -m unittest tests.engineering.test_engineering_platform_golden
+          PYTHONPATH=src python scripts/engineering/audit_ep_extraction_baseline.py --check
+          python -c 'import engineering_platform, engineering_platform.execution_host'

@@ -1,0 +1,8 @@
+name: Capability request
+description: Propose an Engineering Platform capability or qualification improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes: {label: Problem and scope}
+  - type: textarea
+    attributes: {label: Qualification and security impact}
