@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "project": {
+    "id": "engineering-platform",
+    "authority_repository_id": "engineering-platform"
+  },
+  "repository": {
+    "id": "engineering-platform",
+    "role": "authority"
+  },
+  "validation": {
+    "kind": "command",
+    "entrypoint": "PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'"
+  }
+}
