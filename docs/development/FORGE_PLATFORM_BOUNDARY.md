@@ -12,6 +12,11 @@ deployment topology, update, repair, uninstall, and their user experience.
 Forge Platform consumes qualified EP artifacts; it does not own or implement
 EP execution, the Project Agent, EP protocol, or EP clean-store behavior.
 
+For the macOS Project Agent role, Forge may independently invoke the EP-owned
+`install`, `uninstall`, `start`, `stop`, `restart`, and `status` primitives in
+the target user's context. The exact per-user paths, label and configuration
+inputs are specified in `docs/engineering/MACOS_PROJECT_AGENT_SERVICE.md`.
+
 Historical EP documents that describe a native installer are read as the
 EP-specific packaging/service-installation contract. They do not grant EP
 authority over a future universal Forge Platform installer. No installer or

@@ -17,6 +17,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 from typing import Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -114,6 +115,8 @@ def default_identity_path() -> Path:
     configured = os.environ.get("ENGINEERING_PLATFORM_AGENT_IDENTITY_PATH")
     if configured:
         return Path(configured).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Engineering Platform" / "Project Agent" / "identity.json"
     return Path.home() / ".config" / "engineering-platform" / "project-agent-identity.json"
 
 
@@ -277,7 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    supplied = list(argv) if argv is not None else sys.argv[1:]
+    if supplied and supplied[0] in {"install", "uninstall", "start", "stop", "restart", "status", "service"}:
+        return service_main(supplied)
+    parser = build_parser()
+    args = parser.parse_args(supplied)
     if args.command == "observe": result = observe(args.repository_root, identity_path=args.identity_path).payload()
     elif args.command == "pair":
         if not args.server_endpoint or not args.pairing_code: parser.error("pair requires --server-endpoint and --pairing-code")
@@ -285,6 +292,46 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "register": result = register(args.repository_root, identity_path=args.identity_path, configuration_path=args.configuration_path)
     else: result = heartbeat(configuration_path=args.configuration_path)
     print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def service_main(argv: list[str]) -> int:
+    """Dispatch packaging lifecycle commands without changing B4 observation CLI."""
+    from . import project_agent_service as service
+    parser = argparse.ArgumentParser(prog="engineering-project-agent")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("install", "uninstall", "start", "stop", "restart", "status"):
+        commands.add_parser(name)
+    run_parser = commands.add_parser("service")
+    run_commands = run_parser.add_subparsers(dest="service_command", required=True)
+    run = run_commands.add_parser("run")
+    run.add_argument("--config", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "install":
+            # Entry-point invocation is the authoritative installed artifact;
+            # consulting PATH here could select a different developer install.
+            result: object = service.install(executable=Path(sys.argv[0]))
+        elif args.command == "uninstall":
+            service.uninstall()
+            result = {"state": "uninstalled"}
+        elif args.command == "start":
+            service.start()
+            result = service.status()
+        elif args.command == "stop":
+            service.stop()
+            result = service.status()
+        elif args.command == "restart":
+            service.stop()
+            service.start()
+            result = service.status()
+        elif args.command == "status":
+            result = service.status()
+        else:
+            return service.run(args.config)
+    except service.AgentServiceError as error:
+        parser.error(str(error))
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
