@@ -1,0 +1,9 @@
+{
+  "identifier": "engineering-platform",
+  "name": "Engineering Platform",
+  "repositoryRoot": "../..",
+  "repositoryType": "source",
+  "primaryLanguage": "Python",
+  "defaultAssessmentProfile": "standard",
+  "metadata": {"consumer": "Engineering Platform", "rolloutPhase": "observe"}
+}
