@@ -10,15 +10,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import inbox_watcher
-from tools.engineering.dependabot_admission import (
+from engineering_platform import inbox_watcher
+from engineering_platform.dependabot_admission import (
     DependabotPullRequest,
     discover_open_pull_requests,
     envelope,
     is_already_admitted,
 )
-from tools.engineering.producer import parse_producer_submission
-from tools.engineering.storage import EngineeringStorageError, open_storage
+from engineering_platform.producer import parse_producer_submission
+from engineering_platform.storage import EngineeringStorageError, open_storage
 
 
 class DependabotAdmissionTest(unittest.TestCase):
@@ -26,11 +26,7 @@ class DependabotAdmissionTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.repo = Path(self.temporary.name) / "repo"
         self.root = Path(self.temporary.name) / "cloud"
-        (self.repo / "tools/engineering").mkdir(parents=True)
-        (self.repo / "tools/engineering/ENGINEERING_PLATFORM_CONFIG.json").write_text(
-            json.dumps({"workspace": {"repository": {"owner": "pcvantol", "name": "djconnect"}}}),
-            encoding="utf-8",
-        )
+        self.repo.mkdir(parents=True)
         self.pull_request = DependabotPullRequest(
             42, "Bump example from 1.0 to 1.1", "https://github.com/pcvantol/djconnect/pull/42",
             "dependabot/pip/example-1.1", "a" * 40,
@@ -48,7 +44,7 @@ class DependabotAdmissionTest(unittest.TestCase):
             {"number": 44, "title": "Malformed", "html_url": "https://github.com/pcvantol/djconnect/pull/44",
              "user": {"login": "app/dependabot"}, "head": {"ref": "dependabot/pip/bad", "sha": "invalid"}},
         ]
-        with patch("tools.engineering.dependabot_admission.GitHubProvider") as provider:
+        with patch("engineering_platform.dependabot_admission.GitHubProvider") as provider:
             provider.return_value.github.return_value = json.dumps(payload)
             discovered = discover_open_pull_requests("pcvantol/djconnect")
         self.assertEqual(discovered, (DependabotPullRequest(

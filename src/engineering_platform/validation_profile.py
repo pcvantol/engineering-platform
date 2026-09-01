@@ -7,9 +7,9 @@ import subprocess
 import sys
 
 DOCUMENTATION_PREFIXES = ("docs/",)
-DASHBOARD_PREFIXES = ("tools/engineering/assets/",)
-DASHBOARD_FILES = {"tools/engineering/dashboard.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
-RUNTIME_PREFIXES = ("tools/engineering/", "tests/engineering/", ".github/workflows/")
+DASHBOARD_PREFIXES = ("src/engineering_platform/assets/",)
+DASHBOARD_FILES = {"src/engineering_platform/dashboard.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
+RUNTIME_PREFIXES = ("src/engineering_platform/", "tests/engineering/", ".github/workflows/")
 VALIDATION_PROFILE_VERSION = "1.0"
 REQUIRED_CONTROLS = {
     "DOCUMENTATION": ("git_diff_check", "documentation_contract"),

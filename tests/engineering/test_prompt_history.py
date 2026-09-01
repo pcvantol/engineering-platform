@@ -7,16 +7,16 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.prompt_history import (
+from engineering_platform.prompt_history import (
     prompt_history,
     record_terminal_report,
     record_prompt_execution,
     report_path_for_prompt_history,
     report_for_prompt_history,
 )
-from tools.engineering.storage import open_storage, record_submission
-from tools.engineering.execution_timing import record_phase
-from tools.engineering.telemetry import ExecutionTelemetry, persist_execution
+from engineering_platform.storage import open_storage, record_submission
+from engineering_platform.execution_timing import record_phase
+from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
 
 
 class PromptHistoryTest(unittest.TestCase):
@@ -88,7 +88,7 @@ class PromptHistoryTest(unittest.TestCase):
     def test_projects_total_execution_duration_from_run_bound_component_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            from tools.engineering.storage import open_storage
+            from engineering_platform.storage import open_storage
 
             with open_storage(root) as connection:
                 for timestamp, event in (

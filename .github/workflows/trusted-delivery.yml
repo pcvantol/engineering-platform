@@ -1,0 +1,17 @@
+name: Trusted Delivery
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  qualification:
+    name: Trusted Delivery qualification
+    uses: ./.github/workflows/trusted-delivery-qualification.yml
+    with:
+      owner_login: pcvantol

@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import platform_bootstrap
-from tools.engineering.platform_api import PlatformConfigurationError
-from tools.engineering.providers import (
+from engineering_platform import platform_bootstrap
+from engineering_platform.platform_api import PlatformConfigurationError
+from engineering_platform.providers import (
     CodexCliProvider,
     GitProvider,
     GitHubProvider,
@@ -20,7 +20,7 @@ from tools.engineering.providers import (
 
 
 class PlatformBootstrapTest(unittest.TestCase):
-    @patch("tools.engineering.platform_bootstrap.PlatformConfiguration.load")
+    @patch("engineering_platform.platform_bootstrap.PlatformConfiguration.load")
     def test_workspace_provisioning_is_idempotent_and_private(self, load: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = platform_bootstrap.provision_workspace(Path(temporary))
@@ -30,7 +30,7 @@ class PlatformBootstrapTest(unittest.TestCase):
             self.assertTrue(all(path.is_dir() for path in paths.values()))
             load.assert_called()
 
-    @patch("tools.engineering.platform_bootstrap.PlatformConfiguration.load", return_value="configuration")
+    @patch("engineering_platform.platform_bootstrap.PlatformConfiguration.load", return_value="configuration")
     def test_repository_validation_requires_bootstrap_and_git(self, _: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -52,8 +52,8 @@ class PlatformBootstrapTest(unittest.TestCase):
 
 
 class ProviderContractTest(unittest.TestCase):
-    @patch("tools.engineering.providers.shutil.which", return_value=None)
-    @patch("tools.engineering.providers.codex_cli_executable", return_value=None)
+    @patch("engineering_platform.providers.shutil.which", return_value=None)
+    @patch("engineering_platform.providers.codex_cli_executable", return_value=None)
     def test_unavailable_runtime_and_service_providers_are_unqualified(
         self, _: object, __: object
     ) -> None:
@@ -61,8 +61,8 @@ class ProviderContractTest(unittest.TestCase):
         self.assertFalse(LaunchdProvider().status().qualified)
         self.assertFalse(TailscaleProvider().status().qualified)
 
-    @patch("tools.engineering.providers.subprocess.run")
-    @patch("tools.engineering.providers.codex_cli_executable", return_value="/managed/codex")
+    @patch("engineering_platform.providers.subprocess.run")
+    @patch("engineering_platform.providers.codex_cli_executable", return_value="/managed/codex")
     def test_codex_provider_uses_only_the_managed_launcher(self, _: object, run: object) -> None:
         executable = "/managed/codex"
         run.return_value = __import__("subprocess").CompletedProcess((executable, "--version"), 0, "codex", "")
@@ -73,8 +73,8 @@ class ProviderContractTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0], (executable, "--version"))
         self.assertEqual(run.call_args_list[1].args[0], (executable, "exec", "status"))
 
-    @patch("tools.engineering.providers.subprocess.run")
-    @patch("tools.engineering.providers.shutil.which", return_value="/usr/local/bin/tailscale")
+    @patch("engineering_platform.providers.subprocess.run")
+    @patch("engineering_platform.providers.shutil.which", return_value="/usr/local/bin/tailscale")
     def test_tailscale_accepts_only_its_routable_ipv4_range(self, _: object, run: object) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(
             ("tailscale",), 0, "127.0.0.1\n100.100.100.100\nnot-an-ip\n", ""
@@ -84,7 +84,7 @@ class ProviderContractTest(unittest.TestCase):
         self.assertIsNone(TailscaleProvider().ipv4_address())
         self.assertFalse(TailscaleProvider().status().qualified)
 
-    @patch("tools.engineering.providers.subprocess.run")
+    @patch("engineering_platform.providers.subprocess.run")
     def test_github_provider_contract_reports_and_raises_failures(self, run: object) -> None:
         root = Path("/repository")
         run.return_value = __import__("subprocess").CompletedProcess(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", "")
@@ -106,7 +106,7 @@ class ProviderContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "failed"):
             provider.github("pr", "view")
 
-    @patch("tools.engineering.providers.subprocess.run")
+    @patch("engineering_platform.providers.subprocess.run")
     def test_launchd_install_and_uninstall_use_owned_plist(self, run: object) -> None:
         plist = Path("/tmp/com.example.plist")
         provider = LaunchdProvider()
@@ -114,8 +114,8 @@ class ProviderContractTest(unittest.TestCase):
         provider.uninstall(plist)
         self.assertEqual(run.call_count, 3)
 
-    @patch("tools.engineering.providers.subprocess.run")
-    @patch("tools.engineering.providers.shutil.which", return_value="/bin/launchctl")
+    @patch("engineering_platform.providers.subprocess.run")
+    @patch("engineering_platform.providers.shutil.which", return_value="/bin/launchctl")
     def test_launchd_runtime_status_requires_an_active_process(self, _: object, run: object) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(
             ("launchctl", "print"),
@@ -134,10 +134,10 @@ class ProviderContractTest(unittest.TestCase):
         self.assertTrue(running.qualified)
         self.assertIn("active", running.detail)
 
-    @patch("tools.engineering.providers.LaunchdProvider.restart")
-    @patch("tools.engineering.providers.LaunchdProvider.inspect", return_value=False)
-    @patch("tools.engineering.providers.shutil.which", return_value="/bin/launchctl")
-    @patch("tools.engineering.providers.subprocess.run")
+    @patch("engineering_platform.providers.LaunchdProvider.restart")
+    @patch("engineering_platform.providers.LaunchdProvider.inspect", return_value=False)
+    @patch("engineering_platform.providers.shutil.which", return_value="/bin/launchctl")
+    @patch("engineering_platform.providers.subprocess.run")
     def test_launchd_maintenance_quiesce_boots_out_and_resume_bootstraps(
         self, run: object, _: object, inspect: object, restart: object
     ) -> None:
@@ -151,15 +151,15 @@ class ProviderContractTest(unittest.TestCase):
         self.assertIn("bootstrap", run.call_args_list[1].args[0])
         restart.assert_called_once_with("com.example")
 
-    @patch("tools.engineering.providers.TailscaleProvider.status")
-    @patch("tools.engineering.providers.LaunchdProvider.status")
-    @patch("tools.engineering.providers.GitHubProvider.status")
-    @patch("tools.engineering.providers.CodexCliProvider.status")
+    @patch("engineering_platform.providers.TailscaleProvider.status")
+    @patch("engineering_platform.providers.LaunchdProvider.status")
+    @patch("engineering_platform.providers.GitHubProvider.status")
+    @patch("engineering_platform.providers.CodexCliProvider.status")
     def test_registry_has_the_complete_provider_boundary(
         self, codex: object, github: object, launchd: object, tailscale: object
     ) -> None:
         for mocked, name in ((codex, "codex_cli"), (github, "github"), (launchd, "launchd"), (tailscale, "tailscale")):
-            mocked.return_value = __import__("tools.engineering.providers", fromlist=["ProviderStatus"]).ProviderStatus(name, "configured", True, "ok")
+            mocked.return_value = __import__("engineering_platform.providers", fromlist=["ProviderStatus"]).ProviderStatus(name, "configured", True, "ok")
         providers = registry(Path("/repository"))
         self.assertEqual(set(providers), {"runtime", "repository", "service_manager", "remote_submission", "private_remote_access"})
         self.assertTrue(ICloudInboxProvider().status().qualified)

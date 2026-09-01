@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import component_logging
+from engineering_platform import component_logging
 
 
 class ComponentLoggingTest(unittest.TestCase):
@@ -37,7 +37,7 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertFalse((root / ".engineering" / "logs" / "inbox.log").exists())
 
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
-        from tools.engineering import providers
+        from engineering_platform import providers
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             providers.subprocess,
             "run",

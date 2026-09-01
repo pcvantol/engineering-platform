@@ -9,8 +9,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.central_store_migration import main
-from tools.engineering.forensic_attribution_v2 import (
+from engineering_platform.central_store_migration import main
+from engineering_platform.forensic_attribution_v2 import (
     ForensicAttributionV2Error,
     _digest,
     canonical_attribution_v2_json,

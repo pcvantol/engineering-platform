@@ -9,8 +9,8 @@ import tempfile
 from threading import Thread
 import unittest
 
-from tools.engineering.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from tools.engineering.local_api_credentials import CredentialAuthority
+from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
+from engineering_platform.local_api_credentials import CredentialAuthority
 
 
 SECRET = "local-api-sentinel-secret-do-not-log"

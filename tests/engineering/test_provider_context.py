@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from tools.engineering.provider_context import ProviderRole, project_context, provider_need_for_phase
-from tools.engineering.provider_context_benchmark import benchmark_shape
+from engineering_platform.provider_context import ProviderRole, project_context, provider_need_for_phase
+from engineering_platform.provider_context_benchmark import benchmark_shape
 
 
 OBJECTIVE = """# Objective

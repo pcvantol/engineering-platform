@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import emergency_recovery
-from tools.engineering.prompt_history import prompt_history, record_prompt_execution
-from tools.engineering.storage import record_emergency_recovery
+from engineering_platform import emergency_recovery
+from engineering_platform.prompt_history import prompt_history, record_prompt_execution
+from engineering_platform.storage import record_emergency_recovery
 
 
 BASE = "a" * 40
@@ -37,7 +37,7 @@ class EmergencyRecoveryTest(unittest.TestCase):
             patch.object(emergency_recovery, "_git", side_effect=["codex/new-work", BASE]),
             patch.object(emergency_recovery, "_runner", return_value=(123, 456)),
             patch.object(emergency_recovery, "_host_pid", return_value=789),
-            patch.object(emergency_recovery, "_process_command", side_effect=["codex exec", "python -m tools.engineering.execution_host"]),
+            patch.object(emergency_recovery, "_process_command", side_effect=["codex exec", "python -m engineering_platform.execution_host"]),
         ):
             preview = emergency_recovery.preview(Path("/workspace"), "inbox-abcdef12")
 
@@ -101,7 +101,7 @@ class EmergencyRecoveryTest(unittest.TestCase):
             patch.object(emergency_recovery, "_git", side_effect=["main", BASE]),
             patch.object(emergency_recovery, "_runner", return_value=None),
             patch.object(emergency_recovery, "_host_pid", return_value=789),
-            patch.object(emergency_recovery, "_process_command", return_value="python -m tools.engineering.execution_host"),
+            patch.object(emergency_recovery, "_process_command", return_value="python -m engineering_platform.execution_host"),
         ):
             preview = emergency_recovery.preview(Path("/workspace"), "inbox-abcdef12")
 

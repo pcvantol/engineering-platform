@@ -26,6 +26,7 @@ from .drift_diagnostics import evidence_for_checks, guidance, persist as persist
 from .provider_readiness import failures as provider_readiness_failures
 from .dashboard_configuration import get as dashboard_configuration
 from .codex_capacity import read_remaining_percent
+from .resources import package_path
 
 RECOVERABILITY = frozenset(
     {
@@ -144,7 +145,7 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
         )
     try:
         manifest = EngineeringPlatformManifest.load(
-            root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
+            package_path("ENGINEERING_PLATFORM_VERSION.json")
         )
         runner = RunnerCompatibility()
     except EngineeringPlatformCompatibilityError as error:

@@ -34,13 +34,15 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         # Materialize every classified path, plus one discovered file below each
         # candidate root, without copying production content into the fixture.
         for rule in self.manifest["path_rules"]:
-            path = root / rule["path"]
+            path = root / AUDIT_MODULE.target_path(rule["path"])
             if path.suffix:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("fixture", encoding="utf-8")
             else:
                 path.mkdir(parents=True, exist_ok=True)
         for relative in AUDIT_MODULE.CANDIDATE_ROOTS:
+            if relative in {"onboarding", "scripts/runner"}:
+                continue
             path = root / relative / "fixture.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture", encoding="utf-8")
@@ -48,7 +50,8 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture", encoding="utf-8")
-        product_fixture = root / "tools/engineering/fixture.py"
+        product_fixture = root / "src/engineering_platform/fixture.py"
+        product_fixture.parent.mkdir(parents=True, exist_ok=True)
         product_fixture.write_text("import homeassistant\n", encoding="utf-8")
         manifest = copy.deepcopy(self.manifest)
         manifest["candidate_universe_digest"] = AUDIT_MODULE.universe_digest(AUDIT_MODULE.candidate_universe(root))
@@ -60,7 +63,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0)
         self.assertEqual(first.stdout, second.stdout)
         projection = json.loads(first.stdout)
-        self.assertEqual(projection["candidate_universe_count"], 310)
+        self.assertEqual(projection["candidate_universe_count"], 230)
         self.assertEqual(projection["manifest_semantic_digest"], self.manifest["manifest_semantic_digest"])
         self.assertEqual(projection["classified_exactly_once"], projection["candidate_universe_count"])
         self.assertEqual(projection["unclassified"], 0)
@@ -96,7 +99,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         unclassified["path_rules"] = [rule for rule in unclassified["path_rules"] if rule["path"] != "tools/engineering"]
         self.assertTrue(any("unclassified candidates" in error for error in AUDIT_MODULE.validate(unclassified, ROOT)))
         missing = copy.deepcopy(self.manifest)
-        missing["path_rules"][0]["path"] = "tools/engineering/does-not-exist"
+        missing["path_rules"][0]["path"] = "src/engineering_platform/does-not-exist"
         self.assertTrue(any("missing required classified path" in error for error in AUDIT_MODULE.validate(missing, ROOT)))
 
     def test_valid_classification_change_requires_manifest_reconciliation(self) -> None:
@@ -125,7 +128,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         temporary, root, manifest = self._fixture_root()
         with temporary:
             self.assertEqual(AUDIT_MODULE.validate(manifest, root), [])
-            new_file = root / "tools/engineering/new_ep_module.py"
+            new_file = root / "src/engineering_platform/new_ep_module.py"
             new_file.write_text("fixture", encoding="utf-8")
             errors = AUDIT_MODULE.validate(manifest, root)
             self.assertTrue(any("candidate universe drift" in error for error in errors))

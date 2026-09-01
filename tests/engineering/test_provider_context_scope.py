@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 import unittest
 
-from tools.engineering.evidence_projection import ToolProxyEnvironment
-from tools.engineering.provider_context_scope import (
+from engineering_platform.evidence_projection import ToolProxyEnvironment
+from engineering_platform.provider_context_scope import (
     ContextEscalationReason,
     ContextEscalationRequest,
     ContextScope,
@@ -14,7 +14,7 @@ from tools.engineering.provider_context_scope import (
     initial_context_scope,
     provider_instruction,
 )
-from tools.engineering.provider_usage import churn_from_jsonl
+from engineering_platform.provider_usage import churn_from_jsonl
 
 
 class ProviderContextScopeTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class ProviderContextScopeTests(unittest.TestCase):
     def test_escalation_requires_a_valid_reason_and_bounded_boundary(self) -> None:
         request = ContextEscalationRequest(
             ContextEscalationReason.REGRESSION_ORIGIN_UNKNOWN,
-            HistoryBoundaryKind.COMMITS_TOUCHING_PATH, "tools/engineering/provider_context.py", 10,
+            HistoryBoundaryKind.COMMITS_TOUCHING_PATH, "src/engineering_platform/provider_context.py", 10,
             "Current delta does not explain the regression.",
         ).validate()
         self.assertEqual(request.limit, MAX_HISTORICAL_COMMITS)

@@ -1,0 +1,74 @@
+name: TDE observe
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tde-observe-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  observe:
+    name: TDE observe (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Generate canonical coverage input
+        run: |
+          python -m pip install --upgrade pip coverage
+          mkdir -p artifacts tde-observe
+          set +e
+          coverage run --branch -m unittest discover -s tests/engineering
+          coverage_exit="$?"
+          if [ "$coverage_exit" = 0 ]; then
+            coverage xml -o artifacts/coverage.xml
+          else
+            printf "coverage_evidence=unavailable\ncoverage_collection_exit=%s\n" "$coverage_exit" > tde-observe/coverage-status.txt
+          fi
+          set -e
+      - name: Install published TDE runtime
+        run: |
+          python -m pip install --no-cache-dir technical-debt-engine-runtime==1.1.1
+          mkdir -p "$RUNNER_TEMP/tde-tools"
+          curl --fail --silent --show-error --location --retry 5 --retry-delay 5 --retry-all-errors https://github.com/AlDanial/cloc/releases/download/v2.10/cloc-2.10.pl --output "$RUNNER_TEMP/tde-tools/cloc"
+          echo "bf59272455172108072a0a106379f7509fd4349bdcfd85203bac038ccd286d83  $RUNNER_TEMP/tde-tools/cloc" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/tde-tools/cloc"
+          echo "$RUNNER_TEMP/tde-tools" >> "$GITHUB_PATH"
+      - name: Run TDE standard assessment in observe mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p tde-observe
+          set +e
+          tde --format json --profile standard assess . > tde-observe/assessment.json
+          assessment_exit="$?"
+          tde --format json --repository-definition .github/tde/repository-definition.json qualify . > tde-observe/qualification.json
+          qualification_exit="$?"
+          set -e
+          jq -r '.evidence.assessment.executedCapabilities | join(", ")' tde-observe/assessment.json > tde-observe/executed-capabilities.txt 2>/dev/null || echo unavailable > tde-observe/executed-capabilities.txt
+          printf 'assessment_exit=%s\nqualification_exit=%s\n' "$assessment_exit" "$qualification_exit" > tde-observe/summary.txt
+      - name: Publish TDE observe evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tde-observe-evidence
+          path: |
+            artifacts/coverage.xml
+            tde-observe/
+            .tde/evidence/
+            .tde/qualifications/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve observe mode
+        if: always()
+        run: exit 0

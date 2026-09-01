@@ -38,7 +38,7 @@ def activate() -> Path:
     # Import only after HOME is isolated. An explicit test patch must not turn
     # an external authority pointer into writable test state; normal
     # per-repository legacy fixtures remain valid when no pointer exists.
-    from tools.engineering import storage
+    from engineering_platform import storage
 
     global _ORIGINAL_DATABASE_PATH, _SUITE_INSTALLATION_ROOT
     _SUITE_INSTALLATION_ROOT = installation_root

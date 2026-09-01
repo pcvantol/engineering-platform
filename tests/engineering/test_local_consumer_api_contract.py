@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from tools.engineering.contracts.local_consumer_api import (
+from engineering_platform.contracts.local_consumer_api import (
     ContractError,
     ErrorCode,
     ErrorEnvelope,

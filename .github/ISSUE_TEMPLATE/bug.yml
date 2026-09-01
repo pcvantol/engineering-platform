@@ -1,0 +1,8 @@
+name: Bug report
+description: Report a reproducible Engineering Platform defect.
+labels: [bug]
+body:
+  - type: textarea
+    attributes: {label: Reproduction, description: Include isolated, redacted steps and expected versus actual behavior.}
+  - type: textarea
+    attributes: {label: Validation evidence, description: Include relevant test output without secrets or production data.}

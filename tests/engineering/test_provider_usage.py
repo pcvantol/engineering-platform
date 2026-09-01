@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from tools.engineering.provider_usage import (
+from engineering_platform.provider_usage import (
     AUTHORITATIVE,
     ProviderInvocation,
     churn_from_jsonl,
@@ -17,7 +17,7 @@ from tools.engineering.provider_usage import (
     usage_from_jsonl,
     usage_snapshots_from_jsonl,
 )
-from tools.engineering.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
 
 
 class ProviderUsageTests(unittest.TestCase):
@@ -219,12 +219,12 @@ class ProviderUsageTests(unittest.TestCase):
 
         required = (
             event("git status --short --branch", "## main"),
-            event("sed -n '1,80p' tools/engineering/execution_host.py"),
+            event("sed -n '1,80p' src/engineering_platform/execution_host.py"),
             event("pytest tests/engineering/test_execution_host.py", "passed"),
             event("git diff --check"),
             event("git status --short --branch", "## feature"),
         )
-        before = required[:2] + (event("git log --oneline --decorate", "x" * 300),) * 8 + required[2:] + (event("sed -n '1,80p' tools/engineering/execution_host.py"),) * 7
+        before = required[:2] + (event("git log --oneline --decorate", "x" * 300),) * 8 + required[2:] + (event("sed -n '1,80p' src/engineering_platform/execution_host.py"),) * 7
         after = required
         baseline = churn_from_jsonl("\n".join(before))
         optimized = churn_from_jsonl("\n".join(after))
@@ -239,7 +239,7 @@ class ProviderUsageTests(unittest.TestCase):
 
     def test_comparable_fixture_shows_duplicate_logical_read_reduction(self) -> None:
         event = ('{"type":"item.completed","item":{"type":"command_execution",'
-                 '"command":"sed -n \'1,120p\' tools/engineering/execution_host.py"}}')
+                 '"command":"sed -n \'1,120p\' src/engineering_platform/execution_host.py"}}')
         before = "\n".join((event,) * 49)
         after = "\n".join((event,) * 25)
         baseline = churn_from_jsonl(before)

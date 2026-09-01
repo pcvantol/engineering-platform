@@ -1,6 +1,6 @@
 from __future__ import annotations
 import unittest
-from tools.engineering.validation_profile import (
+from engineering_platform.validation_profile import (
     ValidationProfileResolutionError, classify, profile_control_bindings,
     producer_profile_payload, resolve_producer_profile,
 )
@@ -15,7 +15,7 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertEqual(profile.tier, "DOCUMENTATION")
 
     def test_dashboard_requires_browser_validation(self) -> None:
-        self.assertEqual(classify(["tools/engineering/dashboard.py"]).tier, "DASHBOARD")
+        self.assertEqual(classify(["src/engineering_platform/dashboard.py"]).tier, "DASHBOARD")
 
     def test_unknown_or_mixed_scope_fails_closed_to_full_validation(self) -> None:
         self.assertEqual(classify(["docs/engineering/a.md", "custom_components/djconnect/__init__.py"]).tier, "FULL")

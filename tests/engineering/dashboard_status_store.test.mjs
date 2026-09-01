@@ -5,11 +5,11 @@ import {
   createDashboardStatusStore,
   normalizeDashboardSnapshot,
   normalizeDashboardStatus,
-} from "../../tools/engineering/assets/dashboard_status_store.mjs";
+} from "../../src/engineering_platform/assets/dashboard_status_store.mjs";
 import {
   createLocaleService,
   normalizeLocale,
-} from "../../tools/engineering/assets/dashboard_locales.mjs";
+} from "../../src/engineering_platform/assets/dashboard_locales.mjs";
 
 test("normalizes only object-shaped status and snapshots", () => {
   const fallback = { watcher_state: "DEGRADED" };

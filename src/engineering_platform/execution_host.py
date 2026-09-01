@@ -47,7 +47,8 @@ from .qualification import dashboard, execute_qualification
 from .report_analysis import analyze as analyze_terminal_report
 from .prompt_history import record_terminal_report
 from .status_model import build as build_canonical_status, publish as publish_canonical_status
-from .platform_api import PlatformConfiguration, PlatformConfigurationError, provider_registry
+from .platform_api import PlatformConfiguration, PlatformConfigurationError
+from .resources import package_path
 from .platform_bootstrap import runtime_workspace
 from .providers import DeterministicValidationExecutor, GitProvider, CodexCliProvider
 from .host_preflight import latest as latest_host_preflight
@@ -2337,19 +2338,14 @@ Mandatory autonomous refactor and quality-control stage:
         try:
             self.detected_codex_cli = self.agent.version()
             self.platform_manifest = EngineeringPlatformManifest.load(
-                self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+                package_path("ENGINEERING_PLATFORM_VERSION.json")
             )
             validate_compatibility(
                 self.platform_manifest, self.compatibility, self.detected_codex_cli
             )
-            configuration_path = self.root / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json"
-            if configuration_path.is_file():
-                configuration = PlatformConfiguration.load(self.root)
-                if configuration.platform.version != self.platform_manifest.platform_version:
-                    raise EngineeringPlatformCompatibilityError("Platform identity and manifest version mismatch")
-                providers = provider_registry(self.root)
-                if any(not item["status"].qualified for item in providers.values()):
-                    raise EngineeringPlatformCompatibilityError("Configured Engineering Platform provider is unavailable")
+            configuration = PlatformConfiguration.load(self.root)
+            if configuration.platform.version != self.platform_manifest.platform_version:
+                raise EngineeringPlatformCompatibilityError("Platform identity and manifest version mismatch")
         except (EngineeringPlatformCompatibilityError, PlatformConfigurationError) as error:
             raise RunnerError(str(error)) from error
 
@@ -2725,7 +2721,7 @@ Mandatory autonomous refactor and quality-control stage:
             f"\n\nThe implementation PR #{implementation_pr} is merged. Execute only its mandatory "
             "governance-only Finalization: reconcile the four rolling records and immutable Prompt "
             f"History, then create a draft Finalization PR on exactly `{expected_branch}`. After GitHub assigns its number, run "
-            f"`python3 -m tools.engineering.repository_handoff --run-id {finalization.run_id} "
+            f"`python3 -m engineering_platform.repository_handoff --run-id {finalization.run_id} "
             f"--platform-version {self.platform_manifest.platform_version if self.platform_manifest else 'unknown'} "
             f"--implementation-pr {implementation_pr} --finalization-pr <PR_NUMBER>`, commit the "
             "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "

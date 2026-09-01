@@ -8,12 +8,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering import pr_check_repair
+from engineering_platform import pr_check_repair
 
 
 class PullRequestCheckRepairTest(unittest.TestCase):
-    @patch("tools.engineering.pr_check_repair.GitHubProvider")
-    @patch("tools.engineering.pr_check_repair.GitProvider")
+    @patch("engineering_platform.pr_check_repair.GitHubProvider")
+    @patch("engineering_platform.pr_check_repair.GitProvider")
     def test_current_evidence_accepts_only_terminal_same_repository_failures(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -35,8 +35,8 @@ class PullRequestCheckRepairTest(unittest.TestCase):
         self.assertTrue(evidence["eligible"])
         self.assertEqual(evidence["failed_checks"], ["tests"])
 
-    @patch("tools.engineering.pr_check_repair.GitHubProvider")
-    @patch("tools.engineering.pr_check_repair.GitProvider")
+    @patch("engineering_platform.pr_check_repair.GitHubProvider")
+    @patch("engineering_platform.pr_check_repair.GitProvider")
     def test_current_evidence_rejects_a_fork_or_an_already_attempted_sha(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -75,7 +75,7 @@ class PullRequestCheckRepairTest(unittest.TestCase):
             (worktree / "package-lock.json").write_text("{}", encoding="utf-8")
             (worktree / "playwright.config.mjs").write_text("export default {};", encoding="utf-8")
             (worktree / "node_modules" / "@playwright" / "test").mkdir(parents=True)
-            with patch("tools.engineering.worktree_tooling.subprocess.run", return_value=completed(("npm", "ci"), 0, "", "")) as run:
+            with patch("engineering_platform.worktree_tooling.subprocess.run", return_value=completed(("npm", "ci"), 0, "", "")) as run:
                 pr_check_repair._prepare_worktree_tooling(worktree)
             run.assert_called_once_with(("npm", "ci"), cwd=worktree, check=False, capture_output=True, text=True)
 

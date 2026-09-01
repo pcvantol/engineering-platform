@@ -6,17 +6,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.human_text_ingress import HumanTextIngressError, ingest, parse_text_submission
-from tools.engineering.producer import parse_producer_submission
-from tools.engineering.storage import open_storage
+from engineering_platform.human_text_ingress import HumanTextIngressError, ingest, parse_text_submission
+from engineering_platform.producer import parse_producer_submission
+from engineering_platform.storage import open_storage
 
 
 class HumanTextIngressTest(unittest.TestCase):
     def _root(self, directory: str) -> Path:
         root = Path(directory)
-        target = root / "tools" / "engineering"
+        target = root / "src" / "engineering_platform"
         target.mkdir(parents=True)
-        source = Path(__file__).resolve().parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_CONFIG.json"
+        source = Path(__file__).resolve().parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_CONFIG.json"
         (target / "ENGINEERING_PLATFORM_CONFIG.json").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         return root
 

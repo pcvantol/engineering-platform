@@ -1816,7 +1816,7 @@ def _detach_runner(
             [
                 sys.executable,
                 "-m",
-                "tools.engineering.inbox_watcher",
+                "engineering_platform.inbox_watcher",
                 "once",
                 "--repo",
                 str(repo),
@@ -1862,7 +1862,9 @@ def _execute_runner_command(
     phase, _ = _runner_result(repo, run_id)
     _clear_prior_codex_log(repo, run_id)
     arguments = [
-        str(repo / "tools/engineering/engineering-execution-host"),
+        sys.executable,
+        "-m",
+        "engineering_platform",
         str(prompt.relative_to(repo)),
         "--owner-authorized",
         "--run-id",
@@ -2382,7 +2384,7 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
 def launch_agent(repo: Path) -> Path:
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    launcher = [sys.executable, "-m", "tools.engineering.inbox_watcher", "run", "--repo", str(repo)]
+    launcher = [sys.executable, "-m", "engineering_platform.inbox_watcher", "run", "--repo", str(repo)]
     command = f"cd {shlex.quote(str(repo))} && exec " + " ".join(shlex.quote(value) for value in launcher)
     arguments = f"<string>/bin/zsh</string><string>-lc</string><string>{escape(command)}</string>"
     runtime_environment = execution_host_configuration(repo).runtime_environment()
@@ -2408,12 +2410,12 @@ def doctor(repo: Path, root: Path) -> int:
     areas = local_folders(repo)
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     checks = {
-        "repository_runner": (repo / "tools/engineering/engineering-execution-host").is_file(),
+        "repository_runner": Path(sys.executable).is_file(),
         "inbox_writable": os.access(transport["Inbox"], os.W_OK),
         "local_archives_writable": os.access(areas["Completed"], os.W_OK),
         "launch_agent": agent.is_file(),
         "gitignored": ".engineering/" in (repo / ".gitignore").read_text(encoding="utf-8"),
-        "dashboard_code": (repo / "tools/engineering/dashboard.py").is_file(),
+        "dashboard_code": (repo / "src/engineering_platform/dashboard.py").is_file(),
         "handoff_index": (repo / "docs/engineering/runs/index.json").is_file(),
         "handoff_latest": (repo / "docs/engineering/runs/latest.md").is_file(),
         "dashboard_launch_agent": (

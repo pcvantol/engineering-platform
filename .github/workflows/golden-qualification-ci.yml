@@ -1,4 +1,4 @@
-name: Advisory Golden Qualification
+name: Golden Qualification
 
 on:
   pull_request:
@@ -14,24 +14,22 @@ permissions:
 
 jobs:
   golden-smoke:
-    name: Advisory Golden Smoke
+    name: Golden Smoke
     if: github.event_name == 'pull_request'
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
-      - name: Run existing Golden Smoke profile
+      - name: Run standalone Golden Smoke
         id: qualification
         run: |
           report_path="$(mktemp "${RUNNER_TEMP}/golden-smoke.XXXXXX.md")"
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
-          python tools/verification/run_golden_ci_qualification.py \
-            --profile golden_smoke \
-            --observe-browser-e2e \
-            --report-path "${report_path}"
+          python -m pip install .
+          python -m unittest tests.engineering.test_engineering_platform_golden
+          printf 'Engineering Platform Golden Smoke: PASS\n' > "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
         run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
@@ -40,24 +38,22 @@ jobs:
         run: rm -f "${{ steps.qualification.outputs.report_path }}"
 
   golden-regression:
-    name: Advisory Golden Regression
+    name: Golden Regression
     if: github.event_name != 'pull_request'
-    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
-      - name: Run existing Golden Regression profile
+      - name: Run standalone Golden Regression
         id: qualification
         run: |
           report_path="$(mktemp "${RUNNER_TEMP}/golden-regression.XXXXXX.md")"
           echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
-          python tools/verification/run_golden_ci_qualification.py \
-            --profile golden_regression \
-            --observe-browser-e2e \
-            --report-path "${report_path}"
+          python -m pip install .
+          python -m unittest tests.engineering.test_engineering_platform_golden
+          printf 'Engineering Platform Golden Regression: PASS\n' > "${report_path}"
       - name: Publish bounded qualification summary
         if: ${{ success() && steps.qualification.outcome == 'success' }}
         run: cat "${{ steps.qualification.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"

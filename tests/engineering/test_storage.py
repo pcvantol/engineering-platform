@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.storage import (
+from engineering_platform.storage import (
     DATABASE_FILENAME,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
     MIGRATIONS,
@@ -37,8 +37,8 @@ from tools.engineering.storage import (
     store_projection,
     verify_artifact_integrity,
 )
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.platform_version import EngineeringPlatformManifest
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
@@ -160,7 +160,7 @@ class EngineeringStorageTest(unittest.TestCase):
     def test_platform_manifest_tracks_the_current_storage_schema(self) -> None:
         root = Path(__file__).parents[2]
         manifest = EngineeringPlatformManifest.load(
-            root / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json"
+            root / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json"
         )
         self.assertEqual(manifest.storage_schema, ENGINEERING_STORAGE_SCHEMA_VERSION)
 
@@ -223,7 +223,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 remaining_percent=91,
                 observed_at=first_bucket.replace(hour=12),
             )
-            with patch("tools.engineering.storage.datetime") as mocked_datetime:
+            with patch("engineering_platform.storage.datetime") as mocked_datetime:
                 mocked_datetime.now.return_value = datetime(
                     2026, 8, 25, 12, 15, tzinfo=timezone.utc
                 )
@@ -581,7 +581,7 @@ class EngineeringStorageTest(unittest.TestCase):
                     ).fetchone()[0],
                     ENGINEERING_STORAGE_SCHEMA_VERSION,
                 )
-            from tools.engineering import storage
+            from engineering_platform import storage
 
             migrations = dict(storage.MIGRATIONS)
             migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
@@ -615,7 +615,7 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             with open_storage(root):
                 pass
-            from tools.engineering import storage
+            from engineering_platform import storage
 
             migrations = dict(storage.MIGRATIONS)
             migrations[ENGINEERING_STORAGE_SCHEMA_VERSION + 1] = lambda _: None
@@ -644,7 +644,7 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             with open_storage(root):
                 pass
-            from tools.engineering import storage
+            from engineering_platform import storage
 
             self.assertFalse(storage.storage_activation_required(root))
             with patch.object(
@@ -659,8 +659,8 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             with open_storage(root):
                 pass
-            from tools.engineering import storage
-            from tools.engineering.execution_lease import acquire
+            from engineering_platform import storage
+            from engineering_platform.execution_lease import acquire
 
             StateStore(root / ".engineering" / "engineering-runs").save(
                 TransactionState("inbox-schema-activation", "repo", "prompt.md", "INITIALIZE")
@@ -708,7 +708,7 @@ class EngineeringStorageTest(unittest.TestCase):
             root = Path(temporary)
             with open_storage(root):
                 pass
-            from tools.engineering import storage
+            from engineering_platform import storage
 
             self.assertEqual(storage.main(["activate", "--repo", str(root)]), 0)
 

@@ -17,6 +17,7 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
         self.assertIn("minimum = 80.20", workflow)
         self.assertIn('minimum 80.20%', workflow)
         self.assertIn("covered is None or covered < minimum", workflow)
+        self.assertIn("coverage run --branch --source=engineering_platform", workflow)
 
     def test_browser_dashboard_validation_uses_four_parallel_shards(self) -> None:
         workflow = Path(".github/workflows/engineering-platform-validation.yml").read_text(
@@ -34,7 +35,7 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
             "docs/engineering/LOCAL_DASHBOARD_SUPERVISOR.md"
         ).read_text(encoding="utf-8")
         design_system = Path(
-            "tools/engineering/OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
+            "src/engineering_platform/OPERATIONS_CONSOLE_DESIGN_SYSTEM.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn("CI-pariteit en reproduceerbare browserfouten", supervisor)

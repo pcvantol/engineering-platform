@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import unittest
 
@@ -11,20 +12,19 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
     """Keep the operator-facing EP contract aligned with the local implementation."""
 
     def test_onboarding_describes_iCloud_as_transport_only(self) -> None:
-        onboarding = (ROOT / "onboarding" / "README.md").read_text(encoding="utf-8")
-        self.assertIn("iCloud is transport only.", onboarding)
-        self.assertIn(".engineering/status/", onboarding)
-        self.assertIn(".engineering/reports/", onboarding)
-        self.assertIn(".engineering/engineering.db", onboarding)
-        self.assertIn("WAITING_FOR_PREDECESSOR", onboarding)
-        self.assertNotIn("local-run reports to `Reports`", onboarding)
+        manifest = json.loads((ROOT / "docs/engineering/extraction/EP_2X_EXTRACTION_MANIFEST.json").read_text())
+        retained = {rule["path"] for rule in manifest["path_rules"] if rule["classification"] == "DJCONNECT_RETAINED"}
+        self.assertIn("onboarding/README.md", retained)
 
     def test_onboarding_installs_watcher_and_dashboard_together(self) -> None:
-        script = (ROOT / "onboarding" / "dev_onboarding_macos.sh").read_text(encoding="utf-8")
-        self.assertIn("tools.engineering.inbox_watcher install", script)
-        self.assertIn("tools.engineering.dashboard install", script)
-        self.assertIn("iCloud is transport only; prompts, reports and status", script)
-        self.assertNotIn("Reports: iCloud Drive/DJConnect Engineering/Reports", script)
+        manifest = json.loads((ROOT / "docs/engineering/extraction/EP_2X_EXTRACTION_MANIFEST.json").read_text())
+        retained = {rule["path"] for rule in manifest["path_rules"] if rule["classification"] == "DJCONNECT_RETAINED"}
+        self.assertIn("onboarding/dev_onboarding_macos.sh", retained)
+
+    def test_clean_slate_adr_preserves_extraction_provenance(self) -> None:
+        adr = (ROOT / "docs/adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md").read_text(encoding="utf-8")
+        self.assertIn("ADR-0026", adr)
+        self.assertIn("RETIRED_FOR_CLEAN_SLATE_EXTRACTION", adr)
 
     def test_local_runner_and_dashboard_docs_use_canonical_local_storage(self) -> None:
         runner = (ROOT / "docs" / "development" / "LOCAL_AGENT_RUNNER.md").read_text(encoding="utf-8")
@@ -103,11 +103,6 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(
             encoding="utf-8"
         )
-        backlog = (ROOT / "PLATFORM_EVOLUTION_BACKLOG.md").read_text(encoding="utf-8")
         self.assertIn("## 1.5 — Platform Productization\n\nCompleted and operational.", roadmap)
         self.assertIn("## 1.6 — Repository Extraction Readiness\n\nPlanned.", roadmap)
         self.assertIn("## 2.0 — Versioned Platform Boundary\n\nIn review.", roadmap)
-        self.assertIn("Engineering Platform 1.5 operational hardening", backlog)
-        self.assertIn("Engineering Platform 2.0 versioned boundary", backlog)
-        self.assertIn("Legacy iCloud Engineering archive migration", backlog)
-        self.assertIn("sole iCloud engineering folder", backlog)

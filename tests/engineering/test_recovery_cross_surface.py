@@ -7,25 +7,25 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.engineering import dashboard, dashboard_state
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_lifecycle import projection as lifecycle_projection
-from tools.engineering.execution_models import AgentResult
-from tools.engineering.execution_reporting import (
+from engineering_platform import dashboard, dashboard_state
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_lifecycle import projection as lifecycle_projection
+from engineering_platform.execution_models import AgentResult
+from engineering_platform.execution_reporting import (
     _execution_receipt_projection,
     generate_terminal_report,
 )
-from tools.engineering.managed_autonomy import (
+from engineering_platform.managed_autonomy import (
     append_action,
     append_pr_check_observation,
     append_validation_observation,
     record_gate,
     terminal_snapshot,
 )
-from tools.engineering.platform_version import EngineeringPlatformManifest
-from tools.engineering.prompt_history import record_prompt_execution
-from tools.engineering.producer import ProducerMetadata
-from tools.engineering.provider_recovery import (
+from engineering_platform.platform_version import EngineeringPlatformManifest
+from engineering_platform.prompt_history import record_prompt_execution
+from engineering_platform.producer import ProducerMetadata
+from engineering_platform.provider_recovery import (
     claim_replacement_launch,
     create_recovery_available,
     load_recovery_state,
@@ -34,8 +34,8 @@ from tools.engineering.provider_recovery import (
     record_replacement_terminal,
     transition_recovery_state,
 )
-from tools.engineering.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
-from tools.engineering.storage import (
+from engineering_platform.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
+from engineering_platform.storage import (
     record_run_qualification_context,
     record_submission,
     record_validation_control_result,
@@ -150,7 +150,7 @@ class RecoveredRunCrossSurfaceTests(unittest.TestCase):
         receipt = "\n".join(_execution_receipt_projection(
             self.root, state, ProducerMetadata(self.producer_id, "HUMAN", "1.0"),
         ))
-        report = generate_terminal_report(self.root, state, manifest=EngineeringPlatformManifest.load(Path(__file__).parents[2] / "tools" / "engineering" / "ENGINEERING_PLATFORM_VERSION.json")).read_text(encoding="utf-8")
+        report = generate_terminal_report(self.root, state, manifest=EngineeringPlatformManifest.load(Path(__file__).parents[2] / "src" / "engineering_platform" / "ENGINEERING_PLATFORM_VERSION.json")).read_text(encoding="utf-8")
         dashboard_payload = json.loads(dashboard_state.status(self.root))
         history = json.loads(dashboard._prompt_history_detail(self.root, self.run_id))
         self.assertIn("- Recovery State: `RECOVERED`", receipt)

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.component_lock import DuplicateComponentInstanceError, single_instance
+from engineering_platform.component_lock import DuplicateComponentInstanceError, single_instance
 
 
 class ComponentLockTest(unittest.TestCase):
@@ -18,7 +18,7 @@ class ComponentLockTest(unittest.TestCase):
 
     def test_second_instance_is_refused_without_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "tools.engineering.component_lock.fcntl.flock",
+            "engineering_platform.component_lock.fcntl.flock",
             side_effect=(BlockingIOError(), None),
         ):
             with self.assertRaises(DuplicateComponentInstanceError):

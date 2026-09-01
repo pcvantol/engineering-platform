@@ -6,9 +6,9 @@ from http.client import HTTPConnection
 import json
 from threading import Thread
 import unittest
-from tools.engineering.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from tools.engineering.local_api_credentials import CredentialAuthority, disable_consumer, issue_credential, register_consumer, revoke_credential, rotate_credential
-from tools.engineering.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
+from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
+from engineering_platform.local_api_credentials import CredentialAuthority, disable_consumer, issue_credential, register_consumer, revoke_credential, rotate_credential
+from engineering_platform.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
 
 
 class ConsumerCredentialTests(unittest.TestCase):

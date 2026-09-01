@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from tools.engineering.agent_state import TransactionState
-from tools.engineering.execution_lease import Lease
-from tools.engineering.execution_transaction import ExecutionTransaction
+from engineering_platform.agent_state import TransactionState
+from engineering_platform.execution_lease import Lease
+from engineering_platform.execution_transaction import ExecutionTransaction
 
 
 class ExecutionTransactionTest(unittest.TestCase):

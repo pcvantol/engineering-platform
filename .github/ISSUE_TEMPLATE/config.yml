@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/pcvantol/engineering-platform/security/advisories/new
+    about: Report suspected vulnerabilities privately; do not disclose secrets in public issues.

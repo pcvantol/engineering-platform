@@ -5,12 +5,12 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_lease import acquire, history
-from tools.engineering.execution_timing import phase_spans, start_phase
-from tools.engineering.provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
-from tools.engineering.provider_recovery import load_recovery_state
-from tools.engineering.provider_usage import ProviderInvocation, persist_provider_invocation
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_lease import acquire, history
+from engineering_platform.execution_timing import phase_spans, start_phase
+from engineering_platform.provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
+from engineering_platform.provider_recovery import load_recovery_state
+from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 
 
 class ProviderInterruptionRecoveryTests(unittest.TestCase):
@@ -78,7 +78,7 @@ class ProviderInterruptionRecoveryTests(unittest.TestCase):
         child = start_phase(
             self.root, self.state.run_id, "VALIDATION", parent_phase_id=provider.phase_id,
         )
-        from tools.engineering.execution_timing import complete_phase
+        from engineering_platform.execution_timing import complete_phase
 
         complete_phase(self.root, child, outcome="INTERRUPTED")
         complete_phase(self.root, provider, outcome="FAILED")
@@ -101,7 +101,7 @@ class ProviderInterruptionRecoveryTests(unittest.TestCase):
 
     def test_lease_cleanup_failure_does_not_overwrite_terminal_checkpoint(self) -> None:
         self._interrupted_invocation()
-        with patch("tools.engineering.provider_interruption.release_terminal_lease", side_effect=Exception("offline")):
+        with patch("engineering_platform.provider_interruption.release_terminal_lease", side_effect=Exception("offline")):
             terminal = terminalize_after_host_exit(self.root, self.state.run_id)
         self.assertIsNotNone(terminal)
         saved = self.store.load(self.state.run_id)

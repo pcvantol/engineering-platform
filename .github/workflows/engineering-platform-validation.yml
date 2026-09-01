@@ -3,28 +3,43 @@ name: Engineering Platform validation
 on:
   pull_request:
     paths:
-      - 'tools/engineering/**'
+      - 'src/engineering_platform/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
-      - 'onboarding/**'
+      - 'docs/ai-development/**'
+      - 'docs/governance/**'
+      - 'BOOTSTRAP.md'
       - 'package.json'
       - 'package-lock.json'
-      - 'BOOTSTRAP.md'
+      - 'playwright.config.mjs'
+      - 'pyproject.toml'
       - '.github/workflows/engineering-platform-validation.yml'
   push:
     branches: [main]
     paths:
-      - 'tools/engineering/**'
+      - 'src/engineering_platform/**'
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
-      - 'onboarding/**'
+      - 'docs/ai-development/**'
+      - 'docs/governance/**'
+      - 'BOOTSTRAP.md'
       - 'package.json'
       - 'package-lock.json'
-      - 'BOOTSTRAP.md'
+      - 'playwright.config.mjs'
+      - 'pyproject.toml'
 
 jobs:
+  projection:
+    name: Validate AI-development projection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - name: Validate committed offline projection
+        run: python3 docs/ai-development/validate_projection.py --profile engineering-platform --source-commit ec070e399ff4dbd92e760370002995fe4f4d52d6 --extension-identity ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION
   validation-profile:
     runs-on: ubuntu-latest
     outputs:
@@ -33,7 +48,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with: {fetch-depth: 0}
       - id: profile
-        run: python3 -m tools.engineering.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
+        run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
   validate:
     needs: validation-profile
     runs-on: ubuntu-latest
@@ -41,18 +56,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
-      - name: Install Engineering Platform validation tools
-        run: python3 -m pip install -r requirements-dev.txt
-      - name: Version and configuration contracts
-        run: python3 -c "from pathlib import Path; from tools.engineering.platform_api import PlatformConfiguration; from tools.engineering.platform_version import EngineeringPlatformManifest; r=Path('.'); assert PlatformConfiguration.load(r).platform.version == EngineeringPlatformManifest.load(r/'tools/engineering/ENGINEERING_PLATFORM_VERSION.json').platform_version"
-      - name: Provider, qualification and golden scenario
+      - name: Build and install standalone Engineering Platform
+        run: python3 -m pip install build coverage .
+      - name: Import, bytecode and qualification smoke
         run: |
-          python3 -m unittest tests.engineering.test_platform_productization tests.engineering.test_engineering_platform_golden
-          ./tools/engineering/engineering-execution-host qualify
-          python3 -c "from pathlib import Path; from tools.engineering.golden_scenario import run; assert run(Path('.'))['result'] == 'ENGINEERING_PLATFORM_GOLDEN_PASS'"
+          python3 -c "import engineering_platform, engineering_platform.execution_host"
+          python3 -m compileall -q src/engineering_platform
+          python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Enforce Engineering Platform coverage contract
         run: |
-          coverage run --branch -m unittest discover -s tests/engineering
+          # The standalone package is installed before this job runs.  Tell
+          # Coverage explicitly to measure that installed runtime authority;
+          # otherwise its default file-discovery scope records only tests.
+          coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering
           coverage json -o engineering-platform-coverage.json
           python3 - <<'PY'
           import json
@@ -62,16 +78,21 @@ jobs:
           # a small, verified margin below the current dashboard evidence.
           minimum = 80.20
           targets = (
-              "tools/engineering/dashboard.py",
-              "tools/engineering/platform_bootstrap.py",
-              "tools/engineering/providers.py",
-              "tools/engineering/inbox_watcher.py",
+              "engineering_platform/dashboard.py",
+              "engineering_platform/platform_bootstrap.py",
+              "engineering_platform/providers.py",
+              "engineering_platform/inbox_watcher.py",
           )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]
           failures = []
           for target in targets:
-              covered = files.get(target, {}).get("summary", {}).get("percent_covered")
+              matching_paths = [path for path in files if path.replace("\\\\", "/").endswith(target)]
+              covered = (
+                  files[matching_paths[0]]["summary"]["percent_covered"]
+                  if len(matching_paths) == 1
+                  else None
+              )
               if covered is None or covered < minimum:
                   failures.append(f"{target}: {covered if covered is not None else 'missing'}% (minimum 80.20%)")
               else:
@@ -104,7 +125,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: {python-version: '3.12'}
       - name: Install Engineering Platform runtime
-        run: python3 -m pip install -r requirements-dev.txt
+        run: python3 -m pip install .
       - name: Install browser validation dependencies
         run: npm ci
       - name: Install Chromium for browser validation
@@ -125,3 +146,17 @@ jobs:
             test-results/**
             tests/engineering/dashboard.spec.mjs-snapshots/**
           if-no-files-found: warn
+  trusted-delivery-evidence:
+    name: Qualify trusted delivery evidence
+    needs: [validate, browser-dashboard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - name: Verify standalone qualification evidence
+        run: |
+          python -m pip install build .
+          python -m unittest tests.engineering.test_engineering_platform_golden
+          PYTHONPATH=src python scripts/engineering/audit_ep_extraction_baseline.py --check
+          python -c 'import engineering_platform, engineering_platform.execution_host'

@@ -4,9 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.dashboard_configuration import DEFAULTS, get, inbox_root, update, update_inbox_root
-from tools.engineering.component_logging import prune_component_logs
-from tools.engineering.storage import open_storage
+from engineering_platform.dashboard_configuration import DEFAULTS, get, inbox_root, update, update_inbox_root
+from engineering_platform.component_logging import prune_component_logs
+from engineering_platform.storage import open_storage
 
 
 class DashboardConfigurationTest(unittest.TestCase):

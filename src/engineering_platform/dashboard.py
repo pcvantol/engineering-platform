@@ -74,6 +74,7 @@ from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
+from .resources import package_path
 from .dashboard_configuration import (
     DashboardConfigurationConflict,
     get as dashboard_configuration,
@@ -1077,7 +1078,7 @@ def _launch_agent_details(label: str) -> dict[str, object]:
 def _component_processes(component: str) -> list[dict[str, int | str]]:
     """Return bounded process evidence for a known local component only."""
     patterns = {
-        "dashboard": ("tools.engineering.dashboard", "dashboard.py"),
+        "dashboard": ("engineering_platform.dashboard", "dashboard.py"),
         "inbox_watcher": ("inbox_watcher",),
         "dashboard_relay": ("dashboard_supervisor",),
     }.get(component, ())
@@ -1255,7 +1256,7 @@ def _registered_worktree_switch_target(root: Path, worktree_path: object, branch
     target = _registered_worktree_path(root, worktree_path, branch)
     if branch == PlatformConfiguration.load(root).workspace.default_branch:
         raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
-    if not target.is_dir() or not (target / "tools" / "engineering" / "dashboard.py").is_file() or not (target / "tools" / "engineering" / "inbox_watcher.py").is_file():
+    if not target.is_dir() or not (target / "src" / "engineering_platform" / "dashboard.py").is_file() or not (target / "src" / "engineering_platform" / "inbox_watcher.py").is_file():
         raise RuntimeError("De gekozen worktree bevat geen complete Engineering Platform-installatie.")
     provider = GitProvider()
     try:
@@ -2969,7 +2970,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
     workspace_location = str(root)
     tracked_files = _tracked_file_count(root)
     platform_version = EngineeringPlatformManifest.load(
-        root / "tools/engineering/ENGINEERING_PLATFORM_VERSION.json"
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
     ).platform_version
     logger = logger or component_logger(root, "dashboard")
     class DashboardHandler(BaseHTTPRequestHandler):
@@ -3101,7 +3102,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                     try:
                         LocalProcessProvider().spawn_detached(
                             root,
-                            (sys.executable, "-m", "tools.engineering.pr_check_repair", "--root", str(root), "--pull-request", str(number), "--head-sha", sha),
+                            (sys.executable, "-m", "engineering_platform.pr_check_repair", "--root", str(root), "--pull-request", str(number), "--head-sha", sha),
                             os.environ.copy(),
                         )
                     except OSError:
@@ -4088,7 +4089,7 @@ def launch_agent(repo: Path) -> Path:
     """
     destination = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    launcher = (sys.executable, "-m", "tools.engineering.dashboard", "run", "--repo", str(repo))
+    launcher = (sys.executable, "-m", "engineering_platform.dashboard", "run", "--repo", str(repo))
     command = "cd " + shlex.quote(str(repo)) + " && exec " + " ".join(
         shlex.quote(value) for value in launcher
     )
@@ -4113,13 +4114,15 @@ def relay_binary(repo: Path) -> Path:
 
 
 def build_relay(repo: Path) -> Path:
-    """Compile the repository-owned private Tailnet-to-loopback relay."""
+    """Compile the package-owned private Tailnet-to-loopback relay."""
     compiler = shutil.which("swiftc")
     if compiler is None:
         raise RuntimeError("Swift compiler ontbreekt; de private dashboardrelay kan niet starten.")
     binary = relay_binary(repo)
     binary.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    compiled = LocalProcessProvider().execute(repo, (compiler, str(repo / "tools/engineering/dashboard_supervisor.swift"), "-o", str(binary)))
+    compiled = LocalProcessProvider().execute(
+        repo, (compiler, str(package_path("dashboard_supervisor.swift")), "-o", str(binary))
+    )
     if compiled.returncode:
         raise RuntimeError("Dashboardrelay compilation failed.")
     binary.chmod(0o700)

@@ -4,9 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.engineering.repository_handoff import main as handoff_main, publish as publish_handoff
-from tools.engineering.status_model import build, publish
-from tools.engineering.platform_version import EngineeringPlatformManifest
+from engineering_platform.repository_handoff import main as handoff_main, publish as publish_handoff
+from engineering_platform.status_model import build, publish
+from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class RemoteEngineeringTest(unittest.TestCase):

@@ -5,26 +5,26 @@ import tempfile
 import unittest
 import os
 
-from tools.engineering.managed_autonomy import (
+from engineering_platform.managed_autonomy import (
     append_action,
     append_pr_check_observation,
     append_validation_observation,
     record_gate,
     terminal_snapshot,
 )
-from tools.engineering.storage import (
+from engineering_platform.storage import (
     record_run_qualification_context,
     record_validation_control_result,
     record_validation_profile,
 )
-from tools.engineering.agent_state import StateStore, TransactionState
-from tools.engineering.execution_models import AgentResult
-from tools.engineering.provider_recovery import (
+from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.execution_models import AgentResult
+from engineering_platform.provider_recovery import (
     claim_replacement_launch, create_recovery_available, load_recovery_state,
     persist_recovery_agent_result, record_provider_started, record_replacement_terminal,
     transition_recovery_state,
 )
-from tools.engineering.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
+from engineering_platform.provider_usage import AUTHORITATIVE, ProviderInvocation, persist_provider_invocation
 
 
 class ManagedAutonomyEvidenceTest(unittest.TestCase):
