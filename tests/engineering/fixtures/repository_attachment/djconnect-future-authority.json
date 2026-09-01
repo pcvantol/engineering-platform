@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "djconnect", "authority_repository_id": "djconnect"},
+  "repository": {"id": "djconnect", "role": "authority"},
+  "validation": {"kind": "command", "entrypoint": "python -m unittest", "description": "Illustrative future attachment only."},
+  "integrations": {"future_ep": {"registration_mode": "pending"}}
+}

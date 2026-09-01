@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-mobile", "authority_repository_id": "acme-mobile-app"},
+  "repository": {"id": "acme-mobile-framework", "role": "child"},
+  "validation": {"kind": "command", "entrypoint": "xcodebuild test -scheme Framework", "description": "Run framework tests."},
+  "requirements": {"host": {"os": "macos"}, "tools": {"xcode": "16.x"}}
+}
