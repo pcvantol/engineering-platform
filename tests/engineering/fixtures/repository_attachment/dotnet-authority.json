@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-ledger", "authority_repository_id": "acme-ledger"},
+  "repository": {"id": "acme-ledger", "role": "authority"},
+  "validation": {"kind": "command", "entrypoint": "dotnet test", "description": "Run the .NET test suite."},
+  "requirements": {"tools": {"dotnet": "8.x"}}
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-web", "authority_repository_id": "acme-web"},
+  "repository": {"id": "acme-web", "role": "authority"},
+  "validation": {"kind": "script", "entrypoint": "npm test", "description": "Run web checks."},
+  "requirements": {"tools": {"node": "22.x"}}
+}

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://engineering-platform.dev/schemas/repository-attachment/1.0",
+  "title": "Engineering Platform repository attachment",
+  "description": "Declarative, repository-local project attachment metadata. It is never executable configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project", "repository", "validation"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "authority_repository_id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "authority_repository_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "role": {"enum": ["authority", "child"]}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["command", "script", "workflow", "none"]},
+        "entrypoint": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000\\r\\n]+$"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000\\r\\n]+$"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "none"}}}, "then": {"not": {"required": ["entrypoint"]}}},
+        {"if": {"properties": {"kind": {"enum": ["command", "script", "workflow"]}}}, "then": {"required": ["entrypoint"]}}
+      ]
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "object", "propertyNames": {"$ref": "#/$defs/metadata_key"}, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000\\r\\n]+$"}},
+        "tools": {"type": "object", "propertyNames": {"$ref": "#/$defs/metadata_key"}, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000\\r\\n]+$"}}
+      }
+    },
+    "integrations": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/metadata_key"},
+      "additionalProperties": {"type": "object", "additionalProperties": true}
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "metadata_key": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9._-]*$"}
+  }
+}
