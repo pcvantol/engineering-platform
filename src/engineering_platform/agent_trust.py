@@ -103,6 +103,8 @@ def authenticate(connection: sqlite3.Connection, agent_id: object, token: str | 
         raise AgentTrustError("unknown agent")
     if row[0] == "REVOKED":
         raise AgentTrustError("agent is revoked")
+    if row[0] not in {"PAIRED", "REGISTERED"}:
+        raise AgentTrustError("agent is not paired")
     if not hmac.compare_digest(bytes(row[1]), _verify(_TOKEN_DOMAIN, token)):
         raise AgentTrustError("invalid credential")
 
@@ -136,6 +138,20 @@ def heartbeat(connection: sqlite3.Connection, body: object, token: str | None) -
     now = utcnow()
     connection.execute("UPDATE ep_agent_registrations SET last_seen_at=?,updated_at=? WHERE agent_id=?", (now, now, agent_id))
     return {"agent_id": agent_id, "state": "ONLINE"}
+
+
+def register_attachment(connection: sqlite3.Connection, body: object, token: str | None) -> dict[str, str]:
+    """Accept a B5 declaration only from an authenticated paired Agent."""
+    raw = _payload(body)
+    if set(raw) != {"protocol_version", "agent_id", "attachment", "availability"}:
+        raise AgentTrustError("attachment registration payload is malformed")
+    agent_id = _identifier(raw["agent_id"])
+    authenticate(connection, agent_id, token)
+    from .project_topology import TopologyRegistrationError, register_attachment as persist_attachment
+    try:
+        return persist_attachment(connection, agent_id=agent_id, declaration=raw["attachment"], availability=raw["availability"])
+    except TopologyRegistrationError as error:
+        raise AgentTrustError(str(error)) from error
 
 
 def revoke(connection: sqlite3.Connection, agent_id: str) -> bool:

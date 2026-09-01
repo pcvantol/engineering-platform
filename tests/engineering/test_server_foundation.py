@@ -28,7 +28,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.status(self.root)
         self.assertTrue((self.root / server.SERVER_DATABASE_FILENAME).is_file())
         self.assertEqual(report["instance_id"], identity.instance_id)
-        self.assertEqual(report["schema_version"], 41)
+        self.assertEqual(report["schema_version"], 42)
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
@@ -61,13 +61,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(request.agent_id, "future-agent")
         self.assertFalse(hasattr(request, "credential"))
 
-    def test_fresh_store_is_official_schema_41_with_empty_operational_state(self) -> None:
+    def test_fresh_store_is_official_schema_42_with_empty_operational_state(self) -> None:
         identity = server.initialize(self.root)
         report = server.validate_store(self.root, identity)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
-                41,
+                42,
             )
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_installations").fetchone()[0], 1)
             for table in (
@@ -102,7 +102,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(40)")
-        with self.assertRaisesRegex(server.ServerConfigurationError, "schema-41"):
+        with self.assertRaisesRegex(server.ServerConfigurationError, "schema-42"):
             server.initialize(self.root)
 
     def test_restart_preserves_clean_identity_and_schema(self) -> None:
@@ -116,4 +116,4 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.health(self.root)
         self.assertTrue(report["ready"])
         self.assertEqual(report["instance_id"], identity.instance_id)
-        self.assertEqual(report["schema_version"], 41)
+        self.assertEqual(report["schema_version"], 42)
