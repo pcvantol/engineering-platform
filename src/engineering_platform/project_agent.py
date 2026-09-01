@@ -205,6 +205,9 @@ def load_or_create_identity(host: HostIdentity, path: Path | None = None) -> Age
         raw = json.loads(identity_path.read_text(encoding="utf-8"))
         identity = AgentIdentity(**raw)
         if identity.identity_format == IDENTITY_FORMAT and identity.host_context_key == host.context_key:
+            # Identity metadata is not a credential, but it is still per-user
+            # installation state and must not be readable by other accounts.
+            identity_path.chmod(0o600)
             return identity
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
@@ -212,7 +215,9 @@ def load_or_create_identity(host: HostIdentity, path: Path | None = None) -> Age
     identity_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = identity_path.with_suffix(identity_path.suffix + ".tmp")
     temporary.write_text(json.dumps(asdict(identity), sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
     os.replace(temporary, identity_path)
+    identity_path.chmod(0o600)
     return identity
 
 

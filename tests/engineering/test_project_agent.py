@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,13 @@ class ProjectAgentTests(unittest.TestCase):
             second = project_agent.load_or_create_identity(host, path)
         self.assertEqual(first, second)
         self.assertEqual(first.identity_format, project_agent.IDENTITY_FORMAT)
+
+    def test_identity_file_is_private(self) -> None:
+        host = project_agent.HostIdentity("host", "user", "Darwin", "arm64")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "identity.json"
+            project_agent.load_or_create_identity(host, path)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     @patch("engineering_platform.project_agent.subprocess.run")
     def test_inventory_supports_zero_one_and_many_explicit_roots(self, run: object) -> None:
