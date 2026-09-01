@@ -15,7 +15,8 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
-import subprocess
+# The lifecycle starts this module with a fixed argv; no shell is used.
+import subprocess  # nosec B404
 import sys
 import time
 from typing import Protocol
@@ -29,15 +30,47 @@ from . import agent_trust
 SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
-SERVER_DATABASE_FILENAME = "ep-server.db"
+SERVER_DATABASE_FILENAME = "engineering.db"
 SERVER_CONFIGURATION_VERSION = 1
-SERVER_STORE_SCHEMA_VERSION = 1
+# ADR-0026 defines the first standalone store as the canonical schema-40
+# product definitions plus immutable control provenance.  This server-owned
+# bootstrap is deliberately separate from the retired DJConnect migration
+# machinery: it creates a clean installation only and never accepts a source
+# database path.
+SERVER_STORE_SCHEMA_VERSION = 41
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
 
 class ServerConfigurationError(ValueError):
     """Raised when an installation-owned server configuration is invalid."""
+
+
+SERVER_REQUIRED_TABLES = frozenset(
+    {
+        "engineering_schema_migrations",
+        "engineering_metadata",
+        "ep_installations",
+        "ep_control_provenance",
+        "local_api_credentials",
+        "local_api_consumer_registrations",
+        "ep_project_registrations",
+        "ep_execution_runs",
+        "ep_execution_leases",
+        "prompt_execution_history",
+        "ep_agent_registrations",
+        "ep_agent_pairing_codes",
+    }
+)
+SERVER_REQUIRED_INDEXES = frozenset(
+    {
+        "local_api_credentials_scope_lookup",
+        "local_api_consumer_registrations_status_lookup",
+        "ep_project_registrations_status_lookup",
+        "ep_execution_runs_project_lookup",
+        "ep_control_provenance_subject_lookup",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +145,71 @@ def _write_json(path: Path, payload: object) -> None:
     path.chmod(0o600)
 
 
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def _index_names(connection: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+
+
+def _schema_version(connection: sqlite3.Connection) -> int:
+    if "engineering_schema_migrations" not in _table_names(connection):
+        return 0
+    row = connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _install_schema_41(connection: sqlite3.Connection, identity: RuntimeIdentity) -> None:
+    """Install the clean standalone schema and immutable control provenance."""
+    for statement in (
+        "CREATE TABLE IF NOT EXISTS engineering_schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS engineering_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version=41))",
+        "CREATE TABLE IF NOT EXISTS ep_control_provenance (event_id INTEGER PRIMARY KEY, event_kind TEXT NOT NULL CHECK(event_kind IN ('INSTALLATION_CREATED','CREDENTIAL_LIFECYCLE','CONSUMER_REGISTRATION','PROJECT_SCOPE_MUTATION')), subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS ep_control_provenance_subject_lookup ON ep_control_provenance(subject_kind,subject_id,event_id DESC)",
+        "CREATE TABLE IF NOT EXISTS local_api_credentials (credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128), consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32), fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32), issued_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, replaced_by_credential_id TEXT REFERENCES local_api_credentials(credential_id))",
+        "CREATE INDEX IF NOT EXISTS local_api_credentials_scope_lookup ON local_api_credentials(consumer_id,project_id,revoked_at)",
+        "CREATE TABLE IF NOT EXISTS local_api_consumer_registrations (consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128), project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128), status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, revoked_at TEXT, audit_metadata TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(consumer_id,project_id))",
+        "CREATE INDEX IF NOT EXISTS local_api_consumer_registrations_status_lookup ON local_api_consumer_registrations(consumer_id,project_id,status)",
+        "CREATE TABLE IF NOT EXISTS ep_project_registrations (project_id TEXT PRIMARY KEY CHECK(length(project_id) BETWEEN 1 AND 128), attachment_contract TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS ep_project_registrations_status_lookup ON ep_project_registrations(status,project_id)",
+        "CREATE TABLE IF NOT EXISTS ep_execution_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id), state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS ep_execution_runs_project_lookup ON ep_execution_runs(project_id,state,created_at DESC)",
+        "CREATE TABLE IF NOT EXISTS ep_execution_leases (lease_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES ep_execution_runs(run_id), holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, released_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS prompt_execution_history (run_id TEXT PRIMARY KEY REFERENCES ep_execution_runs(run_id), prompt_digest TEXT NOT NULL, recorded_at TEXT NOT NULL)",
+    ):
+        connection.execute(statement)
+    agent_trust.install_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(?)", (SERVER_STORE_SCHEMA_VERSION,))
+    connection.execute("INSERT OR IGNORE INTO engineering_metadata(key,value) VALUES('installation.instance_id',?)", (identity.instance_id,))
+    connection.execute("INSERT OR IGNORE INTO engineering_metadata(key,value) VALUES('installation.schema_version',?)", (str(SERVER_STORE_SCHEMA_VERSION),))
+    connection.execute("INSERT OR IGNORE INTO ep_installations(instance_id,created_at,schema_version) VALUES(?,?,?)", (identity.instance_id, identity.created_at, SERVER_STORE_SCHEMA_VERSION))
+    connection.execute("INSERT OR IGNORE INTO ep_control_provenance(event_kind,subject_kind,subject_id,payload,recorded_at) VALUES('INSTALLATION_CREATED','installation',?,?,?)", (identity.instance_id, json.dumps({'schema_version': SERVER_STORE_SCHEMA_VERSION}, sort_keys=True), identity.created_at))
+    for table in ("ep_control_provenance",):
+        for operation in ("UPDATE", "DELETE"):
+            connection.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, '{table} evidence is immutable.'); END")
+
+
+def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
+    """Return a deterministic fail-closed schema-41 structural report."""
+    path = data_root / SERVER_DATABASE_FILENAME
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            tables = _table_names(connection)
+            indexes = _index_names(connection)
+            schema = _schema_version(connection)
+            integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+            metadata = dict(connection.execute("SELECT key,value FROM engineering_metadata WHERE key IN ('installation.instance_id','installation.schema_version')"))
+            installation = connection.execute("SELECT instance_id FROM ep_installations WHERE instance_id=?", (identity.instance_id,)).fetchone()
+    except (OSError, sqlite3.DatabaseError) as error:
+        raise ServerConfigurationError("EP Server store is unavailable.") from error
+    valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
+    if not valid:
+        raise ServerConfigurationError("EP Server store is not a valid official schema-41 installation.")
+    return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
+
+
 def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int = 8765) -> RuntimeIdentity:
     """Create or validate an empty, installation-owned server instance."""
     data_root = data_root.resolve()
@@ -134,14 +232,27 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
     else:
         identity = RuntimeIdentity(str(uuid4()), _utcnow())
         _write_json(identity_path, asdict(identity))
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+    database_path = data_root / SERVER_DATABASE_FILENAME
+    if database_path.exists():
+        try:
+            with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as existing:
+                existing_tables = _table_names(existing)
+                if existing_tables:
+                    if _schema_version(existing) != SERVER_STORE_SCHEMA_VERSION:
+                        raise ServerConfigurationError(
+                            "EP Server store is not a valid official schema-41 installation."
+                        )
+                    validate_store(data_root, identity)
+                    return identity
+        except sqlite3.DatabaseError as error:
+            raise ServerConfigurationError("EP Server store is unavailable.") from error
+    with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("CREATE TABLE IF NOT EXISTS ep_server_schema_migrations (version INTEGER PRIMARY KEY)")
-        connection.execute("INSERT OR IGNORE INTO ep_server_schema_migrations(version) VALUES(?)", (SERVER_STORE_SCHEMA_VERSION,))
-        connection.execute("CREATE TABLE IF NOT EXISTS ep_server_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.execute("INSERT OR IGNORE INTO ep_server_metadata(key,value) VALUES('instance_id',?)", (identity.instance_id,))
-        agent_trust.install_schema(connection)
-    (data_root / SERVER_DATABASE_FILENAME).chmod(0o600)
+        connection.execute("BEGIN IMMEDIATE")
+        _install_schema_41(connection, identity)
+        connection.execute("COMMIT")
+    database_path.chmod(0o600)
+    validate_store(data_root, identity)
     return identity
 
 
@@ -174,6 +285,7 @@ def status(data_root: Path) -> dict[str, object]:
         "service": "engineering-platform-server",
         "instance_id": identity.instance_id,
         "store": "ready",
+        "schema_version": SERVER_STORE_SCHEMA_VERSION,
         "operational_state": "empty-valid",
         "running": running,
         "bind": {"host": config.bind_host, "port": config.bind_port},
@@ -181,12 +293,13 @@ def status(data_root: Path) -> dict[str, object]:
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
-    def _send(self, status_code: int, payload: dict[str, object]) -> None:
+    def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("EP-Server-Instance", initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+        if instance_id:
+            self.send_header("EP-Server-Instance", instance_id)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -194,7 +307,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if self.path not in {"/healthz", "/readyz"}:
             self.send_error(404)
             return
-        self._send(200, status(self.server.data_root))  # type: ignore[attr-defined]
+        try:
+            report = status(self.server.data_root)  # type: ignore[attr-defined]
+        except ServerConfigurationError:
+            self._send(503, {"healthy": False, "ready": False})
+            return
+        self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
         routes = {"/v1/agent/pair": agent_trust.pair, "/v1/agent/register": agent_trust.register, "/v1/agent/heartbeat": agent_trust.heartbeat}
@@ -211,7 +329,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
             with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                 result = action(connection, body) if action is agent_trust.pair else action(connection, body, token)
-            self._send(200, result)
+            self._send(200, result, initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
         except (ValueError, OSError, json.JSONDecodeError, agent_trust.AgentTrustError):
             self._send(400 if self.path == "/v1/agent/pair" else 401, {"error": "agent request rejected"})
 
@@ -243,7 +361,8 @@ def start(data_root: Path) -> dict[str, object]:
     current = status(data_root)
     if current["running"]:
         return current
-    child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root.resolve())], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Fixed executable/module argv; data root is resolved locally before launch.
+    child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root.resolve())], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
     _CHILDREN[child.pid] = child
     for _ in range(40):
         time.sleep(0.05)
@@ -277,7 +396,8 @@ def health(data_root: Path) -> dict[str, object]:
         return {**result, "healthy": False, "ready": False}
     bind = result["bind"]
     try:
-        with urlopen(f"http://{bind['host']}:{bind['port']}/readyz", timeout=1) as response:
+        # Server configuration permits loopback host only.
+        with urlopen(f"http://{bind['host']}:{bind['port']}/readyz", timeout=1) as response:  # nosec B310
             response.read()
         return {**result, "healthy": True, "ready": True}
     except (URLError, OSError):
