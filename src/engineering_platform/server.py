@@ -26,6 +26,8 @@ from uuid import uuid4
 
 from . import agent_trust
 from . import project_topology
+from . import submission_service
+from .local_api_credentials import verifier
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -38,7 +40,7 @@ SERVER_CONFIGURATION_VERSION = 1
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 42
+SERVER_STORE_SCHEMA_VERSION = 43
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
@@ -63,6 +65,9 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_agent_pairing_codes",
         "ep_repository_registrations",
         "ep_agent_repository_attachments",
+        "ep_submissions",
+        "ep_submission_events",
+        "ep_submission_prompt_history",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -74,6 +79,8 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_control_provenance_subject_lookup",
         "ep_repository_registrations_project_lookup",
         "ep_agent_repository_attachments_repository_lookup",
+        "ep_submissions_project_lookup",
+        "ep_submissions_idempotency_lookup",
     }
 )
 
@@ -211,6 +218,34 @@ def _migrate_schema_42(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=42")
 
 
+def _migrate_schema_43(connection: sqlite3.Connection) -> None:
+    """Add CENTRAL-owned canonical submission persistence.
+
+    This is deliberately a forward migration from schema 42; historical
+    schema-40 execution databases are neither inspected nor imported.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema42")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,43 FROM ep_installations_schema42")
+    connection.execute("DROP TABLE ep_installations_schema42")
+    connection.execute("""CREATE TABLE ep_submissions (
+        submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','LEGACY_FILE')),
+        prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
+        idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        created_at TEXT NOT NULL)""")
+    connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
+    connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    connection.execute("CREATE TABLE ep_submission_events (event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id), event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)")
+    connection.execute("CREATE TABLE ep_submission_prompt_history (submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL, recorded_at TEXT NOT NULL)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(43)")
+    connection.execute("UPDATE engineering_metadata SET value='43' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=43")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -226,7 +261,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         raise ServerConfigurationError("EP Server store is unavailable.") from error
     valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
-        raise ServerConfigurationError("EP Server store is not a valid official schema-42 installation.")
+        raise ServerConfigurationError("EP Server store is not a valid official schema-43 installation.")
     return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
 
 
@@ -259,11 +294,19 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
-                            "EP Server store is not a valid official schema-42 installation."
+                            "EP Server store is not a valid official schema-43 installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
+                        validate_store(data_root, identity)
+                        return identity
+                    if current_schema == 42:
+                        with sqlite3.connect(database_path) as connection:
+                            connection.execute("PRAGMA foreign_keys=ON")
+                            connection.execute("BEGIN IMMEDIATE")
+                            _migrate_schema_43(connection)
+                            connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
         except sqlite3.DatabaseError as error:
@@ -273,6 +316,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         connection.execute("BEGIN IMMEDIATE")
         _install_schema_41(connection, identity)
         _migrate_schema_42(connection)
+        _migrate_schema_43(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -337,6 +381,17 @@ def _operations_console_document() -> bytes:
     return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
 
 
+def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
+    """Authenticate an existing scoped CENTRAL consumer credential."""
+    if not isinstance(token, str) or not token or len(token) > 4096:
+        return None
+    row = connection.execute("""SELECT c.consumer_id FROM local_api_credentials c
+        JOIN local_api_consumer_registrations r ON r.consumer_id=c.consumer_id AND r.project_id=c.project_id
+        WHERE c.verifier=? AND c.project_id=? AND c.revoked_at IS NULL
+        AND (c.expires_at IS NULL OR c.expires_at>CURRENT_TIMESTAMP) AND r.status='ACTIVE'""", (verifier(token), project_id)).fetchone()
+    return str(row[0]) if row else None
+
+
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -374,6 +429,37 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/v1/projects/") and self.path.endswith("/submissions"):
+            parts = self.path.split("/")
+            if len(parts) != 5 or not parts[3]:
+                self._send(404, {"error": "not found"})
+                return
+            project_id = parts[3]
+            try:
+                if self.headers.get_content_type() != "application/json":
+                    raise submission_service.SubmissionError("UNSUPPORTED_MEDIA_TYPE", 415)
+                length = int(self.headers.get("Content-Length", "-1"))
+                if not 0 < length <= 131072:
+                    raise submission_service.SubmissionError("PAYLOAD_TOO_LARGE", 413)
+                raw = self.rfile.read(length)
+                if b"\0" in raw:
+                    raise submission_service.SubmissionError("MALFORMED_REQUEST")
+                payload = json.loads(raw.decode("utf-8"))
+                authorization = self.headers.get("Authorization", "")
+                token = authorization[7:] if authorization.startswith("Bearer ") else None
+                with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                    if _authenticated_consumer(connection, token, project_id) is None:
+                        raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
+                    request = submission_service.request_from_mapping(project_id, payload, transport="HTTP")
+                    result = submission_service.submit(connection, request)
+                self._send(200, result.to_dict(), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except UnicodeDecodeError:
+                self._send(400, {"error": "MALFORMED_REQUEST"})
+            except json.JSONDecodeError:
+                self._send(400, {"error": "MALFORMED_REQUEST"})
+            except submission_service.SubmissionError as error:
+                self._send(error.status, {"error": error.code})
+            return
         routes = {"/v1/agent/pair": agent_trust.pair, "/v1/agent/register": agent_trust.register, "/v1/agent/heartbeat": agent_trust.heartbeat, "/v1/agent/attachment": agent_trust.register_attachment}
         action = routes.get(self.path)
         if action is None:

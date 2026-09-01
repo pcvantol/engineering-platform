@@ -1,0 +1,178 @@
+"""Canonical, transport-neutral CENTRAL submission intake.
+
+Adapters only turn their input into :class:`SubmissionRequest`; this module is
+the single owner of project resolution, durable acceptance, idempotency and
+the initial admission/queue projection.  It intentionally does *not* execute
+a provider.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import secrets
+import sqlite3
+from typing import Any, Mapping
+
+
+MAX_PROMPT_BYTES = 65536
+MAX_FIELD_LENGTH = 128
+MAX_CONSTRAINT_BYTES = 8192
+
+
+class SubmissionError(ValueError):
+    """A stable, safe submission rejection."""
+    def __init__(self, code: str, status: int = 400) -> None:
+        super().__init__(code)
+        self.code, self.status = code, status
+
+
+@dataclass(frozen=True)
+class SubmissionRequest:
+    project_id: str
+    repository_id: str
+    producer_id: str
+    producer_type: str
+    producer_version: str | None
+    prompt: str
+    transport: str
+    idempotency_key: str | None = None
+    correlation_id: str | None = None
+    mission_id: str | None = None
+    engineering_action_id: str | None = None
+    constraints: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    submission_id: str
+    project_id: str
+    repository_id: str
+    state: str
+    created_at: str
+    admission: str
+    duplicate: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {"submission_id": self.submission_id, "project_id": self.project_id,
+                "repository_id": self.repository_id, "state": self.state,
+                "created_at": self.created_at, "admission": self.admission,
+                "duplicate": self.duplicate}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _token(value: object, field: str, *, optional: bool = False) -> str | None:
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or not value or len(value) > MAX_FIELD_LENGTH or "\x00" in value:
+        raise SubmissionError(f"INVALID_{field.upper()}")
+    return value
+
+
+def _json_object(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise SubmissionError("INVALID_CONSTRAINTS")
+    try:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        raise SubmissionError("INVALID_CONSTRAINTS") from None
+    if len(encoded) > MAX_CONSTRAINT_BYTES or b"\0" in encoded:
+        raise SubmissionError("INVALID_CONSTRAINTS")
+    return dict(value)
+
+
+def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
+    if not isinstance(payload, Mapping):
+        raise SubmissionError("MALFORMED_REQUEST")
+    allowed = {"repository_id", "producer", "prompt", "idempotency_key", "correlation_id", "mission_id", "engineering_action_id", "constraints"}
+    if set(payload) - allowed:
+        raise SubmissionError("UNKNOWN_FIELD")
+    producer = payload.get("producer")
+    if not isinstance(producer, Mapping) or set(producer) - {"id", "type", "version"}:
+        raise SubmissionError("INVALID_PRODUCER")
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip() or "\x00" in prompt or len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+        raise SubmissionError("INVALID_PROMPT")
+    return SubmissionRequest(
+        project_id=_token(project_id, "project_id") or "",
+        repository_id=_token(payload.get("repository_id"), "repository_id") or "",
+        producer_id=_token(producer.get("id"), "producer_id") or "",
+        producer_type=_token(producer.get("type"), "producer_type") or "",
+        producer_version=_token(producer.get("version"), "producer_version", optional=True),
+        prompt=prompt.replace("\r\n", "\n").replace("\r", "\n"), transport=transport,
+        idempotency_key=_token(payload.get("idempotency_key"), "idempotency_key", optional=True),
+        correlation_id=_token(payload.get("correlation_id"), "correlation_id", optional=True),
+        mission_id=_token(payload.get("mission_id"), "mission_id", optional=True),
+        engineering_action_id=_token(payload.get("engineering_action_id"), "engineering_action_id", optional=True),
+        constraints=_json_object(payload.get("constraints")),
+    )
+
+
+def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> SubmissionResult:
+    """Persist and admit one request; no provider or Agent is selected here."""
+    project = connection.execute("SELECT status FROM ep_project_registrations WHERE project_id=?", (request.project_id,)).fetchone()
+    if project is None:
+        raise SubmissionError("UNKNOWN_PROJECT", 404)
+    if project[0] != "ACTIVE":
+        raise SubmissionError("PROJECT_NOT_ACTIVE", 409)
+    repository = connection.execute("SELECT project_id FROM ep_repository_registrations WHERE repository_id=?", (request.repository_id,)).fetchone()
+    if repository is None:
+        raise SubmissionError("UNKNOWN_REPOSITORY", 404)
+    if repository[0] != request.project_id:
+        raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
+    if request.idempotency_key:
+        duplicate = connection.execute("SELECT submission_id,created_at,state,admission FROM ep_submissions WHERE project_id=? AND idempotency_key=?", (request.project_id, request.idempotency_key)).fetchone()
+        if duplicate is not None:
+            return SubmissionResult(str(duplicate[0]), request.project_id, request.repository_id, str(duplicate[2]), str(duplicate[1]), str(duplicate[3]), True)
+    submission_id, created_at = "sub-" + secrets.token_hex(16), _now()
+    # Admission intentionally validates CENTRAL topology only at submission
+    # time. Agent selection, leases and provider execution remain downstream.
+    admission, state = "ADMITTED", "QUEUED"
+    prompt_digest = hashlib.sha256(request.prompt.encode("utf-8")).hexdigest()
+    connection.execute("""INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (submission_id, request.project_id, request.repository_id, request.producer_id, request.producer_type, request.producer_version, request.transport, request.prompt, prompt_digest, json.dumps(request.constraints or {}, sort_keys=True), request.idempotency_key, request.correlation_id, request.mission_id, request.engineering_action_id, state, admission, created_at))
+    connection.execute("INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)", (submission_id, "SUBMITTED", json.dumps({"transport": request.transport, "producer_id": request.producer_id}, sort_keys=True), created_at))
+    connection.execute("INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at) VALUES(?,?,?)", (submission_id, prompt_digest, created_at))
+    return SubmissionResult(submission_id, request.project_id, request.repository_id, state, created_at, admission)
+
+
+def register_consumer(connection: sqlite3.Connection, *, consumer_id: str, project_id: str) -> None:
+    """Explicitly grant a consumer one project scope in CENTRAL."""
+    consumer_id = _token(consumer_id, "consumer_id") or ""
+    project_id = _token(project_id, "project_id") or ""
+    if connection.execute("SELECT 1 FROM ep_project_registrations WHERE project_id=? AND status='ACTIVE'", (project_id,)).fetchone() is None:
+        raise SubmissionError("UNKNOWN_PROJECT", 404)
+    now = _now()
+    connection.execute("""INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,audit_metadata)
+        VALUES(?,?,'ACTIVE',?,?,?) ON CONFLICT(consumer_id,project_id) DO UPDATE SET status='ACTIVE',updated_at=excluded.updated_at""", (consumer_id, project_id, now, now, json.dumps({"action": "SUBMISSION_CONSUMER_REGISTER"}, sort_keys=True)))
+
+
+def issue_consumer_credential(connection: sqlite3.Connection, *, consumer_id: str, project_id: str) -> dict[str, str]:
+    """Issue a scoped bearer token once; only its verifier is retained."""
+    register_consumer(connection, consumer_id=consumer_id, project_id=project_id)
+    from .local_api_credentials import fingerprint, verifier
+    token, credential_id, now = secrets.token_urlsafe(32), "production-" + secrets.token_hex(16), _now()
+    connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", (credential_id, consumer_id, project_id, verifier(token), fingerprint(token), now))
+    return {"credential_id": credential_id, "consumer_id": consumer_id, "project_id": project_id, "credential": token}
+
+
+def submit_legacy_file(connection: sqlite3.Connection, path: object) -> SubmissionResult:
+    """Compatibility adapter: a bounded JSON envelope with explicit project scope."""
+    from pathlib import Path
+    candidate = Path(path)
+    raw = candidate.read_bytes()
+    if len(raw) > 131072 or b"\0" in raw:
+        raise SubmissionError("MALFORMED_LEGACY_FILE")
+    try:
+        envelope = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SubmissionError("MALFORMED_LEGACY_FILE") from None
+    if not isinstance(envelope, Mapping) or set(envelope) != {"project_id", "submission"}:
+        raise SubmissionError("MALFORMED_LEGACY_FILE")
+    return submit(connection, request_from_mapping(str(envelope["project_id"]), envelope["submission"], transport="LEGACY_FILE"))
