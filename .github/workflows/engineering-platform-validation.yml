@@ -7,6 +7,9 @@ on:
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
+      - 'docs/ai-development/**'
+      - 'docs/governance/**'
+      - 'BOOTSTRAP.md'
       - 'package.json'
       - 'package-lock.json'
       - 'playwright.config.mjs'
@@ -19,12 +22,24 @@ on:
       - 'tests/engineering/**'
       - 'docs/engineering/**'
       - 'docs/development/**'
+      - 'docs/ai-development/**'
+      - 'docs/governance/**'
+      - 'BOOTSTRAP.md'
       - 'package.json'
       - 'package-lock.json'
       - 'playwright.config.mjs'
       - 'pyproject.toml'
 
 jobs:
+  projection:
+    name: Validate AI-development projection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with: {python-version: '3.12'}
+      - name: Validate committed offline projection
+        run: python3 docs/ai-development/validate_projection.py --profile engineering-platform --source-commit ec070e399ff4dbd92e760370002995fe4f4d52d6 --extension-identity ENGINEERING_PLATFORM_DEVELOPMENT_EXTENSION
   validation-profile:
     runs-on: ubuntu-latest
     outputs:
