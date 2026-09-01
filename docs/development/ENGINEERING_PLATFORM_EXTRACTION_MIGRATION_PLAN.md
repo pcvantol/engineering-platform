@@ -785,6 +785,27 @@ packaged path is proven.
 
 ## Sequencing and safety gates
 
+### B8E zero-loss gate (pre-B9)
+
+Before B9, the capability-level audit in
+[STANDALONE_ZERO_LOSS_CAPABILITY_AUDIT.md](../engineering/STANDALONE_ZERO_LOSS_CAPABILITY_AUDIT.md)
+must be `B8E_ZERO_LOSS_PASS`: every historical responsibility maps to one
+disposition, `UNRESOLVED=0`, every gap has severity/owner, and every claimed
+live capability has installed-runtime evidence. Extraction or retirement of a
+LaunchAgent alone is not semantic retirement.
+
+The recovery order is mandatory: **Phase P — extracted standalone functional
+parity** restores the installed extracted product before any redesign or
+distributed decomposition. Only after `FULL_EXTRACTED_EP_CORE_VERIFIED` may
+**Phase S — architectural seam decomposition** introduce the front ingress and
+CENTRAL-to-Project-Agent physical-execution seams, each with parity evidence.
+
+```text
+B8C_PASS + B8D_PASS + B8E_ZERO_LOSS_PASS + execution protocol ready -> B9
+```
+
+The current B8E result is `B8E_REPAIR_PLAN_REQUIRED`; B9 is not open.
+
 | Gate | Required before proceeding |
 | --- | --- |
 | Contract gate | Versioned consumer API, project identity semantics and error/redaction rules approved. |
