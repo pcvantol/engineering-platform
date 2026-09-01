@@ -794,6 +794,12 @@ disposition, `UNRESOLVED=0`, every gap has severity/owner, and every claimed
 live capability has installed-runtime evidence. Extraction or retirement of a
 LaunchAgent alone is not semantic retirement.
 
+The recovery order is mandatory: **Phase P — extracted standalone functional
+parity** restores the installed extracted product before any redesign or
+distributed decomposition. Only after `FULL_EXTRACTED_EP_CORE_VERIFIED` may
+**Phase S — architectural seam decomposition** introduce the front ingress and
+CENTRAL-to-Project-Agent physical-execution seams, each with parity evidence.
+
 ```text
 B8C_PASS + B8D_PASS + B8E_ZERO_LOSS_PASS + execution protocol ready -> B9
 ```

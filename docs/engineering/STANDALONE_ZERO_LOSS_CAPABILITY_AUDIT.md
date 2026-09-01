@@ -18,6 +18,10 @@ installed-runtime inspection reported a running, installed, `empty-valid`
 CENTRAL. No execution was submitted or dispatched. Matrix validation is
 deterministic via `scripts/engineering/validate_zero_loss_capability_audit.py`.
 
+**Refresh record (2026-09-01):** PR #18 head is
+`0c5b90cebc1ca997b7c4fb90d40ad48c97474c2f`; PR #17 (B8D.1) is open at
+`0fae5bfd3b26dee9797fb548a93594da234393b0`; both target the main SHA above.
+
 ## Findings
 
 | Area | Status | Evidence-based conclusion |
@@ -50,25 +54,54 @@ Existing unit/browser/CI tests preserve extracted implementation and foundation
 controls. They do not prove live dispatch, full Console, terminal evidence or
 update lifecycle. Those are missing assurance, not a passing replacement.
 
-## Repair DAG
+## Corrected recovery strategy
+
+The B8E findings do **not** authorize an independent rewrite of the Console,
+queue/recovery, finalization, telemetry, or Agent orchestration. The original
+2.x program is a history-preserving extraction migration. Its recovery
+principle is **preserve first; decompose second**.
+
+**Phase P — extraction functional parity recovery** restores the extracted EP
+core, from the installed standalone package, with the same Console, Engineering
+Action lifecycle, Managed/Genesis semantics, queue/admission, provider/Codex,
+recovery, validation/qualification, Prompt History, reporting/evidence, and
+finalization behavior. The extracted implementation is the primary source of
+truth; existing cohesive lifecycle logic is reconnected rather than replaced.
+
+**Phase S — architectural seam decomposition** begins only after
+`FULL_EXTRACTED_EP_CORE_VERIFIED`: first the front ingress seam (HTTP/CLI/file)
+and then the physical execution seam (CENTRAL ↔ Project Agent), with parity
+qualification across each decomposition. Phase S does not begin B9 and does
+not authorize distributed execution implementation yet.
+
+## Canonical recovery DAG
 
 ```text
-B8D.1 + B8C-R -> B8F-B dispatch/queue/recovery -> B8F-C finalization/evidence
-                    |                              -> B8F-D telemetry/usage
-                    -> B8F-A Console wiring
-B8F-E installer lifecycle (parallel; blocks cutover)
+history-preserving source extraction
+              ↓
+standalone package/install
+              ↓
+EXTRACTION FUNCTIONAL PARITY RECOVERY (Phase P)
+              ↓
+FULL EXTRACTED EP CORE VERIFIED
+       ┌──────┴──────┐
+       ↓             ↓
+front ingress seam   physical execution seam (Phase S)
+HTTP / CLI / file    CENTRAL ↔ Project Agent
+       └──────┬──────┘
+              ↓
+distributed parity qualification → B9 → STANDALONE_EP_VERIFIED
 ```
 
-| Lane | Acceptance evidence |
+| Phase | Scope and acceptance evidence |
 | --- | --- |
-| B8F-A | Installed multi-project Console/browser proof of retained views/actions and five locales. |
-| B8F-B | Authenticated CENTRAL→Agent dispatch, Agent worktree/provider execution, CENTRAL queue/lease/retry; two-project isolation canary. |
-| B8F-C | Validation, PR/review/merge wait, reports, receipts, Prompt History and exactly-once terminal proof. |
-| B8F-D | Project-scoped timing, provider/model usage, telemetry and export projections from lifecycle evidence. |
-| B8F-E | Install/lifecycle, repair/upgrade/uninstall, retention and artifact-provenance qualification. |
+| P | Reconnect the extracted functional core in the installed package without redesign: full Console, canonical lifecycle and legacy semantics, provider path, recovery, qualification, history, reports/receipts, telemetry and installation lifecycle. Installed-package end-to-end parity evidence is required. |
+| S | After Phase P only, introduce ingress and physical-execution seams one at a time and prove every matrix capability retains equivalent behavior, isolation and evidence. |
 
-B8F-B is critical pre-B9. B8E can become `B8E_ZERO_LOSS_PASS` only after every
-blocking matrix gap is repaired or qualifiedly reclassified.
+The missing dispatch protocol remains a B9 blocker, but is a **Phase S**
+concern, not the first recovery implementation. B8E can become
+`B8E_ZERO_LOSS_PASS` only after Phase P and any subsequent qualified seam work
+resolve or explicitly retire every blocking matrix gap.
 
 ## Pre-B9 rule
 
