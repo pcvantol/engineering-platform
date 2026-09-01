@@ -1,5 +1,11 @@
 # Engineering Platform 2.x consumer contract
 
+> **Scope clarification (B8R):** This contract's Workspace `project_id`
+> language applies to the legacy consumer API scope. The durable logical
+> identity of a repository attached through the Project Agent is declared by
+> the B5 repository declaration; see
+> [Project identity and attachment runtime](../engineering/PROJECT_IDENTITY_AND_ATTACHMENT_RUNTIME.md).
+
 ## Purpose
 
 This contract lets DJConnect, Forge and Workspace consume an installed,

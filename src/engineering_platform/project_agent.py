@@ -198,6 +198,25 @@ def heartbeat(*, configuration_path: Path | None = None) -> dict[str, object]:
     return response
 
 
+def attach(repository_root: Path, *, identity_path: Path | None = None, configuration_path: Path | None = None) -> dict[str, object]:
+    """Read one explicit root and register only its validated declaration.
+
+    The checkout path remains local to the Agent and is intentionally absent
+    from the request and Server topology.
+    """
+    config, snapshot = _configuration(configuration_path), observe((), identity_path=identity_path)
+    if config["agent_id"] != snapshot.identity.agent_id:
+        raise ValueError("Agent installation identity differs from pairing configuration")
+    try:
+        declaration = load_repository_attachment(repository_root).agent_read_surface()
+    except RepositoryAttachmentError as error:
+        raise ValueError("Repository attachment declaration is unavailable or invalid") from error
+    response, instance = _post(config["endpoint"], "/v1/agent/attachment", {"protocol_version": agent_trust.PROTOCOL_VERSION, "agent_id": snapshot.identity.agent_id, "attachment": declaration, "availability": "AVAILABLE"}, config["credential"])
+    if instance != config["server_instance_id"]:
+        raise ValueError("EP Server identity changed; re-pair explicitly")
+    return response
+
+
 def load_or_create_identity(host: HostIdentity, path: Path | None = None) -> AgentIdentity:
     """Persist only installation identity; never execution, queue, or lock data."""
     identity_path = path or default_identity_path()
@@ -275,7 +294,7 @@ def observe(repository_roots: Sequence[Path] = (), *, identity_path: Path | None
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-project-agent", description="Observe or pair the Project Agent with EP Server.")
-    parser.add_argument("command", choices=("observe", "pair", "register", "heartbeat"), nargs="?", default="observe")
+    parser.add_argument("command", choices=("observe", "pair", "register", "heartbeat", "attach"), nargs="?", default="observe")
     parser.add_argument("--repository-root", action="append", default=[], type=Path, help="Repository root to inspect; may be repeated.")
     parser.add_argument("--identity-path", type=Path, help="Local installation identity file; contains no execution state.")
     parser.add_argument("--configuration-path", type=Path, help="Private Agent pairing configuration path.")
@@ -295,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.server_endpoint or not args.pairing_code: parser.error("pair requires --server-endpoint and --pairing-code")
         result = pair(args.server_endpoint, args.pairing_code, identity_path=args.identity_path, configuration_path=args.configuration_path)
     elif args.command == "register": result = register(args.repository_root, identity_path=args.identity_path, configuration_path=args.configuration_path)
-    else: result = heartbeat(configuration_path=args.configuration_path)
+    elif args.command == "heartbeat": result = heartbeat(configuration_path=args.configuration_path)
+    else:
+        if len(args.repository_root) != 1: parser.error("attach requires exactly one --repository-root")
+        result = attach(args.repository_root[0], identity_path=args.identity_path, configuration_path=args.configuration_path)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

@@ -69,6 +69,11 @@ mechanism.
 
 ## B6 convergence handoff
 
+The B8R runtime now implements the previously deferred authenticated Server
+registration and physical attachment persistence while retaining this B5 file
+as the canonical logical declaration. See
+[Project identity and attachment runtime](PROJECT_IDENTITY_AND_ATTACHMENT_RUNTIME.md).
+
 | Topic | B5 handoff |
 | --- | --- |
 | Config/schema identity | `.engineering-platform/repository.json`; schema `https://engineering-platform.dev/schemas/repository-attachment/1.0`; schema version `1.0`. |

@@ -41,6 +41,17 @@ valid `.engineering-platform/repository.json`; it omits local paths, secrets,
 and filesystem discovery. It can report zero or many repositories. B5 logical
 project topology remains declarative and is not replaced by a host inventory.
 
+## Authenticated topology attachment (B8R)
+
+After pairing, an Agent may call its explicit `attach` operation for one
+repository root. The operation reads the B5 declaration, sends no local path,
+and requires the existing B6A bearer credential. The Server independently
+validates the declaration and atomically persists logical project/repository
+topology plus that Agent's physical `AVAILABLE` attachment. Repeated identical
+reports are idempotent. Revocation and heartbeat staleness make only the
+physical attachment unavailable; logical topology survives. The full authority
+model is [Project identity and attachment runtime](PROJECT_IDENTITY_AND_ATTACHMENT_RUNTIME.md).
+
 ## Liveness, reconnect, and reset
 
 An authenticated heartbeat updates `last_seen_at`. Status is `ONLINE` within

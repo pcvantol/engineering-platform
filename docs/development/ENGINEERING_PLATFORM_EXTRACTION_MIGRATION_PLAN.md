@@ -6,6 +6,12 @@ standalone, local-first Execution Operations Platform
 **Decision baseline:** [ADR-0019](../adr/0019-engineering-platform-central-installation-store.md) and the
 [EP consumer contract](ENGINEERING_PLATFORM_CONSUMER_CONTRACT.md)
 
+> **B8R authority supersession:** For Git-declared project/repository
+> attachment, the current authority is
+> [Project identity and attachment runtime](../engineering/PROJECT_IDENTITY_AND_ATTACHMENT_RUNTIME.md).
+> Earlier Workspace-supplied `project_id` wording remains historical consumer
+> registration context and must not be read as topology authority.
+
 ## Review objective
 
 Turn Engineering Platform (EP) from the current repository-local implementation

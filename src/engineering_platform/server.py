@@ -25,6 +25,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 from . import agent_trust
+from . import project_topology
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -37,7 +38,7 @@ SERVER_CONFIGURATION_VERSION = 1
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 41
+SERVER_STORE_SCHEMA_VERSION = 42
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
@@ -60,6 +61,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "prompt_execution_history",
         "ep_agent_registrations",
         "ep_agent_pairing_codes",
+        "ep_repository_registrations",
+        "ep_agent_repository_attachments",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -69,6 +72,8 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_project_registrations_status_lookup",
         "ep_execution_runs_project_lookup",
         "ep_control_provenance_subject_lookup",
+        "ep_repository_registrations_project_lookup",
+        "ep_agent_repository_attachments_repository_lookup",
     }
 )
 
@@ -181,18 +186,33 @@ def _install_schema_41(connection: sqlite3.Connection, identity: RuntimeIdentity
     ):
         connection.execute(statement)
     agent_trust.install_schema(connection)
-    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(?)", (SERVER_STORE_SCHEMA_VERSION,))
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(41)")
     connection.execute("INSERT OR IGNORE INTO engineering_metadata(key,value) VALUES('installation.instance_id',?)", (identity.instance_id,))
-    connection.execute("INSERT OR IGNORE INTO engineering_metadata(key,value) VALUES('installation.schema_version',?)", (str(SERVER_STORE_SCHEMA_VERSION),))
-    connection.execute("INSERT OR IGNORE INTO ep_installations(instance_id,created_at,schema_version) VALUES(?,?,?)", (identity.instance_id, identity.created_at, SERVER_STORE_SCHEMA_VERSION))
-    connection.execute("INSERT OR IGNORE INTO ep_control_provenance(event_kind,subject_kind,subject_id,payload,recorded_at) VALUES('INSTALLATION_CREATED','installation',?,?,?)", (identity.instance_id, json.dumps({'schema_version': SERVER_STORE_SCHEMA_VERSION}, sort_keys=True), identity.created_at))
+    connection.execute("INSERT OR IGNORE INTO engineering_metadata(key,value) VALUES('installation.schema_version','41')")
+    connection.execute("INSERT OR IGNORE INTO ep_installations(instance_id,created_at,schema_version) VALUES(?,?,41)", (identity.instance_id, identity.created_at))
+    connection.execute("INSERT OR IGNORE INTO ep_control_provenance(event_kind,subject_kind,subject_id,payload,recorded_at) VALUES('INSTALLATION_CREATED','installation',?,?,?)", (identity.instance_id, json.dumps({'schema_version': 41}, sort_keys=True), identity.created_at))
     for table in ("ep_control_provenance",):
         for operation in ("UPDATE", "DELETE"):
             connection.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{operation.casefold()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, '{table} evidence is immutable.'); END")
 
 
+def _migrate_schema_42(connection: sqlite3.Connection) -> None:
+    """Forward-only topology extension; schema-41 structures remain intact."""
+    # Schema 41 deliberately constrained the bootstrap record to 41.  Preserve
+    # its row while widening that bootstrap-only constraint for official
+    # forward migrations; no operational rows are rewritten.
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema41")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,42 FROM ep_installations_schema41")
+    connection.execute("DROP TABLE ep_installations_schema41")
+    project_topology.install_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(42)")
+    connection.execute("UPDATE engineering_metadata SET value='42' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=42")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
-    """Return a deterministic fail-closed schema-41 structural report."""
+    """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
@@ -206,7 +226,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         raise ServerConfigurationError("EP Server store is unavailable.") from error
     valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
-        raise ServerConfigurationError("EP Server store is not a valid official schema-41 installation.")
+        raise ServerConfigurationError("EP Server store is not a valid official schema-42 installation.")
     return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
 
 
@@ -238,18 +258,21 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
             with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True) as existing:
                 existing_tables = _table_names(existing)
                 if existing_tables:
-                    if _schema_version(existing) != SERVER_STORE_SCHEMA_VERSION:
+                    current_schema = _schema_version(existing)
+                    if current_schema not in {41, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
-                            "EP Server store is not a valid official schema-41 installation."
+                            "EP Server store is not a valid official schema-42 installation."
                         )
-                    validate_store(data_root, identity)
-                    return identity
+                    if current_schema == SERVER_STORE_SCHEMA_VERSION:
+                        validate_store(data_root, identity)
+                        return identity
         except sqlite3.DatabaseError as error:
             raise ServerConfigurationError("EP Server store is unavailable.") from error
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
         _install_schema_41(connection, identity)
+        _migrate_schema_42(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -315,7 +338,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
-        routes = {"/v1/agent/pair": agent_trust.pair, "/v1/agent/register": agent_trust.register, "/v1/agent/heartbeat": agent_trust.heartbeat}
+        routes = {"/v1/agent/pair": agent_trust.pair, "/v1/agent/register": agent_trust.register, "/v1/agent/heartbeat": agent_trust.heartbeat, "/v1/agent/attachment": agent_trust.register_attachment}
         action = routes.get(self.path)
         if action is None:
             self.send_error(404)
@@ -406,7 +429,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -424,6 +447,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)
+        elif args.command == "topology":
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = project_topology.topology(connection)
         else:
             if not args.agent_id:
                 raise ServerConfigurationError("--agent-id is required for Agent lifecycle commands.")

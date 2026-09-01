@@ -1,6 +1,6 @@
 # ADR-0019 — Engineering Platform uses one central installation store
 
-**Status:** Accepted for the Engineering Platform 2.x extraction  
+**Status:** Superseded in part by B8R for repository logical identity; retained for installation-store and Workspace presentation boundaries.
 **Date:** 2026-08-25
 
 ## Context
