@@ -240,13 +240,17 @@ The local upgrade runs before the installed EP process becomes the writer:
 The consumer pins the immutable EP 2.x wheel version. It must fail closed when
 the requested contract version or canonical Workspace `project_id` is absent.
 
-## Installation and consumer onboarding
+## EP-specific installation and consumer onboarding
 
-The native macOS Engineering Platform installer owns installation, CLI
-dependency setup, installation data-root creation, empty SQLite creation,
-LaunchAgent activation and first-run Operations Console opening. A consumer
-does not bootstrap these components itself and must never add the installation
-database, credentials, LaunchAgent plists or EP source tree to its repository.
+The EP-specific macOS package/service installer owns EP installation, CLI
+dependency setup, EP installation data-root creation, empty SQLite creation,
+LaunchAgent activation and first-run Operations Console opening. In a
+cross-product deployment, Forge Platform owns universal role selection,
+artifact composition, compatibility, update/repair/uninstall experience and
+deployment topology; it composes the qualified EP artifacts rather than taking
+over EP runtime or service-installation authority. A consumer does not
+bootstrap these components itself and must never add the installation database,
+credentials, LaunchAgent plists or EP source tree to its repository.
 
 After the operator completes explicit provider login in the Operations Console,
 the consumer registers a project through the Local Consumer API. Registration
