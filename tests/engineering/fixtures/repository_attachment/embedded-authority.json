@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-firmware", "authority_repository_id": "acme-firmware"},
+  "repository": {"id": "acme-firmware", "role": "authority"},
+  "validation": {"kind": "workflow", "entrypoint": "make verify", "description": "Run firmware checks."},
+  "requirements": {"host": {"architecture": "arm64"}, "tools": {"make": "4.x"}}
+}

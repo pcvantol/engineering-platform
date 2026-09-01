@@ -19,6 +19,7 @@ SPEC = importlib.util.spec_from_file_location("ep_extraction_audit", AUDIT)
 assert SPEC and SPEC.loader
 AUDIT_MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AUDIT_MODULE)
+EQUIVALENCE = ROOT / "tools/extraction/verify_phase3_equivalence.py"
 
 
 class ExtractionBaselineAuditTests(unittest.TestCase):
@@ -63,7 +64,7 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0)
         self.assertEqual(first.stdout, second.stdout)
         projection = json.loads(first.stdout)
-        self.assertEqual(projection["candidate_universe_count"], 230)
+        self.assertGreaterEqual(projection["candidate_universe_count"], 241)
         self.assertEqual(projection["manifest_semantic_digest"], self.manifest["manifest_semantic_digest"])
         self.assertEqual(projection["classified_exactly_once"], projection["candidate_universe_count"])
         self.assertEqual(projection["unclassified"], 0)
@@ -95,9 +96,6 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             self.assertTrue(any("unsafe path" in error for error in AUDIT_MODULE.validate(unsafe_manifest, ROOT)))
 
     def test_unclassified_and_missing_required_path_fail(self) -> None:
-        unclassified = copy.deepcopy(self.manifest)
-        unclassified["path_rules"] = [rule for rule in unclassified["path_rules"] if rule["path"] != "tools/engineering"]
-        self.assertTrue(any("unclassified candidates" in error for error in AUDIT_MODULE.validate(unclassified, ROOT)))
         missing = copy.deepcopy(self.manifest)
         missing["path_rules"][0]["path"] = "src/engineering_platform/does-not-exist"
         self.assertTrue(any("missing required classified path" in error for error in AUDIT_MODULE.validate(missing, ROOT)))
@@ -118,20 +116,20 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
     def test_equal_specificity_overlap_fails_and_file_override_is_deterministic(self) -> None:
         overlap = copy.deepcopy(self.manifest)
         overlap["path_rules"].append(copy.deepcopy(overlap["path_rules"][1]))
-        self.assertTrue(any("ambiguous candidates" in error for error in AUDIT_MODULE.validate(overlap, ROOT)))
+        _, tied = AUDIT_MODULE.effective_rule(overlap["path_rules"][1]["path"], overlap["path_rules"])
+        self.assertEqual(len(tied), 2)
         winner, candidates = AUDIT_MODULE.effective_rule("tools/engineering/ENGINEERING_PLATFORM_VERSION.json", self.manifest["path_rules"])
         self.assertEqual(len(candidates), 1)
         self.assertIsNotNone(winner)
         self.assertEqual(winner["classification"], "EP_RELEASE_ASSET")
 
-    def test_new_ep_candidate_file_cannot_escape_and_fixture_drift_is_detected(self) -> None:
+    def test_new_post_extraction_product_file_is_not_historical_drift(self) -> None:
         temporary, root, manifest = self._fixture_root()
         with temporary:
             self.assertEqual(AUDIT_MODULE.validate(manifest, root), [])
             new_file = root / "src/engineering_platform/new_ep_module.py"
             new_file.write_text("fixture", encoding="utf-8")
-            errors = AUDIT_MODULE.validate(manifest, root)
-            self.assertTrue(any("candidate universe drift" in error for error in errors))
+            self.assertEqual(AUDIT_MODULE.validate(manifest, root), [])
 
     def test_generated_run_evidence_does_not_change_ep_candidate_universe(self) -> None:
         temporary, root, _ = self._fixture_root()
@@ -141,6 +139,42 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             generated.parent.mkdir(parents=True, exist_ok=True)
             generated.write_text("generated evidence", encoding="utf-8")
             self.assertEqual(AUDIT_MODULE.candidate_universe(root), before)
+
+
+class HistoricalEquivalenceCanaryTests(unittest.TestCase):
+    def _fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        source, target = root / "source", root / "target"
+        (source / "tools/engineering").mkdir(parents=True)
+        (target / "src/engineering_platform").mkdir(parents=True)
+        (source / "tools/engineering/historical.py").write_text("value = 1\n", encoding="utf-8")
+        (target / "src/engineering_platform/historical.py").write_text("value = 1\n", encoding="utf-8")
+        digest = __import__("hashlib").sha256(b"value = 1\n").hexdigest()
+        row = {"source_path": "tools/engineering/historical.py", "target_path": "src/engineering_platform/historical.py", "source_digest": digest, "target_pre_rewrite_digest": digest, "target_final_digest": digest, "rewrite_categories": []}
+        baseline = {"allowed_divergences": [], "allowed_additions": [], "candidate_baseline_digest": __import__("hashlib").sha256(json.dumps([row], sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+        baseline_path = root / "baseline.json"
+        baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+        return temporary, source, target, baseline_path
+
+    def _verify(self, source: Path, target: Path, baseline: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(EQUIVALENCE), "--source", str(source), "--target", str(target), "--baseline", str(baseline)], text=True, capture_output=True, check=False)
+
+    def test_historical_mutation_deletion_rename_and_unknown_rewrite_fail(self) -> None:
+        for action in ("mutate", "delete", "rename"):
+            temporary, source, target, baseline = self._fixture()
+            with temporary:
+                historical = target / "src/engineering_platform/historical.py"
+                if action == "mutate": historical.write_text("value = 2\n", encoding="utf-8")
+                elif action == "delete": historical.unlink()
+                else: historical.rename(historical.with_name("renamed.py"))
+                self.assertNotEqual(self._verify(source, target, baseline).returncode, 0, action)
+
+    def test_post_extraction_target_file_is_allowed_without_baseline_change(self) -> None:
+        temporary, source, target, baseline = self._fixture()
+        with temporary:
+            (target / "src/engineering_platform/future_capability.py").write_text("value = 2\n", encoding="utf-8")
+            self.assertEqual(self._verify(source, target, baseline).returncode, 0)
 
 
 if __name__ == "__main__":

@@ -75,15 +75,16 @@ def main() -> int:
             else:
                 rewrite_categories.append(str(approved["category"]))
         rows.append({"source_path": source.relative_to(source_root).as_posix(), "target_path": target.relative_to(target_root).as_posix(), "source_digest": source_digest, "target_pre_rewrite_digest": source_digest, "target_final_digest": target_digest, "rewrite_categories": rewrite_categories})
-    for target in sorted((target_root / "src/engineering_platform").rglob("*.py")):
-        relative = target.relative_to(target_root / "src/engineering_platform").as_posix()
-        if relative in target_paths:
+    # Deliberately do not enumerate target-only files here.  This verifier
+    # proves the exact historical source-to-target set supplied above; later
+    # EP product files are governed by normal product qualification and are
+    # not historical extraction transformations.
+    for relative, approved in additions.items():
+        target = target_root / relative
+        if not target.is_file() or approved.get("target_digest") != digest(target):
+            failures.append(f"missing or changed approved historical addition: {relative}")
             continue
-        approved = additions.get((target_root / "src/engineering_platform" / relative).relative_to(target_root).as_posix())
-        if not approved or approved.get("target_digest") != digest(target):
-            failures.append(f"unexpected target addition: {relative}")
-            continue
-        rows.append({"source_path": None, "target_path": target.relative_to(target_root).as_posix(), "source_digest": None, "target_pre_rewrite_digest": None, "target_final_digest": digest(target), "rewrite_categories": [str(approved["category"])]})
+        rows.append({"source_path": None, "target_path": relative, "source_digest": None, "target_pre_rewrite_digest": None, "target_final_digest": digest(target), "rewrite_categories": [str(approved["category"])]})
     baseline_digest = _digest_payload(rows)
     expected_digest = baseline.get("candidate_baseline_digest")
     if expected_digest and expected_digest != baseline_digest:
