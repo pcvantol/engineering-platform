@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-data", "authority_repository_id": "acme-data"},
+  "repository": {"id": "acme-data", "role": "authority"},
+  "validation": {"kind": "command", "entrypoint": "python -m pytest", "description": "Run Python tests."},
+  "requirements": {"tools": {"python": "3.11+"}}
+}

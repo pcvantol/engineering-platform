@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0",
+  "project": {"id": "acme-handbook", "authority_repository_id": "acme-handbook"},
+  "repository": {"id": "acme-handbook", "role": "authority"},
+  "validation": {"kind": "none", "description": "No automated local validation is declared."}
+}
