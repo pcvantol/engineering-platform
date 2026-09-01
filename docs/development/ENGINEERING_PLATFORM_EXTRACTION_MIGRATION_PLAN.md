@@ -218,6 +218,86 @@ projections; immutable historical evidence remains unchanged.
 
 The canonical implementation controls remain [EP central-store migration guardrails](../engineering/EP_CENTRAL_STORE_MIGRATION_GUARDRAILS.md), hermetic authority isolation and generic forensic tooling. Under [ADR-0026](../adr/0026-ep-clean-slate-standalone-store-and-migration-retirement.md), the current migration is `RETIRED_FOR_CLEAN_SLATE_EXTRACTION`; its LEGACY/CENTRAL stores are read-only forensic evidence and not a standalone seed. Phase 3 may begin after this documentation/governance reconciliation. It performs history-preserving physical extraction before standalone package/import qualification, official schema-41 fresh-store bootstrap, standalone service qualification, and later consumer cutover.
 
+### Canonical MVP activation and cutover runbook
+
+This section is the current authoritative runbook for the clean-slate MVP. It
+supersedes any interpretation of the retired Phase-2 database-copy cutover as
+the route to standalone authority. It changes neither a runtime nor an
+authority pointer by itself.
+
+#### Authority and development-execution boundary
+
+The legacy DJConnect-hosted EP is **suspended**. It remains non-authoritative
+for development execution and must not be reactivated, thawed, or used for a
+dual-run, shadow-mode, temporary-EP, bootstrap-scheduler, or migration
+handoff. Its database and receipts are historical evidence only.
+
+Until `STANDALONE_EP_VERIFIED` is recorded, all development execution for this
+critical path is performed directly through the locally installed, native
+Codex CLI, outside EP. Native Codex CLI is the temporary development execution
+mechanism; it is not a temporary EP runtime, a new lifecycle/queue authority,
+or a substitute Project Agent. This boundary does not change Forge planning
+authority, Workspace project-identity authority, or the provenance of existing
+evidence.
+
+`DEVELOPMENT_HOST_MATCH` is a narrowly scoped development-host diagnostic
+bypass. It may be used only for the already known host-drift condition and
+only with its recorded drift evidence. It must not waive any other host,
+package, service, project, credential, provider, or governed-execution gate.
+
+#### Clean CENTRAL bootstrap: no MVP database migration
+
+The new CENTRAL EP installation begins with a newly created, empty,
+installation-owned operational database and a new installation identity. MVP
+does **not** migrate, seed, merge, replay, or otherwise copy a legacy database
+into CENTRAL. The following state is intentionally not transferred:
+
+| Legacy state | MVP disposition in clean CENTRAL |
+| --- | --- |
+| Database, operational rows and runtime identity | New empty database and new installation identity. |
+| Agents and hosts | Newly installed, paired and registered. |
+| Projects and project registrations | Registered afresh from the canonical Workspace project identity. |
+| Queues, leases, runs and execution/finalization state | Not resumed or copied; new lifecycle begins at activation. |
+| Consumer and host credentials | Newly provisioned through the approved credential flow; no legacy secret is copied. |
+| Prompt History, receipts, reports and migration artifacts | Independently retained as immutable/read-only historical evidence, never as runtime seed data. |
+
+Historical evidence/provenance remains preserved independently of the new
+operational database: retain the existing read-only stores, fingerprints,
+receipts, reports, authority history and access provenance under the archival
+rules in ADR-0026. It is neither deleted nor made queryable through the new
+operational lifecycle merely because CENTRAL is activated.
+
+#### Required activation sequence
+
+1. Complete final EP #1 qualification and merge, making
+   `engineering-platform/main` the canonical source authority.
+2. Use native Codex CLI to complete the standalone EP Server artifact/runtime,
+   Project Agent artifact, Server-to-Agent protocol and project-attachment
+   contract. Do not start a migration runtime or reactivate legacy EP while
+   doing so.
+3. Install and qualify the standalone EP Server against its clean, empty
+   CENTRAL operational database; install and start a newly registered Project
+   Agent, then pair it with that Server.
+4. Attach the existing DJConnect checkout as the first project through a fresh,
+   explicit canonical project registration. This is a non-destructive
+   attachment, not a migration of DJConnect state or an import of its old EP
+   implementation.
+5. Prove the first governed end-to-end execution through
+   `EP Server -> Project Agent -> provider/Codex`, including the required
+   authority, project-scope, credential, service and evidence gates.
+6. Only after steps 3--5 qualify, record `STANDALONE_EP_VERIFIED` and cleanly
+   activate the new CENTRAL installation as the execution authority. No legacy
+   database cutover, writer handoff, reverse reconciliation, or legacy thaw is
+   part of this activation.
+7. Only after `STANDALONE_EP_VERIFIED` may the obsolete EP implementation in
+   DJConnect be cleaned up through a separately reviewed source-retirement
+   change. Preserve historical evidence and the stated authority boundaries.
+
+If a qualification gate fails, CENTRAL is not activated and native Codex CLI
+remains the development-execution mechanism. A failed gate never authorizes a
+legacy restart, a database migration, a second writer, or a broader
+`DEVELOPMENT_HOST_MATCH` bypass.
+
 ### Phase 0 — Freeze the extraction baseline
 
 **Purpose:** establish the exact 2.x source and evidence baseline before any
@@ -347,8 +427,9 @@ the current DJConnect-hosted database into standalone EP.
 9. Preserve the historic legacy-to-central controls and forensic artifacts;
    do not invoke the retired incident migration as a standalone bootstrap.
 10. Define fresh schema-41 bootstrap independently from future legitimate clean
-    schema-40-to-41 compatibility support. Neither path copies current
-    DJConnect-hosted data, credentials, registrations or project scope.
+    schema-40-to-41 compatibility support. MVP uses the fresh bootstrap only;
+    neither path copies current DJConnect-hosted data, credentials,
+    registrations or project scope.
 
 **Exit evidence**
 
@@ -402,8 +483,9 @@ an independently releasable package plus a clean standalone store.
 
 The required order is physical code extraction, standalone package/import
 qualification, official schema-41 fresh-store bootstrap, standalone service
-qualification, then consumer registration/cutover. No service identity or
-authority transition is implied by repository extraction alone.
+qualification, fresh Project-Agent/DJConnect attachment, first governed
+execution, then `STANDALONE_EP_VERIFIED` clean activation. No service identity
+or authority transition is implied by repository extraction alone.
 
 1. Create the new repository using a history-preserving filtered export of the
    audited EP source paths. Do not rewrite DJConnect history or cosmetically
@@ -636,38 +718,39 @@ and contract boundary.
    and may submit Producer contracts; Workspace uses its BFF for EP read/action
    API access. Neither writes EP SQLite directly, and Workspace does not
    structurally shell out to the CLI.
-3. Add an explicit local upgrade command that:
+3. Add an explicit clean local activation command that:
 
    ```text
-   validates pinned-wheel and consumer compatibility
-   → backs up legacy state
-   → registers/migrates the legacy project into the central store
-   → applies in-place database migrations
-   → replaces launchd commands with installed EP commands
-   → starts exactly one writer
-   → validates health, project routing and retained evidence
+   validates pinned wheel and consumer compatibility
+   → creates a clean installation-owned CENTRAL database
+   → newly provisions consumer/host credentials
+   → registers the canonical project afresh
+   → starts exactly one standalone writer
+   → validates health, project routing and the first governed execution
    ```
 
-4. Trial the upgrade in a disposable clone, then on a representative retained
-   local workspace before declaring it supported.
-5. Run old and new paths only in a migration-controlled, read-only/disabled
-   legacy mode. Never operate dual database writers.
+4. Trial clean activation in a disposable clone, then on the first attached
+   DJConnect workspace before declaring it supported.
+5. Keep legacy suspended and historical only. Never operate dual database
+   writers or migrate its database, registrations, queues, executions or
+   credentials for MVP.
 6. When Forge supplies future dependency metadata, EP validates bounded
    references and the required execution condition without discovering
    dependencies, creating a planning graph, scheduling prerequisites,
    reordering Missions or mutating Forge dependency truth.
 
-The local-upgrade UI uses the same native Installer and Connect-project flow
-as a fresh installation. It must show the discovered legacy state, selected
-canonical project identity, backup location, service cutover result and final
-watcher resolved Inbox root. It must stop rather than guess when project
-identity, legacy-store cardinality, repository evidence or writer ownership is
-ambiguous.
+The clean-activation UI uses the same native Installer and Connect-project flow
+as a fresh installation. It must show the selected canonical project identity,
+new installation identity, clean-database result, fresh credential/agent
+registration result, service activation result and final watcher resolved Inbox
+root. It must stop rather than guess when project identity, repository
+evidence, agent pairing or writer ownership is ambiguous.
 
 **Exit evidence**
 
-- upgrade, downgrade/restore and idempotency tests;
-- a real local upgrade report with recovered backup evidence;
+- clean-install, fresh-registration and idempotency tests;
+- a real first-project activation report with independent historical-evidence
+  retention proof;
 - package-only DJConnect and Forge/Workspace CI jobs; and
 - dashboard proof of project selection, project isolation and legacy-history
   continuity.
@@ -677,8 +760,9 @@ ambiguous.
 **Purpose:** remove the in-repository EP implementation only after the
 packaged path is proven.
 
-1. Remove `tools/engineering/` source only after the package, CI, release and
-   local upgrade paths satisfy their exit evidence.
+1. Remove the obsolete EP implementation from DJConnect only after the
+   package, CI, release, clean activation and `STANDALONE_EP_VERIFIED` satisfy
+   their exit evidence.
 2. Retain migration guides, consumer adapters, pinned version metadata and a
    bounded compatibility/rollback window.
 3. Update DJConnect bootstrap, operational docs, CI and launch-service
@@ -700,8 +784,9 @@ packaged path is proven.
 | Contract gate | Versioned consumer API, project identity semantics and error/redaction rules approved. |
 | Data gate | Clean standalone schema-41 bootstrap, backup/restore and no-dual-writer proof pass; current LEGACY/CENTRAL archive is not a seed. |
 | Package gate | A clean-environment, production-release-mode wheel passes install/smoke checks; its allowlisted contents exclude tests, debug/development assets and development-only dependencies; dedicated EP CI, required security gates and supply-chain evidence pass. |
-| Consumer gate | DJConnect and Forge/Workspace use only the pinned wheel and complete registration. |
-| Retirement gate | Supported upgrade, rollback and launch-service cutover are proven; source removal is then safe. |
+| Activation gate | Standalone EP Server, newly registered Project Agent, DJConnect as first attached project, and the first governed execution qualify; only then is `STANDALONE_EP_VERIFIED` recorded and clean CENTRAL activated. |
+| Consumer gate | DJConnect and Forge/Workspace use only the pinned wheel and complete fresh registration with newly provisioned credentials. |
+| Retirement gate | `STANDALONE_EP_VERIFIED`, clean activation and source-retirement evidence are proven; only then is obsolete EP implementation cleanup in DJConnect safe. |
 
 No phase is authorized merely because code compiles. Each gate requires the
 listed operational evidence and review approval.

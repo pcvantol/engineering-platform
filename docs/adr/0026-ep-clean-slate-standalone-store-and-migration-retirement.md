@@ -58,11 +58,13 @@ neither replays nor discards it.
 
 ### Store and schema model
 
-LEGACY may temporarily remain the limited DJConnect-hosted EP authority only
-where required to keep the pre-extraction runtime safe; it is historical
-evidence, never a standalone seed. Contaminated CENTRAL is forensic/non-seed
-state, is not official product schema 41, and must never be treated as a valid
-schema-41 product store.
+LEGACY remains suspended throughout the current clean-slate MVP. It is
+historical evidence, never a standalone seed or temporary development-execution
+authority. Until standalone qualification is complete, development execution
+uses native Codex CLI directly, outside EP; this does not create a temporary EP
+runtime, queue, writer, or authority handoff. Contaminated CENTRAL is
+forensic/non-seed state, is not official product schema 41, and must never be
+treated as a valid schema-41 product store.
 
 Official product schema **41** is defined from the canonical schema-40 product
 definitions, not by inspection or adoption of CENTRAL. It provides immutable
@@ -100,8 +102,11 @@ The required order is:
 physical code extraction
 → standalone package/import qualification
 → official schema-41 fresh-store bootstrap
-→ standalone service qualification
-→ consumer registration/cutover
+→ standalone EP Server + Project Agent qualification
+→ fresh DJConnect project attachment
+→ first governed execution
+→ STANDALONE_EP_VERIFIED clean CENTRAL activation
+→ later consumer registration/cutover
 ```
 
 No standalone production authority or service-label transition occurs before
@@ -111,9 +116,14 @@ transition. Phase 4 remains consumer cutover; Phase 5 remains legacy runtime
 removal after standalone package, store and consumers qualify. Archive
 retention/deletion is a separate decision.
 
-Until cutover, keep the current contaminated CENTRAL runtime frozen/limited;
-do not normalize or thaw it. No live service restart, authority-pointer action,
-database mutation, recovery, or schema migration is authorized by this ADR.
+Until `STANDALONE_EP_VERIFIED`, keep the current contaminated CENTRAL runtime
+frozen/limited and LEGACY suspended; do not normalize, thaw, restart, or use
+either for development execution. No legacy database migration, legacy state
+copy, live service restart, authority-pointer action, database mutation,
+recovery, or schema migration is authorized by this ADR. Agents, hosts,
+projects, queues, executions and credentials are registered/provisioned afresh
+in clean CENTRAL. `DEVELOPMENT_HOST_MATCH` remains limited to the documented
+known host-drift condition and cannot waive another qualification gate.
 
 ## Consequences
 
