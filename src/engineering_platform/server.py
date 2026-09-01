@@ -23,6 +23,8 @@ from urllib.error import URLError
 from urllib.request import urlopen
 from uuid import uuid4
 
+from . import agent_trust
+
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
@@ -138,6 +140,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         connection.execute("INSERT OR IGNORE INTO ep_server_schema_migrations(version) VALUES(?)", (SERVER_STORE_SCHEMA_VERSION,))
         connection.execute("CREATE TABLE IF NOT EXISTS ep_server_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT OR IGNORE INTO ep_server_metadata(key,value) VALUES('instance_id',?)", (identity.instance_id,))
+        agent_trust.install_schema(connection)
     (data_root / SERVER_DATABASE_FILENAME).chmod(0o600)
     return identity
 
@@ -178,16 +181,39 @@ def status(data_root: Path) -> dict[str, object]:
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    def _send(self, status_code: int, payload: dict[str, object]) -> None:
+        encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("EP-Server-Instance", initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path not in {"/healthz", "/readyz"}:
             self.send_error(404)
             return
-        payload = json.dumps(status(self.server.data_root), sort_keys=True).encode("utf-8")  # type: ignore[attr-defined]
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        self._send(200, status(self.server.data_root))  # type: ignore[attr-defined]
+
+    def do_POST(self) -> None:  # noqa: N802
+        routes = {"/v1/agent/pair": agent_trust.pair, "/v1/agent/register": agent_trust.register, "/v1/agent/heartbeat": agent_trust.heartbeat}
+        action = routes.get(self.path)
+        if action is None:
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 262144:
+                raise agent_trust.AgentTrustError("request body is invalid")
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            authorization = self.headers.get("Authorization", "")
+            token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
+            with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
+                result = action(connection, body) if action is agent_trust.pair else action(connection, body, token)
+            self._send(200, result)
+        except (ValueError, OSError, json.JSONDecodeError, agent_trust.AgentTrustError):
+            self._send(400 if self.path == "/v1/agent/pair" else 401, {"error": "agent request rejected"})
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -260,10 +286,11 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
+    parser.add_argument("--agent-id")
     return parser
 
 
@@ -276,7 +303,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "serve": return serve(args.data_root)
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
-        else: result = health(args.data_root)
+        elif args.command == "health": result = health(args.data_root)
+        else:
+            if not args.agent_id:
+                raise ServerConfigurationError("--agent-id is required for Agent lifecycle commands.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                if args.command == "pairing-create": result = agent_trust.create_pairing_code(connection, args.agent_id)
+                elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
+                elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
+                else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
     except (OSError, RuntimeError, ServerConfigurationError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2

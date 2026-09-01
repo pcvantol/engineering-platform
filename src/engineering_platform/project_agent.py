@@ -19,12 +19,18 @@ import shutil
 import subprocess
 import sys
 from typing import Protocol, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from uuid import uuid4
+
+from . import agent_trust
+from .repository_attachment import RepositoryAttachmentError, load_repository_attachment
 
 
 IDENTITY_FORMAT = "engineering-platform-project-agent/v1"
 DEFAULT_TOOLCHAINS = ("python3", "node", "npm", "go", "cargo", "rustc", "java", "docker", "podman")
 DEFAULT_PROVIDER_CLIS = ("gh", "glab", "az", "codex")
+AGENT_CONFIGURATION_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -114,6 +120,84 @@ def default_identity_path() -> Path:
     return Path.home() / ".config" / "engineering-platform" / "project-agent-identity.json"
 
 
+def default_configuration_path() -> Path:
+    return default_identity_path().with_name("project-agent-server.json")
+
+
+def _write_private_json(path: Path, value: object) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def _post(endpoint: str, route: str, body: dict[str, object], token: str | None = None) -> tuple[dict[str, object], str]:
+    if not endpoint.startswith("http://127.0.0.1:") and not endpoint.startswith("http://localhost:"):
+        raise ValueError("insecure non-loopback Server endpoint is forbidden")
+    headers = {"Content-Type": "application/json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
+    request = Request(endpoint.rstrip("/") + route, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=5) as response:
+            instance = response.headers.get("EP-Server-Instance")
+            raw = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, json.JSONDecodeError) as error:
+        raise ValueError("EP Server request was rejected or unavailable") from error
+    if not isinstance(raw, dict) or not isinstance(instance, str) or not instance:
+        raise ValueError("EP Server identity response is invalid")
+    return raw, instance
+
+
+def _attachment_reports(repository_roots: Sequence[Path]) -> list[dict[str, object]]:
+    reports: list[dict[str, object]] = []
+    for root in repository_roots:
+        try:
+            reports.append({"attachment": load_repository_attachment(root).agent_read_surface()})
+        except RepositoryAttachmentError:
+            continue
+    return reports
+
+
+def pair(endpoint: str, pairing_code: str, *, identity_path: Path | None = None, configuration_path: Path | None = None) -> dict[str, str]:
+    snapshot = observe((), identity_path=identity_path)
+    response, instance = _post(endpoint, "/v1/agent/pair", {"protocol_version": agent_trust.PROTOCOL_VERSION, "agent_id": snapshot.identity.agent_id, "pairing_code": pairing_code})
+    credential = response.get("credential")
+    if not isinstance(credential, str) or response.get("agent_id") != snapshot.identity.agent_id:
+        raise ValueError("EP Server pairing response is invalid")
+    _write_private_json(configuration_path or default_configuration_path(), {"version": AGENT_CONFIGURATION_VERSION, "endpoint": endpoint.rstrip("/"), "server_instance_id": instance, "agent_id": snapshot.identity.agent_id, "credential": credential})
+    return {"agent_id": snapshot.identity.agent_id, "server_instance_id": instance, "paired": "true"}
+
+
+def _configuration(path: Path | None = None) -> dict[str, str]:
+    try:
+        raw = json.loads((path or default_configuration_path()).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Agent pairing configuration is unavailable") from error
+    if not isinstance(raw, dict) or set(raw) != {"version", "endpoint", "server_instance_id", "agent_id", "credential"} or raw.get("version") != AGENT_CONFIGURATION_VERSION or not all(isinstance(raw.get(k), str) and raw[k] for k in ("endpoint", "server_instance_id", "agent_id", "credential")):
+        raise ValueError("Agent pairing configuration is invalid")
+    return raw  # type: ignore[return-value]
+
+
+def register(repository_roots: Sequence[Path] = (), *, identity_path: Path | None = None, configuration_path: Path | None = None) -> dict[str, object]:
+    config, snapshot = _configuration(configuration_path), observe(repository_roots, identity_path=identity_path)
+    if config["agent_id"] != snapshot.identity.agent_id:
+        raise ValueError("Agent installation identity differs from pairing configuration")
+    capabilities = snapshot.payload()["capabilities"]
+    response, instance = _post(config["endpoint"], "/v1/agent/register", {"protocol_version": agent_trust.PROTOCOL_VERSION, "agent_id": snapshot.identity.agent_id, "host": asdict(snapshot.capabilities.host), "capabilities": capabilities, "repositories": _attachment_reports(repository_roots)}, config["credential"])
+    if instance != config["server_instance_id"]:
+        raise ValueError("EP Server identity changed; re-pair explicitly")
+    return response
+
+
+def heartbeat(*, configuration_path: Path | None = None) -> dict[str, object]:
+    config = _configuration(configuration_path)
+    response, instance = _post(config["endpoint"], "/v1/agent/heartbeat", {"protocol_version": agent_trust.PROTOCOL_VERSION, "agent_id": config["agent_id"]}, config["credential"])
+    if instance != config["server_instance_id"]:
+        raise ValueError("EP Server identity changed; re-pair explicitly")
+    return response
+
+
 def load_or_create_identity(host: HostIdentity, path: Path | None = None) -> AgentIdentity:
     """Persist only installation identity; never execution, queue, or lock data."""
     identity_path = path or default_identity_path()
@@ -185,9 +269,13 @@ def observe(repository_roots: Sequence[Path] = (), *, identity_path: Path | None
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="engineering-project-agent", description="Observe local Project Agent capabilities without connecting to EP Server.")
+    parser = argparse.ArgumentParser(prog="engineering-project-agent", description="Observe or pair the Project Agent with EP Server.")
+    parser.add_argument("command", choices=("observe", "pair", "register", "heartbeat"), nargs="?", default="observe")
     parser.add_argument("--repository-root", action="append", default=[], type=Path, help="Repository root to inspect; may be repeated.")
     parser.add_argument("--identity-path", type=Path, help="Local installation identity file; contains no execution state.")
+    parser.add_argument("--configuration-path", type=Path, help="Private Agent pairing configuration path.")
+    parser.add_argument("--server-endpoint")
+    parser.add_argument("--pairing-code")
     return parser
 
 
@@ -195,8 +283,15 @@ def main(argv: list[str] | None = None) -> int:
     supplied = list(argv) if argv is not None else sys.argv[1:]
     if supplied and supplied[0] in {"install", "uninstall", "start", "stop", "restart", "status", "service"}:
         return service_main(supplied)
-    args = build_parser().parse_args(supplied)
-    print(json.dumps(observe(args.repository_root, identity_path=args.identity_path).payload(), indent=2, sort_keys=True))
+    parser = build_parser()
+    args = parser.parse_args(supplied)
+    if args.command == "observe": result = observe(args.repository_root, identity_path=args.identity_path).payload()
+    elif args.command == "pair":
+        if not args.server_endpoint or not args.pairing_code: parser.error("pair requires --server-endpoint and --pairing-code")
+        result = pair(args.server_endpoint, args.pairing_code, identity_path=args.identity_path, configuration_path=args.configuration_path)
+    elif args.command == "register": result = register(args.repository_root, identity_path=args.identity_path, configuration_path=args.configuration_path)
+    else: result = heartbeat(configuration_path=args.configuration_path)
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
