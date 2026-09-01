@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "source": "src/engineering_platform/inbox_watcher.py",
+  "classification_vocabulary": [
+    "TRANSPORT_SPECIFIC",
+    "CANONICAL_SUBMISSION_CORE",
+    "ADMISSION_CORE",
+    "EXECUTION_ORCHESTRATION",
+    "OBSERVABILITY",
+    "LEGACY_COMPATIBILITY"
+  ],
+  "inventory": [
+    {
+      "responsibility": "Watcher process lifecycle and iCloud file transport",
+      "classification": "TRANSPORT_SPECIFIC",
+      "b8d_destination": "legacy-file adapter boundary; never CENTRAL execution authority",
+      "preserved_semantics": "Explicit transport root, bounded stable-file detection, local launch lifecycle and archive-only file handling.",
+      "symbols": [
+        "_run_periodic_database_maintenance", "_source_revision", "publish_ready_record", "_configured_scan_interval",
+        "cloud_root", "folders", "local_folders", "launch_path", "stable_prompt", "_looks_like_markdown",
+        "discover", "_archive_path", "_already_seen", "_move", "_lock", "_scan_queue", "launch_agent", "doctor",
+        "migrate_icloud_archives", "main"
+      ]
+    },
+    {
+      "responsibility": "Submission provenance, identifiers and compatibility normalization",
+      "classification": "CANONICAL_SUBMISSION_CORE",
+      "b8d_destination": "SubmissionRequest and SubmissionService.submit",
+      "preserved_semantics": "Producer provenance and immutable prompt identity are input facts; filenames, CWD and source mtimes never become submission authority.",
+      "symbols": [
+        "_persisted_producer_for_run", "_job_id", "_allocate_run_id", "_prompt_title", "_queue_title_projection",
+        "_previous_prompt_context", "_retry_of", "retry_metadata", "_archived_prompt_for_run", "_terminal_phase_for_run",
+        "_safe_detail"
+      ]
+    },
+    {
+      "responsibility": "Admission ordering, predecessor safety and recovery eligibility",
+      "classification": "ADMISSION_CORE",
+      "b8d_destination": "Downstream execution-admission protocol; submission admission only resolves registered CENTRAL project/repository topology.",
+      "preserved_semantics": "Exactly one candidate is admitted, a blocking predecessor stops later work, and retry/reconciliation admission remains explicit and fail-closed.",
+      "symbols": [
+        "defer_queued_prompt", "_record_provider_free_admission", "_blocking_predecessor", "_predecessor_recovery_action",
+        "retry_admission_preflight", "predecessor_retry_admission_preflight", "submit_execution_retry",
+        "status_reconciliation_preview", "_is_verified_status_reconciliation", "submit_status_reconciliation",
+        "submit_predecessor_retry", "_admit_dependabot_pull_requests", "_admit_queue_candidate", "once"
+      ]
+    },
+    {
+      "responsibility": "Execution ownership, lease/recovery coordination and merge hand-offs",
+      "classification": "EXECUTION_ORCHESTRATION",
+      "b8d_destination": "Future execution protocol and Project Agent boundary; explicitly not invoked by SubmissionService or Server.",
+      "preserved_semantics": "A single runner owns provider invocation, recovery resumes the same run, and operator/finalization merge boundaries remain durable lifecycle checkpoints.",
+      "symbols": [
+        "_nonterminal_transaction_state", "_active_transaction", "_detached_runner_is_alive", "_runner_result",
+        "_operator_merge_wait", "_operator_merge_poll_due", "_verified_merge_continuation", "_finalize_operator_merge_wait",
+        "_detach_runner", "_execute_runner_command", "abort_operator_merge_wait", "check_operator_merge_status",
+        "dismiss_execution"
+      ],
+      "declared_types": ["QueueAdmission", "RetrySubmissionError"]
+    },
+    {
+      "responsibility": "Lifecycle projections, terminal evidence, reports and telemetry",
+      "classification": "OBSERVABILITY",
+      "b8d_destination": "CENTRAL submission event/history projection plus retained downstream execution evidence.",
+      "preserved_semantics": "Dashboard/status data is a projection of durable facts; terminal evidence is reconciled, never inferred from a successful transport acknowledgement.",
+      "symbols": [
+        "_telemetry_values", "_report_runtime_metadata", "_terminal_git_commit", "_terminal_workspace_snapshot",
+        "_report_matches_terminal_phase", "_corrected_terminal_report", "_queue_items", "status", "_publish_active_queue",
+        "_publish_operator_merge_wait", "_publish_resumed_merge_transition", "_publish_verified_merge_continuation",
+        "_github_evidence_failure_category", "_record_operator_merge_status_check", "_report", "_clear_prior_codex_log",
+        "_runner_failure_detail", "_preflight_failure_detail"
+      ]
+    },
+    {
+      "responsibility": "Historical retry, queue and file compatibility controls",
+      "classification": "LEGACY_COMPATIBILITY",
+      "b8d_destination": "Legacy-file adapter or retained historical-reader surface; no new CENTRAL runtime dependency.",
+      "preserved_semantics": "Queued retry children are inspectable, but legacy Markdown, archive moves and old watcher state cannot bypass canonical acceptance/admission decisions.",
+      "symbols": ["queued_retry_children"]
+    }
+  ],
+  "summary": {
+    "declared_function_responsibilities": 77,
+    "unclassified": 0,
+    "ambiguous": 0,
+    "server_to_codex_shortcut": false,
+    "execution_protocol_status": "NOT_IMPLEMENTED"
+  }
+}

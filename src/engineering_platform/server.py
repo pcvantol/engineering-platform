@@ -447,10 +447,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.loads(raw.decode("utf-8"))
                 authorization = self.headers.get("Authorization", "")
                 token = authorization[7:] if authorization.startswith("Bearer ") else None
+                # CLI uses this same authenticated HTTP boundary, but the
+                # durable receipt must retain the original adapter.  It is
+                # observational provenance only: callers cannot select an
+                # execution implementation through this header.
+                transport = self.headers.get("EP-Submission-Transport", "HTTP")
                 with sqlite3.connect(self.server.data_root / SERVER_DATABASE_FILENAME) as connection:  # type: ignore[attr-defined]
                     if _authenticated_consumer(connection, token, project_id) is None:
                         raise submission_service.SubmissionError("UNAUTHENTICATED", 401)
-                    request = submission_service.request_from_mapping(project_id, payload, transport="HTTP")
+                    request = submission_service.request_from_mapping(project_id, payload, transport=transport)
                     result = submission_service.submit(connection, request)
                 self._send(200, result.to_dict(), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
             except UnicodeDecodeError:
