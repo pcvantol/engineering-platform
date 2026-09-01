@@ -25,6 +25,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 from . import agent_trust
+from . import local_repository_binding
 from . import project_topology
 from . import submission_service
 from .local_api_credentials import verifier
@@ -40,7 +41,7 @@ SERVER_CONFIGURATION_VERSION = 1
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 43
+SERVER_STORE_SCHEMA_VERSION = 44
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
@@ -65,6 +66,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_agent_pairing_codes",
         "ep_repository_registrations",
         "ep_agent_repository_attachments",
+        "ep_local_repository_bindings",
         "ep_submissions",
         "ep_submission_events",
         "ep_submission_prompt_history",
@@ -79,6 +81,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_control_provenance_subject_lookup",
         "ep_repository_registrations_project_lookup",
         "ep_agent_repository_attachments_repository_lookup",
+        "ep_local_repository_bindings_repository_lookup",
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
     }
@@ -246,6 +249,18 @@ def _migrate_schema_43(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=43")
 
 
+def _migrate_schema_44(connection: sqlite3.Connection) -> None:
+    """Add the private, explicit Phase-P local checkout binding surface."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema43")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,44 FROM ep_installations_schema43")
+    connection.execute("DROP TABLE ep_installations_schema43")
+    local_repository_binding.install_schema(connection)
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(44)")
+    connection.execute("UPDATE engineering_metadata SET value='44' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=44")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -261,7 +276,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         raise ServerConfigurationError("EP Server store is unavailable.") from error
     valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
-        raise ServerConfigurationError("EP Server store is not a valid official schema-43 installation.")
+        raise ServerConfigurationError("EP Server store is not a valid official schema-44 installation.")
     return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
 
 
@@ -294,18 +309,20 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
-                            "EP Server store is not a valid official schema-43 installation."
+                            "EP Server store is not a valid official schema-44 installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema == 42:
+                    if current_schema in {42, 43}:
                         with sqlite3.connect(database_path) as connection:
                             connection.execute("PRAGMA foreign_keys=ON")
                             connection.execute("BEGIN IMMEDIATE")
-                            _migrate_schema_43(connection)
+                            if current_schema == 42:
+                                _migrate_schema_43(connection)
+                            _migrate_schema_44(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -317,6 +334,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _install_schema_41(connection, identity)
         _migrate_schema_42(connection)
         _migrate_schema_43(connection)
+        _migrate_schema_44(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -559,11 +577,14 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
     parser.add_argument("--agent-id")
+    parser.add_argument("--project-id")
+    parser.add_argument("--repository-id")
+    parser.add_argument("--path", type=Path)
     return parser
 
 
@@ -581,6 +602,22 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.topology(connection)
+        elif args.command in {"bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"}:
+            if not args.project_id or not args.repository_id:
+                raise ServerConfigurationError("--project-id and --repository-id are required for local binding commands.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                if args.command in {"bind-repository", "rebind-repository"}:
+                    if args.path is None:
+                        raise ServerConfigurationError("--path is required when binding a repository.")
+                    binding = local_repository_binding.bind_local_repository(connection, project_id=args.project_id, repository_id=args.repository_id, local_root=args.path, data_root=args.data_root, rebind=args.command == "rebind-repository")
+                    result = {"project_id": binding.project_id, "repository_id": binding.repository_id, "state": binding.state}
+                elif args.command == "unbind-repository":
+                    local_repository_binding.unbind_local_repository(connection, project_id=args.project_id, repository_id=args.repository_id)
+                    result = {"project_id": args.project_id, "repository_id": args.repository_id, "state": "UNBOUND"}
+                else:
+                    binding = local_repository_binding.resolve_execution_repository(connection, project_id=args.project_id, repository_id=args.repository_id, data_root=args.data_root)
+                    result = {"project_id": binding.project_id, "repository_id": binding.repository_id, "state": binding.state}
         else:
             if not args.agent_id:
                 raise ServerConfigurationError("--agent-id is required for Agent lifecycle commands.")
@@ -590,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
-    except (OSError, RuntimeError, ServerConfigurationError) as error:
+    except (OSError, RuntimeError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
