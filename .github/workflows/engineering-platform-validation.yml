@@ -50,7 +50,10 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Enforce Engineering Platform coverage contract
         run: |
-          coverage run --branch -m unittest discover -s tests/engineering
+          # The standalone package is installed before this job runs.  Tell
+          # Coverage explicitly to measure that installed runtime authority;
+          # otherwise its default file-discovery scope records only tests.
+          coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering
           coverage json -o engineering-platform-coverage.json
           python3 - <<'PY'
           import json

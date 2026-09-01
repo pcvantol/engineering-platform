@@ -17,6 +17,7 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
         self.assertIn("minimum = 80.20", workflow)
         self.assertIn('minimum 80.20%', workflow)
         self.assertIn("covered is None or covered < minimum", workflow)
+        self.assertIn("coverage run --branch --source=engineering_platform", workflow)
 
     def test_browser_dashboard_validation_uses_four_parallel_shards(self) -> None:
         workflow = Path(".github/workflows/engineering-platform-validation.yml").read_text(
