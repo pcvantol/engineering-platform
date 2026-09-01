@@ -45,3 +45,11 @@ the future durable execution authority.
   need privacy-preserving rotation; reconnect/backoff and snapshot freshness;
   server-side registration/admission; and the canonical project-attachment
   schema and lifecycle.
+
+## B6B macOS lifecycle
+
+The Project Agent can be installed as a macOS per-user LaunchAgent without an
+EP Server or Workspace Client. See
+[macOS Project Agent service lifecycle](MACOS_PROJECT_AGENT_SERVICE.md) for
+the role artifact boundary, paths, commands, B6A configuration extension
+points, security boundary, and Forge Platform composition handoff.
