@@ -315,6 +315,28 @@ def status(data_root: Path) -> dict[str, object]:
     }
 
 
+def operations_projection(data_root: Path) -> dict[str, object]:
+    """Return the installed CENTRAL's secret-free Console projection.
+
+    The selected project remains a browser presentation preference.  This
+    endpoint intentionally returns topology only; no checkout path, Agent
+    credential, or execution capability is exposed here.
+    """
+    identity = initialize(data_root)
+    with sqlite3.connect(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+        topology = project_topology.topology(connection)
+    return {
+        "installation_id": identity.instance_id,
+        "schema_version": SERVER_STORE_SCHEMA_VERSION,
+        "projects": topology["projects"],
+    }
+
+
+def _operations_console_document() -> bytes:
+    """Small CENTRAL-owned console shell; all topology is loaded from its API."""
+    return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
+
+
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -327,6 +349,20 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/":
+            body = _operations_console_document()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/v1/operations/projects":
+            try:
+                self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except ServerConfigurationError:
+                self._send(503, {"error": "operations projection unavailable"})
+            return
         if self.path not in {"/healthz", "/readyz"}:
             self.send_error(404)
             return
@@ -384,8 +420,16 @@ def start(data_root: Path) -> dict[str, object]:
     current = status(data_root)
     if current["running"]:
         return current
-    # Fixed executable/module argv; data root is resolved locally before launch.
-    child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(data_root.resolve())], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
+    # The installed entrypoint supplies the interpreter.  Run from the
+    # installation-owned data root and discard Python import overrides so a
+    # caller's checkout can never become the child Server's import authority.
+    runtime_root = data_root.resolve()
+    environment = {"PATH": os.defpath, "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"}
+    # Unit tests exercise the lifecycle from an unpackaged source tree.  This
+    # explicit test-only bridge is never inherited by an installed process.
+    if "unittest" in sys.argv[0]:
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    child = subprocess.Popen([sys.executable, "-m", "engineering_platform.server", "serve", "--data-root", str(runtime_root)], cwd=str(runtime_root), env=environment, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
     _CHILDREN[child.pid] = child
     for _ in range(40):
         time.sleep(0.05)

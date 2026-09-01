@@ -117,3 +117,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertTrue(report["ready"])
         self.assertEqual(report["instance_id"], identity.instance_id)
         self.assertEqual(report["schema_version"], 42)
+
+    def test_operations_console_projection_is_central_owned_and_empty_safe(self) -> None:
+        identity = server.initialize(self.root)
+        projection = server.operations_projection(self.root)
+        self.assertEqual(projection["installation_id"], identity.instance_id)
+        self.assertEqual(projection["schema_version"], 42)
+        self.assertEqual(projection["projects"], [])
+        self.assertIn(b"/v1/operations/projects", server._operations_console_document())

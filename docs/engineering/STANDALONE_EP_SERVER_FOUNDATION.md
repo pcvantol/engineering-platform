@@ -13,7 +13,7 @@ engineering-platform-server stop --data-root /secure/ep-server
 ```
 
 `init` creates a strict server configuration, a stable runtime instance ID and
-an empty SQLite store. The installed Server's store is official schema **41**:
+an empty SQLite store. The installed Server's store is official schema **42**:
 it contains canonical credential/consumer-registration structures, standalone
 installation metadata, declared project/execution structures, Agent trust
 tables, and immutable control provenance for installation, credential,
@@ -23,12 +23,16 @@ leases, or Prompt History rows. It is created only from product-owned schema
 definitions; it never accepts a legacy, forensic, or checkout database path.
 
 `engineering_schema_migrations` is the schema-version authority. Readiness
-fails closed unless it reports 41, the required tables and indexes exist,
+fails closed unless it reports 42, the required tables and indexes exist,
 installation metadata matches the local runtime identity, and SQLite integrity
 passes. An empty store is valid (`operational_state: empty-valid`): it does
 not imply CENTRAL activation, project attachment, or an execution authority
-handoff. `start` supplies the lifecycle foundation and
-serves local `GET /healthz` and `GET /readyz`; neither endpoint admits work.
+handoff. `start` supplies the lifecycle foundation and serves local
+`GET /healthz` and `GET /readyz`; neither endpoint admits work. The installed
+Server also owns the Operations Console at `/` and its secret-free topology
+projection at `GET /v1/operations/projects`. See
+[Standalone runtime surfaces](STANDALONE_RUNTIME_SURFACES.md) for the complete
+installed-artifact authority and role contract.
 
 The existing Execution Host remains unchanged and retains its current execution
 authority. The server does not read a source checkout, `.engineering`, or any
