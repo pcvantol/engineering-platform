@@ -30,6 +30,32 @@ file-level digest and rewrite-boundary validator. Its receipt records each
 source/target Python path, source digest, pre-rewrite digest, final digest and
 the permitted rewrite category.
 
+## Historical extracted baseline and standalone productization
+
+The historical extracted baseline is commit
+`d4d538559796f64f1ffa5136698dd207589a4ae0`. Its equivalence receipt is
+[`PHASE_3_INCREMENT_1_EQUIVALENCE_BASELINE.json`](PHASE_3_INCREMENT_1_EQUIVALENCE_BASELINE.json),
+whose candidate baseline digest is
+`b9e6a611bcf4fe3204601ef904bc889b667f627a54913d3105d0d7cfaea8f843`.
+
+The receipt accounts for all 84 historical Python source paths and 85 target
+paths. It permits only nine exact source-to-target digest substitutions for
+standalone package-resource or installed-package-runtime boundaries, plus the
+single package-resource helper. The substitutions are bounded by both source
+and target digest; any changed, missing, or added path is an unexpected
+transformation and fails validation.
+
+Later PR #1 productization is assessed separately from this historical
+baseline. It must not be represented as extraction drift. Verify the baseline
+against a read-only DJConnect checkout with:
+
+```sh
+python3 tools/extraction/verify_phase3_equivalence.py \
+  --source /path/to/djconnect-at-3668eb77fc89418003ae60eeb72c8391e90c3055 \
+  --target . \
+  --baseline docs/provenance/PHASE_3_INCREMENT_1_EQUIVALENCE_BASELINE.json
+```
+
 ## Qualification contract
 
 The source extraction audit reported 301 candidates: 100 product source, 70

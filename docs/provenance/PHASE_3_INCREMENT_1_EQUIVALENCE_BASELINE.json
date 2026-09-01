@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source_repository": "pcvantol/djconnect",
+  "source_commit": "3668eb77fc89418003ae60eeb72c8391e90c3055",
+  "extraction_baseline_commit": "d4d538559796f64f1ffa5136698dd207589a4ae0",
+  "candidate_baseline_digest": "b9e6a611bcf4fe3204601ef904bc889b667f627a54913d3105d0d7cfaea8f843",
+  "allowed_divergences": [
+    {"target_path": "src/engineering_platform/capability_preflight.py", "source_digest": "2ad3f940897ca91765f982e46adf63436eb8382b7cdb3e8ea472d4a7ddb413d8", "target_digest": "d456e18be34073555614490afb833957a9d89d2c6271ca4305376c63acaa604c", "category": "standalone_package_resource_resolution"},
+    {"target_path": "src/engineering_platform/dashboard.py", "source_digest": "a4bf60b5c28a3055d5adbbd38105cff058cbe5c9e90102afa54a18816b6b6448", "target_digest": "914245353b5ef7df3cab21ef409037c48a532ebead8344f458301ab5e1b58b2f", "category": "standalone_package_resource_resolution"},
+    {"target_path": "src/engineering_platform/dependabot_admission.py", "source_digest": "eb6f337dd47f424002472d22da25d44f2cf9fe4a5b2e220bc5cd061188b921bf", "target_digest": "93bdd6ab772ef42598a2d25a9897d40b3c5b069be572580acd7f6386338cf117", "category": "standalone_package_resource_resolution"},
+    {"target_path": "src/engineering_platform/execution_host.py", "source_digest": "893ae36209913cf988031180c16b10b374117f4b1d88f3a7ae74e203710064af", "target_digest": "8fe560eb60491c0be3a20458d7e943dfd075a7bdd3ec843e434bcec28b2862ba", "category": "installed_package_runtime_boundary"},
+    {"target_path": "src/engineering_platform/execution_reporting.py", "source_digest": "80869f6111cb805eec27f3a94694d7e42167a2139bd0cceef168996c9ba0084c", "target_digest": "b504c1ec44357638d65c859d520ecaa407d98bae34e6ac2e494bb1d282c4b0d1", "category": "standalone_package_resource_resolution"},
+    {"target_path": "src/engineering_platform/golden_scenario.py", "source_digest": "442046e357272d0041c045cb3d6f1b832a58a4c9a65f08ae7fab25bab64c4679", "target_digest": "bda9b7bae6be7fc6b9c1b3ed8cb0c9365b2a41c41640c74b94583abfcfa28166", "category": "standalone_qualification_boundary"},
+    {"target_path": "src/engineering_platform/inbox_watcher.py", "source_digest": "c449d4a70e48b711b254791c0868cd29f3cbee043ee7fdd35ab11a3c54908920", "target_digest": "3dfa6f605c42d8028dc12d265d71ec9eaa1129afa4e9b09c2d416e9a8f1a4606", "category": "installed_package_runtime_boundary"},
+    {"target_path": "src/engineering_platform/platform_api.py", "source_digest": "16638313a38d2525d3cbbd082058dcd93c92ca41d93d0a2a3fb4a8c206cc4176", "target_digest": "e144887cd794ed26e01d67ad785b6cb78891a91b3c5d200a9fdabb7287e5181e", "category": "standalone_package_resource_resolution"},
+    {"target_path": "src/engineering_platform/qualification.py", "source_digest": "bffbc6d0eb678a141a743d9149f456cfc9b81b5a1256135c8fd4cabd7b0ecccc", "target_digest": "2ec2a5f9acf8483bcdf0e415e49396b151cd86d7fda53bfbc5de2bd4748774c2", "category": "standalone_qualification_boundary"}
+  ],
+  "allowed_additions": [
+    {"target_path": "src/engineering_platform/resources.py", "target_digest": "65e10d52b2384f2455f9ce30d4b125a816376c5e4f991b7e9631fed9745cb22d", "category": "standalone_package_resource_access"}
+  ]
+}
