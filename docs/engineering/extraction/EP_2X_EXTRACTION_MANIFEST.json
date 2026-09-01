@@ -8,7 +8,8 @@
     "storage_schema_version": 29,
     "consumer_contract_version": "1.0",
     "bootstrap_contract_version": "2026.12",
-    "operations_console_version": "2.0.0"
+    "operations_console_version": "2.0.0",
+    "historical_target_commit": "d4d538559796f64f1ffa5136698dd207589a4ae0"
   },
   "classifications": [
     "CONSUMER_ADAPTER",
