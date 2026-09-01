@@ -26,9 +26,16 @@ jobs:
       - name: Generate canonical coverage input
         run: |
           python -m pip install --upgrade pip coverage
+          mkdir -p artifacts tde-observe
+          set +e
           coverage run --branch -m unittest discover -s tests/engineering
-          mkdir -p artifacts
-          coverage xml -o artifacts/coverage.xml
+          coverage_exit="$?"
+          if [ "$coverage_exit" = 0 ]; then
+            coverage xml -o artifacts/coverage.xml
+          else
+            printf "coverage_evidence=unavailable\ncoverage_collection_exit=%s\n" "$coverage_exit" > tde-observe/coverage-status.txt
+          fi
+          set -e
       - name: Install published TDE runtime
         run: |
           python -m pip install --no-cache-dir technical-debt-engine-runtime==1.1.1
