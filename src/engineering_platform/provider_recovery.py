@@ -524,6 +524,7 @@ def record_provider_started(
 
 def record_replacement_terminal(
     root: Path, *, run_id: str, outcome: str, result_evidence_ref: str | None = None,
+    central_database: Path | None = None,
 ) -> bool:
     """Append terminal provider evidence once and advance the recovery state.
 
@@ -539,7 +540,7 @@ def record_replacement_terminal(
     if target is None:
         raise ValueError("invalid provider recovery terminal outcome")
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(

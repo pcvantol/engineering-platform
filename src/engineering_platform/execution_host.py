@@ -1355,6 +1355,7 @@ class EngineeringRunner:
                 record_replacement_terminal(
                     self.root, run_id=state.run_id,
                     outcome="INTERRUPTED" if interruption_reason else "FAILED",
+                    central_database=self.store.central_database,
                 )
             elif isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_STARTING":
                 # No process callback was observed, so the provider adapter
@@ -1387,6 +1388,7 @@ class EngineeringRunner:
             )
             record_replacement_terminal(
                 self.root, run_id=state.run_id, outcome="SUCCESS", result_evidence_ref=result_reference,
+                central_database=self.store.central_database,
             )
         if state.provider_recovery_attempts and state.provider_recovery_attempts[0].get("result") in {"RECOVERY_AVAILABLE", "ACTIVE"}:
             prior = state.provider_recovery_attempts[0]
