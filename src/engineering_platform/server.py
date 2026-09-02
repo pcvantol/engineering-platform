@@ -653,6 +653,50 @@ def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
     return _WORKSPACE_ID_FIELD.sub(replacement, document, count=1)
 
 
+def _console_project_boundary(project_id: str, options: str) -> str:
+    """Bind CENTRAL selector options and request scope to a dashboard document.
+
+    The historical dashboard initially renders its own selector.  Replacing
+    those options happens after the generic visual picker is initialized, so
+    the explicit event is the boundary contract that keeps the two controls
+    synchronized without exposing CENTRAL details to dashboard internals.
+    """
+    return '''<script>
+(() => {
+  const project = $PROJECT;
+  const options = $OPTIONS;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+    headers.set('X-Engineering-Platform-Project', project);
+    return nativeFetch(input, { ...init, headers });
+  };
+  const NativeEventSource = window.EventSource;
+  window.EventSource = function(url, config) {
+    const target = new URL(url, window.location.href);
+    target.searchParams.set('project', project);
+    return new NativeEventSource(target, config);
+  };
+  window.EventSource.prototype = NativeEventSource.prototype;
+  window.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('dashboardProject');
+    if (!select) return;
+    select.innerHTML = options;
+    select.value = project;
+    select.dispatchEvent(new Event('dashboard-select-options-changed', { bubbles: true }));
+    select.addEventListener('change', () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('project', select.value);
+      window.location.assign(url);
+    });
+    $CENTRAL_DATABASE_SCRIPT
+  });
+})();
+</script>'''.replace("$PROJECT", json.dumps(project_id)).replace("$OPTIONS", json.dumps(options)).replace(
+        "$CENTRAL_DATABASE_SCRIPT", _central_database_script(),
+    )
+
+
 def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path, data_root: Path):
     """Bind CENTRAL project scope to the historical title-bar selector.
 
@@ -665,7 +709,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
         f'<body data-project-id="{escape(project_id, quote=True)}" '
         f'data-project-name="{escape(project_id, quote=True)}">'
     ).encode("utf-8")
-    boundary = '''<script>(function(){const project=$PROJECT,options=$OPTIONS,nativeFetch=window.fetch.bind(window);window.fetch=(input,init={})=>{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{...init,headers})};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.dispatchEvent(new Event('dashboard-select-options-changed',{bubbles:true}));select.addEventListener('change',()=>{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})})();</script>'''.replace("$PROJECT", json.dumps(project_id)).replace("$OPTIONS", json.dumps(options)).replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
+    boundary = _console_project_boundary(project_id, options)
     root_bytes = str(root).encode("utf-8")
 
     def transform(document: bytes) -> bytes:

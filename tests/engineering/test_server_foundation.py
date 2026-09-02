@@ -283,8 +283,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('id="consoleProjectBoundary"', first)
         self.assertIn("getElementById('dashboardProject')", first)
         self.assertIn("dashboard-select-options-changed", first)
-        self.assertIn('const project="djconnect"', first)
-        self.assertIn('const project="engineering-platform"', second)
+        self.assertIn('const project = "djconnect"', first)
+        self.assertIn('const project = "engineering-platform"', second)
         self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
         selector = server._console_document_transform(
