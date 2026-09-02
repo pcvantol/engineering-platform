@@ -581,8 +581,7 @@ body[data-project-id="none"] #queueItems,
 body[data-project-id="none"] #promptHistory,
 body[data-project-id="none"] #currentRun,
 body[data-project-id="none"] #technicalDetails,
-body[data-project-id="none"] #workspaceCard,
-body[data-project-id="none"] .workspace-database-section { display: none !important; }
+body[data-project-id="none"] #workspaceCard { display: none !important; }
 </style>'''
     document = re.sub(
         br'<body data-project-id="[^"]*" data-project-name="[^"]*">',

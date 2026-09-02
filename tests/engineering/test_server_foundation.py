@@ -242,7 +242,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('/assets/dashboard.js', no_project)
         self.assertIn('id="componentLogs"', no_project)
         self.assertIn('id="configuration"', no_project)
-        self.assertIn('.workspace-database-section { display: none !important; }', no_project)
+        self.assertNotIn('workspace-database-section', no_project)
         for hidden_project_section in ("#queueItems", "#promptHistory", "#currentRun", "#technicalDetails", "#workspaceCard"):
             self.assertIn(f'body[data-project-id="none"] {hidden_project_section}', no_project)
         self.assertIn('ENGINEERING_PLATFORM_NO_PROJECT=true', no_project)

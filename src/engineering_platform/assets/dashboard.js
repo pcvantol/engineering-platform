@@ -5738,22 +5738,6 @@ dashboardLocaleMenu.addEventListener("click", (event) => {
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
-const workspaceDatabaseField = $("workspaceDatabaseField");
-if (workspaceDatabaseField) {
-  const content = document.createElement("div"), download = document.createElement("a");
-  content.className = "workspace-database__content";
-  const path = workspaceDatabaseField.querySelector("pre");
-  if (path) content.append(localFolderButton(path.textContent.trim(), { containingFolder: true }));
-  download.className = "dashboard-action dashboard-action--download workspace-database__download";
-  download.id = "workspaceDatabaseDownload";
-  download.href = "/api/engineering-database/download?audit=download";
-  download.download = "";
-  download.dataset.i18nTitle = "workspace.download_database";
-  download.dataset.i18nAriaLabel = "workspace.download_database";
-  download.textContent = "↓";
-  content.append(download);
-  workspaceDatabaseField.append(content);
-}
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
 replaceWithLocalFolderButton(workspaceLocation);
 replaceWithLocalFolderButton($("rateLimitProviderPath"));
@@ -5770,7 +5754,6 @@ const configurationFields = Object.freeze({
   configurationCodexCapacityReserve: ["codex_capacity_reserve_percent", Number],
   configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
   configurationComponentDetailsInterval: ["component_details_refresh_seconds", Number],
-  configurationDatabaseMaintenanceInterval: ["database_maintenance_interval_seconds", Number],
 });
 const dashboardSelectPickers = new Map();
 function syncDashboardSelectPicker(select) {
@@ -5901,7 +5884,6 @@ function addConfigurationControlInfo() {
     ["configurationCodexCapacityReserve", "configuration.codex_capacity_reserve_help"],
     ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
     ["configurationComponentDetailsInterval", "configuration.component_details_interval_help"],
-    ["configurationDatabaseMaintenanceInterval", "configuration.database_maintenance_interval_help"],
   ]) {
     const control = $(id), label = control?.closest("label"), text = label?.querySelector(":scope > span");
     if (!text) continue;
@@ -6211,9 +6193,6 @@ document.addEventListener("click", async (event) => {
     await refreshProviderLoginStatus();
   }
 });
-const MACHINE_SCOPED_WORKSPACE_FIELD_IDS = Object.freeze([
-  "workspaceFreeDiskSpace",
-]);
 const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
   {
     containerClass: "queue-project-settings",
@@ -6260,19 +6239,6 @@ function moveProjectScopedConfiguration() {
   if (!queue || !inboxField) return;
   queue.append(inboxField);
   moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
-}
-function moveMachineScopedWorkspaceDetails() {
-  // Only a direct child is a valid insertion anchor for the machine-scoped
-  // fields. Provider readiness owns a nested configuration group of its own.
-  const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
-  if (!configuration || !controls) return;
-  const databaseSection = configuration.querySelector(".workspace-database-section") || $("workspaceDatabaseField")?.closest(".workspace-database-section");
-  if (!databaseSection) return;
-  configuration.insertBefore(databaseSection, controls);
-  MACHINE_SCOPED_WORKSPACE_FIELD_IDS.forEach((id) => {
-    const field = $(id);
-    if (field) databaseSection.insertBefore(field, $("workspaceDatabaseField"));
-  });
 }
 function groupHostComponentConfiguration() {
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
@@ -6340,7 +6306,6 @@ function localizeConfigurationOptions() {
   ensureCodexCapacityReserveConfigurationControl();
   const providerReadinessLabel = $("configurationProviderReadinessInterval")?.closest("label")?.querySelector(":scope > span");
   if (providerReadinessLabel) providerReadinessLabel.textContent = t("configuration.provider_readiness_interval");
-  moveMachineScopedWorkspaceDetails();
   groupHostComponentConfiguration();
   moveProjectScopedConfiguration();
   CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);

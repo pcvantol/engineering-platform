@@ -20,7 +20,6 @@ import sqlite3
 import socket
 import subprocess  # noqa: F401 - Compatibility mock target; process execution is provider-owned.
 import sys
-import tempfile
 from threading import Lock, Timer
 import time
 import uuid
@@ -171,7 +170,6 @@ AUDITABLE_USER_ACTIONS = frozenset(
         "prompt_history_analysis_downloaded",
         "prompt_history_details_json_downloaded",
         "prompt_history_details_markdown_downloaded",
-        "engineering_database_downloaded",
         "report_copied",
         "report_analysis_copied",
     }
@@ -2743,54 +2741,6 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
     return {"available": True, "worktrees": worktrees}
 
 
-def _engineering_database_details(root: Path) -> dict[str, str]:
-    """Return read-only local SQLite identity details without creating storage."""
-    database = root.resolve() / ".engineering" / "engineering.db"
-    details = {
-        "path": str(database),
-        "size": "Niet beschikbaar",
-        "schema_version": "Niet beschikbaar",
-    }
-    try:
-        megabytes = database.stat().st_size / 1_000_000
-        details["size"] = f"{megabytes:.2f}".replace(".", ",") + " MB"
-    except OSError:
-        return details
-    try:
-        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as connection:
-            row = connection.execute(
-                "SELECT MAX(version) FROM engineering_schema_migrations"
-            ).fetchone()
-    except (OSError, sqlite3.DatabaseError):
-        return details
-    if row and row[0] is not None:
-        details["schema_version"] = str(row[0])
-    return details
-
-
-def _engineering_database_snapshot(root: Path) -> bytes | None:
-    """Create a consistent SQLite backup without modifying the source database."""
-    database = root.resolve() / ".engineering" / "engineering.db"
-    if not database.is_file():
-        return None
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(prefix="engineering-backup-", suffix=".db", delete=False) as temporary:
-            temporary_path = Path(temporary.name)
-        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as source:
-            with sqlite3.connect(temporary_path) as backup:
-                source.backup(backup)
-        return temporary_path.read_bytes()
-    except (OSError, sqlite3.DatabaseError):
-        return None
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
 def _dashboard_html(
     title: str,
     build_commit: str = "onbekend",
@@ -2799,9 +2749,6 @@ def _dashboard_html(
     workspace_location: str = ".",
     workspace_free_disk_space: str = "Niet beschikbaar",
     tracked_files: str = "Niet beschikbaar",
-    engineering_database_path: str = "Niet beschikbaar",
-    engineering_database_size: str = "Niet beschikbaar",
-    engineering_database_schema_version: str = "Niet beschikbaar",
     workspace_branch: str = "Niet beschikbaar",
     workspace_commit: str = "Niet beschikbaar",
     origin_main_commit: str = "Niet beschikbaar",
@@ -2882,7 +2829,7 @@ def _dashboard_html(
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><section class="workspace-database-section" aria-labelledby="workspaceDatabaseHeading"><h2 id="workspaceDatabaseHeading" data-i18n="workspace.database"></h2><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database_location" data-i18n="workspace.database_location"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><label class="workspace-database-maintenance-field" for="configurationDatabaseMaintenanceInterval"><span><span data-i18n="configuration.database_maintenance_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.database_maintenance_interval_help" data-i18n-aria-label="configuration.database_maintenance_interval_help">i</span></span><select id="configurationDatabaseMaintenanceInterval"><option value="60" data-i18n="configuration.minute_1"></option><option value="3600" data-i18n="configuration.hour_1"></option><option value="86400" data-i18n="configuration.day_1"></option><option value="604800" data-i18n="configuration.week_1"></option></select></label></section><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
 <details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section><section class="configuration-timeout-policy" aria-labelledby="configurationTimeoutPolicyTitle"><h2 id="configurationTimeoutPolicyTitle" data-i18n="configuration.timeout_policy"></h2><p data-i18n="configuration.timeout_policy_description"></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.specialist_review"></span><span data-i18n="configuration.minutes_5"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.implementation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.local_repository_validation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.autonomous_quality_control"></span><span data-i18n="configuration.minutes_10"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.repair"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.finalization"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.end_reconciliation"></span><span data-i18n="configuration.minutes_10"></span></p></section></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
@@ -2931,9 +2878,6 @@ def _dashboard_html(
         .replace("$WORKSPACE_LOCATION", escape(workspace_location))
         .replace("$WORKSPACE_FREE_DISK_SPACE", escape(workspace_free_disk_space))
         .replace("$TRACKED_FILES", escape(tracked_files))
-        .replace("$ENGINEERING_DATABASE_PATH", escape(engineering_database_path))
-        .replace("$ENGINEERING_DATABASE_SIZE", escape(engineering_database_size))
-        .replace("$ENGINEERING_DATABASE_SCHEMA_VERSION", escape(engineering_database_schema_version))
         .replace("$WORKSPACE_BRANCH", escape(workspace_branch))
         .replace("$WORKSPACE_COMMIT", escape(workspace_commit))
         .replace("$ORIGIN_MAIN_COMMIT", escape(origin_main_commit))
@@ -3777,22 +3721,6 @@ def handler(
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 404)
                     return
                 return self._send(json.dumps({"messages": messages}, ensure_ascii=False).encode(), "application/json; charset=utf-8")
-            if request.path == "/api/engineering-database/download":
-                snapshot = _engineering_database_snapshot(root)
-                if snapshot is None:
-                    self._send(b'{"error":"Engineering-database is niet beschikbaar."}', "application/json; charset=utf-8", 404)
-                    return
-                if parse_qs(request.query).get("audit") == ["download"]:
-                    log_event(logger, logging.INFO, "engineering_database_downloaded")
-                filename = f"engineering-database-backup-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.sqlite3")
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                self.wfile.write(snapshot)
-                return
             if request.path.startswith("/api/prompt-history/") and request.path.endswith("/details"):
                 run_id = request.path.removeprefix("/api/prompt-history/").removesuffix("/details").strip("/")
                 detail = _prompt_history_detail(root, run_id)
@@ -3981,7 +3909,6 @@ def handler(
             if self.path == "/api/prompt-started":
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if request.path == "/":
-                engineering_database = _engineering_database_details(root)
                 workspace_free_disk_space = _workspace_free_disk_space(root)
                 workspace_git = _workspace_git_projection(root)
                 workspace_open_pull_requests = _workspace_open_pull_requests(root)
@@ -3993,9 +3920,6 @@ def handler(
                         workspace_location,
                         workspace_free_disk_space,
                         tracked_files,
-                        engineering_database["path"],
-                        engineering_database["size"],
-                        engineering_database["schema_version"],
                         str(workspace_git["branch"]),
                         str(workspace_git["commit"]),
                         str(workspace_git["origin_main_commit"]),

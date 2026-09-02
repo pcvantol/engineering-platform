@@ -150,8 +150,8 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="configurationTimeoutPolicyTitle"', page)
         self.assertNotIn('id="configurationAuditLogging"', page)
         self.assertNotIn('configuration.audit_logging', page)
-        self.assertEqual(page.count('class="configuration-info"'), 7)
-        self.assertEqual(page.count("data-i18n-title=\"configuration."), 7)
+        self.assertEqual(page.count('class="configuration-info"'), 6)
+        self.assertEqual(page.count("data-i18n-title=\"configuration."), 6)
         for control in (
             "configurationInboxScanInterval", "configurationOpenPrInterval",
             "configurationDashboardStreamInterval",
@@ -181,10 +181,9 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(f'data-i18n="{key}"', page)
             if value is not None:
                 self.assertIn(f'data-i18n="{value}"', page)
-        self.assertIn('id="configurationDatabaseMaintenanceInterval"', page)
-        self.assertIn('data-i18n="configuration.minute_1"', page)
-        self.assertIn('data-i18n="configuration.day_1"', page)
-        self.assertIn('data-i18n="configuration.week_1"', page)
+        self.assertNotIn('workspace-database-section', page)
+        self.assertNotIn('configurationDatabaseMaintenanceInterval', page)
+        self.assertNotIn('/api/engineering-database/', page)
         self.assertNotIn('id="dashboardLocale"', page[page.index('id="configuration"'):])
         self.assertNotIn('id="autoRefresh"', page[page.index('id="configuration"'):])
         self.assertLess(
@@ -2301,41 +2300,6 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
 
-    def test_engineering_database_details_are_read_only_and_report_the_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            missing = dashboard._engineering_database_details(root)
-            self.assertEqual(
-                missing["path"], str((root / ".engineering" / "engineering.db").resolve())
-            )
-            self.assertEqual(missing["size"], "Niet beschikbaar")
-            self.assertEqual(missing["schema_version"], "Niet beschikbaar")
-            self.assertFalse((root / ".engineering").exists())
-
-            with open_storage(root) as connection:
-                connection.execute("SELECT 1")
-            details = dashboard._engineering_database_details(root)
-
-        self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
-        self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], str(ENGINEERING_STORAGE_SCHEMA_VERSION))
-
-    def test_engineering_database_snapshot_is_a_consistent_read_only_backup(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with open_storage(root) as connection:
-                connection.execute("CREATE TABLE backup_probe (value TEXT)")
-                connection.execute("INSERT INTO backup_probe VALUES ('preserved')")
-
-            snapshot = dashboard._engineering_database_snapshot(root)
-
-        self.assertIsNotNone(snapshot)
-        with tempfile.NamedTemporaryFile(suffix=".db") as backup:
-            backup.write(snapshot or b"")
-            backup.flush()
-            with sqlite3.connect(backup.name) as connection:
-                self.assertEqual(connection.execute("SELECT value FROM backup_probe").fetchone(), ("preserved",))
-
     @patch("engineering_platform.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(
@@ -3592,7 +3556,6 @@ class DashboardStatusTest(unittest.TestCase):
             patches.enter_context(patch("engineering_platform.dashboard._codex_cli_update_status", return_value={"state": "current"}))
             patches.enter_context(patch("engineering_platform.dashboard.daily_timing_detail", return_value={"date": "2026-08-25"}))
             patches.enter_context(patch("engineering_platform.dashboard._component_details", return_value={"component": "dashboard"}))
-            patches.enter_context(patch("engineering_platform.dashboard._engineering_database_snapshot", return_value=b"SQLite format 3\x00backup"))
             patches.enter_context(patch("engineering_platform.dashboard.log_event"))
             with self._dashboard_http_connection() as (_, connection):
                 for route, content_type in (
@@ -3603,14 +3566,11 @@ class DashboardStatusTest(unittest.TestCase):
                     ("/api/codex-cli-update", "application/json"),
                     ("/api/telemetry/2026-08-25", "application/json"),
                     ("/api/components/dashboard/details", "application/json"),
-                    ("/api/engineering-database/download?audit=download", "application/vnd.sqlite3"),
                 ):
                     connection.request("GET", route)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200, route)
                     self.assertIn(content_type, response.getheader("Content-Type"))
-                    if route.startswith("/api/engineering-database/"):
-                        self.assertRegex(response.getheader("Content-Disposition") or "", r'^attachment; filename="engineering-database-backup-\d{8}T\d{6}Z\.db"$')
                     response.read()
 
     def test_http_read_only_evidence_routes_return_explicit_not_found_or_invalid_responses(self) -> None:
@@ -3620,8 +3580,6 @@ class DashboardStatusTest(unittest.TestCase):
             "engineering_platform.dashboard.report_for_prompt_history", return_value=None
         ), patch(
             "engineering_platform.dashboard._report_analysis_for_run", return_value=b""
-        ), patch(
-            "engineering_platform.dashboard._engineering_database_snapshot", return_value=None
         ), patch(
             "engineering_platform.dashboard.daily_timing_detail", side_effect=ValueError("bad date")
         ), patch(
