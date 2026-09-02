@@ -564,7 +564,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
 
 
 def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
-    """Return a data-free Console projection until an operator chooses scope."""
+    """Render global Console controls without selecting project-owned data."""
     document = dashboard._dashboard_html(
         "EP Operations",
         workspace_id="none",
@@ -574,8 +574,15 @@ def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
-    boundary = '''<script>(function(){const select=document.getElementById('dashboardProject');if(!select)return;select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)})})();</script>'''
+    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(!select)return;select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)})})();</script>'''
     empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen.</p></section>'''
+    scoped_style = '''<style>
+body[data-project-id="none"] #queueItems,
+body[data-project-id="none"] #promptHistory,
+body[data-project-id="none"] #currentRun,
+body[data-project-id="none"] #technicalDetails,
+body[data-project-id="none"] #workspaceCard { display: none !important; }
+</style>'''
     document = re.sub(
         br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
         b'<body data-project-id="none" data-project-name="&lt;geen&gt;">',
@@ -588,13 +595,28 @@ def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
         1,
     )
     document = re.sub(
-        br'<main\b[^>]*\bid="engineering-dashboard-content"[^>]*>.*?</main>',
-        b'<main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">' + empty_state.encode("utf-8") + boundary.encode("utf-8") + b'</main>',
+        br'(<main\b[^>]*\bid="engineering-dashboard-content"[^>]*>)',
+        rb'\1' + empty_state.encode("utf-8") + boundary.encode("utf-8"),
         document,
         count=1,
         flags=re.DOTALL,
     )
-    return re.sub(br'<script src="/assets/dashboard\.js[^>]*></script>', b'', document, count=1)
+    return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
+
+
+_NO_PROJECT_GLOBAL_PATHS = frozenset({
+    "/health", "/api/configuration", "/api/execution-runtime-status",
+    "/api/github-rate-limit", "/api/logs/dashboard", "/api/logs/inbox",
+    "/api/process-metrics", "/api/provider-login-status", "/api/usage",
+})
+
+
+def _is_no_project_global_request(method: str, request: SplitResult) -> bool:
+    """Allow only read-only host-wide Console endpoints without project scope."""
+    return method == "do_GET" and (
+        request.path in _NO_PROJECT_GLOBAL_PATHS
+        or (request.path.startswith("/api/components/") and request.path.endswith("/details"))
+    )
 
 
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
@@ -666,8 +688,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
         if method == "do_GET" and request.path == "/" and selected in {None, ""}:
-            # No selection is a valid, deliberately data-free Console view.
-            # Never substitute the first registered project.
+            # No selection is a valid view.  It renders only the host-wide
+            # controls and never substitutes the first project for content.
             document = _no_project_console_document(projects)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -676,6 +698,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(document)
             return
+        if selected in {None, ""} and _is_no_project_global_request(method, request) and projects:
+            # The retained endpoints are host-wide and read-only. The legacy
+            # handler requires a bound root for package resolution, but its
+            # project-scoped endpoints remain unavailable in this state.
+            selected = projects[0]["project_id"]
         if not isinstance(selected, str) or selected not in project_ids:
             # Static package assets are scope-neutral and load before the
             # document's project-aware fetch wrapper exists.  Resolve a valid

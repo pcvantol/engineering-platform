@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from engineering_platform import local_repository_binding, project_topology, server
@@ -174,6 +175,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{port}/") as response:
             unscoped = response.read().decode("utf-8")
+        with urlopen(f"http://127.0.0.1:{port}/api/configuration") as response:
+            self.assertEqual(response.status, 200)
+        with self.assertRaises(HTTPError) as unscoped_history:
+            urlopen(f"http://127.0.0.1:{port}/api/prompt-history")
+        self.assertEqual(unscoped_history.exception.code, 409)
         with urlopen(f"http://127.0.0.1:{port}/?project=djconnect") as response:
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
@@ -209,7 +215,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
         self.assertIn('id="noProjectSelected"', no_project)
         self.assertNotIn(str(roots[0]), no_project)
-        self.assertNotIn('/assets/dashboard.js', no_project)
+        self.assertIn('/assets/dashboard.js', no_project)
+        self.assertIn('id="componentLogs"', no_project)
+        self.assertIn('id="configuration"', no_project)
         self.assertIn('id="noProjectSelected"', unscoped)
         self.assertNotIn('data-project-id="djconnect"', unscoped)
         self.assertNotIn(str(roots[0]), unscoped)

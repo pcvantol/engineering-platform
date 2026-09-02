@@ -27,6 +27,7 @@ window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.value
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
+  NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
   DASHBOARD_BUILD = window.DJCONNECT_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "djconnect-engineering-dashboard-build",
   fallback = {
@@ -5560,7 +5561,7 @@ document
       }
     });
   });
-refreshPromptHistory();
+if (!NO_PROJECT_SELECTED) refreshPromptHistory();
 const DASHBOARD_CLIENT_STATE_KEY = "engineering-dashboard-client-state-v1",
   ALL_SECTIONS_STATE_KEY = "engineering-dashboard-all-sections-open-v1";
 function loadDashboardClientState() {
@@ -8540,7 +8541,10 @@ for (const binding of [
 }
 
 // Start after every DOM-dependent dashboard feature has completed setup.
-localizeOpenPullRequestStatuses();
-void refreshOpenPullRequests();
+if (!NO_PROJECT_SELECTED) {
+  localizeOpenPullRequestStatuses();
+  void refreshOpenPullRequests();
+}
 void refreshGithubRateLimit();
-startDashboardUpdates();
+if (NO_PROJECT_SELECTED) void refreshComponentLogs({}, true);
+else startDashboardUpdates();
