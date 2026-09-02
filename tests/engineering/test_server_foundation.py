@@ -193,6 +193,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn("getElementById('dashboardProject')", first)
         self.assertIn('const project="djconnect"', first)
         self.assertIn('const project="engineering-platform"', second)
+        self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
+        self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
         selector = server._console_document_transform(
             "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0],
         )(b"<main></main>").decode("utf-8")

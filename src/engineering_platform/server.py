@@ -14,6 +14,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sqlite3
 # The lifecycle starts this module with a fixed argv; no shell is used.
@@ -507,11 +508,25 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
     it must not add a second selector to the dashboard content.
     """
     options = _console_project_options(project_id, projects)
+    scoped_body = (
+        f'<body data-project-id="{escape(project_id, quote=True)}" '
+        f'data-project-name="{escape(project_id, quote=True)}">'
+    ).encode("utf-8")
     boundary = f'''<script>(function(){{const project={json.dumps(project_id)},options={json.dumps(options)},nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})}})();</script>'''
     root_bytes = str(root).encode("utf-8")
-    return lambda document: document.replace(root_bytes, b"Project-scoped local workspace").replace(
-        b"</main>", boundary.encode("utf-8") + b"</main>", 1,
-    )
+
+    def transform(document: bytes) -> bytes:
+        scoped = re.sub(
+            br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
+            scoped_body,
+            document,
+            count=1,
+        )
+        return scoped.replace(root_bytes, b"Project-scoped local workspace").replace(
+            b"</main>", boundary.encode("utf-8") + b"</main>", 1,
+        )
+
+    return transform
 
 
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
