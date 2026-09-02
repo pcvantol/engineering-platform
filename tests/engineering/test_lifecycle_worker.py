@@ -119,3 +119,20 @@ class LifecycleWorkerTests(unittest.TestCase):
         time.sleep(0.02)
         self.assertEqual(worker.diagnostics().state, WORKER_RUNNING)
         worker.stop()
+
+    def test_slow_terminal_history_reconciliation_does_not_delay_worker_readiness(self) -> None:
+        from threading import Event
+
+        started, release = Event(), Event()
+
+        class SlowHistoryDispatcher(_Dispatcher):
+            def reconcile_terminal_history(self) -> None:
+                started.set()
+                release.wait(1)
+
+        worker = LifecycleWorker(self.data, dispatcher_factory=SlowHistoryDispatcher, idle_seconds=0.01)
+        worker.start()
+        self.assertTrue(started.wait(0.2))
+        self.assertEqual(worker.diagnostics().state, WORKER_RUNNING)
+        release.set()
+        worker.stop()

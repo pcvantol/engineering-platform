@@ -137,17 +137,35 @@ class LifecycleWorker:
             self._stop.wait(self._failure_seconds if self.diagnostics().state == WORKER_DEGRADED else self._idle_seconds)
         self._replace(state=WORKER_STOPPED)
 
+    def _reconcile_terminal_history(self) -> None:
+        """Backfill historical Console rows without delaying Server readiness."""
+        reconcile = getattr(self._dispatcher_factory(), "reconcile_terminal_history", None)
+        if not callable(reconcile):
+            return
+        try:
+            reconcile()
+        except Exception as error:
+            # Terminal-history projection is additive only. A stale retained
+            # row must not prevent the HTTP Server from accepting fresh
+            # CENTRAL submissions or prevent the worker from servicing a
+            # project queue.
+            current = self.diagnostics()
+            self._replace(failures=current.failures + 1, last_error=type(error).__name__)
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
-        # CENTRAL owns claims; the preserved Console owns terminal evidence.
-        # Restore an interrupted projection before accepting fresh work.
-        reconcile = getattr(self._dispatcher_factory(), "reconcile_terminal_history", None)
-        if callable(reconcile):
-            reconcile()
         self._stop.clear()
         self._thread = Thread(target=self._loop, name="engineering-platform-lifecycle-worker", daemon=True)
         self._thread.start()
+        # CENTRAL owns claims; the preserved Console owns terminal evidence.
+        # Historical projection is additive, so it must never make Server
+        # readiness depend on an old report or a retained stale row.
+        Thread(
+            target=self._reconcile_terminal_history,
+            name="engineering-platform-terminal-history-reconciliation",
+            daemon=True,
+        ).start()
 
     def stop(self, timeout: float = 2.0) -> None:
         self._stop.set()
