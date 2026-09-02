@@ -563,6 +563,17 @@ def _central_database_script() -> str:
     return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:Number(maintenance.value)})});if(!response.ok)throw Error();if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud is bijgewerkt.'}catch{if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false}});'''
 
 
+_WORKSPACE_ID_FIELD = re.compile(
+    br'(<span class="label" data-workspace-label="workspace\.name" data-i18n="workspace\.name"></span><span>)[^<]*(</span>)'
+)
+
+
+def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
+    """Make CENTRAL's selected project the sole visible workspace identity."""
+    replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"
+    return _WORKSPACE_ID_FIELD.sub(replacement, document, count=1)
+
+
 def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path, data_root: Path):
     """Bind CENTRAL project scope to the historical title-bar selector.
 
@@ -585,6 +596,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
             document,
             count=1,
         )
+        scoped = _centralize_workspace_identity(scoped, project_id)
         central_section = _central_database_section(data_root).encode("utf-8")
         scoped = scoped.replace(root_bytes, b"Project-scoped local workspace")
         scoped = scoped.replace(
