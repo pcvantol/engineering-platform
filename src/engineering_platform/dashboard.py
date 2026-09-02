@@ -2565,6 +2565,7 @@ def _execution_runtime_status() -> dict[str, str]:
     return {
         "state": "READY" if ready else "UNAVAILABLE",
         "executable": str(executable) if ready else "",
+        "version": sys.version.split()[0] if ready else "",
     }
 
 

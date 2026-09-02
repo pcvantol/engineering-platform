@@ -206,6 +206,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(status["state"], "READY")
         self.assertIn("executable", status)
+        self.assertRegex(status["version"], r"^\d+\.\d+\.\d+")
 
     @patch("engineering_platform.dashboard._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
     @patch("engineering_platform.dashboard.managed_codex_runtime.provision")

@@ -431,6 +431,9 @@ test.describe("Engineering Status browser smoke", () => {
         github: { provider: "GITHUB", state: "AUTH_REQUIRED" },
       },
     } }));
+    await page.route("**/api/execution-runtime-status", (route) => route.fulfill({ json: {
+      state: "READY", executable: "/opt/engineering-platform/bin/python", version: "3.14.1",
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
@@ -448,6 +451,11 @@ test.describe("Engineering Status browser smoke", () => {
     await login.hover();
     await expect(login).toHaveCSS("background-color", "rgb(244, 195, 79)");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-logout]')).toBeHidden();
+    const validation = page.locator("#configurationValidationEnvironmentStatus");
+    await expect(validation).toBeVisible();
+    await expect(validation).toContainText(DASHBOARD_MESSAGES.nl["configuration.validation_environment"]);
+    await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
+    await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
   });
 
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {
