@@ -6069,8 +6069,12 @@ function renderProviderLoginStatus(block, providers) {
     repair.textContent = action ? t(`notification.provider_readiness.${action}`, { provider: providerDisplayName(provider) }) : "";
   });
 }
-function renderExecutionRuntimeStatus(block, runtime) {
-  const row = block.querySelector("[data-execution-runtime]");
+function renderExecutionRuntimeStatus(runtime) {
+  // The validation card is a sibling of the provider card, not its child.
+  // Scope the lookup to that card so a successful runtime check is always
+  // reflected in its own row.
+  const validation = $("configurationValidationEnvironmentStatus");
+  const row = validation?.querySelector("[data-execution-runtime]");
   const banner = $("executionRuntimeBanner"), title = $("executionRuntimeTitle"), message = $("executionRuntimeMessage"), bannerRepair = $("executionRuntimeRepair");
   if (!row || !banner || !title || !message || !bannerRepair) return;
   const state = String(runtime?.state || "CHECK_FAILED");
@@ -6079,7 +6083,6 @@ function renderExecutionRuntimeStatus(block, runtime) {
   const version = String(runtime?.version || "").trim();
   row.dataset.providerState = state;
   row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
-  const validation = row.closest("#configurationValidationEnvironmentStatus");
   const path = validation?.querySelector("[data-execution-runtime-path]");
   const runtimeVersion = validation?.querySelector("[data-execution-runtime-version]");
   if (path) path.textContent = executable || "—";
@@ -6109,10 +6112,10 @@ async function refreshProviderLoginStatus() {
     const [payload, runtime] = await Promise.all([response.json(), runtimeResponse.json()]);
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
     renderProviderLoginStatus(block, payload.providers);
-    renderExecutionRuntimeStatus(block, runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
+    renderExecutionRuntimeStatus(runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
   } catch {
     renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
-    renderExecutionRuntimeStatus(block, { state: "CHECK_FAILED" });
+    renderExecutionRuntimeStatus({ state: "CHECK_FAILED" });
   }
 }
 let providerReadinessRefreshIntervalMs = 300_000, providerReadinessRefreshTimer = null;
