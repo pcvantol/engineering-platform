@@ -159,10 +159,13 @@ def _format_terminal_report(state: TransactionState) -> str:
     return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"
 
 
-def _persisted_producer_submission(root: Path, state: TransactionState, fallback_prompt: str) -> tuple[ProducerMetadata, dict[str, object] | None]:
+def _persisted_producer_submission(
+    root: Path, state: TransactionState, fallback_prompt: str, *,
+    central_database: Path | None = None,
+) -> tuple[ProducerMetadata, dict[str, object] | None]:
     """Use immutable Producer submission evidence before legacy prompt compatibility."""
     try:
-        submission = load_submission_for_run(root, state.run_id)
+        submission = load_submission_for_run(root, state.run_id, central_database=central_database)
     except EngineeringStorageError:
         submission = None
     if submission is None:
@@ -1171,7 +1174,9 @@ def generate_terminal_report(
         "Submitted runtime prompt retained at the supplied prompt path; "
         "non-authoritative input."
     )
-    producer, submission = _persisted_producer_submission(root, state, objective)
+    producer, submission = _persisted_producer_submission(
+        root, state, objective, central_database=central_database,
+    )
     raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
     handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
     manifest = manifest or EngineeringPlatformManifest.load(

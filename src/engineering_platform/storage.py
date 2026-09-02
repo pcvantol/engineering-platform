@@ -1913,9 +1913,11 @@ def record_run_qualification_snapshot(root: Path, snapshot: dict[str, object]) -
     return stored
 
 
-def load_run_qualification_snapshot(root: Path, run_id: str) -> dict[str, object] | None:
+def load_run_qualification_snapshot(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Load a persisted snapshot without deriving or backfilling legacy runs."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
