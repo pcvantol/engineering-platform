@@ -6613,9 +6613,9 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
     expect(diagnosisBounds).not.toBeNull();
     expect(driftBounds).not.toBeNull();
-    expect(Math.abs(diagnosisBounds.width - driftBounds.width)).toBeLessThanOrEqual(1);
-    expect(diagnosisBounds.x).toBeGreaterThan(driftBounds.x);
-    expect(Math.abs(diagnosisBounds.y - driftBounds.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(diagnosisBounds.x - driftBounds.x)).toBeLessThanOrEqual(1);
+    expect(diagnosisBounds.width).toBeGreaterThan(driftBounds.width * 1.9);
+    expect(diagnosisBounds.y).toBeGreaterThan(driftBounds.y);
 
     await page.setViewportSize({ width: 760, height: 844 });
     await expect.poll(columns).toBe(1);

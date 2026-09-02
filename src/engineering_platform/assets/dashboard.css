@@ -577,7 +577,7 @@ html[data-theme="light"] .chat-message__body code{background:transparent;color:i
 #technicalDetails{--section-secondary:#a7e7f2}
 #technicalDetails{container-name:operational-overview;container-type:inline-size}
 #technicalDetails .technical-grid{grid-template-columns:minmax(0,1fr)}
-@container operational-overview (min-width:760px){#technicalDetails .technical-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container operational-overview (min-width:760px){#technicalDetails .technical-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#technicalDetails #technicalDiagnosticsCard{grid-column:1 / -1}}
 #componentLogs{--section-secondary:#ffd59b}
 #technicalDetails .card,#componentLogs .card{--category-secondary:var(--section-secondary)}
 #currentRun .card{--category-secondary:#f9b6d8}
