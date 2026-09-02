@@ -326,12 +326,11 @@ class ParityLifecycleDispatcher:
             if context.local_repository_root is None:
                 continue
             try:
-                with _historical_admission_environment(
-                    context.local_repository_root, self.data_root
-                ):
-                    state = StateStore(
-                        context.local_repository_root / ".engineering" / "engineering-runs"
-                    ).load(run_id)
+                state = StateStore(
+                    context.local_repository_root / ".engineering" / "engineering-runs",
+                    central_database=self.data_root / "engineering.db",
+                    emit_local_projection=False,
+                ).load(run_id)
             except StateError:
                 # CENTRAL terminal history can outlive the local retained
                 # checkpoint. It is already durable history, not an active
