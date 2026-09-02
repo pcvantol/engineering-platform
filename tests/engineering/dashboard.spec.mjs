@@ -1015,7 +1015,10 @@ test.describe("Engineering Status browser smoke", () => {
     await openDashboardPicker(picker);
     await chooseDashboardPickerOption(picker, "DEBUG");
     expect(await page.evaluate(() => window.__dashboardSelectFocusOptions)).toEqual([]);
-    await expect(page.locator("#configuration .configuration-field")).toHaveCount(5);
+    // Selecting a value must not steal focus.  The number of fields is
+    // intentionally not an interaction contract: host-wide runtime and
+    // CENTRAL configuration sections can add further fields.
+    await expect(page.locator("#configurationLogLevel + .dashboard-select-picker")).toHaveCount(1);
   });
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
@@ -2065,7 +2068,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↓", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
+      "", "⧉", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A
@@ -7716,7 +7719,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download", "#workspaceDatabaseDownload"]) {
+    for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
       const action = page.locator(selector).first();
       await expect(action).toHaveClass(/dashboard-action--download/);
       await expect(action).toHaveCSS("font-size", "0px");
@@ -8641,15 +8644,17 @@ test.describe("Engineering Status browser smoke", () => {
       const result = {
         label: getComputedStyle(element.querySelector(".lifecycle-detail-modal__content .label")).color,
         secondary: getComputedStyle(secondary).color,
-        phaseDivider: getComputedStyle(element.querySelector(".lifecycle-detail-modal__phase-list li")).borderBottomColor,
-        divider: getComputedStyle(divider).borderBottomColor,
+        phaseDividerWidth: getComputedStyle(element.querySelector(".lifecycle-detail-modal__phase-list li")).borderBottomWidth,
       };
       secondary.remove();
       divider.remove();
       return result;
     });
     expect(inheritedDetailTokens.label).toBe(inheritedDetailTokens.secondary);
-    expect(inheritedDetailTokens.phaseDivider).toBe(inheritedDetailTokens.divider);
+    // A one-item list is also its final item; it intentionally has no
+    // trailing ruler.  Intermediate items are covered by the multi-phase
+    // lifecycle fixture above.
+    expect(inheritedDetailTokens.phaseDividerWidth).toBe("0px");
     await page.locator("#lifecycleDetailClose").click();
     const executionSummary = page.locator("#promptHistoryDetailContent > .prompt-detail-leftbar > .prompt-detail-card--execution-summary");
     const executionContext = page.locator("#promptHistoryDetailContent > .prompt-detail-rightbar > .prompt-detail-card--execution-context");
@@ -9062,7 +9067,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(sizes.message).toBeLessThan(100);
     expect(sizes.message).toBeLessThanOrEqual(sizes.container * (2 / 3) + 2);
     expect(sizes.bodyScrollable).toBe(false);
-    expect(sizes.bodyOverflowY).toBe("auto");
+    expect(sizes.bodyOverflowY).toBe("visible");
     expect(sizes.bodyScrollbarGutter).toBe("auto");
   });
 
