@@ -460,15 +460,23 @@ test.describe("Engineering Status browser smoke", () => {
     const geometry = await row.evaluate((element) => {
       const logoutBox = element.querySelector("[data-provider-logout]")?.getBoundingClientRect();
       const labelBox = element.querySelector(".configuration-provider-status__label")?.getBoundingClientRect();
+      const detailsBox = element.querySelector(".configuration-provider-status__details")?.getBoundingClientRect();
+      const rowBox = element.getBoundingClientRect();
       return {
-        height: element.getBoundingClientRect().height,
+        primaryHeight: logoutBox ? logoutBox.bottom - rowBox.top : null,
+        detailsTop: detailsBox ? detailsBox.top - rowBox.top : null,
+        height: rowBox.height,
         logoutCentre: logoutBox ? logoutBox.top + (logoutBox.height / 2) : null,
         labelCentre: labelBox ? labelBox.top + (labelBox.height / 2) : null,
         dotRight: element.querySelector(".configuration-provider-status__dot")?.getBoundingClientRect().right,
         nameLeft: element.querySelector("strong")?.getBoundingClientRect().left,
       };
     });
-    expect(geometry.height).toBeLessThanOrEqual(36);
+    // The primary provider state remains a compact 36px line.  CLI path and
+    // version intentionally occupy the subsequent details row.
+    expect(geometry.primaryHeight).toBeLessThanOrEqual(36);
+    expect(geometry.detailsTop).toBeGreaterThanOrEqual(36);
+    expect(geometry.height).toBeGreaterThan(36);
     expect(geometry.logoutCentre).toBe(geometry.labelCentre);
     expect(geometry.nameLeft - geometry.dotRight).toBeLessThanOrEqual(12);
   });
