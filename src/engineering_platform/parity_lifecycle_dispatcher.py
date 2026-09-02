@@ -312,6 +312,7 @@ class ParityLifecycleDispatcher:
             getattr(runner, "reviewer_records", ()),
             getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
             getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
+            central_database=data_root / "engineering.db",
         )
         record_terminal_report(repository_root, report, central_database=data_root / "engineering.db")
         record_artifact(
