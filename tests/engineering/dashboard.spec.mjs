@@ -804,6 +804,8 @@ test.describe("Engineering Status browser smoke", () => {
     expect(script).toContain('event.target.closest("#centralDatabaseLocation")');
     expect(stylesheet).toContain(".configuration-central-database__location-link{");
     expect(stylesheet).toContain("text-decoration:underline");
+    expect(stylesheet).toContain(".configuration-central-database{border:");
+    expect(stylesheet).not.toContain(".configuration-central-database{background:");
   });
 
   test("analyses every worktree before showing a safe removal action", async ({ page }) => {

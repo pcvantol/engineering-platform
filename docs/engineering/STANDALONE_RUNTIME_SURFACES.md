@@ -45,6 +45,16 @@ runtime alert. A running Server alone is not end-to-end validation evidence:
 qualification still verifies that child validation commands resolve this
 installed environment.
 
+## EP-database configuration
+
+Configuration presents the installation-owned **EP-database** separately from
+project-scoped controls. The card reports the CENTRAL database's ownership,
+location, size, schema version and integrity, and provides its governed
+download, Finder and maintenance actions. It is a structural group only: its
+background remains transparent so it inherits the Configuration section's
+surface, while its border and maintenance divider retain the visual grouping.
+No project-local database path or project ownership is presented there.
+
 The Project Agent remains a separate per-user installed role. It owns local
 checkout observation and authenticated attachment reporting, while the Server
 owns logical topology and CENTRAL state. Either role can be installed alone;
