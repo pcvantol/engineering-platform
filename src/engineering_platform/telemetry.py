@@ -254,13 +254,13 @@ def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = N
     return result
 
 
-def _recovery_telemetry(root: Path, run_id: str) -> ExecutionTelemetry:
+def _recovery_telemetry(root: Path, run_id: str, *, central_database: Path | None = None) -> ExecutionTelemetry:
     """Reconstruct a projection only from structured terminal evidence.
 
     This intentionally does not read report prose, infer tokens, or fabricate
     duration values.  Missing optional evidence remains unknown.
     """
-    connection = open_storage(root, create=False)
+    connection = open_storage(root, create=False) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         transaction = connection.execute(
             "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
@@ -314,31 +314,31 @@ def _recovery_telemetry(root: Path, run_id: str) -> ExecutionTelemetry:
     )
 
 
-def recover_terminal_telemetry(root: Path, run_id: str, *, source: Literal["RECOVERY", "BACKFILL"] = "RECOVERY") -> str:
+def recover_terminal_telemetry(root: Path, run_id: str, *, source: Literal["RECOVERY", "BACKFILL"] = "RECOVERY", central_database: Path | None = None) -> str:
     """Perform one governed recovery from canonical terminal evidence.
 
     Existing telemetry is left untouched.  The result records the operational
     path so callers can audit whether a run was live, recovered, or backfilled.
     """
-    connection = open_storage(root, create=False)
+    connection = open_storage(root, create=False) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         if connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone() is not None:
             return "already_materialized"
     finally:
         connection.close()
-    telemetry = _recovery_telemetry(root, run_id)
-    queue_terminal_telemetry(root, telemetry, source=source)
-    result = materialize_pending_terminal_telemetry(root, run_id=run_id, limit=1)
+    telemetry = _recovery_telemetry(root, run_id, central_database=central_database)
+    queue_terminal_telemetry(root, telemetry, source=source, central_database=central_database)
+    result = materialize_pending_terminal_telemetry(root, run_id=run_id, limit=1, central_database=central_database)
     if result["failed"]:
         raise ValueError("terminal telemetry recovery remains retryable")
     return "recovered" if result["processed"] else "already_queued"
 
 
-def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25) -> dict[str, int]:
+def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25, central_database: Path | None = None) -> dict[str, int]:
     """Boundedly repair only missing projections with complete source evidence."""
     if limit < 1 or limit > 250:
         raise ValueError("terminal telemetry recovery limit is invalid")
-    connection = open_storage(root, create=False)
+    connection = open_storage(root, create=False) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         rows = connection.execute(
             "SELECT history.run_id FROM prompt_execution_history AS history "
@@ -356,7 +356,7 @@ def recover_missing_terminal_telemetry(root: Path, *, limit: int = 25) -> dict[s
     result = {"recovered": 0, "failed": 0, "candidates": len(rows)}
     for (run_id,) in rows:
         try:
-            if recover_terminal_telemetry(root, run_id) == "recovered":
+            if recover_terminal_telemetry(root, run_id, central_database=central_database) == "recovered":
                 result["recovered"] += 1
         except Exception:
             # The detailed, redacted failure remains in the outbox when it was
