@@ -6782,6 +6782,26 @@ new MutationObserver((records) => {
 });
 updateAllSectionsToggle();
 updateIndependentLogSortHeaders();
+function constrainChatBubbles() {
+  const messages = $("chatMessages");
+  if (!messages || !messages.clientHeight) return;
+  const limit = messages.clientHeight * 2 / 3;
+  messages.querySelectorAll(".chat-message").forEach((message) => {
+    message.classList.remove("chat-message--scrollable");
+    if (message.scrollHeight > limit) message.classList.add("chat-message--scrollable");
+  });
+}
+let chatBubbleLayoutPending = false;
+function scheduleChatBubbleLayout() {
+  if (chatBubbleLayoutPending) return;
+  chatBubbleLayoutPending = true;
+  requestAnimationFrame(() => {
+    chatBubbleLayoutPending = false;
+    constrainChatBubbles();
+  });
+}
+new MutationObserver(scheduleChatBubbleLayout).observe($("chatMessages"), { childList: true, subtree: true, characterData: true });
+window.addEventListener("resize", scheduleChatBubbleLayout);
 function chatHistoryMarkdown() {
   const context = chatContextEntry || {};
   const metadata = chatContextRun
