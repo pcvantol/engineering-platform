@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.request import urlopen
 
 from engineering_platform import local_repository_binding, project_topology, server
@@ -33,6 +34,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
+
+    def test_server_surfaces_missing_managed_runtime_without_degrading_central(self) -> None:
+        identity = server.initialize(self.root)
+        report = server.status(self.root)
+        self.assertEqual(report["instance_id"], identity.instance_id)
+        self.assertIn(report["managed_codex_runtime"]["state"], {"MISSING", "BROKEN", "READY"})
+        self.assertEqual(server.operations_projection(self.root)["managed_codex_runtime"], report["managed_codex_runtime"])
+
+    @patch("engineering_platform.server.managed_codex_runtime.inspect")
+    def test_runtime_state_is_observational_and_never_changes_server_readiness(self, inspect: object) -> None:
+        inspect.return_value = {"state": "MISSING", "path": "/isolated/codex", "remediation_available": True}
+        server.initialize(self.root)
+        report = server.status(self.root)
+        self.assertEqual(report["managed_codex_runtime"]["state"], "MISSING")
+        self.assertEqual(report["store"], "ready")
 
     def test_start_stop_and_http_readiness_work_without_a_checkout(self) -> None:
         with socket.socket() as probe:
