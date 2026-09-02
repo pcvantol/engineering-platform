@@ -418,6 +418,9 @@ html[data-theme="light"] :is(.dashboard-locale,.dashboard-project){color:#415168
 #engineering-dashboard-content{overflow-anchor:none}
 .footer__item{align-items:baseline;display:inline-flex;gap:4px;min-width:0}
 .technical-grid>.card,.log-table-wrap{min-width:0}.log-table-wrap{box-sizing:border-box;width:100%}
+/* Host paths are machine-generated and can be a single unbroken token. Keep
+   them inside their diagnostic card instead of creating page-wide overflow. */
+#executionHostRuntimePath{display:block;max-inline-size:100%;min-inline-size:0;overflow-wrap:anywhere;white-space:pre-wrap;word-break:break-word}
 #promptHistory .log-table-wrap{
   /* Pagination supplies exactly ten rows. Let their natural height define the
      field, so a sparse area is never left below the final visible row. */
