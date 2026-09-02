@@ -22,7 +22,7 @@ context, not operational authority.
 | `execution_host.py`: CENTRAL-bound runner | checkpoints, leases, recovery, provider usage, phase spans, validation profiles/command receipts/results, managed-autonomy evidence and terminal report index | CENTRAL_CANONICAL | CENTRAL_CANONICAL | explicit database/artifact bindings injected from `StateStore` | focused host/recovery/timing/validation tests |
 | `execution_executor.py`: validation diagnostics | immutable validation evidence | CENTRAL_CANONICAL index + ARTIFACT_FILE_ONLY | CENTRAL_CANONICAL index + ARTIFACT_FILE_ONLY | explicit CENTRAL database and artifact-root binding | host/storage tests |
 | `execution_lease.py`, `provider_recovery.py`: CENTRAL runner route | leases, heartbeats, recovery and retry lineage; recovery-result artifact integrity and retrieval | CENTRAL_CANONICAL | CENTRAL_CANONICAL | explicit database and artifact-root binding through runner | focused lease/recovery tests |
-| `provider_interruption.py`, `emergency_recovery.py` | watcher-side interruption/cancellation | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL | migrate explicit recovery/lifecycle repository | recovery/isolation tests pending |
+| `provider_interruption.py`, `emergency_recovery.py` | retained watcher/direct-dashboard compatibility branches | HISTORICAL_COMPATIBILITY_ONLY | CENTRAL_CANONICAL on supported composition | Server/Execution Host supply explicit CENTRAL bindings; unbound branches are guard-classified legacy compatibility | focused binding and authority-guard tests |
 | `execution_finalization.py`, `status_reconciliation.py`, `managed_autonomy.py` | merge wait, finalization and reconciliation evidence | REPOSITORY_LOCAL_DB | CENTRAL_CANONICAL | central lifecycle/evidence repository | merge wait/finalization tests |
 | `execution_timing.py`, `provider_usage.py`: CENTRAL runner route | phase spans; provider/model/token usage | CENTRAL_CANONICAL | CENTRAL_CANONICAL | explicit runner database binding | focused timing/provider tests |
 | `telemetry.py` | terminal telemetry/outbox/read models | REPOSITORY_LOCAL_DB | CENTRAL_CANONICAL | explicit API exists; active watcher composition remains | terminal telemetry canary pending |
@@ -59,8 +59,8 @@ converted or removed from every supported installed entrypoint.
 | `execution_host.main` | direct installed host entrypoint | direct-host lifecycle | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit `--central-database` required) | fail closed without the composition-root binding; no local StateStore projection |
 | `inbox_watcher` retry, cancellation, merge-wait and recovery calls | retired checkout-bound watcher commands | retry, merge wait, recovery lifecycle | HISTORICAL_PROVENANCE | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | operational `once`, `run` and `install` commands fail closed; retained code is not reachable from Server/LifecycleWorker | focused retirement boundary test |
 | `provider_recovery._validate_control_target` | qualification control CLI and Execution Host | recovery eligibility | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle repository; fault marker remains PHYSICAL_EXECUTION_ONLY |
-| `provider_interruption.terminalize_after_host_exit`, `prepare_same_run_recovery_after_host_exit` | watcher recovery scan | interruption terminalization and recovery | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repositories |
-| `emergency_recovery._plan`, `execute` | Dashboard emergency-recovery route | cancel/rollback lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repository; git rollback remains PHYSICAL_EXECUTION_ONLY |
+| `provider_interruption.terminalize_after_host_exit`, `prepare_same_run_recovery_after_host_exit` | retired watcher recovery scan | interruption terminalization and recovery | HISTORICAL_COMPATIBILITY_ONLY | retained compatibility fallback | watcher CLI rejects operational invocation before storage; active host route is CENTRAL-bound |
+| `emergency_recovery._plan`, `execute` | Dashboard emergency-recovery route | cancel/rollback lifecycle | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit Server binding) | validated project/run ownership and CENTRAL lifecycle/recovery repository; git rollback remains PHYSICAL_EXECUTION_ONLY |
 
 `StateStore` raw-module count is **6**. It is not a completion count: two
 dispatcher callsites are already CENTRAL-bound; all other rows above remain
@@ -78,3 +78,18 @@ telemetry APIs remain CENTRAL-bound on active lifecycle paths; the retained
 watcher implementation may only be exercised by isolated historical/forensic
 tests until a separate P-TRANSPORT contract replaces it. Deriving CENTRAL from
 the checkout is forbidden.
+
+## Explicit retained fallback classifications
+
+| Exact path | Classification | Supported installed reachability | Reason |
+| --- | --- | --- | --- |
+| `telemetry.py` unbound `central_database=None` branches | HISTORICAL_COMPATIBILITY_ONLY | no | Their only product callers are the retired watcher; active runner calls supply its explicit CENTRAL binding. |
+| `provider_interruption.py` unbound branches | HISTORICAL_COMPATIBILITY_ONLY | no | The retained watcher is rejected before storage access; active Execution Host calls use its bound CENTRAL store. |
+| `emergency_recovery.py` unbound branches | HISTORICAL_COMPATIBILITY_ONLY | no | The supported Server Dashboard composition supplies both CENTRAL database and validated project scope; direct historical dashboard composition remains compatibility-only. |
+
+`tools/qualification/p_central_core_authority_guard.py` is the deterministic
+classification gate. Every file containing an operational-storage marker must
+have an exact path classification; an unclassified new product module fails.
+The guard separately asserts the direct-host CENTRAL requirement and the
+retired watcher entrypoint. Its negative fixture is rejected and its exact
+historical telemetry fixture is accepted.
