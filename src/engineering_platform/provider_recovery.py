@@ -261,8 +261,8 @@ def watcher_resume_action(root: Path, run_id: str) -> str | None:
     return None
 
 
-def _receipts(root: Path, run_id: str, invocation_id: str) -> list[dict[str, object]]:
-    connection = open_storage(root)
+def _receipts(root: Path, run_id: str, invocation_id: str, *, central_database: Path | None = None) -> list[dict[str, object]]:
+    connection = _connection(root, central_database)
     try:
         rows = connection.execute(
             "SELECT receipt_id,run_id,invocation_id,launch_state,provider_session_id,process_pid,process_group,"
@@ -317,44 +317,45 @@ def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_c
         connection.close()
 
 
-def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_identity) -> str:
+def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_identity,
+                       central_database: Path | None = None) -> str:
     """Classify a restart solely from immutable receipts and recovery state.
 
     A live provider is accepted only when its persisted session, birth
     fingerprint and executable identity verify as one invocation-bound unit.
     """
-    recovery = load_recovery_state(root, run_id)
+    recovery = load_recovery_state(root, run_id, central_database=central_database)
     if recovery is None:
         return "NOT_APPLICABLE"
     state = recovery.get("state")
     invocation_id = recovery.get("replacement_invocation_id")
     if not isinstance(invocation_id, str):
-        mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="missing_replacement_invocation")
+        mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="missing_replacement_invocation", central_database=central_database)
         return "AMBIGUOUS"
-    receipts = _receipts(root, run_id, invocation_id)
+    receipts = _receipts(root, run_id, invocation_id, central_database=central_database)
     claims = [receipt for receipt in receipts if receipt["launch_state"] == "CLAIMED"]
     starts = [receipt for receipt in receipts if receipt["launch_state"] == "PROCESS_STARTED"]
     terminals = [receipt for receipt in receipts if receipt["launch_state"] == "TERMINAL"]
     outcomes = {str(receipt["outcome"]) for receipt in terminals if receipt["outcome"] is not None}
     if len(claims) > 1 or len(starts) > 1 or len(terminals) > 1 or len(outcomes) > 1:
         if state in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
-            mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="contradictory_receipts")
+            mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="contradictory_receipts", central_database=central_database)
         return "AMBIGUOUS"
     if state == "RECOVERY_STARTING":
         if starts or terminals:
             # Receipt ordering/state mismatch is never repaired by a launch.
-            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="starting_receipt_conflict")
+            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="starting_receipt_conflict", central_database=central_database)
             return "AMBIGUOUS"
         if not claims:
             return "LAUNCH_UNCLAIMED"
         diagnostic = str(recovery.get("diagnostic_code") or "")
         if diagnostic.startswith("LAUNCH_NOT_STARTED:"):
             return "LAUNCH_CLAIMED_PREEXEC_FAILURE"
-        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="claimed_launch_unresolved")
+        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="claimed_launch_unresolved", central_database=central_database)
         return "AMBIGUOUS"
     if state == "RECOVERY_IN_PROGRESS":
         if len(starts) != 1:
-            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="missing_process_started_receipt")
+            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="missing_process_started_receipt", central_database=central_database)
             return "AMBIGUOUS"
         if not terminals:
             start = starts[0]
@@ -367,7 +368,7 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
                 or not isinstance(start.get("process_start_fingerprint"), str)
                 or not isinstance(start.get("process_executable_identity"), str)
             ):
-                mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="provider_session_identity_invalid")
+                mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="provider_session_identity_invalid", central_database=central_database)
                 return "AMBIGUOUS"
             verification = verifier(ProcessIdentity(
                 pid=int(start["process_pid"]), process_group=int(start["process_group"]),
@@ -379,6 +380,7 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
             mark_ambiguous(
                 root, run_id=run_id, expected="RECOVERY_IN_PROGRESS",
                 diagnostic_code="provider_process_not_active" if verification == "NOT_ACTIVE" else "provider_process_identity_mismatch",
+                central_database=central_database,
             )
             return "AMBIGUOUS"
         outcome = next(iter(outcomes), "")
@@ -386,12 +388,13 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
             transition_recovery_state(
                 root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="RECOVERED",
                 result="SUCCESS", result_evidence_ref=str(terminals[0]["result_evidence_ref"]),
+                central_database=central_database,
             )
             return "RECOVERED"
         if outcome == "INTERRUPTED":
-            transition_recovery_state(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="EXHAUSTED", result="INTERRUPTED")
+            transition_recovery_state(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="EXHAUSTED", result="INTERRUPTED", central_database=central_database)
             return "EXHAUSTED"
-        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="terminal_failure_or_invalid_result")
+        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="terminal_failure_or_invalid_result", central_database=central_database)
         return "AMBIGUOUS"
     return str(state)
 
@@ -575,9 +578,11 @@ def mark_precheck_failed(root: Path, *, run_id: str, diagnostic_code: str,
     )
 
 
-def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: str) -> bool:
+def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: str,
+                   central_database: Path | None = None) -> bool:
     return transition_recovery_state(
         root, run_id=run_id, expected=expected, target="AMBIGUOUS", diagnostic_code=diagnostic_code,
+        central_database=central_database,
     )
 
 

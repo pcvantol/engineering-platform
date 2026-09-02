@@ -1502,7 +1502,9 @@ class EngineeringRunner:
                     next_action="NONE", terminal_condition="provider_turn_interrupted",
                 )
             if isinstance(recovery, dict) and recovery.get("state") in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
-                reconciliation = reconcile_recovery(self.root, run_id=state.run_id)
+                reconciliation = reconcile_recovery(
+                    self.root, run_id=state.run_id, central_database=self.store.central_database,
+                )
                 if reconciliation == "LAUNCH_UNCLAIMED":
                     claim = claim_replacement_launch(
                         self.root, run_id=state.run_id, central_database=self.store.central_database,
