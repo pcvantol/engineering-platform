@@ -130,3 +130,18 @@ class CapabilityPreflightTest(unittest.TestCase):
             )
             status = provider_readiness.status(self.root, require_github=False)
         self.assertEqual(status["codex"]["state"], "AUTH_REQUIRED")
+
+    def test_provider_runtime_details_report_only_executable_paths_and_versions(self) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        with patch("engineering_platform.provider_readiness.codex_cli_executable", return_value="/ep/bin/codex"), patch(
+            "engineering_platform.provider_readiness.CodexCliProvider"
+        ) as codex, patch("engineering_platform.provider_readiness.shutil.which", return_value="/opt/homebrew/bin/gh"), patch(
+            "engineering_platform.provider_readiness.LocalProcessProvider"
+        ) as process:
+            codex.return_value.command.return_value = completed(("codex", "--version"), 0, "codex-cli 0.152.1\n", "")
+            process.return_value.execute.return_value = completed(("gh", "--version"), 0, "gh version 2.82.1 (2026-09-01)\n", "")
+            details = provider_readiness.runtime_details(self.root)
+        self.assertEqual(details, {
+            "codex": {"executable": "/ep/bin/codex", "version": "0.152.1"},
+            "github": {"executable": "/opt/homebrew/bin/gh", "version": "2.82.1"},
+        })

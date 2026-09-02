@@ -7,10 +7,14 @@ retries authentication on behalf of an execution.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
-from .providers import CodexCliProvider, LocalProcessProvider
+from .providers import CodexCliProvider, LocalProcessProvider, codex_cli_executable
+
+
+_VERSION = re.compile(r"\b\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.]+)?\b")
 
 
 def _classify(result: subprocess.CompletedProcess[str] | None) -> str:
@@ -36,6 +40,32 @@ def _repository_classify(result: subprocess.CompletedProcess[str] | None) -> str
     )):
         return "CHECK_FAILED"
     return "AUTH_REQUIRED"
+
+
+def _version(result: subprocess.CompletedProcess[str] | None) -> str:
+    """Return just a CLI version, never command output or diagnostics."""
+    if result is None or result.returncode:
+        return ""
+    match = _VERSION.search(f"{result.stdout}\n{result.stderr}")
+    return match.group(0) if match else ""
+
+
+def runtime_details(root: Path) -> dict[str, dict[str, str]]:
+    """Project token-free CLI provenance for the host-wide Console projection."""
+    codex_path = codex_cli_executable() or ""
+    try:
+        codex_version = _version(CodexCliProvider().command("--version")) if codex_path else ""
+    except OSError:
+        codex_version = ""
+    github_path = shutil.which("gh") or ""
+    try:
+        github_version = _version(LocalProcessProvider().execute(root, (github_path, "--version"))) if github_path else ""
+    except OSError:
+        github_version = ""
+    return {
+        "codex": {"executable": codex_path, "version": codex_version},
+        "github": {"executable": github_path, "version": github_version},
+    }
 
 
 def status(root: Path, *, require_github: bool = True) -> dict[str, dict[str, str]]:

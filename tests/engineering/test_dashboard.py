@@ -192,22 +192,28 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertLess(page.index('id="configuration"'), page.index("</main>"))
 
+    @patch("engineering_platform.dashboard.provider_runtime_details")
     @patch("engineering_platform.dashboard.provider_readiness_status")
     def test_provider_login_status_is_token_free_and_classifies_auth(
-        self, readiness: MagicMock,
+        self, readiness: MagicMock, runtime: MagicMock,
     ) -> None:
         readiness.return_value = {
             "codex": {"provider": "CODEX", "state": "READY"},
             "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
         }
+        runtime.return_value = {
+            "codex": {"executable": "/ep/codex", "version": "0.152.1"},
+            "github": {"executable": "/opt/homebrew/bin/gh", "version": "2.82.1"},
+        }
 
         status = dashboard._provider_login_status(Path("/workspace"))
 
         self.assertEqual(status, {
-            "codex": {"provider": "CODEX", "state": "READY"},
-            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
+            "codex": {"provider": "CODEX", "state": "READY", "executable": "/ep/codex", "version": "0.152.1"},
+            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED", "executable": "/opt/homebrew/bin/gh", "version": "2.82.1"},
         })
         readiness.assert_called_once_with(Path("/workspace"))
+        runtime.assert_called_once_with(Path("/workspace"))
 
     def test_execution_runtime_status_is_token_free(self) -> None:
         status = _execution_runtime_status()

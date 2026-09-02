@@ -395,8 +395,8 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows localized provider login states in Configuration", async ({ page }) => {
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
-        codex: { provider: "CODEX", state: "READY" },
-        github: { provider: "GITHUB", state: "AUTH_REQUIRED" },
+        codex: { provider: "CODEX", state: "READY", executable: "/ep/codex/bin/codex", version: "0.152.1" },
+        github: { provider: "GITHUB", state: "AUTH_REQUIRED", executable: "/opt/homebrew/bin/gh", version: "2.82.1" },
       },
     } }));
     await page.route("**/api/execution-runtime-status", (route) => route.fulfill({ json: {
@@ -412,6 +412,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="GITHUB"]')).toContainText(DASHBOARD_MESSAGES.nl["configuration.provider_status.AUTH_REQUIRED"]);
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
     await expect(login).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "GitHub"));

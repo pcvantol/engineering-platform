@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_runtime_workspace as provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
-from .provider_readiness import status as provider_readiness_status
+from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
@@ -2547,13 +2547,17 @@ def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
     """Dashboard projection of the shared token-free provider readiness check."""
     global _provider_login_active, _provider_login_started_at
     statuses = provider_readiness_status(root)
+    runtime = provider_runtime_details(root)
     with _provider_login_lock:
         active = _provider_login_active
         expired = time.monotonic() - _provider_login_started_at >= _PROVIDER_LOGIN_TIMEOUT_SECONDS
         if active and (expired or statuses.get(active.lower(), {}).get("state") == "READY"):
             _provider_login_active = None
             _provider_login_started_at = 0.0
-    return statuses
+    return {
+        provider: {**value, **runtime.get(provider, {})}
+        for provider, value in statuses.items()
+    }
 
 
 def _execution_runtime_status() -> dict[str, str]:

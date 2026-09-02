@@ -5978,12 +5978,19 @@ function providerLoginStatusBlock() {
       repair.dataset.providerRepair = provider;
       const logout = Object.assign(document.createElement("button"), { className: "configuration-provider-status__logout", type: "button", textContent: t("configuration.provider_logout") });
       logout.dataset.providerLogout = provider;
+      const details = document.createElement("div");
+      details.className = "configuration-provider-status__details";
+      details.append(
+        validationEnvironmentDetail(t("configuration.provider_cli_path", { provider: providerDisplayName(provider) }), "providerCliPath"),
+        validationEnvironmentDetail(t("configuration.provider_cli_version", { provider: providerDisplayName(provider) }), "providerCliVersion"),
+      );
       row.append(
         Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
         Object.assign(document.createElement("strong"), { textContent: provider === "CODEX" ? "Codex" : "GitHub" }),
         Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
         repair,
         logout,
+        details,
       );
       block.append(row);
     }
@@ -6079,7 +6086,13 @@ function renderProviderLoginStatus(block, providers) {
     const state = providerReadinessState(providers, provider);
     const logout = row.querySelector("[data-provider-logout]"), repair = row.querySelector("[data-provider-repair]");
     row.dataset.providerState = state;
+    const executable = String(providers?.[provider]?.executable || "").trim();
+    const version = String(providers?.[provider]?.version || "").trim();
     row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
+    const path = row.querySelector("[data-provider-cli-path]");
+    const providerVersion = row.querySelector("[data-provider-cli-version]");
+    if (path) path.textContent = executable || "—";
+    if (providerVersion) providerVersion.textContent = version || "—";
     logout.hidden = state !== "READY";
     logout.disabled = state !== "READY";
     const action = state === "UNAVAILABLE" ? "install" : state === "AUTH_REQUIRED" ? "login" : null;
