@@ -203,7 +203,10 @@ class ParityLifecycleDispatcher:
             if not duplicate:
                 self._persist_historical_input(repository_root, candidate, run_id, prompt)
             with _historical_admission_environment(repository_root):
-                state = self.runner_factory(repository_root).run(prompt, run_id=run_id, resume=duplicate)
+                state = self.runner_factory(repository_root).run(
+                    prompt, run_id=run_id, resume=duplicate,
+                    owner_authorized=candidate.execution_mode == "MANAGED",
+                )
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)

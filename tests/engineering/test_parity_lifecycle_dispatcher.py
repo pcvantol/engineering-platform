@@ -18,11 +18,11 @@ class _PassingPreflight:
 
 
 class _Runner:
-    calls: list[tuple[Path, str | None, bool]] = []
+    calls: list[tuple[Path, str | None, bool, bool]] = []
 
     def run(self, prompt_path: Path, run_id: str | None = None, resume: bool = False,
             owner_authorized: bool = False, transaction_kind: str = "IMPLEMENTATION") -> TransactionState:
-        self.calls.append((prompt_path, run_id, resume))
+        self.calls.append((prompt_path, run_id, resume, owner_authorized))
         return TransactionState(run_id or "inbox-missing", "fixture", str(prompt_path), "COMPLETE", terminal=True)
 
 
@@ -72,6 +72,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(len(_Runner.calls), 2)
         self.assertFalse(_Runner.calls[0][2])
         self.assertTrue(_Runner.calls[1][2])
+        self.assertTrue(_Runner.calls[0][3])
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute("SELECT project_id,repository_id,run_id,state FROM ep_parity_lifecycle_dispatches").fetchone()
         self.assertEqual(row, ("alpha", "alpha", first.run_id, "COMPLETE"))
