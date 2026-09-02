@@ -44,7 +44,7 @@ SERVER_CONFIGURATION_VERSION = 1
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 44
+SERVER_STORE_SCHEMA_VERSION = 45
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
@@ -73,6 +73,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submissions",
         "ep_submission_events",
         "ep_submission_prompt_history",
+        "ep_parity_lifecycle_dispatches",
     }
 )
 SERVER_REQUIRED_INDEXES = frozenset(
@@ -87,6 +88,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_local_repository_bindings_repository_lookup",
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
+        "ep_parity_lifecycle_dispatches_run_lookup",
     }
 )
 
@@ -264,6 +266,28 @@ def _migrate_schema_44(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=44")
 
 
+def _migrate_schema_45(connection: sqlite3.Connection) -> None:
+    """Add the single-writer CENTRAL-to-historical lifecycle association."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema44")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,45 FROM ep_installations_schema44")
+    connection.execute("DROP TABLE ep_installations_schema44")
+    connection.execute("""CREATE TABLE ep_parity_lifecycle_dispatches (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')),
+        prompt_path TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    connection.execute("CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(45)")
+    connection.execute("UPDATE engineering_metadata SET value='45' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=45")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -279,7 +303,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         raise ServerConfigurationError("EP Server store is unavailable.") from error
     valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
-        raise ServerConfigurationError("EP Server store is not a valid official schema-44 installation.")
+        raise ServerConfigurationError("EP Server store is not a valid official schema-45 installation.")
     return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
 
 
@@ -312,20 +336,22 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
-                            "EP Server store is not a valid official schema-44 installation."
+                            "EP Server store is not a valid official schema-45 installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43}:
+                    if current_schema in {42, 43, 44}:
                         with sqlite3.connect(database_path) as connection:
                             connection.execute("PRAGMA foreign_keys=ON")
                             connection.execute("BEGIN IMMEDIATE")
                             if current_schema == 42:
                                 _migrate_schema_43(connection)
-                            _migrate_schema_44(connection)
+                            if current_schema in {42, 43}:
+                                _migrate_schema_44(connection)
+                            _migrate_schema_45(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -338,6 +364,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_42(connection)
         _migrate_schema_43(connection)
         _migrate_schema_44(connection)
+        _migrate_schema_45(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
