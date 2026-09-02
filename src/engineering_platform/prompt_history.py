@@ -51,10 +51,10 @@ def _safe_timestamp(value: object) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _relative_report(root: Path, report: Path | None) -> str | None:
+def _relative_report(root: Path, report: Path | None, *, central_database: Path | None = None) -> str | None:
     if report is None:
         return None
-    central = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+    central = str(central_database) if central_database is not None else os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
     if central:
         try:
             return "CENTRAL:" + str(report.resolve().relative_to(Path(central).resolve().parent / "artifacts"))
@@ -194,7 +194,7 @@ def record_prompt_execution(
                 title,
                 _safe_timestamp(executed_at),
                 commit,
-                _relative_report(root, report),
+                _relative_report(root, report, central_database=central_database),
                 parent,
                 original,
                 generation,
@@ -277,7 +277,7 @@ def submission_prompt_title(root: Path, run_id: str) -> str | None:
     return str(title).strip()[:500] or None if isinstance(title, str) else None
 
 
-def record_terminal_report(root: Path, report: Path) -> None:
+def record_terminal_report(root: Path, report: Path, *, central_database: Path | None = None) -> None:
     """Project one authoritative terminal report into prompt history.
 
     Direct execution-host invocations do not pass through the inbox watcher.
@@ -288,14 +288,14 @@ def record_terminal_report(root: Path, report: Path) -> None:
     record = _report_record(root, report)
     if record is None:
         raise ValueError("terminal report cannot be projected into prompt history")
-    submitted_title = submission_prompt_title(root, str(record["run_id"]))
+    submitted_title = submission_prompt_title(root, str(record["run_id"])) if central_database is None else None
     # A managed Inbox submission owns its title. The terminal report's
     # Objective is deliberately non-authoritative input context and must never
     # replace the title already recorded at submission, including when the
     # report supplies a non-generic placeholder for that Objective.
     if submitted_title:
         record["prompt_title"] = submitted_title
-    record_prompt_execution(root, **record)
+    record_prompt_execution(root, central_database=central_database, **record)
 
 
 def backfill_prompt_history(root: Path) -> None:

@@ -312,7 +312,7 @@ class ParityLifecycleDispatcher:
             getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
             getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
         )
-        record_terminal_report(repository_root, report)
+        record_terminal_report(repository_root, report, central_database=data_root / "engineering.db")
         analyze_terminal_report(repository_root, state.run_id, report)
 
     def reconcile_terminal_history(self) -> None:

@@ -138,7 +138,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         root = self.roots["alpha"]
         store = StateStore(
             root / ".engineering" / "engineering-runs",
-            central_database=self.data / server.SERVER_DATABASE_FILENAME,
+            central_database=(self.data / server.SERVER_DATABASE_FILENAME).resolve(),
             emit_local_projection=False,
         )
         state = TransactionState("central-checkpoint", "fixture", "central", "COMPLETE", terminal=True)
@@ -217,7 +217,12 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             report.return_value = self.roots["alpha"] / ".engineering" / "reports" / "terminal.md"
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
-        record.assert_called_once_with(self.roots["alpha"].resolve(), report.return_value)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[0], self.roots["alpha"].resolve())
+        self.assertEqual(
+            record.call_args.kwargs["central_database"],
+            (self.data / server.SERVER_DATABASE_FILENAME).resolve(),
+        )
         analyze.assert_called_once_with(self.roots["alpha"].resolve(), receipt.run_id, report.return_value)
 
     def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:
