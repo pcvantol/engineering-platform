@@ -1948,14 +1948,17 @@ def record_artifact(
     execution_id: str | None = None,
     producer_id: str | None = None,
     projection_status: str = "AVAILABLE",
+    central_database: Path | None = None,
+    artifact_root: Path | None = None,
 ) -> None:
     """Register immutable filesystem payload metadata in the canonical store."""
     try:
-        location = str(path.resolve().relative_to((root / ".engineering").resolve()))
+        base = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        location = str(path.resolve().relative_to(base))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError) as error:
         raise EngineeringStorageError("Artifact payload cannot be recorded safely.") from error
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         if run_id and not connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone():
             run_id = None
