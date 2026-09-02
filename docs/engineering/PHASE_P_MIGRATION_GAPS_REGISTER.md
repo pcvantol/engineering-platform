@@ -1,6 +1,6 @@
 # Phase P — migration-gaps register
 
-**Status:** open engineering register for PR #23 and its follow-up increments
+**Status:** authoritative Phase-P migration completion gate for PR #23 and its follow-up increments
 
 **Last reviewed:** 2026-09-02
 **Scope:** the installed standalone EP Server, Operations Console, CENTRAL
@@ -13,6 +13,12 @@ This register records the audits performed while restoring Phase-P functional
 parity.  It prevents a presentation fix, a CENTRAL overlay, or a retained
 historical adapter from being mistaken for completion of the standalone
 migration.
+
+This register is the authoritative Phase-P migration completion gate.
+Functional-parity receipts, green pull requests, Console-parity receipts and
+transition-baseline qualifications do not supersede unresolved **ACTIVE GAP**
+entries.  PR #23 is a transition/consolidation baseline, not completion of the
+CENTRAL cutover.
 
 The target architecture is deliberately simple:
 
@@ -33,6 +39,16 @@ telemetry, provider usage, downloads, or project identity.  Historical
 DJConnect records may remain as read-only provenance, but must not be on a
 standalone product path.
 
+The non-negotiable operational-authority target is:
+
+```text
+OPERATIONAL_DATABASE_COUNT = 1
+CANONICAL_OPERATIONAL_DATABASE = <installation data root>/engineering.db
+ACTIVE_REPOSITORY_LOCAL_DB_AUTHORITY = 0
+ACTIVE_LOCAL_STATESTORE_AUTHORITY = 0
+ACTIVE_SECONDARY_SERVER_DATABASE_AUTHORITY = 0
+```
+
 The rows below use these dispositions:
 
 - **REPAIRED IN #23** — the live Server route now uses CENTRAL for this
@@ -50,8 +66,8 @@ The rows below use these dispositions:
 | MG-02 | **Project identity and workspace label.** A selected CENTRAL project could show a package/default local-root name such as `djconnect`. | **REPAIRED IN #23** | The selected CENTRAL project identity is the display authority; the local root is an internal binding.  Keep a regression test whose project label differs from the checkout directory name. |
 | MG-03 | **No-project projection.** `<geen>` must retain platform cards but must not leak a default/first project. | **PARTIALLY REPAIRED IN #23** | The selector and no-project banner exist, and provider capacity is available without selection.  The retained health tooltip still combines a root-derived `latestStatus` with global component health.  It must hide project execution, queue, watcher-state and workspace rows at `<geen>`, or show an explicitly labelled all-project aggregate. |
 | MG-04 | **Provider capacity and admission reserve.** Codex account limits were visually live but their history and reserve policy were root/project scoped. | **REPAIRED IN #23** | Capacity history and `codex_capacity_reserve_percent` are now CENTRAL platform metadata, exposed by `/api/provider-capacity`; worker admission resolves the same Server data root.  Keep tests for no-project visibility, cross-project policy equality and child-process inheritance. |
-| MG-05 | **Managed Codex CLI location.** Diagnostics could show a temporary-process `HOME` path while the server used the installed CLI elsewhere. | **REPAIRED IN #23** | `managed_codex_cli_prefix` is installation configuration and is passed to Server and child processes.  Diagnostics must derive both directory and executable from this one value.  Do not reintroduce `Path.home()` as a managed-CLI locator. |
-| MG-06 | **Local database fallback.** Historical `storage.database_path(root)` can resolve `root/.engineering/engineering.db`; root-based helpers still call `open_storage(root)`. | **ACTIVE GAP — P0** | A CENTRAL overlay does not remove this dependency.  Replace the root-based storage interface on standalone routes with typed CENTRAL repositories; then make local-database resolution unavailable to installed product code.  A build-time import/use guard and a clean-install test must prove that no local `engineering.db` is opened. |
+| MG-05 | **Managed Codex CLI location.** Diagnostics could show a temporary-process `HOME` path while the server used the installed CLI elsewhere. | **PARTIALLY REPAIRED IN #23** | `managed_codex_cli_prefix` is installation configuration and is passed to the active Server/worker/child path. Historical independently launched watcher, dashboard and direct entrypoints are not yet proven to consume the same typed configuration; `DJCONNECT_ENGINEERING_CODEX_EXECUTABLE` remains dead configuration. Do not reintroduce `Path.home()` as a managed-CLI locator. |
+| MG-06 | **Local and secondary database authority.** Historical `storage.database_path(root)` can resolve `root/.engineering/engineering.db`; root-based helpers still call `open_storage(root)`. A possible `ep-server.db` installation database must also be disproven or consolidated. | **ACTIVE GAP — P0** | A CENTRAL overlay does not remove either dependency.  Replace root-based storage interfaces on standalone routes with typed CENTRAL repositories, inventory all installation database paths, and make local-database resolution unavailable to installed product code.  A build-time import/use guard and a clean-install test must prove that no local `engineering.db` or secondary operational `ep-server.db` is opened. |
 | MG-07 | **Historical dashboard delegation.** The Server delegates most routes to `dashboard.handler(root, ...)`; CENTRAL validates the root but does not own every displayed datum. | **ACTIVE GAP — P0** | `server._delegate_dashboard` remains a compatibility boundary, not a CENTRAL-native projection service.  Replace its status, history, configuration, log, report/download and action routes incrementally.  No-project routes must never select a first bound root as a hidden data source. |
 | MG-08 | **Run state, lease, retry and recovery.** The retained lifecycle uses `.engineering/engineering-runs` through `StateStore`; watcher and recovery logic read/write it. | **ACTIVE GAP — P0** | CENTRAL dispatch/lease/run state is not yet the sole state machine.  Move checkpoints, cancellation, retries, predecessor blocking, merge waits and finalization to CENTRAL transactions.  Qualify one active-run-per-project and independent concurrent runs across two projects. |
 | MG-09 | **Telemetry.** `telemetry.py` persists run rows, daily aggregates, phase spans and a terminal outbox through local storage. | **ACTIVE GAP — P0** | Renaming the card to execution telemetry did not migrate the writer or reader.  CENTRAL needs project-keyed telemetry/evidence tables and platform-safe aggregates.  Prove a project cannot read another project's telemetry and that `<geen>` exposes only an explicit aggregate, if one is intended. |
@@ -85,17 +101,23 @@ runtime path or presented as the new CENTRAL operational store.
 
 ## Required increment order
 
-1. **Close authority leakage:** remove root-local database fallback from all
-   installed runtime paths and establish CENTRAL repositories for the lifecycle.
-2. **Close execution leakage:** migrate run state, leases, recovery and
+1. **P-CENTRAL-CORE — close authority leakage:** remove root-local database
+   fallback and any secondary operational database from all installed runtime
+   paths; establish CENTRAL repositories for the lifecycle, StateStore,
+   telemetry and operational evidence/history/provider usage.
+2. **P-CENTRAL-CONSOLE — close projection leakage:** replace historical
+   dashboard delegation with CENTRAL-native status, history, configuration,
+   logs, downloads and explicit no-project/platform projections.
+3. **P-TRANSPORT — close ingress leakage:** reduce watcher state to transport
+   normalization and CENTRAL submission ingress.
+4. **P-QUEUE — close execution leakage:** migrate run state, leases, recovery and
    finalization before allowing broader scheduling or concurrency claims.
-3. **Close projection leakage:** migrate Console history, telemetry, evidence,
-   configuration, logs and downloads; make no-project/platform aggregates
-   explicit.
-4. **Retire compatibility transport:** reduce the Inbox watcher to ingress or
-   remove it, then retire active DJConnect service identities.
-5. **Establish release authority:** only after a signed wheel release contract
-   exists may EP expose runtime-update availability or an update action.
+5. **P-NEUTRAL / runtime-authority consolidation:** retire active DJConnect
+   service identities and converge supported entrypoints on runtime authority.
+6. **P-RELEASE:** only after a signed wheel release contract exists may EP
+   expose runtime-update availability or an update action.
+7. **Phase-P parity re-audit**, then **P-D Managed / Genesis / armed-retry
+   Goldens**; only later may Phase S and B9 be considered.
 
 ## Exit criteria
 

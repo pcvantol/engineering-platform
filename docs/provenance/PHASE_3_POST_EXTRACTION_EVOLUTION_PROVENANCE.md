@@ -31,11 +31,15 @@ that every mapped target blob at the anchor equals the immutable target before
 using normal EP history for Stage 2; this is rebase/squash robust without
 reinterpreting historical evidence.
 
-Current inventory: 83 `UNCHANGED`, one `GOVERNED_MODIFICATION`, zero
-`UNACCOUNTED`.  `dashboard.py` retains its responsibility at the same path and
-is governed by the standalone Operations Console composition in PR #22.
-`inbox_watcher.py` remains Stage-1-equivalent at its extracted standalone path;
-its historical extraction adaptation is not a current standalone mutation.
+Current inventory: 68 `UNCHANGED`, 15 `GOVERNED_MODIFICATION`, one
+`INTENTIONAL_RETIREMENT`, and zero `UNACCOUNTED`. `dashboard.py` retains its
+responsibility at the same path, first governed by the standalone Operations
+Console composition in PR #22 and updated by the Phase-P transition baseline
+in PR #23. PR #23's other retained historical targets have explicit
+post-extraction lineage receipts; the historical project-local
+`database_maintenance.py` module is intentionally retired. This provenance
+bookkeeping describes source evolution only; it does not claim CENTRAL
+migration completion.
 
 Target-only modules are intentionally outside this historical mapping.  They
 remain normal post-extraction product development and do not modify either
@@ -46,7 +50,8 @@ Run the control against the designated read-only historical checkout:
 
 ```sh
 python3 tools/extraction/verify_phase3_equivalence.py \
-  --source /private/tmp/djconnect-extraction-source-3668eb77 --target .
+  --source /private/tmp/djconnect-extraction-source-3668eb77 \
+  --target . --qualified-revision HEAD
 ```
 
 ## Cutover assurance contract
