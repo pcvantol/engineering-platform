@@ -38,3 +38,11 @@ class DashboardTranslationTests(unittest.TestCase):
             dashboard_translation.translate("pt", ["text"])
         with self.assertRaisesRegex(dashboard_translation.DashboardTranslationError, "REQUEST_INVALID"):
             dashboard_translation.translate("nl", ["x" * 241])
+
+    def test_provider_failure_is_a_safe_display_failure(self) -> None:
+        with patch(
+            "engineering_platform.dashboard_translation.CodexCliProvider.invoke",
+            side_effect=OSError("runtime unavailable"),
+        ):
+            with self.assertRaisesRegex(dashboard_translation.DashboardTranslationError, "UNAVAILABLE"):
+                dashboard_translation.translate("nl", ["Recorded validation passed."])

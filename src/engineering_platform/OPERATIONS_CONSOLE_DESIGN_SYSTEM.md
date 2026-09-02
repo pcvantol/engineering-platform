@@ -513,7 +513,12 @@ literal into `dashboard.js`. Keep operation language concrete:
   exports. The dashboard presents known evidence codes through deterministic
   catalogue keys and parameters; it must never invoke an AI service to
   translate an operational diagnosis. Unknown or redacted evidence follows
-  the existing safe generic-diagnostic path.
+  the existing safe generic-diagnostic path. The narrowly separate
+  `quality_evidence.result` field is operator-facing, bounded, redacted prose
+  produced by an execution. It may be translated on demand only by the
+  installation-managed Codex runtime through the read-only translation route;
+  stored evidence is never changed, provider input is treated as untrusted
+  data, and a failure leaves its original evidence visible.
 
 ## 9. Required design-review checklist
 

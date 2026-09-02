@@ -3285,6 +3285,30 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toContainText(source);
   });
 
+  test("retains dynamic quality evidence when translation is unavailable", async ({ page }) => {
+    const source = "No documented behavior changed; documentation remained unchanged.";
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", (route) => route.fulfill({
+      status: 503, json: { error: "DASHBOARD_TRANSLATION_UNAVAILABLE" },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ source: result }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "quality-control-translation-failure",
+      lifecycle: {
+        available: true, run_id: "quality-control-translation-failure", terminal_state: "ACTIVE",
+        steps: [{
+          id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+          quality_evidence: [{ activity: "DOCUMENTATION", result }],
+        }],
+      },
+    }, {}), { source });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    await expect(page.locator("#lifecycleDetailModal")).toContainText(source);
+  });
+
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
