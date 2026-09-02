@@ -2611,6 +2611,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 "Execution Mode: Genesis\n\nTarget repository:\n\nrelative/project\n",
                 self.root,
             )
+
+    def test_genesis_context_accepts_inline_target_declaration(self) -> None:
+        context = resolve_execution_context(
+            "Execution Mode: Genesis\nTarget repository: /tmp/qualified-genesis\n",
+            self.root,
+        )
+        self.assertEqual(context.execution_mode, "GENESIS")
+        self.assertEqual(context.target_repository, Path("/tmp/qualified-genesis").resolve())
         with self.assertRaisesRegex(RunnerError, "cannot be the Engineering Platform host"):
             resolve_execution_context(
                 f"Execution Mode: Genesis\n\nTarget repository:\n\n{self.root}\n",
