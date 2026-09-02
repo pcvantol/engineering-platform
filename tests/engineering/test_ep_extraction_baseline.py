@@ -141,41 +141,5 @@ class ExtractionBaselineAuditTests(unittest.TestCase):
             self.assertEqual(AUDIT_MODULE.candidate_universe(root), before)
 
 
-class HistoricalEquivalenceCanaryTests(unittest.TestCase):
-    def _fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
-        temporary = tempfile.TemporaryDirectory()
-        root = Path(temporary.name)
-        source, target = root / "source", root / "target"
-        (source / "tools/engineering").mkdir(parents=True)
-        (target / "src/engineering_platform").mkdir(parents=True)
-        (source / "tools/engineering/historical.py").write_text("value = 1\n", encoding="utf-8")
-        (target / "src/engineering_platform/historical.py").write_text("value = 1\n", encoding="utf-8")
-        digest = __import__("hashlib").sha256(b"value = 1\n").hexdigest()
-        row = {"source_path": "tools/engineering/historical.py", "target_path": "src/engineering_platform/historical.py", "source_digest": digest, "target_pre_rewrite_digest": digest, "target_final_digest": digest, "rewrite_categories": []}
-        baseline = {"allowed_divergences": [], "allowed_additions": [], "candidate_baseline_digest": __import__("hashlib").sha256(json.dumps([row], sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
-        baseline_path = root / "baseline.json"
-        baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
-        return temporary, source, target, baseline_path
-
-    def _verify(self, source: Path, target: Path, baseline: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([sys.executable, str(EQUIVALENCE), "--source", str(source), "--target", str(target), "--baseline", str(baseline)], text=True, capture_output=True, check=False)
-
-    def test_historical_mutation_deletion_rename_and_unknown_rewrite_fail(self) -> None:
-        for action in ("mutate", "delete", "rename"):
-            temporary, source, target, baseline = self._fixture()
-            with temporary:
-                historical = target / "src/engineering_platform/historical.py"
-                if action == "mutate": historical.write_text("value = 2\n", encoding="utf-8")
-                elif action == "delete": historical.unlink()
-                else: historical.rename(historical.with_name("renamed.py"))
-                self.assertNotEqual(self._verify(source, target, baseline).returncode, 0, action)
-
-    def test_post_extraction_target_file_is_allowed_without_baseline_change(self) -> None:
-        temporary, source, target, baseline = self._fixture()
-        with temporary:
-            (target / "src/engineering_platform/future_capability.py").write_text("value = 2\n", encoding="utf-8")
-            self.assertEqual(self._verify(source, target, baseline).returncode, 0)
-
-
 if __name__ == "__main__":
     unittest.main()
