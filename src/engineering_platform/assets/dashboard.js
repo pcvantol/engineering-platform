@@ -7393,7 +7393,7 @@ function executionActivityDisplayValue(value) {
 }
 function promptDetailExecutionActivitySection(activity) {
   if (!activity || typeof activity !== "object") {
-    return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))]);
+    return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))], false, "prompt-detail-card--execution-activity");
   }
   const counters = activity.activity || {};
   const diff = activity.terminal_delivery_diff || {};
@@ -7408,7 +7408,7 @@ function promptDetailExecutionActivitySection(activity) {
     detailField(t("detail.delivery_paths"), diff.total_unique_changed_paths),
     detailField(t("detail.delivery_renamed"), Array.isArray(diff.renamed) ? diff.renamed.length : undefined),
     detailField(t("detail.delivery_pr_scope"), executionActivityDisplayValue(diff.per_pr_changed_file_counts)),
-  ]);
+  ], false, "prompt-detail-card--execution-activity");
 }
 function commitTimelineKind(item) {
   const mergeKinds = {
@@ -7640,6 +7640,7 @@ function renderPromptHistoryDetail(payload) {
     activity = history.execution_activity_summary,
     recommendationHandoff = payload?.recommendation_handoff;
   const [executionSummary, executionContext] = promptDetailExecutionSections(history);
+  const executionActivity = promptDetailExecutionActivitySection(activity);
   if (typeof history.title === "string" && history.title.trim())
     $("promptHistoryDetailTitle").textContent = history.title.trim();
   setPromptHistoryDetailDownloads(payload);
@@ -7650,6 +7651,7 @@ function renderPromptHistoryDetail(payload) {
         executionSummary,
         promptDetailSidebar([
           promptDetailDurationSection(execution),
+          executionActivity,
           promptDetailRuntimeSection(runtime),
           promptDetailCommitsSection(commits),
           promptDetailEvidenceSection(evidence),
@@ -7658,7 +7660,6 @@ function renderPromptHistoryDetail(payload) {
       promptDetailRightbar([executionContext, promptDetailPullRequestsSection(pullRequests)]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
-      promptDetailExecutionActivitySection(activity),
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailRecommendationHandoff(recommendationHandoff),
     ].filter(Boolean),

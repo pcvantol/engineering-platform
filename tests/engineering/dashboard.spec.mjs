@@ -8577,7 +8577,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
-        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 } },
+        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
         usage: { input_tokens: 120, output_tokens: 45 },
@@ -8690,6 +8690,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-status .indicator--green")).toHaveCount(1);
     await expect(detailSidebar).toHaveCount(1);
     await expect(detailSidebar).toContainText("Doorlooptijd");
+    const durationCard = detailSidebar.locator(".prompt-detail-card").filter({ hasText: "Doorlooptijd" });
+    const activityCard = detailSidebar.locator(".prompt-detail-card--execution-activity");
+    await expect(activityCard).toHaveCount(1);
+    await expect(activityCard).toContainText("Samenvatting uitvoeringsactiviteit");
+    expect(await activityCard.evaluate((card) => {
+      const cards = [...card.parentElement.children];
+      return cards.indexOf(card) === cards.indexOf(card.parentElement.querySelector(".prompt-detail-card")) + 1;
+    })).toBe(true);
+    const [durationBounds, activityBounds] = await Promise.all([durationCard.boundingBox(), activityCard.boundingBox()]);
+    expect(durationBounds).not.toBeNull();
+    expect(activityBounds).not.toBeNull();
+    expect(activityBounds.x).toBe(durationBounds.x);
+    expect(activityBounds.y).toBeGreaterThan(durationBounds.y);
     await expect(detailSidebar).toContainText("Runtime");
     await expect(detailSidebar).toContainText("Git-commit");
     await expect(detailSidebar).toContainText("Uitvoeringsbewijs");
