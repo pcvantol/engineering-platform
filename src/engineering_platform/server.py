@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from html import escape
 import http.server
 import json
 import os
@@ -22,9 +23,11 @@ import time
 from typing import Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
+from . import dashboard
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
@@ -426,6 +429,62 @@ def _operations_console_document() -> bytes:
     return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
 
 
+def _bound_console_projects(data_root: Path) -> list[dict[str, str]]:
+    """Return project identities with a validated schema-44 Console binding.
+
+    Local roots are resolved only at this Server boundary and are never sent to
+    the browser.  The historical dashboard remains root-based; CENTRAL decides
+    which root is permitted for each request.
+    """
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute("""SELECT p.project_id, r.repository_id
+            FROM ep_project_registrations p JOIN ep_repository_registrations r
+              ON r.project_id=p.project_id JOIN ep_local_repository_bindings b
+              ON b.project_id=p.project_id AND b.repository_id=r.repository_id
+            WHERE p.status='ACTIVE' AND b.state='BOUND'
+            ORDER BY p.project_id, CASE r.role WHEN 'authority' THEN 0 ELSE 1 END, r.repository_id""").fetchall()
+        projects: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for project_id, repository_id in rows:
+            if str(project_id) in seen:
+                continue
+            try:
+                local_repository_binding.resolve_execution_repository(
+                    connection, project_id=str(project_id), repository_id=str(repository_id), data_root=data_root,
+                )
+            except local_repository_binding.LocalRepositoryBindingError:
+                continue
+            seen.add(str(project_id))
+            projects.append({"project_id": str(project_id), "repository_id": str(repository_id)})
+    return projects
+
+
+def _console_root(data_root: Path, project_id: str) -> Path:
+    """Resolve the selected project through schema-44 before every request."""
+    for project in _bound_console_projects(data_root):
+        if project["project_id"] == project_id:
+            with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+                return local_repository_binding.resolve_execution_repository(
+                    connection, project_id=project_id, repository_id=project["repository_id"], data_root=data_root,
+                ).local_root
+    raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
+
+
+def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path):
+    """Add the CENTRAL project boundary without replacing the historical UI."""
+    options = "".join(
+        f'<option value="{escape(item["project_id"], quote=True)}"'
+        f'{" selected" if item["project_id"] == project_id else ""}>'
+        f'{escape("DJConnect" if item["project_id"] == "djconnect" else "Engineering Platform" if item["project_id"] == "engineering-platform" else item["project_id"])}</option>'
+        for item in projects
+    )
+    boundary = f'''<section class="card" id="consoleProjectBoundary" aria-label="Project selection"><label for="consoleProject">Project</label><select id="consoleProject">{options}</select></section><script>(function(){{const project={json.dumps(project_id)},select=document.getElementById('consoleProject'),nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})();</script>'''
+    root_bytes = str(root).encode("utf-8")
+    return lambda document: document.replace(root_bytes, b"Project-scoped local workspace").replace(
+        b"</main>", boundary.encode("utf-8") + b"</main>", 1,
+    )
+
+
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
     """Authenticate an existing scoped CENTRAL consumer credential."""
     if not isinstance(token, str) or not token or len(token) > 4096:
@@ -448,8 +507,43 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _delegate_dashboard(self, method: str) -> None:
+        """Run the preserved handler after CENTRAL validates the selected scope."""
+        request = urlsplit(self.path)
+        selected = self.headers.get("X-Engineering-Platform-Project")
+        if not selected:
+            selected = (parse_qs(request.query).get("project") or [None])[0]
+        projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
+        project_ids = {item["project_id"] for item in projects}
+        if not isinstance(selected, str) or selected not in project_ids:
+            # Static package assets are scope-neutral and load before the
+            # document's project-aware fetch wrapper exists.  Resolve a valid
+            # bound root solely to reuse the installed asset handler; no
+            # project data is read or disclosed by these routes.
+            if (request.path == "/" or request.path.startswith("/assets/") or request.path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}) and projects:
+                selected = projects[0]["project_id"]
+            else:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+        try:
+            root = _console_root(self.server.data_root, selected)  # type: ignore[attr-defined]
+            historical = dashboard.handler(
+                root, document_transform=_console_document_transform(selected, projects, root),
+            )
+        except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
+            self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+            return
+        # The historical handler is deliberately reused verbatim.  Bind its
+        # small private helpers to this request instance, then invoke its route
+        # method so every historical asset, modal, SSE endpoint and action
+        # remains available without a route-by-route copy.
+        self._send = historical._send.__get__(self, type(self))  # type: ignore[method-assign]
+        self._same_origin = historical._same_origin.__get__(self, type(self))  # type: ignore[attr-defined]
+        getattr(historical, method)(self)
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/":
+        request = urlsplit(self.path)
+        if request.path == "/diagnostics/topology":
             body = _operations_console_document()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -463,6 +557,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             except ServerConfigurationError:
                 self._send(503, {"error": "operations projection unavailable"})
             return
+        if request.path == "/" or request.path.startswith("/api/") or request.path.startswith("/assets/") or request.path in {"/health", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}:
+            self._delegate_dashboard("do_GET")
+            return
         if self.path not in {"/healthz", "/readyz"}:
             self.send_error(404)
             return
@@ -474,6 +571,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self._send(200, report, str(report["instance_id"]))
 
     def do_POST(self) -> None:  # noqa: N802
+        if urlsplit(self.path).path.startswith("/api/"):
+            self._delegate_dashboard("do_POST")
+            return
         if self.path.startswith("/v1/projects/") and self.path.endswith("/submissions"):
             parts = self.path.split("/")
             if len(parts) != 5 or not parts[3]:
