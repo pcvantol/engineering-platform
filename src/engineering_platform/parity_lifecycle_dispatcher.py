@@ -10,13 +10,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Callable, Protocol
 
 from . import inbox_watcher
-from .agent_state import StateStore, TransactionState
+from .agent_state import StateStore, TransactionState, redact_diagnostic
+from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .parity_context import HistoricalCandidate, ParityProjectContext, historical_candidate, project_context
@@ -27,6 +30,7 @@ from .storage import record_run_qualification_context, record_submission
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+_LOCAL_PATH = re.compile(r"(?:/[^\s:]+)+")
 
 
 class ParityLifecycleDispatchError(RuntimeError):
@@ -173,6 +177,19 @@ class ParityLifecycleDispatcher:
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             connection.execute("UPDATE ep_parity_lifecycle_dispatches SET state=?,updated_at=? WHERE submission_id=? AND run_id=?", (state, now, submission_id, run_id))
 
+    def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
+                                     run_id: str, error: RunnerError) -> None:
+        """Persist only the missing pre-checkpoint explanation, never a run state."""
+        message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
+        path = self.data_root / "artifacts" / "projects" / context.project_id / "runs" / run_id / "early-runner-failure.json"
+        payload = {"submission_id": submission_id, "project_id": context.project_id,
+                   "repository_id": context.repository_id, "run_id": run_id,
+                   "failure_stage": "RUNNER_INITIALIZATION", "error_type": type(error).__name__,
+                   "diagnostic_code": "RUNNER_EARLY_FAILURE", "message": message,
+                   "recorded_at": _utcnow()}
+        path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
     def dispatch(self, submission_id: str) -> DispatchReceipt:
         context, candidate, run_id, prompt, duplicate = self._claim(submission_id)
         if context.local_repository_root is None:
@@ -187,6 +204,10 @@ class ParityLifecycleDispatcher:
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
+        except RunnerError as error:
+            self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)
+            self._set_state(submission_id, run_id, "BLOCKED")
+            raise
         except Exception:
             # A nonterminal checkpoint is deliberately resumable with the same
             # run ID; an uncheckpointed admission failure is visible as BLOCKED.
