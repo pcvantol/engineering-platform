@@ -518,6 +518,31 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => repairs).toBe(1);
   });
 
+  test("refreshes missing Codex runtime state to ready after the Console install action", async ({ page }) => {
+    let installed = false;
+    await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
+      providers: {
+        codex: { provider: "CODEX", state: installed ? "READY" : "UNAVAILABLE" },
+        github: { provider: "GITHUB", state: "READY" },
+      },
+    } }));
+    await page.route("**/api/provider-login/repair", async (route) => {
+      expect(JSON.parse(route.request().postData() || "{}")).toEqual({ provider: "CODEX", action: "install" });
+      installed = true;
+      await route.fulfill({ status: 202, json: { started: true } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    const banner = page.locator("#codexProviderReadinessBanner");
+    await expect(banner).toBeVisible();
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveText(
+      DASHBOARD_MESSAGES.nl["notification.provider_readiness.install"].replace("{provider}", "Codex"),
+    );
+    await page.locator("#codexProviderReadinessAction").click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect(banner).toBeHidden({ timeout: 3_000 });
+  });
+
   test("shows a sticky provider repair banner and never reports it as resolved before recheck", async ({ page }) => {
     let readinessCalls = 0;
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {

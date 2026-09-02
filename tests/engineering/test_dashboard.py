@@ -202,22 +202,13 @@ class DashboardStatusTest(unittest.TestCase):
         readiness.assert_called_once_with(Path("/workspace"))
 
     @patch("engineering_platform.dashboard._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
-    @patch("engineering_platform.dashboard.CodexCliProvider")
-    @patch("engineering_platform.dashboard.LocalProcessProvider")
-    @patch("engineering_platform.dashboard._npm_executable", return_value="/usr/local/bin/npm")
+    @patch("engineering_platform.dashboard.managed_codex_runtime.provision")
     @patch("engineering_platform.dashboard._execution_active", return_value=False)
-    def test_codex_install_is_serialized_and_verifies_the_cli_before_login(
-        self, _active: MagicMock, _npm: MagicMock, process: MagicMock, codex: MagicMock, _status: MagicMock,
+    def test_codex_install_uses_the_installation_owned_runtime_lifecycle(
+        self, _active: MagicMock, provision: MagicMock, _status: MagicMock,
     ) -> None:
-        completed = __import__("subprocess").CompletedProcess
-        process.return_value.execute.side_effect = [
-            completed(("npm", "view"), 0, '"0.150.0"', ""),
-            completed(("npm", "install"), 0, "", ""),
-        ]
-        codex.return_value.command.return_value = completed(("codex", "--version"), 0, "0.150.0", "")
         dashboard._install_provider(Path("/workspace"), "CODEX")
-        self.assertEqual(codex.return_value.command.call_args.args, ("--version",))
-        self.assertEqual(process.return_value.execute.call_count, 2)
+        provision.assert_called_once_with(Path("/workspace"))
 
     @patch("engineering_platform.dashboard.LocalProcessProvider")
     @patch("engineering_platform.dashboard.CodexCliProvider")
