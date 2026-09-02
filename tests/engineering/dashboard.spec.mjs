@@ -4035,6 +4035,31 @@ test.describe("Engineering Status browser smoke", () => {
     )).toBe(true);
   });
 
+  test("scrolls a chat bubble only after it exceeds two thirds of the available chat space", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").replaceChildren();
+      chatMessage("assistant", "Korte reactie zonder interne scrollbar.");
+      chatMessage("assistant", "Lange reactie. ".repeat(1500));
+      element.showModal();
+    });
+    const messages = page.locator("#chatMessages .chat-message");
+    const shortBody = messages.nth(0).locator(".chat-message__body");
+    const longBubble = messages.nth(1);
+    const longBody = longBubble.locator(".chat-message__body");
+    await expect(messages).toHaveCount(2);
+    expect(await shortBody.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    expect(await longBody.evaluate((element) => element.scrollHeight > element.clientHeight + 1)).toBe(true);
+    const [messagesBox, longBubbleBox] = await Promise.all([
+      page.locator("#chatMessages").boundingBox(), longBubble.boundingBox(),
+    ]);
+    expect(messagesBox).not.toBeNull();
+    expect(longBubbleBox).not.toBeNull();
+    expect(longBubbleBox.height).toBeLessThanOrEqual(messagesBox.height * 2 / 3 + 1);
+  });
+
   test("shows the refresh timestamp in the bottom status bar", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#currentTime")).toHaveCount(0);

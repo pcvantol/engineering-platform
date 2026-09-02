@@ -539,7 +539,7 @@ html[data-theme="light"] .chat-message__body code{background:transparent;color:i
 /* Keep role and timestamp fixed within a long bubble while only its message
    body scrolls. The messages list owns the definite available chat height.
    `auto` deliberately reserves no scrollbar space for a short message. */
-.prompt-chat-modal .chat-message{display:grid;grid-template-rows:auto auto minmax(0,1fr);max-block-size:var(--chat-bubble-max-block);min-block-size:0;overflow:hidden}.prompt-chat-modal .chat-message__body{min-block-size:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:auto;scrollbar-width:thin}
+.prompt-chat-modal .chat-message{box-sizing:border-box;display:flex;flex-direction:column;max-block-size:var(--chat-bubble-max-block);min-block-size:0;overflow:hidden}.prompt-chat-modal .chat-message__body{flex:0 1 auto;min-block-size:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:auto;scrollbar-width:thin}
 .prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
