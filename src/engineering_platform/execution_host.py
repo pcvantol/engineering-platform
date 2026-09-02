@@ -3115,6 +3115,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument(
+        "--central-database", type=Path,
+        help="installation-owned engineering.db selected by the lifecycle composition root",
+    )
+    parser.add_argument(
         "--transaction-kind",
         choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"),
         default="IMPLEMENTATION",
@@ -3145,6 +3149,11 @@ def main(argv: list[str] | None = None) -> int:
         print(dashboard(report))
         return 0 if report["qualification"] == "PASS" else 1
     args = build_parser().parse_args(raw_args)
+    central_database = args.central_database.resolve() if args.central_database is not None else None
+    if central_database is not None and central_database.name != "engineering.db":
+        raise SystemExit("--central-database must name engineering.db")
+    if central_database is not None and not central_database.is_file():
+        raise SystemExit("--central-database does not exist")
     prompt_path = args.prompt.resolve()
     if not prompt_path.is_file():
         raise SystemExit(f"prompt does not exist: {prompt_path}")
@@ -3169,7 +3178,11 @@ def main(argv: list[str] | None = None) -> int:
         runtime = None
     runner = EngineeringRunner(
         root,
-        StateStore(root / ".engineering" / "engineering-runs"),
+        StateStore(
+            root / ".engineering" / "engineering-runs",
+            central_database=central_database,
+            emit_local_projection=central_database is None,
+        ),
         SubprocessRepositoryClient(),
         GhCliClient(),
         CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
@@ -3200,6 +3213,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner.reviewer_records,
                 getattr(runner.agent, "last_runtime_metadata", None),
                 getattr(runner.agent, "last_execution_metadata", None),
+                central_database=central_database,
             )
             if state.terminal
             else None
@@ -3213,7 +3227,7 @@ def main(argv: list[str] | None = None) -> int:
     if report_path:
         evidence_phase = start_phase(root, state.run_id, "EVIDENCE_PERSISTENCE")
         try:
-            record_terminal_report(root, report_path)
+            record_terminal_report(root, report_path, central_database=central_database)
             analyze_terminal_report(root, state.run_id, report_path)
         except Exception:
             complete_phase(root, evidence_phase, outcome="FAILED")
