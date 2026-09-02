@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from typing import Mapping, Protocol, Sequence
 
 
@@ -30,7 +31,9 @@ class RuntimeProvider(Protocol):
 class ProcessProvider(Protocol):
     """The sole boundary for local child-process execution."""
 
-    def execute(self, root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]: ...
+    def execute(
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]: ...
 
@@ -40,8 +43,13 @@ class ProcessProvider(Protocol):
 class LocalProcessProvider:
     """Default local process adapter; orchestration code never imports subprocess for work."""
 
-    def execute(self, root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=root, text=True, capture_output=True, check=False)
+    def execute(
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            arguments, cwd=root, env=dict(environment) if environment is not None else None,
+            text=True, capture_output=True, check=False,
+        )
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]:
         return subprocess.Popen(
@@ -56,6 +64,23 @@ class LocalProcessProvider:
         )
 
 
+def installed_python_environment() -> dict[str, str]:
+    """Return the Server-owned interpreter environment for child validation.
+
+    An installed Engineering Platform Server is executed by its installation
+    virtual environment.  Child validation must retain that interpreter when a
+    repository asks for the conventional ``python -m ...`` command; otherwise
+    it can accidentally resolve a different system Python.
+    """
+    executable = Path(sys.executable).resolve()
+    environment = dict(os.environ)
+    environment["PATH"] = str(executable.parent) + os.pathsep + environment.get("PATH", "")
+    virtual_environment = executable.parent.parent
+    if (virtual_environment / "pyvenv.cfg").is_file():
+        environment["VIRTUAL_ENV"] = str(virtual_environment)
+    return environment
+
+
 class DeterministicValidationExecutor:
     """Run one resolved validation control outside provider-agent dispatch."""
 
@@ -64,7 +89,7 @@ class DeterministicValidationExecutor:
 
     def run(self, root: Path, command: tuple[str, ...]) -> "DeterministicValidationResult":
         try:
-            completed = self.process.execute(root, command)
+            completed = self.process.execute(root, command, environment=installed_python_environment())
             stdout = completed.stdout
             stderr = completed.stderr
             return DeterministicValidationResult(

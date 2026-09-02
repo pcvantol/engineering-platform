@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -4314,13 +4315,20 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         class Process:
             def __init__(self, completed: subprocess.CompletedProcess[str]) -> None:
                 self.completed = completed
+                self.environment: dict[str, str] | None = None
 
-            def execute(self, root: Path, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            def execute(
+                self, root: Path, arguments: tuple[str, ...], *, environment: dict[str, str] | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                self.environment = environment
                 return self.completed
 
-        success = DeterministicValidationExecutor(Process(subprocess.CompletedProcess(("check",), 0, "ok", ""))).run(self.root, ("check",))
+        process = Process(subprocess.CompletedProcess(("check",), 0, "ok", ""))
+        success = DeterministicValidationExecutor(process).run(self.root, ("check",))
         self.assertEqual(success.exit_code, 0)
         self.assertTrue(success.diagnostic_capture_available)
+        self.assertIsNotNone(process.environment)
+        self.assertTrue(str(process.environment["PATH"]).startswith(str(Path(sys.executable).resolve().parent)))
         self.assertFalse((self.root / ".engineering" / "artifacts").exists())
         record_validation_profile(
             self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",

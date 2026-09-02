@@ -5968,6 +5968,21 @@ function providerLoginStatusBlock() {
       );
       block.append(row);
     }
+    const runtime = document.createElement("div");
+    runtime.className = "configuration-provider-status__row";
+    runtime.dataset.executionRuntime = "true";
+    const repair = Object.assign(document.createElement("button"), {
+      className: "configuration-provider-status__repair", type: "button", hidden: true,
+      textContent: t("configuration.execution_runtime_repair"),
+    });
+    repair.dataset.executionRuntimeRepair = "true";
+    runtime.append(
+      Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
+      Object.assign(document.createElement("strong"), { textContent: t("configuration.execution_runtime") }),
+      Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
+      repair,
+    );
+    block.append(runtime);
     configuration.querySelector("summary")?.after(block);
   }
   return block;
@@ -6027,16 +6042,43 @@ function renderProviderLoginStatus(block, providers) {
     repair.textContent = action ? t(`notification.provider_readiness.${action}`, { provider: providerDisplayName(provider) }) : "";
   });
 }
+function renderExecutionRuntimeStatus(block, runtime) {
+  const row = block.querySelector("[data-execution-runtime]");
+  const banner = $("executionRuntimeBanner"), title = $("executionRuntimeTitle"), message = $("executionRuntimeMessage"), bannerRepair = $("executionRuntimeRepair");
+  if (!row || !banner || !title || !message || !bannerRepair) return;
+  const state = String(runtime?.state || "CHECK_FAILED");
+  const repair = row.querySelector("[data-execution-runtime-repair]");
+  row.dataset.providerState = state;
+  row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
+  const needsRepair = state !== "READY";
+  repair.hidden = !needsRepair;
+  repair.disabled = providerInteractiveRepairInProgress;
+  banner.hidden = !needsRepair;
+  if (needsRepair) {
+    banner.className = `dashboard-status-banner dashboard-status-banner--execution-runtime dashboard-status-banner--provider-${state.toLowerCase()}`;
+    title.textContent = t("notification.execution_runtime.title");
+    message.textContent = t(`notification.execution_runtime.${state.toLowerCase()}`, {}, t("notification.execution_runtime.check_failed"));
+    bannerRepair.hidden = false;
+    bannerRepair.disabled = providerInteractiveRepairInProgress;
+    bannerRepair.textContent = t("configuration.execution_runtime_repair");
+  }
+  syncStickyHeaderOffset();
+}
 async function refreshProviderLoginStatus() {
   const block = providerLoginStatusBlock();
   if (!block) return;
   try {
-    const response = await fetch("/api/provider-login-status", { cache: "no-store" });
-    const payload = await response.json();
+    const [response, runtimeResponse] = await Promise.all([
+      fetch("/api/provider-login-status", { cache: "no-store" }),
+      fetch("/api/execution-runtime-status", { cache: "no-store" }),
+    ]);
+    const [payload, runtime] = await Promise.all([response.json(), runtimeResponse.json()]);
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
     renderProviderLoginStatus(block, payload.providers);
+    renderExecutionRuntimeStatus(block, runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
   } catch {
     renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+    renderExecutionRuntimeStatus(block, { state: "CHECK_FAILED" });
   }
 }
 let providerReadinessRefreshIntervalMs = 300_000, providerReadinessRefreshTimer = null;
@@ -6095,6 +6137,23 @@ document.addEventListener("click", async (event) => {
       providerInteractiveRepairInProgress = false;
       await refreshProviderLoginStatus();
     }, 1200);
+  }
+});
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("#executionRuntimeRepair, [data-execution-runtime-repair]");
+  if (!button || providerInteractiveRepairInProgress) return;
+  providerInteractiveRepairInProgress = true;
+  document.querySelectorAll("#executionRuntimeRepair, [data-execution-runtime-repair]").forEach((candidate) => { candidate.disabled = true; });
+  try {
+    const response = await fetch("/api/execution-runtime/repair", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    $("executionRuntimeMessage").textContent = t("notification.execution_runtime.repair_failed");
+  } finally {
+    providerInteractiveRepairInProgress = false;
+    await refreshProviderLoginStatus();
   }
 });
 document.addEventListener("click", async (event) => {

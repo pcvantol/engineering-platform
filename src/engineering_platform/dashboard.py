@@ -2558,6 +2558,16 @@ def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
     return statuses
 
 
+def _execution_runtime_status() -> dict[str, str]:
+    """Project a token-free readiness check for the installed Server Python."""
+    executable = Path(sys.executable).resolve()
+    ready = executable.is_file() and os.access(executable, os.X_OK)
+    return {
+        "state": "READY" if ready else "UNAVAILABLE",
+        "executable": str(executable) if ready else "",
+    }
+
+
 def _start_provider_login(root: Path, provider: str) -> None:
     """Open one explicit interactive login in Terminal; no credential crosses EP."""
     commands = {
@@ -2830,6 +2840,7 @@ def _dashboard_html(
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="githubProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="github-provider-readiness-banner"><strong id="githubProviderReadinessTitle"></strong><span id="githubProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="githubProviderReadinessAction" type="button" hidden></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--execution-runtime" id="executionRuntimeBanner" role="alert" aria-live="assertive" hidden data-testid="execution-runtime-banner"><strong id="executionRuntimeTitle"></strong><span id="executionRuntimeMessage"></span><button class="provider-readiness-banner__action" id="executionRuntimeRepair" type="button" hidden></button></aside>
 </div>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
@@ -3016,6 +3027,19 @@ def handler(
                     self._send(b'{"error":"Provider repair did not start safely."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(b'{"started":true}', "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/execution-runtime/repair":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    runtime = _execution_runtime_status()
+                    if runtime["state"] != "READY":
+                        raise ValueError
+                except ValueError:
+                    self._send(b'{"error":"Execution runtime is still unavailable."}', "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps({"rechecked": True, "runtime": runtime}).encode(), "application/json; charset=utf-8")
                 return
             if request_path == "/api/telemetry/clear":
                 try:
@@ -3939,6 +3963,11 @@ def handler(
             if self.path == "/api/provider-login-status":
                 return self._send(
                     json.dumps({"providers": _provider_login_status(root)}, separators=(",", ":")).encode(),
+                    "application/json; charset=utf-8",
+                )
+            if self.path == "/api/execution-runtime-status":
+                return self._send(
+                    json.dumps(_execution_runtime_status(), separators=(",", ":")).encode(),
                     "application/json; charset=utf-8",
                 )
             if request.path == "/api/configuration":
