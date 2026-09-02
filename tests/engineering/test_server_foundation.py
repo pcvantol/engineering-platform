@@ -177,6 +177,22 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
         self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
 
+    def test_ep_database_panel_is_framed_and_maintenance_selection_recovers_safely(self) -> None:
+        server.initialize(self.root)
+        panel = server._central_database_section(self.root)
+        script = server._central_database_script()
+
+        self.assertIn('class="configuration-central-database"', panel)
+        self.assertIn('data-i18n="configuration.ep_database"', panel)
+        self.assertIn('EP-database', panel)
+        self.assertNotIn('CENTRAL database', panel)
+        self.assertIn('class="configuration-central-database__maintenance"', panel)
+        self.assertIn('data-saved-value="3600"', panel)
+        self.assertIn('aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus"', panel)
+        self.assertIn("maintenance.dataset.savedValue", script)
+        self.assertIn("maintenance.value=previous", script)
+        self.assertIn("Number(result.interval_seconds)!==requested", script)
+
     def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
         """Two requests select separate roots without exposing either path."""
         with socket.socket() as probe:

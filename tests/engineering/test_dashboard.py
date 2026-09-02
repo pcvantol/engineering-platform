@@ -428,6 +428,8 @@ class DashboardStatusTest(unittest.TestCase):
             "lifecycle.detail_quality_evidence", "lifecycle.quality_evidence.test_coverage",
             "section.configuration", "description.configuration", "configuration.inbox_location",
             "configuration.inbox_scan_interval", "configuration.open_pr_interval",
+            "configuration.ep_database", "configuration.ep_database_description", "configuration.ep_database_download",
+            "configuration.ep_database_maintenance", "configuration.ep_database_maintenance_help",
             "configuration.dashboard_stream_interval", "configuration.seconds_15",
             "configuration.seconds_30", "configuration.second_1",
             "configuration.inbox_location_help", "configuration.inbox_scan_interval_help",

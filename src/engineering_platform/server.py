@@ -590,7 +590,7 @@ def _console_project_options(project_id: str | None, projects: list[dict[str, st
 
 
 def _central_database_section(data_root: Path) -> str:
-    """Render the one installation-owned database panel for Configuration."""
+    """Render the one installation-owned EP database panel for Configuration."""
     details = central_database.details(data_root)
     interval = central_database.maintenance_configuration(data_root)["interval_seconds"]
     size = f"{int(details['size_bytes']) / 1_000_000:.2f}".replace(".", ",") + " MB"
@@ -600,21 +600,31 @@ def _central_database_section(data_root: Path) -> str:
     )
     return (
         '<section class="configuration-central-database" aria-labelledby="centralDatabaseHeading">'
-        '<h2 id="centralDatabaseHeading">CENTRAL database</h2>'
-        '<p class="field"><span class="label">Database-eigendom</span><span>Engineering Platform (CENTRAL)</span></p>'
-        f'<div class="field"><span class="label">Databaselocatie</span><pre>{escape(str(details["path"]))}</pre></div>'
-        f'<p class="field"><span class="label">Databasegrootte</span><span>{size}</span></p>'
-        f'<p class="field"><span class="label">Schema-versie</span><span>{details["schema_version"]}</span></p>'
-        f'<p class="field"><span class="label">Integriteit</span><span>{details["integrity"]}</span></p>'
-        '<div class="field"><span class="label">Databaseback-up</span><a class="dashboard-action dashboard-action--download" href="/api/central-database/download" download>Download CENTRAL database</a></div>'
-        f'<label for="centralDatabaseMaintenanceInterval"><span class="label">Databaseonderhoud</span><select id="centralDatabaseMaintenanceInterval">{options}</select></label>'
+        '<header class="configuration-central-database__header">'
+        '<div><h2 id="centralDatabaseHeading" data-i18n="configuration.ep_database">EP-database</h2>'
+        '<p data-i18n="configuration.ep_database_description">Platformbrede opslag voor projecten, uitvoeringen en configuratie.</p></div>'
+        '<a class="dashboard-action dashboard-action--download" href="/api/central-database/download" download '
+        'data-i18n="configuration.ep_database_download" data-i18n-aria-label="configuration.ep_database_download" '
+        'aria-label="Download EP-database">Download EP-database</a></header>'
+        '<dl class="configuration-central-database__facts">'
+        '<div><dt class="label" data-i18n="configuration.database_owner">Database-eigendom</dt><dd data-i18n="configuration.ep_database_owner">Engineering Platform</dd></div>'
+        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd><code>{escape(str(details["path"]))}</code></dd></div>'
+        f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
+        f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
+        f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd>{details["integrity"]}</dd></div>'
+        '</dl>'
+        '<div class="configuration-central-database__maintenance">'
+        '<div><span class="label" id="centralDatabaseMaintenanceLabel" data-i18n="configuration.ep_database_maintenance">Databaseonderhoud</span>'
+        '<p id="centralDatabaseMaintenanceHelp" data-i18n="configuration.ep_database_maintenance_help">Optimaliseert de EP-database wanneer geen uitvoering actief is.</p></div>'
+        f'<select id="centralDatabaseMaintenanceInterval" aria-labelledby="centralDatabaseMaintenanceLabel" aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus" data-saved-value="{interval}">{options}</select>'
+        '</div>'
         '<p id="centralDatabaseMaintenanceStatus" role="status" aria-live="polite"></p></section>'
     )
 
 
 def _central_database_script() -> str:
-    """Keep the CENTRAL-only maintenance preference host-scoped in the Console."""
-    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:Number(maintenance.value)})});if(!response.ok)throw Error();if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud is bijgewerkt.'}catch{if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false}});'''
+    """Keep the EP database maintenance preference host-scoped in the Console."""
+    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud bijgewerkt.'}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});'''
 
 
 _WORKSPACE_ID_FIELD = re.compile(
