@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 import logging
 from pathlib import Path
+import sqlite3
 
 from .agent_state import StateError, StateStore, TransactionState
 from .execution_lease import release_terminal_lease
@@ -22,7 +23,9 @@ TERMINAL_DIAGNOSTIC = (
 LOGGER = logging.getLogger(__name__)
 
 
-def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] | None:
+def _latest_interrupted_invocation(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> tuple[str, str] | None:
     """Return only durable, allow-listed provider interruption evidence.
 
     Some providers terminate after streaming an interrupted child command but
@@ -31,7 +34,7 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] |
     interrupted under the same provider boundary.
     """
     try:
-        connection = open_storage(root)
+        connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
         try:
             row = connection.execute(
                 "SELECT invocation_id,churn,usage_authority FROM provider_invocations WHERE run_id=? "
@@ -56,7 +59,7 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] |
     if row[2] != "UNAVAILABLE":
         return None
     try:
-        connection = open_storage(root)
+        connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
         try:
             interrupted_child = connection.execute(
                 "SELECT 1 FROM execution_phase_spans AS child "
