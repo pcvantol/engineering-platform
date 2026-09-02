@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "model": "TWO_STAGE_PROVENANCE_EVOLUTION_DAG",
+  "historical_extraction": {
+    "source_repository": "pcvantol/djconnect",
+    "source_commit": "3668eb77fc89418003ae60eeb72c8391e90c3055",
+    "target_baseline_commit": "d4d538559796f64f1ffa5136698dd207589a4ae0",
+    "standalone_lineage_anchor_commit": "0c0d546b6816de19df77cfc9a6f9e2adefecddcd",
+    "equivalence_baseline": "docs/provenance/PHASE_3_INCREMENT_1_EQUIVALENCE_BASELINE.json",
+    "equivalence_baseline_sha256": "1baf0d517629a1c730f1d3fe9c46800b6f03dcc7a07fa5b39e447234ac6791c6",
+    "historical_equivalence_receipt": "docs/provenance/phase3-file-equivalence.json",
+    "historical_equivalence_receipt_sha256": "8d130ad7dbf9d59ad7f7cc69a0b0beac13e4a57bfd575bfa9ea1879906b6bd61"
+  },
+  "graph": {
+    "nodes": [
+      {"node_id":"baseline:dashboard","node_type":"BASELINE","path":"src/engineering_platform/dashboard.py","responsibilities":["src/engineering_platform/dashboard.py::module"]},
+      {"node_id":"current:dashboard","node_type":"CURRENT_TARGET","path":"src/engineering_platform/dashboard.py","sha256":"03027b7f6556e9d074d8df80572c1ad7d2744db1e406c790cae06ace48705862"}
+    ],
+    "edges": [
+      {"from":"baseline:dashboard","to":"current:dashboard","kind":"MODIFY","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"0a4c95d021c63921ca96c5617be24dac48fb7390","supporting_pr":22}
+    ]
+  },
+  "evolutions": [
+    {
+      "historical_target_path": "src/engineering_platform/dashboard.py",
+      "baseline_sha256": "914245353b5ef7df3cab21ef409037c48a532ebead8344f458301ab5e1b58b2f",
+      "evolution_type": "GOVERNED_MODIFICATION",
+      "first_governed_commit": "0a4c95d021c63921ca96c5617be24dac48fb7390",
+      "last_governed_commit": "0a4c95d021c63921ca96c5617be24dac48fb7390",
+      "supporting_pr": 22,
+      "reason_category": "STANDALONE_OPERATIONS_CONSOLE_COMPOSITION",
+      "destinations": [{
+        "path": "src/engineering_platform/dashboard.py",
+        "current_sha256": "03027b7f6556e9d074d8df80572c1ad7d2744db1e406c790cae06ace48705862",
+        "responsibilities": ["src/engineering_platform/dashboard.py::module"]
+      }],
+      "disposition": "The historical dashboard responsibility remains at the same standalone path."
+    }
+  ]
+}
