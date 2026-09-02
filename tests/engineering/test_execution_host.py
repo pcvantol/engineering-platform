@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -20,7 +21,8 @@ from engineering_platform.storage import (
     record_validation_control_result,
     record_validation_profile,
 )
-from engineering_platform.execution_errors import CodexHandoffTimeout
+from engineering_platform.execution_errors import CodexHandoffTimeout, CodexInvocationError
+from engineering_platform.execution_reporting import _target_repository_name
 from engineering_platform.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -77,7 +79,7 @@ from engineering_platform.execution_executor import (
     validation_failure_artifact_id,
     workspace_change_summary,
 )
-from engineering_platform.execution_lease import history as lease_history, liveness as lease_liveness, release as release_lease
+from engineering_platform.execution_lease import acquire as acquire_lease, history as lease_history, liveness as lease_liveness, release as release_lease
 from engineering_platform.execution_timing import complete_phase, phase_spans, start_phase
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import open_storage
@@ -1102,6 +1104,37 @@ class ClientContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RunnerError, "provider failed"):
             SubprocessRepositoryClient(FailingProvider())._run(Path("/tmp"), "git", "status")
+
+    def test_repository_client_normalizes_https_github_origin(self) -> None:
+        class Provider:
+            def command(self, root: Path, *args: str) -> str:
+                values = {
+                    ("git", "remote", "get-url", "origin"): "https://github.com/pcvantol/ep-pa1q-qualification.git",
+                    ("git", "branch", "--show-current"): "main",
+                    ("git", "rev-parse", "HEAD"): "a" * 40,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return values[args]
+
+            def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "BOOTSTRAP.md").write_text("contract", encoding="utf-8")
+            (root / ".git").mkdir()
+            evidence = SubprocessRepositoryClient(Provider()).inspect(root)
+
+        self.assertEqual(evidence.repository, "pcvantol/ep-pa1q-qualification")
+
+    def test_terminal_reporting_normalizes_https_github_origin(self) -> None:
+        with patch(
+            "engineering_platform.execution_reporting._git_output",
+            return_value="https://github.com/pcvantol/ep-pa1q-qualification.git",
+        ):
+            repository = _target_repository_name(Path("/qualification/repo"), "fallback/repository")
+
+        self.assertEqual(repository, "pcvantol/ep-pa1q-qualification")
 
     def test_github_client_interprets_checks_and_control_commands(self) -> None:
         class Provider:
@@ -3321,6 +3354,23 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(blocked.repair_audit[0]["outcome"], "agent_timed_out")
         self.assertEqual(self.store.load("repair-timeout").repair_audit[0]["outcome"], "agent_timed_out")
 
+    def test_implementation_timeout_becomes_a_durable_provider_failure(self) -> None:
+        state = TransactionState(
+            "implementation-timeout", "pcvantol/djconnect", str(self.prompt),
+            "EXECUTE_AGENT", branch="codex/implementation-timeout", owner_authorized=True,
+        )
+        agent = DeadlineFakeAgent()
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None,
+        )
+
+        with self.assertRaises(CodexInvocationError) as raised:
+            runner._invoke_agent_with_timing(state, "bounded implementation")
+
+        self.assertEqual(raised.exception.terminal_condition, "provider_invocation_timeout")
+        self.assertIn("15-minute", str(raised.exception))
+        self.assertIsNone(agent.deadline_callback)
+
     def test_finalization_pr_behind_main_enters_same_bounded_repair_loop(self) -> None:
         state = TransactionState(
             "behind-finalization", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE",
@@ -3409,10 +3459,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)
         github = FakeGitHub([RunnerError("temporary GitHub outage")] * 3)
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)
+        runner.active_lease = acquire_lease(
+            self.root, state.run_id, identity="test-host", instance_id="test-instance"
+        )
         result = runner._poll(state)
         self.assertEqual(result.phase, "WAIT_FOR_TERMINAL_EVIDENCE")
         self.assertFalse(result.terminal)
         self.assertEqual(result.next_action, "retry_github_evidence")
+        self.assertEqual(lease_liveness(self.root, state.run_id)["lease_state"], "RELEASED")
 
     def test_dirty_workspace_has_no_agent_or_destructive_action(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))
@@ -4309,13 +4364,20 @@ class ValidationFailureDiagnosticTest(unittest.TestCase):
         class Process:
             def __init__(self, completed: subprocess.CompletedProcess[str]) -> None:
                 self.completed = completed
+                self.environment: dict[str, str] | None = None
 
-            def execute(self, root: Path, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            def execute(
+                self, root: Path, arguments: tuple[str, ...], *, environment: dict[str, str] | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                self.environment = environment
                 return self.completed
 
-        success = DeterministicValidationExecutor(Process(subprocess.CompletedProcess(("check",), 0, "ok", ""))).run(self.root, ("check",))
+        process = Process(subprocess.CompletedProcess(("check",), 0, "ok", ""))
+        success = DeterministicValidationExecutor(process).run(self.root, ("check",))
         self.assertEqual(success.exit_code, 0)
         self.assertTrue(success.diagnostic_capture_available)
+        self.assertIsNotNone(process.environment)
+        self.assertTrue(str(process.environment["PATH"]).startswith(str(Path(sys.executable).resolve().parent)))
         self.assertFalse((self.root / ".engineering" / "artifacts").exists())
         record_validation_profile(
             self.root, run_id=self.run_id, selected_validation_tier="CUSTOM", validation_profile_version="1.0",

@@ -81,6 +81,25 @@ This also applies to every phase, commit type and verified description in the
 commit timeline; an unrecognized future value remains visible as its stable
 machine value instead of being guessed or mutated.
 
+### Dynamic execution evidence
+
+The static Console interface is always translated by `dashboard_locales.mjs`.
+`quality_evidence.result` is different: it is bounded, redacted free text
+generated during the autonomous quality-control stage. When the selected
+Console language is not English, the browser sends at most eight distinct
+240-character evidence values to `POST /api/dashboard-translate`. The route is
+same-origin and project-scoped, invokes only the installation-managed Codex CLI
+in an ephemeral read-only workspace, requires schema-conforming output, and
+keeps an in-memory per-language cache. The stored CENTRAL/local lifecycle
+evidence is never modified or replaced.
+
+The translation prompt treats evidence as untrusted data and has no tools or
+repository authority. Translation failure is intentionally non-blocking: the
+browser continues to show the original evidence rather than hiding, guessing,
+or mutating an operational record. This route is limited to quality-evidence
+prose; machine statuses, diagnostics, drift and preflight evidence remain
+deterministic locale-catalog translations as described above.
+
 The dashboard assets also own the presentation contract: the sticky title bar
 uses the same `18px` outer corner radius as the top-level categories, while
 the category colour remains the visual source for interactive actions. A
@@ -537,6 +556,12 @@ Execution Host activity must resolve through a catalog key; raw identifiers and
 English fallback sentences are not permitted on the operator surface. The
 browser suite maintains an explicit operational-key inventory so that adding a
 new phase or status without all five translations fails CI.
+
+The suite also verifies the dynamic evidence boundary: a non-English quality
+evidence result requests the bounded translation route and renders the returned
+translation; a failed request retains the source evidence. Unit tests assert
+the managed Codex invocation, read-only sandbox, schema-bound result handling,
+locale validation and cache behavior.
 
 The dashboard suite also covers the managed PR hand-off semantics: a failed
 required PR check leaves Merge blocked without a completion checkmark and

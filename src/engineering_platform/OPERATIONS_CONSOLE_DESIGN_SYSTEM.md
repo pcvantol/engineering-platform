@@ -151,6 +151,18 @@ separate focus or selection border around individual cells. Sortable headers
 may use their own thin focus edge because they are independently interactive;
 that edge must remain contained inside the sticky header cell.
 
+The scroll region around a table may receive keyboard focus to support keyboard
+scrolling, but it is not a selected control: it never receives an outer focus
+border, ring, glow or changed border colour. Focus feedback belongs only to an
+independently interactive element within the table, such as a sortable header.
+
+Conversation bubbles retain their natural content height. Only when one
+message exceeds two-thirds of the definite available message-area height may
+its body become vertically scrollable. The role, timestamp and copy action
+remain fixed in that bubble. Short messages reserve neither scrollbar space nor
+scrollbar chrome; the surrounding conversation area remains the only ordinary
+message-list scroller.
+
 The **Operationeel overzicht** card grid is one column by default. Once its
 own container reaches **760px**, it uses two equal columns. This container
 query keeps individual evidence cards readable in narrow side-by-side layouts
@@ -501,7 +513,12 @@ literal into `dashboard.js`. Keep operation language concrete:
   exports. The dashboard presents known evidence codes through deterministic
   catalogue keys and parameters; it must never invoke an AI service to
   translate an operational diagnosis. Unknown or redacted evidence follows
-  the existing safe generic-diagnostic path.
+  the existing safe generic-diagnostic path. The narrowly separate
+  `quality_evidence.result` field is operator-facing, bounded, redacted prose
+  produced by an execution. It may be translated on demand only by the
+  installation-managed Codex runtime through the read-only translation route;
+  stored evidence is never changed, provider input is treated as untrusted
+  data, and a failure leaves its original evidence visible.
 
 ## 9. Required design-review checklist
 

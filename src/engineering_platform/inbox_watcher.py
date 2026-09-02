@@ -63,7 +63,6 @@ from .execution_lease import reconcile_stale
 from .provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
 from .provider_recovery import watcher_resume_action
 from .dashboard_configuration import get as dashboard_configuration
-from .database_maintenance import run_periodic_database_maintenance
 from .central_store_migration import CutoverError, admission_status, mark_central_post_write
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
@@ -88,28 +87,6 @@ LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
 WATCHER_READY_PROJECTION = "inbox_watcher_ready"
-
-
-def _run_periodic_database_maintenance(repo: Path, logger: logging.Logger) -> None:
-    """Run the bounded idle-only compaction pass without affecting execution."""
-    outcome = run_periodic_database_maintenance(repo)
-    state = outcome.get("state")
-    if state == "COMPACTED":
-        log_event(
-            logger,
-            logging.INFO,
-            "periodic_database_maintenance_completed",
-            diagnostic="tasks=PRAGMA optimize,VACUUM",
-        )
-    elif state == "SKIPPED_ACTIVE_RUN":
-        log_event(
-            logger,
-            logging.INFO,
-            "database_maintenance_skipped_active_run",
-            diagnostic="reason=active_execution_lease",
-        )
-    elif state == "DEFERRED":
-        log_event(logger, logging.WARNING, "database_maintenance_deferred")
 
 
 def _source_revision(repo: Path) -> str | None:
@@ -1417,6 +1394,23 @@ def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "d
     with _lock(repo):
         state = _operator_merge_wait(repo)
         if state is None or state.run_id != run_id:
+            try:
+                connection = open_storage(repo)
+                try:
+                    row = connection.execute(
+                        "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                finally:
+                    connection.close()
+                candidate = TransactionState.from_dict(json.loads(row[0])) if row else None
+                state = candidate if (
+                    candidate is not None and not candidate.terminal
+                    and row[1] == "WAIT_FOR_TERMINAL_EVIDENCE"
+                    and candidate.pull_request is not None
+                ) else None
+            except (EngineeringStorageError, TypeError, json.JSONDecodeError, ValueError):
+                state = None
+        if state is None or state.run_id != run_id:
             raise RetrySubmissionError("Deze uitvoering wacht niet op een pull request-merge.")
         aborted = replace(
             state,
@@ -1453,6 +1447,19 @@ def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "d
         except EngineeringStorageError as error:
             raise RetrySubmissionError("De afsluiting kon niet veilig worden vastgelegd.") from error
         complete_active_phase(repo, run_id, "TOTAL_EXECUTION", outcome="FAILED")
+        branches = (
+            state.branch,
+            state.implementation_branch,
+            state.finalization_branch,
+        )
+        try:
+            cleanup = SubprocessRepositoryClient().cleanup_transaction(repo, branches)
+        except Exception as error:
+            # The terminal abort is durable even when conservative workspace
+            # cleanup cannot proceed.  Keep the exact cleanup boundary visible
+            # so a later product recovery never needs to guess or force files.
+            cleanup = f"cleanup_pending:{redact_diagnostic(str(error), limit=240)}"
+        record = {**record, "workspace_cleanup": cleanup}
         status(
             repo,
             "JOB_FAILED",
@@ -2551,7 +2558,6 @@ def main(argv: list[str] | None = None) -> int:
                                         diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                                     )
                                     log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
-                            _run_periodic_database_maintenance(repo, logger)
                             current_revision = _source_revision(repo)
                             if started_revision and current_revision and current_revision != started_revision:
                                 if _active_transaction(repo):

@@ -27,6 +27,7 @@ window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.value
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
+  NO_PROJECT_SELECTED = document.body.dataset.projectId === "none",
   DASHBOARD_BUILD = window.DJCONNECT_DASHBOARD_BUILD || "",
   DASHBOARD_BUILD_KEY = "djconnect-engineering-dashboard-build",
   fallback = {
@@ -636,6 +637,25 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   button.hidden = !(credits > 0);
   button.disabled = false;
 }
+async function refreshPlatformProviderCapacity() {
+  try {
+    const response = await fetch("/api/provider-capacity", { cache: "no-store" });
+    const payload = response.ok ? await response.json() : null;
+    if (!payload || typeof payload.rate_limits !== "object") return;
+    latestDashboardSnapshot = {
+      ...(latestDashboardSnapshot || {}), rate_limits: payload.rate_limits,
+      ai_capacity_history: Array.isArray(payload.ai_capacity_history) ? payload.ai_capacity_history : [],
+    };
+    if (payload.configuration && typeof payload.configuration === "object") {
+      dashboardConfiguration = { ...dashboardConfiguration, ...payload.configuration };
+    }
+    rateLimits(latestDashboardSnapshot.rate_limits, latestDashboardSnapshot.ai_capacity_history);
+    renderCodexUsageLimitBanner({}, latestDashboardSnapshot.rate_limits);
+    renderCodexCapacityReserveBanner(latestDashboardSnapshot.rate_limits);
+  } catch {
+    // Do not manufacture provider capacity when the account cannot be read.
+  }
+}
 let latestCodexCliUpdateStatus = null;
 function codexCliVersionParts(value) {
   const match = typeof value === "string" && /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value);
@@ -908,19 +928,22 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
-    const defer = document.createElement("button");
-    defer.className = "queue-defer";
-    defer.type = "button";
-    defer.textContent = t("queue.defer_action");
-    defer.title = t("queue.defer_action");
-    defer.setAttribute("aria-label", t("queue.defer_action"));
-    defer.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      deferQueueItem(item, defer);
-    });
+    const defer = item.queue_source === "CENTRAL" ? null : document.createElement("button");
+    if (defer) {
+      defer.className = "queue-defer";
+      defer.type = "button";
+      defer.textContent = t("queue.defer_action");
+      defer.title = t("queue.defer_action");
+      defer.setAttribute("aria-label", t("queue.defer_action"));
+      defer.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deferQueueItem(item, defer);
+      });
+    }
     body.append(title, meta);
-    row.append(number, body, defer);
+    row.append(number, body);
+    if (defer) row.append(defer);
     container.append(row);
   });
 }
@@ -1495,6 +1518,31 @@ async function openLocalFolder(directoryPath) {
     );
   }
 }
+async function openCentralDatabaseDirectory() {
+  try {
+    const response = await fetch("/api/central-database/open-directory", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
+  }
+}
+async function openRuntimeDirectory(runtime) {
+  if (!new Set(["codex", "github", "python"]).has(runtime)) return;
+  try {
+    const response = await fetch("/api/runtime-directory/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runtime }),
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
+  }
+}
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
+});
 function configureLocalFolderButton(button, value, { containingFolder = false } = {}) {
   const path = localFolderPath(value);
   button.classList.add("local-folder-link");
@@ -1520,6 +1568,21 @@ function localFolderButton(value, options = {}) {
   const button = document.createElement("button");
   configureLocalFolderButton(button, value, options);
   return button;
+}
+function configureRuntimeDirectoryButton(button, value, runtime) {
+  const path = localFolderPath(value);
+  button.classList.add("local-folder-link", "runtime-directory-link");
+  button.type = "button";
+  button.textContent = String(value || "—");
+  button.disabled = !path;
+  button.onclick = null;
+  button.removeAttribute("title");
+  button.removeAttribute("aria-label");
+  if (!path) return;
+  const label = t("workspace.open_containing_folder", { path });
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.onclick = () => void openRuntimeDirectory(runtime);
 }
 function replaceWithLocalFolderButton(element, options = {}) {
   if (!element) return null;
@@ -1880,6 +1943,35 @@ function lifecyclePhaseTiming(spans) {
     duration_ms: hasDuration ? phase.duration_ms : null,
   }));
 }
+const dynamicEvidenceTranslationCache = new Map();
+async function localizeDynamicEvidence(rows) {
+  if (dashboardLocale === "en" || !rows.length) return;
+  const originals = [...new Set(rows.map(({ source }) => source).filter(
+    (source) => source && !dynamicEvidenceTranslationCache.has(`${dashboardLocale}\u0000${source}`),
+  ))];
+  if (originals.length) {
+    try {
+      const response = await fetch("/api/dashboard-translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale: dashboardLocale, texts: originals }),
+      });
+      const payload = response.ok ? await response.json() : null;
+      if (!Array.isArray(payload?.translations) || payload.translations.length !== originals.length) return;
+      payload.translations.forEach((translation, index) => {
+        if (typeof translation === "string" && translation.trim()) {
+          dynamicEvidenceTranslationCache.set(`${dashboardLocale}\u0000${originals[index]}`, translation);
+        }
+      });
+    } catch {
+      return;
+    }
+  }
+  rows.forEach(({ source, element }) => {
+    const translation = dynamicEvidenceTranslationCache.get(`${dashboardLocale}\u0000${source}`);
+    if (translation && element.textContent === source) element.textContent = translation;
+  });
+}
 function lifecycleQualityEvidence(step) {
   const evidence = Array.isArray(step?.quality_evidence) ? step.quality_evidence : [];
   if (!evidence.length) return null;
@@ -1890,22 +1982,26 @@ function lifecycleQualityEvidence(step) {
   }));
   const list = document.createElement("ol");
   list.className = "lifecycle-detail-modal__phase-list";
+  const dynamicRows = [];
   for (const item of evidence) {
     if (!item || typeof item !== "object") continue;
     const activity = String(item.activity || "").trim();
     const result = String(item.result || "").trim();
     if (!activity || !result) continue;
     const row = document.createElement("li");
+    const resultElement = Object.assign(document.createElement("span"), { textContent: result });
     row.append(
       Object.assign(document.createElement("strong"), {
         textContent: t("lifecycle.quality_evidence." + activity.toLowerCase(), {}, activity),
       }),
-      Object.assign(document.createElement("span"), { textContent: result }),
+      resultElement,
     );
+    dynamicRows.push({ source: result, element: resultElement });
     list.append(row);
   }
   if (!list.childElementCount) return null;
   section.append(list);
+  void localizeDynamicEvidence(dynamicRows);
   return section;
 }
 function lifecycleRepairEvidence(step) {
@@ -2279,6 +2375,9 @@ function renderHealthStatus(x, snapshot = {}) {
   renderActiveLifecycle(x.lifecycle, x);
   renderOperatorMergeWait(x);
   renderEmergencyRecovery(snapshot.emergency_recovery, x);
+  if (snapshot.capacity_configuration && typeof snapshot.capacity_configuration === "object") {
+    dashboardConfiguration = { ...dashboardConfiguration, ...snapshot.capacity_configuration };
+  }
   renderCodexUsageLimitBanner(x, snapshot.rate_limits);
   renderCodexCapacityReserveBanner(snapshot.rate_limits);
   syncCodexCapacityReserveOptions(snapshot.rate_limits);
@@ -5557,7 +5656,7 @@ document
       }
     });
   });
-refreshPromptHistory();
+if (!NO_PROJECT_SELECTED) refreshPromptHistory();
 const DASHBOARD_CLIENT_STATE_KEY = "engineering-dashboard-client-state-v1",
   ALL_SECTIONS_STATE_KEY = "engineering-dashboard-all-sections-open-v1";
 function loadDashboardClientState() {
@@ -5734,22 +5833,6 @@ dashboardLocaleMenu.addEventListener("click", (event) => {
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
-const workspaceDatabaseField = $("workspaceDatabaseField");
-if (workspaceDatabaseField) {
-  const content = document.createElement("div"), download = document.createElement("a");
-  content.className = "workspace-database__content";
-  const path = workspaceDatabaseField.querySelector("pre");
-  if (path) content.append(localFolderButton(path.textContent.trim(), { containingFolder: true }));
-  download.className = "dashboard-action dashboard-action--download workspace-database__download";
-  download.id = "workspaceDatabaseDownload";
-  download.href = "/api/engineering-database/download?audit=download";
-  download.download = "";
-  download.dataset.i18nTitle = "workspace.download_database";
-  download.dataset.i18nAriaLabel = "workspace.download_database";
-  download.textContent = "↓";
-  content.append(download);
-  workspaceDatabaseField.append(content);
-}
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
 replaceWithLocalFolderButton(workspaceLocation);
 replaceWithLocalFolderButton($("rateLimitProviderPath"));
@@ -5766,7 +5849,6 @@ const configurationFields = Object.freeze({
   configurationCodexCapacityReserve: ["codex_capacity_reserve_percent", Number],
   configurationPlatformHealthInterval: ["platform_health_refresh_seconds", Number],
   configurationComponentDetailsInterval: ["component_details_refresh_seconds", Number],
-  configurationDatabaseMaintenanceInterval: ["database_maintenance_interval_seconds", Number],
 });
 const dashboardSelectPickers = new Map();
 function syncDashboardSelectPicker(select) {
@@ -5880,6 +5962,13 @@ function syncInboxLocationChangeAvailability(queueDepth) {
 function enhanceDashboardSelectPickers() {
   document.querySelectorAll("select:not([multiple]):not(#dashboardLocale)").forEach(enhanceDashboardSelectPicker);
 }
+// The Server fills the CENTRAL project options only after the historical
+// dashboard document has loaded. Keep the visual picker in lockstep with
+// that authoritative native select instead of leaving a stale local option
+// list visible to the operator.
+document.addEventListener("dashboard-select-options-changed", (event) => {
+  if (event.target instanceof HTMLSelectElement) syncDashboardSelectPicker(event.target);
+});
 document.addEventListener("pointerdown", (event) => {
   dashboardSelectPickers.forEach((picker) => {
     if (!event.target.closest(".dashboard-select-picker")) setDashboardSelectPickerOpen(picker, false);
@@ -5897,7 +5986,6 @@ function addConfigurationControlInfo() {
     ["configurationCodexCapacityReserve", "configuration.codex_capacity_reserve_help"],
     ["configurationPlatformHealthInterval", "configuration.platform_health_interval_help"],
     ["configurationComponentDetailsInterval", "configuration.component_details_interval_help"],
-    ["configurationDatabaseMaintenanceInterval", "configuration.database_maintenance_interval_help"],
   ]) {
     const control = $(id), label = control?.closest("label"), text = label?.querySelector(":scope > span");
     if (!text) continue;
@@ -5959,18 +6047,68 @@ function providerLoginStatusBlock() {
       repair.dataset.providerRepair = provider;
       const logout = Object.assign(document.createElement("button"), { className: "configuration-provider-status__logout", type: "button", textContent: t("configuration.provider_logout") });
       logout.dataset.providerLogout = provider;
+      const details = document.createElement("div");
+      details.className = "configuration-provider-status__details";
+      details.append(
+        validationEnvironmentDetail(t("configuration.provider_cli_path", { provider: providerDisplayName(provider) }), "providerCliPath", provider.toLowerCase()),
+        validationEnvironmentDetail(t("configuration.provider_cli_version", { provider: providerDisplayName(provider) }), "providerCliVersion"),
+      );
       row.append(
         Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
         Object.assign(document.createElement("strong"), { textContent: provider === "CODEX" ? "Codex" : "GitHub" }),
         Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
         repair,
         logout,
+        details,
       );
       block.append(row);
     }
+    const runtimeBlock = validationEnvironmentBlock();
     configuration.querySelector("summary")?.after(block);
+    block.after(runtimeBlock);
   }
   return block;
+}
+function validationEnvironmentDetail(label, attribute, runtime = null) {
+  const detail = document.createElement("span");
+  detail.className = "configuration-validation-environment__detail";
+  const value = document.createElement(runtime ? "button" : "code");
+  value.dataset[attribute] = "true";
+  if (runtime) value.dataset.runtimeDirectory = runtime;
+  value.textContent = "—";
+  detail.append(Object.assign(document.createElement("span"), { textContent: label }), value);
+  return detail;
+}
+function validationEnvironmentBlock() {
+  const runtimeBlock = document.createElement("section");
+  runtimeBlock.id = "configurationValidationEnvironmentStatus";
+  runtimeBlock.className = "configuration-validation-environment";
+  runtimeBlock.setAttribute("aria-live", "polite");
+  runtimeBlock.append(Object.assign(document.createElement("h3"), {
+    textContent: t("configuration.validation_environment"),
+  }));
+  const runtime = document.createElement("div");
+  runtime.className = "configuration-provider-status__row configuration-validation-environment__row";
+  runtime.dataset.executionRuntime = "true";
+  const repair = Object.assign(document.createElement("button"), {
+    className: "configuration-provider-status__repair", type: "button", hidden: true,
+    textContent: t("configuration.execution_runtime_repair"),
+  });
+  repair.dataset.executionRuntimeRepair = "true";
+  const details = document.createElement("div");
+  details.className = "configuration-validation-environment__details";
+  details.append(
+    validationEnvironmentDetail(t("configuration.python_path"), "executionRuntimePath", "python"),
+    validationEnvironmentDetail(t("configuration.python_version"), "executionRuntimeVersion"),
+  );
+  runtime.append(
+    Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
+    Object.assign(document.createElement("strong"), { textContent: t("configuration.execution_runtime") }),
+    Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
+    repair,
+  );
+  runtimeBlock.append(runtime, details);
+  return runtimeBlock;
 }
 const PROVIDER_READINESS_KEYS = Object.freeze(["codex", "github"]);
 const CHECK_FAILED_PROVIDERS = Object.freeze({
@@ -6018,7 +6156,13 @@ function renderProviderLoginStatus(block, providers) {
     const state = providerReadinessState(providers, provider);
     const logout = row.querySelector("[data-provider-logout]"), repair = row.querySelector("[data-provider-repair]");
     row.dataset.providerState = state;
+    const executable = String(providers?.[provider]?.executable || "").trim();
+    const version = String(providers?.[provider]?.version || "").trim();
     row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
+    const path = row.querySelector("[data-provider-cli-path]");
+    const providerVersion = row.querySelector("[data-provider-cli-version]");
+    if (path) configureRuntimeDirectoryButton(path, executable, provider);
+    if (providerVersion) providerVersion.textContent = version || "—";
     logout.hidden = state !== "READY";
     logout.disabled = state !== "READY";
     const action = state === "UNAVAILABLE" ? "install" : state === "AUTH_REQUIRED" ? "login" : null;
@@ -6027,16 +6171,53 @@ function renderProviderLoginStatus(block, providers) {
     repair.textContent = action ? t(`notification.provider_readiness.${action}`, { provider: providerDisplayName(provider) }) : "";
   });
 }
+function renderExecutionRuntimeStatus(runtime) {
+  // The validation card is a sibling of the provider card, not its child.
+  // Scope the lookup to that card so a successful runtime check is always
+  // reflected in its own row.
+  const validation = $("configurationValidationEnvironmentStatus");
+  const row = validation?.querySelector("[data-execution-runtime]");
+  const banner = $("executionRuntimeBanner"), title = $("executionRuntimeTitle"), message = $("executionRuntimeMessage"), bannerRepair = $("executionRuntimeRepair");
+  if (!row || !banner || !title || !message || !bannerRepair) return;
+  const state = String(runtime?.state || "CHECK_FAILED");
+  const repair = row.querySelector("[data-execution-runtime-repair]");
+  const executable = String(runtime?.executable || "").trim();
+  const version = String(runtime?.version || "").trim();
+  row.dataset.providerState = state;
+  row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
+  const path = validation?.querySelector("[data-execution-runtime-path]");
+  const runtimeVersion = validation?.querySelector("[data-execution-runtime-version]");
+  if (path) configureRuntimeDirectoryButton(path, executable, "python");
+  if (runtimeVersion) runtimeVersion.textContent = version || "—";
+  const needsRepair = state !== "READY";
+  repair.hidden = !needsRepair;
+  repair.disabled = providerInteractiveRepairInProgress;
+  banner.hidden = !needsRepair;
+  if (needsRepair) {
+    banner.className = `dashboard-status-banner dashboard-status-banner--execution-runtime dashboard-status-banner--provider-${state.toLowerCase()}`;
+    title.textContent = t("notification.execution_runtime.title");
+    message.textContent = t(`notification.execution_runtime.${state.toLowerCase()}`, {}, t("notification.execution_runtime.check_failed"));
+    bannerRepair.hidden = false;
+    bannerRepair.disabled = providerInteractiveRepairInProgress;
+    bannerRepair.textContent = t("configuration.execution_runtime_repair");
+  }
+  syncStickyHeaderOffset();
+}
 async function refreshProviderLoginStatus() {
   const block = providerLoginStatusBlock();
   if (!block) return;
   try {
-    const response = await fetch("/api/provider-login-status", { cache: "no-store" });
-    const payload = await response.json();
+    const [response, runtimeResponse] = await Promise.all([
+      fetch("/api/provider-login-status", { cache: "no-store" }),
+      fetch("/api/execution-runtime-status", { cache: "no-store" }),
+    ]);
+    const [payload, runtime] = await Promise.all([response.json(), runtimeResponse.json()]);
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
     renderProviderLoginStatus(block, payload.providers);
+    renderExecutionRuntimeStatus(runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
   } catch {
     renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+    renderExecutionRuntimeStatus({ state: "CHECK_FAILED" });
   }
 }
 let providerReadinessRefreshIntervalMs = 300_000, providerReadinessRefreshTimer = null;
@@ -6098,6 +6279,23 @@ document.addEventListener("click", async (event) => {
   }
 });
 document.addEventListener("click", async (event) => {
+  const button = event.target.closest("#executionRuntimeRepair, [data-execution-runtime-repair]");
+  if (!button || providerInteractiveRepairInProgress) return;
+  providerInteractiveRepairInProgress = true;
+  document.querySelectorAll("#executionRuntimeRepair, [data-execution-runtime-repair]").forEach((candidate) => { candidate.disabled = true; });
+  try {
+    const response = await fetch("/api/execution-runtime/repair", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    $("executionRuntimeMessage").textContent = t("notification.execution_runtime.repair_failed");
+  } finally {
+    providerInteractiveRepairInProgress = false;
+    await refreshProviderLoginStatus();
+  }
+});
+document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-provider-logout]");
   if (!button || button.disabled) return;
   const provider = String(button.dataset.providerLogout || "");
@@ -6111,9 +6309,6 @@ document.addEventListener("click", async (event) => {
     await refreshProviderLoginStatus();
   }
 });
-const MACHINE_SCOPED_WORKSPACE_FIELD_IDS = Object.freeze([
-  "workspaceFreeDiskSpace",
-]);
 const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
   {
     containerClass: "queue-project-settings",
@@ -6160,19 +6355,6 @@ function moveProjectScopedConfiguration() {
   if (!queue || !inboxField) return;
   queue.append(inboxField);
   moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
-}
-function moveMachineScopedWorkspaceDetails() {
-  // Only a direct child is a valid insertion anchor for the machine-scoped
-  // fields. Provider readiness owns a nested configuration group of its own.
-  const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
-  if (!configuration || !controls) return;
-  const databaseSection = configuration.querySelector(".workspace-database-section") || $("workspaceDatabaseField")?.closest(".workspace-database-section");
-  if (!databaseSection) return;
-  configuration.insertBefore(databaseSection, controls);
-  MACHINE_SCOPED_WORKSPACE_FIELD_IDS.forEach((id) => {
-    const field = $(id);
-    if (field) databaseSection.insertBefore(field, $("workspaceDatabaseField"));
-  });
 }
 function groupHostComponentConfiguration() {
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
@@ -6240,7 +6422,6 @@ function localizeConfigurationOptions() {
   ensureCodexCapacityReserveConfigurationControl();
   const providerReadinessLabel = $("configurationProviderReadinessInterval")?.closest("label")?.querySelector(":scope > span");
   if (providerReadinessLabel) providerReadinessLabel.textContent = t("configuration.provider_readiness_interval");
-  moveMachineScopedWorkspaceDetails();
   groupHostComponentConfiguration();
   moveProjectScopedConfiguration();
   CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
@@ -6332,10 +6513,13 @@ async function saveDashboardConfiguration(control) {
   control.disabled = true;
   syncDashboardSelectPicker(control);
   try {
-    const response = await fetch("/api/configuration", {
+    const capacityPolicy = key === "codex_capacity_reserve_percent";
+    const response = await fetch(capacityPolicy ? "/api/provider-capacity/configuration" : "/api/configuration", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value, previous: normalizer(previous) }),
+      body: capacityPolicy
+        ? JSON.stringify({ codex_capacity_reserve_percent: value })
+        : JSON.stringify({ key, value, previous: normalizer(previous) }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -6354,9 +6538,10 @@ async function saveDashboardConfiguration(control) {
       error.remainingPercent = Number(payload.remaining_percent);
       throw error;
     }
-    control.value = String(payload.value);
+    const saved = capacityPolicy ? payload.codex_capacity_reserve_percent : payload.value;
+    control.value = String(saved);
     control.dataset.savedValue = control.value;
-    dashboardConfiguration = { ...dashboardConfiguration, [key]: payload.value };
+    dashboardConfiguration = { ...dashboardConfiguration, [key]: saved };
     if (key === "codex_capacity_reserve_percent") {
       renderCodexCapacityReserveBanner(latestDashboardSnapshot?.rate_limits);
       syncCodexCapacityReserveOptions();
@@ -6682,6 +6867,26 @@ new MutationObserver((records) => {
 });
 updateAllSectionsToggle();
 updateIndependentLogSortHeaders();
+function constrainChatBubbles() {
+  const messages = $("chatMessages");
+  if (!messages || !messages.clientHeight) return;
+  const limit = messages.clientHeight * 2 / 3;
+  messages.querySelectorAll(".chat-message").forEach((message) => {
+    message.classList.remove("chat-message--scrollable");
+    if (message.scrollHeight > limit) message.classList.add("chat-message--scrollable");
+  });
+}
+let chatBubbleLayoutPending = false;
+function scheduleChatBubbleLayout() {
+  if (chatBubbleLayoutPending) return;
+  chatBubbleLayoutPending = true;
+  requestAnimationFrame(() => {
+    chatBubbleLayoutPending = false;
+    constrainChatBubbles();
+  });
+}
+new MutationObserver(scheduleChatBubbleLayout).observe($("chatMessages"), { childList: true, subtree: true, characterData: true });
+window.addEventListener("resize", scheduleChatBubbleLayout);
 function chatHistoryMarkdown() {
   const context = chatContextEntry || {};
   const metadata = chatContextRun
@@ -7297,7 +7502,7 @@ function executionActivityDisplayValue(value) {
 }
 function promptDetailExecutionActivitySection(activity) {
   if (!activity || typeof activity !== "object") {
-    return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))]);
+    return promptDetailCard(t("detail.execution_activity"), [detailField(t("detail.activity_unavailable"), t("detail.activity_unavailable"))], false, "prompt-detail-card--execution-activity");
   }
   const counters = activity.activity || {};
   const diff = activity.terminal_delivery_diff || {};
@@ -7312,7 +7517,7 @@ function promptDetailExecutionActivitySection(activity) {
     detailField(t("detail.delivery_paths"), diff.total_unique_changed_paths),
     detailField(t("detail.delivery_renamed"), Array.isArray(diff.renamed) ? diff.renamed.length : undefined),
     detailField(t("detail.delivery_pr_scope"), executionActivityDisplayValue(diff.per_pr_changed_file_counts)),
-  ]);
+  ], false, "prompt-detail-card--execution-activity");
 }
 function commitTimelineKind(item) {
   const mergeKinds = {
@@ -7544,6 +7749,7 @@ function renderPromptHistoryDetail(payload) {
     activity = history.execution_activity_summary,
     recommendationHandoff = payload?.recommendation_handoff;
   const [executionSummary, executionContext] = promptDetailExecutionSections(history);
+  const executionActivity = promptDetailExecutionActivitySection(activity);
   if (typeof history.title === "string" && history.title.trim())
     $("promptHistoryDetailTitle").textContent = history.title.trim();
   setPromptHistoryDetailDownloads(payload);
@@ -7554,6 +7760,7 @@ function renderPromptHistoryDetail(payload) {
         executionSummary,
         promptDetailSidebar([
           promptDetailDurationSection(execution),
+          executionActivity,
           promptDetailRuntimeSection(runtime),
           promptDetailCommitsSection(commits),
           promptDetailEvidenceSection(evidence),
@@ -7562,7 +7769,6 @@ function renderPromptHistoryDetail(payload) {
       promptDetailRightbar([executionContext, promptDetailPullRequestsSection(pullRequests)]),
       lifecycleFlow(payload?.lifecycle, { historical: true }),
       statusReconciliationCard(payload?.lifecycle?.recovery),
-      promptDetailExecutionActivitySection(activity),
       promptDetailProviderReviewSections(usage, reviewers, commitTimeline),
       promptDetailRecommendationHandoff(recommendationHandoff),
     ].filter(Boolean),
@@ -8440,7 +8646,15 @@ for (const binding of [
 }
 
 // Start after every DOM-dependent dashboard feature has completed setup.
-localizeOpenPullRequestStatuses();
-void refreshOpenPullRequests();
+if (!NO_PROJECT_SELECTED) {
+  localizeOpenPullRequestStatuses();
+  void refreshOpenPullRequests();
+}
 void refreshGithubRateLimit();
-startDashboardUpdates();
+if (NO_PROJECT_SELECTED) {
+  void refreshComponentLogs({}, true);
+  void refreshPlatformProviderCapacity();
+  window.setInterval(() => {
+    if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
+  }, 60_000);
+} else startDashboardUpdates();

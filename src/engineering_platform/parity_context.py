@@ -82,6 +82,37 @@ class ParityProjectStore:
                  "admission": str(row[3]), "created_at": str(row[4]), "prompt_digest": str(row[5])}
                 for row in rows]
 
+    def console_queue_projection(self, *, limit: int = 25) -> dict[str, object]:
+        """Return title-only FIFO evidence for this project's CENTRAL queue.
+
+        Transports are admission inputs, not independently visible queues.  A
+        submission leaves the visible FIFO as soon as the dispatcher claims
+        it; terminal records remain durable history rather than queue items.
+        """
+        rows = self.connection.execute(
+            """SELECT s.submission_id,s.transport,s.producer_type,s.created_at
+                FROM ep_submissions s
+                LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
+                WHERE s.project_id=? AND s.state='QUEUED' AND s.admission='ADMITTED'
+                  AND d.submission_id IS NULL
+                ORDER BY s.created_at,s.submission_id""",
+            (self.context.project_id,),
+        ).fetchall()
+        items = [
+            {
+                "submission_id": str(row[0]),
+                "filename": str(row[0]),
+                "title_kind": "producer_submission",
+                "producer_type": str(row[2]),
+                "action_intent": "UNSPECIFIED",
+                "modified_at": str(row[3]),
+                "queue_source": "CENTRAL",
+                "transport": str(row[1]),
+            }
+            for row in rows[:limit]
+        ]
+        return {"queue_depth": len(rows), "queue_items": items}
+
     def dashboard_projection(self) -> dict[str, object]:
         """A deliberately small project-scoped P-B data boundary, not a UI."""
         runs = self.connection.execute(
@@ -92,6 +123,7 @@ class ParityProjectStore:
             "project_id": self.context.project_id,
             "repository_id": self.context.repository_id,
             "queue": self.queued_submissions(),
+            "console_queue": self.console_queue_projection(),
             "runs": [{"run_id": str(row[0]), "state": str(row[1]), "created_at": str(row[2]), "updated_at": str(row[3])} for row in runs],
             "local_execution_available": self.context.local_repository_root is not None,
         }

@@ -50,10 +50,7 @@ class ForensicAttributionTests(unittest.TestCase):
                 _change("ADDED", "fixture-credential-1", credential_id="fixture-credential-1", consumer_id="fixture-consumer", project_id="fixture-project"),
             ]},
             {"table_name": "engineering_component_logs", "changes": [_change("REMOVED", "log-1")]},
-            {"table_name": "engineering_metadata", "changes": [
-                _change("MODIFIED", "database_maintenance.last_attempt_at"),
-                _change("MODIFIED", "dashboard_configuration.log_level"),
-            ]},
+            {"table_name": "engineering_metadata", "changes": [_change("MODIFIED", "dashboard_configuration.log_level")]},
             {"table_name": "execution_projections", "changes": [_change("MODIFIED", "live_status")]},
             {"table_name": "backup_probe", "changes": [_change("ADDED", "marker-41")]},
         )
@@ -70,7 +67,6 @@ class ForensicAttributionTests(unittest.TestCase):
         self.assertEqual((authority["writer_origin"], authority["state_semantics"]), ("TEST_HARNESS", "CONTROL_STATE"))
         logs = rows[("engineering_component_logs", "log-1")]
         self.assertEqual((logs["writer_origin"], logs["state_semantics"], logs["evidence_status"]), ("MAINTENANCE", "RETENTION_STATE", "PROVEN"))
-        self.assertEqual(rows[("engineering_metadata", "database_maintenance.last_attempt_at")]["writer_origin"], "MAINTENANCE")
         self.assertEqual(rows[("engineering_metadata", "dashboard_configuration.log_level")]["evidence_status"], "UNRESOLVED")
         self.assertEqual(rows[("execution_projections", "live_status")]["state_semantics"], "MUTABLE_PROJECTION")
         self.assertEqual(rows[("backup_probe", "marker-41")]["state_semantics"], "TEST_ONLY_STRUCTURE")

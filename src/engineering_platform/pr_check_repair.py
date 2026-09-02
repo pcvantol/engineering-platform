@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from .dashboard_configuration import get as dashboard_configuration
+from .central_database import capacity_reserve_from_environment
 from .worktree_tooling import WorktreeToolingError, prepare as prepare_worktree_tooling
 from .codex_capacity import read_remaining_percent
 from .provider_readiness import failures as provider_readiness_failures
@@ -168,7 +168,7 @@ def admit(root: Path, number: int) -> dict[str, object]:
     if missing:
         raise PullRequestCheckRepairError("pr_check_repair_provider_not_ready")
     remaining = read_remaining_percent()
-    reserve = int(dashboard_configuration(root)["codex_capacity_reserve_percent"])
+    reserve = capacity_reserve_from_environment()
     if remaining is None or remaining <= reserve:
         raise PullRequestCheckRepairError("pr_check_repair_capacity_unavailable")
     sha = str(evidence["head_sha"])

@@ -43,12 +43,12 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             return bindings.bind_local_repository(connection, project_id="acme-data", repository_id="acme-data", local_root=root, data_root=self.data_root, rebind=rebind)
 
-    def test_fresh_schema_45_has_no_bindings_and_integrity_passes(self) -> None:
+    def test_fresh_schema_46_has_no_bindings_and_integrity_passes(self) -> None:
         identity = server.initialize(self.data_root)
         with sqlite3.connect(self.data_root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_local_repository_bindings").fetchone()[0], 0)
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-        self.assertEqual(server.validate_store(self.data_root, identity)["schema_version"], 45)
+        self.assertEqual(server.validate_store(self.data_root, identity)["schema_version"], 47)
 
     def test_valid_bind_resolves_and_rebind_is_explicit(self) -> None:
         first, second = self._checkout("first"), self._checkout("second")
@@ -111,7 +111,7 @@ class LocalRepositoryBindingTests(unittest.TestCase):
         (root / server.SERVER_IDENTITY_FILENAME).write_text(json.dumps({"instance_id": identity.instance_id, "created_at": identity.created_at}), encoding="utf-8")
         server.initialize(root)
         with sqlite3.connect(db) as connection:
-            self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 45)
+            self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 47)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_local_repository_bindings").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_project_registrations").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_repository_registrations").fetchone()[0], 1)

@@ -16,7 +16,7 @@
       "b8d_destination": "legacy-file adapter boundary; never CENTRAL execution authority",
       "preserved_semantics": "Explicit transport root, bounded stable-file detection, local launch lifecycle and archive-only file handling.",
       "symbols": [
-        "_run_periodic_database_maintenance", "_source_revision", "publish_ready_record", "_configured_scan_interval",
+        "_source_revision", "publish_ready_record", "_configured_scan_interval",
         "cloud_root", "folders", "local_folders", "launch_path", "stable_prompt", "_looks_like_markdown",
         "discover", "_archive_path", "_already_seen", "_move", "_lock", "_scan_queue", "launch_agent", "doctor",
         "migrate_icloud_archives", "main"
@@ -80,7 +80,7 @@
     }
   ],
   "summary": {
-    "declared_function_responsibilities": 77,
+    "declared_function_responsibilities": 76,
     "unclassified": 0,
     "ambiguous": 0,
     "server_to_codex_shortcut": false,

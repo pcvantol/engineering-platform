@@ -71,14 +71,10 @@ changes execution semantics.
 - Watcher and dashboard application logs are structured, bounded, rotated and
   redacted before persistence. The dashboard automatically refreshes a bounded
   log tail only when its server-pushed revision changes.
-- The Inbox watcher performs a configurable, read-only-advertised SQLite
-  maintenance check. It executes `PRAGMA optimize` and `VACUUM` only when the
-  canonical database has no live execution lease. Historical non-terminal
-  transaction records are not runtime ownership and cannot block maintenance.
-  A busy, unavailable or live-lease state is safely deferred or skipped; the
-  pass never deletes, prunes or rewrites execution evidence. A completed pass
-  emits `periodic_database_maintenance_completed` with its task list; a skip
-  caused by a live lease emits `database_maintenance_skipped_active_run`.
+- The standalone lifecycle worker performs the only database-maintenance pass.
+  It targets the installation-owned CENTRAL database, executes `PRAGMA
+  optimize` and `VACUUM` only when no CENTRAL lifecycle is active, and never
+  opens, compacts or configures a project-local database.
 - During an active run, a fully successful specialist review remains visible
   as compact historical evidence after the review phase. Partial, failed or
   running reviewer projections remain phase-scoped and are never presented as

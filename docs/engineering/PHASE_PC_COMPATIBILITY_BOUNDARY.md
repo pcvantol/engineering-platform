@@ -4,6 +4,13 @@
 **Base:** schema 44, `f2ca7ff`  
 **Implementation:** `engineering_platform.parity_context`
 
+**Migration-gap register:** The parity boundary deliberately retains historical
+physical execution while CENTRAL is introduced.  The resulting active and
+repaired migration gaps are tracked in
+[Phase P migration-gaps register](PHASE_P_MIGRATION_GAPS_REGISTER.md).  A
+validated local root is not evidence that a retained local projection has
+become CENTRAL-owned.
+
 ## Authority and scope
 
 CENTRAL remains the lifecycle and durable-store authority. The installed local

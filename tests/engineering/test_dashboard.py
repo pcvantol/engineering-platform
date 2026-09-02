@@ -14,7 +14,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
 from engineering_platform import dashboard
-from engineering_platform.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
+from engineering_platform.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
 from engineering_platform.inbox_watcher import WATCHER_VERSION
 from engineering_platform.platform_version import EngineeringPlatformManifest
 from engineering_platform.resources import package_path
@@ -147,10 +147,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="configurationInboxBrowse"', page)
         self.assertIn('id="configurationLogRetention"', page)
         self.assertIn('id="configurationLogLevel"', page)
+        self.assertIn('id="configurationTimeoutPolicyTitle"', page)
         self.assertNotIn('id="configurationAuditLogging"', page)
         self.assertNotIn('configuration.audit_logging', page)
-        self.assertEqual(page.count('class="configuration-info"'), 7)
-        self.assertEqual(page.count("data-i18n-title=\"configuration."), 7)
+        self.assertEqual(page.count('class="configuration-info"'), 6)
+        self.assertEqual(page.count("data-i18n-title=\"configuration."), 6)
         for control in (
             "configurationInboxScanInterval", "configurationOpenPrInterval",
             "configurationDashboardStreamInterval",
@@ -168,14 +169,21 @@ class DashboardStatusTest(unittest.TestCase):
             ("configuration.lease_heartbeat_interval", "configuration.seconds_15"),
             ("configuration.lease_timeout", "configuration.seconds_90"),
             ("configuration.github_retry_backoff", "configuration.github_retry_backoff_value"),
+            ("configuration.timeout_policy", None),
+            ("configuration.timeout.specialist_review", "configuration.minutes_5"),
+            ("configuration.timeout.implementation", "configuration.minutes_15"),
+            ("configuration.timeout.local_repository_validation", "configuration.minutes_15"),
+            ("configuration.timeout.autonomous_quality_control", "configuration.minutes_10"),
+            ("configuration.timeout.repair", "configuration.minutes_15"),
+            ("configuration.timeout.finalization", "configuration.minutes_15"),
+            ("configuration.timeout.end_reconciliation", "configuration.minutes_10"),
         ):
             self.assertIn(f'data-i18n="{key}"', page)
             if value is not None:
                 self.assertIn(f'data-i18n="{value}"', page)
-        self.assertIn('id="configurationDatabaseMaintenanceInterval"', page)
-        self.assertIn('data-i18n="configuration.minute_1"', page)
-        self.assertIn('data-i18n="configuration.day_1"', page)
-        self.assertIn('data-i18n="configuration.week_1"', page)
+        self.assertNotIn('workspace-database-section', page)
+        self.assertNotIn('configurationDatabaseMaintenanceInterval', page)
+        self.assertNotIn('/api/engineering-database/', page)
         self.assertNotIn('id="dashboardLocale"', page[page.index('id="configuration"'):])
         self.assertNotIn('id="autoRefresh"', page[page.index('id="configuration"'):])
         self.assertLess(
@@ -184,22 +192,35 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertLess(page.index('id="configuration"'), page.index("</main>"))
 
+    @patch("engineering_platform.dashboard.provider_runtime_details")
     @patch("engineering_platform.dashboard.provider_readiness_status")
     def test_provider_login_status_is_token_free_and_classifies_auth(
-        self, readiness: MagicMock,
+        self, readiness: MagicMock, runtime: MagicMock,
     ) -> None:
         readiness.return_value = {
             "codex": {"provider": "CODEX", "state": "READY"},
             "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
         }
+        runtime.return_value = {
+            "codex": {"executable": "/ep/codex", "version": "0.152.1"},
+            "github": {"executable": "/opt/homebrew/bin/gh", "version": "2.82.1"},
+        }
 
         status = dashboard._provider_login_status(Path("/workspace"))
 
         self.assertEqual(status, {
-            "codex": {"provider": "CODEX", "state": "READY"},
-            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED"},
+            "codex": {"provider": "CODEX", "state": "READY", "executable": "/ep/codex", "version": "0.152.1"},
+            "github": {"provider": "GITHUB", "state": "AUTH_REQUIRED", "executable": "/opt/homebrew/bin/gh", "version": "2.82.1"},
         })
         readiness.assert_called_once_with(Path("/workspace"))
+        runtime.assert_called_once_with(Path("/workspace"))
+
+    def test_execution_runtime_status_is_token_free(self) -> None:
+        status = _execution_runtime_status()
+
+        self.assertEqual(status["state"], "READY")
+        self.assertIn("executable", status)
+        self.assertRegex(status["version"], r"^\d+\.\d+\.\d+")
 
     @patch("engineering_platform.dashboard._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
     @patch("engineering_platform.dashboard.managed_codex_runtime.provision")
@@ -396,6 +417,7 @@ class DashboardStatusTest(unittest.TestCase):
         page = _dashboard_html("Engineering Status").decode("utf-8")
 
         self.assertIn('id="dashboardLocale"', page)
+        self.assertIn('id="executionRuntimeBanner"', page)
         self.assertIn('data-project-id="onbekend" data-project-name="Project"', page)
         self.assertIn('"/assets/dashboard_locales.mjs"', (root / "src/engineering_platform/dashboard.py").read_text(encoding="utf-8"))
         for locale in ("en", "nl", "de", "fr", "es"):
@@ -412,6 +434,8 @@ class DashboardStatusTest(unittest.TestCase):
             "lifecycle.detail_quality_evidence", "lifecycle.quality_evidence.test_coverage",
             "section.configuration", "description.configuration", "configuration.inbox_location",
             "configuration.inbox_scan_interval", "configuration.open_pr_interval",
+            "configuration.ep_database", "configuration.ep_database_description", "configuration.ep_database_download",
+            "configuration.ep_database_maintenance", "configuration.ep_database_maintenance_help",
             "configuration.dashboard_stream_interval", "configuration.seconds_15",
             "configuration.seconds_30", "configuration.second_1",
             "configuration.inbox_location_help", "configuration.inbox_scan_interval_help",
@@ -427,6 +451,11 @@ class DashboardStatusTest(unittest.TestCase):
             "configuration.seconds_5", "configuration.seconds_60", "configuration.seconds_90",
             "configuration.minute_1", "configuration.minutes_5", "configuration.minutes_10",
             "configuration.github_retry_backoff_value",
+            "configuration.timeout_policy", "configuration.timeout_policy_description",
+            "configuration.timeout.specialist_review", "configuration.timeout.implementation",
+            "configuration.timeout.local_repository_validation", "configuration.timeout.autonomous_quality_control",
+            "configuration.timeout.repair", "configuration.timeout.finalization",
+            "configuration.timeout.end_reconciliation", "configuration.minutes_15",
             "configuration.inbox_location_open", "configuration.inbox_location_modal_description",
             "configuration.inbox_location_queue_not_empty",
             "configuration.inbox_location_input", "configuration.inbox_location_browse", "configuration.inbox_location_requirement",
@@ -1612,25 +1641,9 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertEqual(execute.call_args_list[1].args[1], ("/usr/local/bin/npm", "view", "@openai/codex", "version", "--json"))
 
-        dashboard._codex_identity_cache = None
-        dashboard._codex_update_cache = None
-        with (
-            patch("engineering_platform.dashboard.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
-            patch("engineering_platform.dashboard.codex_cli_executable", return_value="/managed/bin/codex"),
-            patch("engineering_platform.dashboard.LocalProcessProvider.execute", side_effect=[
-                completed(("codex", "--version"), 0, "codex-cli 0.149.0", ""),
-                completed(("npm", "view"), 0, '"0.150.0"', ""),
-                completed(("npm", "install"), 0, "installed", ""),
-                completed(("codex", "--version"), 0, "codex-cli 0.150.0", ""),
-            ]) as execute,
-        ):
+        with patch("engineering_platform.dashboard.managed_codex_runtime.provision", return_value={"updated": True, "current_version": "0.150.0"}) as provision:
             self.assertEqual(dashboard._install_codex_cli_update(root), {"updated": True, "current_version": "0.150.0"})
-            self.assertEqual(
-                execute.call_args_list[2].args[1],
-                ("/usr/local/bin/npm", "install", "--global", "--prefix", str(dashboard.engineering_platform_codex_cli_prefix()), "@openai/codex@0.150.0"),
-            )
-        dashboard._codex_identity_cache = None
-        dashboard._codex_update_cache = None
+            provision.assert_called_once_with(root)
 
     def test_codex_cli_update_installation_is_blocked_during_an_active_execution(self) -> None:
         with patch(
@@ -1654,8 +1667,8 @@ class DashboardStatusTest(unittest.TestCase):
             )
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "current", "update_available": False, "current_version": "0.150.0"},
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            return_value={"updated": False, "current_version": "0.150.0"},
         ):
             self.assertEqual(
                 dashboard._install_codex_cli_update(root),
@@ -1663,18 +1676,15 @@ class DashboardStatusTest(unittest.TestCase):
             )
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "update_available", "update_available": True, "latest_version": "0.150.0"},
-        ), patch("engineering_platform.dashboard._npm_executable", return_value=None):
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_unavailable"),
+        ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_unavailable"):
                 dashboard._install_codex_cli_update(root)
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "update_available", "update_available": True, "latest_version": "0.150.0"},
-        ), patch("engineering_platform.dashboard._npm_executable", return_value="/usr/local/bin/npm"), patch(
-            "engineering_platform.dashboard.LocalProcessProvider.execute",
-            return_value=__import__("subprocess").CompletedProcess(("npm",), 1, "", "npm error code EACCES: permission denied"),
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_permissions_required"),
         ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_permissions_required"):
                 dashboard._install_codex_cli_update(root)
@@ -2297,41 +2307,6 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
-
-    def test_engineering_database_details_are_read_only_and_report_the_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            missing = dashboard._engineering_database_details(root)
-            self.assertEqual(
-                missing["path"], str((root / ".engineering" / "engineering.db").resolve())
-            )
-            self.assertEqual(missing["size"], "Niet beschikbaar")
-            self.assertEqual(missing["schema_version"], "Niet beschikbaar")
-            self.assertFalse((root / ".engineering").exists())
-
-            with open_storage(root) as connection:
-                connection.execute("SELECT 1")
-            details = dashboard._engineering_database_details(root)
-
-        self.assertRegex(details["size"], r"^\d+,\d{2} MB$")
-        self.assertNotEqual(details["size"], "0,00 MB")
-        self.assertEqual(details["schema_version"], str(ENGINEERING_STORAGE_SCHEMA_VERSION))
-
-    def test_engineering_database_snapshot_is_a_consistent_read_only_backup(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with open_storage(root) as connection:
-                connection.execute("CREATE TABLE backup_probe (value TEXT)")
-                connection.execute("INSERT INTO backup_probe VALUES ('preserved')")
-
-            snapshot = dashboard._engineering_database_snapshot(root)
-
-        self.assertIsNotNone(snapshot)
-        with tempfile.NamedTemporaryFile(suffix=".db") as backup:
-            backup.write(snapshot or b"")
-            backup.flush()
-            with sqlite3.connect(backup.name) as connection:
-                self.assertEqual(connection.execute("SELECT value FROM backup_probe").fetchone(), ("preserved",))
 
     @patch("engineering_platform.dashboard.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:
@@ -3589,7 +3564,6 @@ class DashboardStatusTest(unittest.TestCase):
             patches.enter_context(patch("engineering_platform.dashboard._codex_cli_update_status", return_value={"state": "current"}))
             patches.enter_context(patch("engineering_platform.dashboard.daily_timing_detail", return_value={"date": "2026-08-25"}))
             patches.enter_context(patch("engineering_platform.dashboard._component_details", return_value={"component": "dashboard"}))
-            patches.enter_context(patch("engineering_platform.dashboard._engineering_database_snapshot", return_value=b"SQLite format 3\x00backup"))
             patches.enter_context(patch("engineering_platform.dashboard.log_event"))
             with self._dashboard_http_connection() as (_, connection):
                 for route, content_type in (
@@ -3600,14 +3574,11 @@ class DashboardStatusTest(unittest.TestCase):
                     ("/api/codex-cli-update", "application/json"),
                     ("/api/telemetry/2026-08-25", "application/json"),
                     ("/api/components/dashboard/details", "application/json"),
-                    ("/api/engineering-database/download?audit=download", "application/vnd.sqlite3"),
                 ):
                     connection.request("GET", route)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200, route)
                     self.assertIn(content_type, response.getheader("Content-Type"))
-                    if route.startswith("/api/engineering-database/"):
-                        self.assertRegex(response.getheader("Content-Disposition") or "", r'^attachment; filename="engineering-database-backup-\d{8}T\d{6}Z\.db"$')
                     response.read()
 
     def test_http_read_only_evidence_routes_return_explicit_not_found_or_invalid_responses(self) -> None:
@@ -3617,8 +3588,6 @@ class DashboardStatusTest(unittest.TestCase):
             "engineering_platform.dashboard.report_for_prompt_history", return_value=None
         ), patch(
             "engineering_platform.dashboard._report_analysis_for_run", return_value=b""
-        ), patch(
-            "engineering_platform.dashboard._engineering_database_snapshot", return_value=None
         ), patch(
             "engineering_platform.dashboard.daily_timing_detail", side_effect=ValueError("bad date")
         ), patch(

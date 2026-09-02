@@ -274,38 +274,6 @@ test.describe("Engineering Status browser smoke", () => {
     }]);
   });
 
-  test("persists the database maintenance interval from the Engineering database block", async ({ page }) => {
-    const writes = [];
-    await page.route("**/api/configuration", async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({ json: {
-          log_retention_days: 30, telemetry_retention_days: 90, log_level: "INFO", inbox_scan_interval_seconds: 15,
-          open_pr_check_interval_seconds: 30, dashboard_stream_interval_seconds: 1,
-          platform_health_refresh_seconds: 15, component_details_refresh_seconds: 5,
-          database_maintenance_interval_seconds: 3600,
-          provider_readiness_refresh_seconds: 300, codex_capacity_reserve_percent: 0,
-        } });
-        return;
-      }
-      writes.push(JSON.parse(route.request().postData() || "{}"));
-      await route.fulfill({ json: { key: "database_maintenance_interval_seconds", previous: 3600, value: 86400 } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const section = page.locator(".workspace-database-section");
-    const select = section.locator("#configurationDatabaseMaintenanceInterval");
-    const field = section.locator(".workspace-database-maintenance-field");
-    await expect(select).toHaveValue("3600");
-    await expect(field).toHaveCount(1);
-    await expect(select.locator("option")).toHaveText(["1 minuut", "1 uur", "1 dag", "1 week"]);
-    const picker = select.locator("+ .dashboard-select-picker");
-    await expect(picker).toHaveCSS("max-width", "224px");
-    await openDashboardPicker(picker);
-    await chooseDashboardPickerOption(picker, "86400");
-    await expect.poll(() => writes).toEqual([{
-      key: "database_maintenance_interval_seconds", value: 86400, previous: 3600,
-    }]);
-  });
-
   test("keeps configuration controls visible while hiding an empty status message", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
@@ -425,12 +393,20 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows localized provider login states in Configuration", async ({ page }) => {
+    const openedRuntimes = [];
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
-        codex: { provider: "CODEX", state: "READY" },
-        github: { provider: "GITHUB", state: "AUTH_REQUIRED" },
+        codex: { provider: "CODEX", state: "READY", executable: "/ep/codex/bin/codex", version: "0.152.1" },
+        github: { provider: "GITHUB", state: "AUTH_REQUIRED", executable: "/opt/homebrew/bin/gh", version: "2.82.1" },
       },
     } }));
+    await page.route("**/api/execution-runtime-status", (route) => route.fulfill({ json: {
+      state: "READY", executable: "/opt/engineering-platform/bin/python", version: "3.14.1",
+    } }));
+    await page.route("**/api/runtime-directory/open", async (route) => {
+      openedRuntimes.push(JSON.parse(route.request().postData()).runtime);
+      await route.fulfill({ status: 202, json: { opened_directory: "/runtime/bin" } });
+    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
@@ -441,6 +417,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="GITHUB"]')).toContainText(DASHBOARD_MESSAGES.nl["configuration.provider_status.AUTH_REQUIRED"]);
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveClass(/local-folder-link/);
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
     await expect(login).toHaveText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.login"].replace("{provider}", "GitHub"));
@@ -448,6 +429,22 @@ test.describe("Engineering Status browser smoke", () => {
     await login.hover();
     await expect(login).toHaveCSS("background-color", "rgb(244, 195, 79)");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-logout]')).toBeHidden();
+    const validation = page.locator("#configurationValidationEnvironmentStatus");
+    await expect(validation).toBeVisible();
+    await expect(validation).toContainText(DASHBOARD_MESSAGES.nl["configuration.validation_environment"]);
+    const runtime = validation.locator("[data-execution-runtime]");
+    await expect(runtime).toHaveAttribute("data-provider-state", "READY");
+    await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
+    await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
+    await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
+    await expect(validation.locator("[data-execution-runtime-path]")).toHaveClass(/local-folder-link/);
+    await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
+    await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
+    await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
+    await dispatchDashboardPointerClick(block.locator('[data-provider="CODEX"] [data-provider-cli-path]'));
+    await dispatchDashboardPointerClick(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]'));
+    await dispatchDashboardPointerClick(validation.locator("[data-execution-runtime-path]"));
+    await expect.poll(() => openedRuntimes).toEqual(["codex", "github", "python"]);
   });
 
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {
@@ -474,15 +471,23 @@ test.describe("Engineering Status browser smoke", () => {
     const geometry = await row.evaluate((element) => {
       const logoutBox = element.querySelector("[data-provider-logout]")?.getBoundingClientRect();
       const labelBox = element.querySelector(".configuration-provider-status__label")?.getBoundingClientRect();
+      const detailsBox = element.querySelector(".configuration-provider-status__details")?.getBoundingClientRect();
+      const rowBox = element.getBoundingClientRect();
       return {
-        height: element.getBoundingClientRect().height,
+        primaryHeight: logoutBox ? logoutBox.bottom - rowBox.top : null,
+        detailsTop: detailsBox ? detailsBox.top - rowBox.top : null,
+        height: rowBox.height,
         logoutCentre: logoutBox ? logoutBox.top + (logoutBox.height / 2) : null,
         labelCentre: labelBox ? labelBox.top + (labelBox.height / 2) : null,
         dotRight: element.querySelector(".configuration-provider-status__dot")?.getBoundingClientRect().right,
         nameLeft: element.querySelector("strong")?.getBoundingClientRect().left,
       };
     });
-    expect(geometry.height).toBeLessThanOrEqual(36);
+    // The primary provider state remains a compact 36px line.  CLI path and
+    // version intentionally occupy the subsequent details row.
+    expect(geometry.primaryHeight).toBeLessThanOrEqual(36);
+    expect(geometry.detailsTop).toBeGreaterThanOrEqual(36);
+    expect(geometry.height).toBeGreaterThan(36);
     expect(geometry.logoutCentre).toBe(geometry.labelCentre);
     expect(geometry.nameLeft - geometry.dotRight).toBeLessThanOrEqual(12);
   });
@@ -535,9 +540,16 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     const banner = page.locator("#codexProviderReadinessBanner");
     await expect(banner).toBeVisible();
+    await expect(banner).toHaveClass(/dashboard-status-banner--provider-unavailable/);
     await expect(page.locator("#codexProviderReadinessAction")).toHaveText(
       DASHBOARD_MESSAGES.nl["notification.provider_readiness.install"].replace("{provider}", "Codex"),
     );
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(122, 34, 48)");
+    await page.locator("#codexProviderReadinessAction").hover();
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(169, 43, 64)");
+    await page.locator("#codexProviderReadinessAction").focus();
+    expect(await page.locator("#codexProviderReadinessAction").evaluate((element) => element.matches(":focus"))).toBeTruthy();
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("outline-color", "rgb(255, 145, 161)");
     await page.locator("#codexProviderReadinessAction").click();
     await page.locator("#confirmationModalConfirm").click();
     await expect(banner).toBeHidden({ timeout: 3_000 });
@@ -804,6 +816,17 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
   });
 
+  test("uses the CENTRAL-only Finder route for the EP database location", () => {
+    const script = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
+    expect(script).toContain('fetch("/api/central-database/open-directory"');
+    expect(script).toContain('event.target.closest("#centralDatabaseLocation")');
+    expect(stylesheet).toContain(".configuration-central-database__location-link{");
+    expect(stylesheet).toContain("text-decoration:underline");
+    expect(stylesheet).toContain(".configuration-central-database{border:");
+    expect(stylesheet).not.toContain(".configuration-central-database{background:");
+  });
+
   test("analyses every worktree before showing a safe removal action", async ({ page }) => {
     const projection = { available: true, worktrees: [
       { path: "/workspace", branch: "main", commit: "123456789abc" },
@@ -1033,7 +1056,10 @@ test.describe("Engineering Status browser smoke", () => {
     await openDashboardPicker(picker);
     await chooseDashboardPickerOption(picker, "DEBUG");
     expect(await page.evaluate(() => window.__dashboardSelectFocusOptions)).toEqual([]);
-    await expect(page.locator("#configuration .configuration-field")).toHaveCount(5);
+    // Selecting a value must not steal focus.  The number of fields is
+    // intentionally not an interaction contract: host-wide runtime and
+    // CENTRAL configuration sections can add further fields.
+    await expect(page.locator("#configurationLogLevel + .dashboard-select-picker")).toHaveCount(1);
   });
 
   test("stacks flat log settings pulldowns below their labels on iPhone", async ({ page }) => {
@@ -1263,8 +1289,11 @@ test.describe("Engineering Status browser smoke", () => {
         } });
         return;
       }
+      await route.fulfill({ status: 405, json: { error: "METHOD_NOT_ALLOWED" } });
+    });
+    await page.route("**/api/provider-capacity/configuration", async (route) => {
       writes.push(JSON.parse(route.request().postData() || "{}"));
-      await route.fulfill({ json: { key: "codex_capacity_reserve_percent", previous: 0, value: 25 } });
+      await route.fulfill({ json: { codex_capacity_reserve_percent: 25 } });
     });
     const configurationLoaded = page.waitForResponse("**/api/configuration");
     const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -1278,9 +1307,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(select.locator("option[value='75']")).toHaveText("75% reserve");
     await expect(select.locator("xpath=ancestor::details[1]")).toHaveAttribute("id", "rateLimits");
     await select.selectOption("25", { force: true });
-    await expect.poll(() => writes).toEqual([{
-      key: "codex_capacity_reserve_percent", value: 25, previous: 0,
-    }]);
+    await expect.poll(() => writes).toEqual([{ codex_capacity_reserve_percent: 25 }]);
     await expect(select.locator("xpath=ancestor::label[1]").locator(".configuration-field-status")).toHaveText(DASHBOARD_MESSAGES.nl["configuration.saved"]);
   });
 
@@ -1325,8 +1352,11 @@ test.describe("Engineering Status browser smoke", () => {
         } });
         return;
       }
+      await route.fulfill({ status: 405, json: { error: "METHOD_NOT_ALLOWED" } });
+    });
+    await page.route("**/api/provider-capacity/configuration", async (route) => {
       writes.push(JSON.parse(route.request().postData() || "{}"));
-      await route.fulfill({ json: { key: "codex_capacity_reserve_percent", previous: 25, value: 20 } });
+      await route.fulfill({ json: { codex_capacity_reserve_percent: 20 } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
@@ -1340,9 +1370,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#rateLimits")).toHaveAttribute("open", "");
     await expect(select).toBeFocused();
     await select.selectOption("20", { force: true });
-    await expect.poll(() => writes).toEqual([{
-      key: "codex_capacity_reserve_percent", value: 20, previous: 25,
-    }]);
+    await expect.poll(() => writes).toEqual([{ codex_capacity_reserve_percent: 20 }]);
     await expect(banner).toBeHidden();
   });
 
@@ -1472,7 +1500,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{ date: "2026-08-25", prompt_count: 1 }]));
     await expect(page.locator("#executionTelemetry .category-description")).toHaveText(
-      "Operationele trends van de laatste 180 dagen. Telemetrie is geen repositorybewijs.",
+      "Operationele trends voor dit project van de laatste 180 dagen. Telemetrie is geen repositorybewijs.",
     );
     await expect(page.locator("#configurationTelemetryRetention")).toHaveValue("180");
     await expect(page.locator("#executionTelemetry > #configurationTelemetryRetention")).toHaveCount(0);
@@ -2083,7 +2111,7 @@ test.describe("Engineering Status browser smoke", () => {
     // Visible words must come from t(). The remaining literals are deliberate
     // control glyphs, empty cleanup values, or the neutral empty-table mark.
     expect(new Set(staticPresentationLiterals)).toEqual(new Set([
-      "", "⧉", "↓", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
+      "", "⧉", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
     ]));
     expect(dashboardSource).not.toMatch(/confirmDashboardAction\(\s*["']/);
     // Dashboard feedback must remain inside the shared modal system.  A
@@ -3012,6 +3040,10 @@ test.describe("Engineering Status browser smoke", () => {
       getComputedStyle(element).gridTemplateColumns.split(" ").length,
     );
     await expect.poll(columns).toBe(2);
+    await page.locator("#currentDiagnostic").evaluate((element) => {
+      element.hidden = false;
+      element.querySelector("pre").textContent = "Diagnostic evidence";
+    });
     const [executionIdentity, executionEstimate] = await Promise.all([
       page.locator("#executionIdentity").boundingBox(),
       page.locator("#executionEstimate").locator("xpath=..").boundingBox(),
@@ -3020,6 +3052,15 @@ test.describe("Engineering Status browser smoke", () => {
     expect(executionEstimate).not.toBeNull();
     expect(executionIdentity.y).toBe(executionEstimate.y);
     expect(executionIdentity.x).toBeLessThan(executionEstimate.x);
+
+    const [diagnosticBounds, identityBounds] = await Promise.all([
+      page.locator("#currentDiagnostic").boundingBox(),
+      page.locator("#executionIdentity").boundingBox(),
+    ]);
+    expect(diagnosticBounds).not.toBeNull();
+    expect(identityBounds).not.toBeNull();
+    expect(Math.abs(diagnosticBounds.x - identityBounds.x)).toBeLessThanOrEqual(1);
+    expect(diagnosticBounds.width).toBeGreaterThan(identityBounds.width * 1.9);
 
     const contained = async () => page.locator("#currentRun").evaluate((run) => {
       const runRight = run.getBoundingClientRect().right;
@@ -3258,6 +3299,59 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
+  test("translates dynamic quality evidence with the bounded Codex translation route", async ({ page }) => {
+    const source = "No changed behavior or executable test surface exists, so no regression test was applicable.";
+    const translated = "Er is geen gewijzigd gedrag of uitvoerbaar testoppervlak, dus er was geen regressietest van toepassing.";
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", async (route) => {
+      expect(route.request().method()).toBe("POST");
+      expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [source] });
+      await route.fulfill({ json: { translations: [translated] } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ source: result }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "quality-control-translation",
+      lifecycle: {
+        available: true, run_id: "quality-control-translation", terminal_state: "ACTIVE",
+        steps: [{
+          id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+          quality_evidence: [{ activity: "TEST_COVERAGE", result }],
+        }],
+      },
+    }, {}), { source });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toContainText(translated);
+    await expect(modal).not.toContainText(source);
+  });
+
+  test("retains dynamic quality evidence when translation is unavailable", async ({ page }) => {
+    const source = "No documented behavior changed; documentation remained unchanged.";
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", (route) => route.fulfill({
+      status: 503, json: { error: "DASHBOARD_TRANSLATION_UNAVAILABLE" },
+    }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ source: result }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "quality-control-translation-failure",
+      lifecycle: {
+        available: true, run_id: "quality-control-translation-failure", terminal_state: "ACTIVE",
+        steps: [{
+          id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+          quality_evidence: [{ activity: "DOCUMENTATION", result }],
+        }],
+      },
+    }, {}), { source });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    await expect(page.locator("#lifecycleDetailModal")).toContainText(source);
+  });
+
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({
@@ -3286,6 +3380,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(phaseRows.nth(0)).toContainText("3 sec");
     await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
     await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
+    await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
+    await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
   });
 
   test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
@@ -4021,6 +4117,31 @@ test.describe("Engineering Status browser smoke", () => {
     )).toBe(true);
   });
 
+  test("scrolls a chat bubble only after it exceeds two thirds of the available chat space", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const modal = page.locator("#promptHistoryChatModal");
+    await modal.evaluate((element) => {
+      document.querySelector("#chatMessages").replaceChildren();
+      chatMessage("assistant", "Korte reactie zonder interne scrollbar.");
+      chatMessage("assistant", "Lange reactie. ".repeat(1500));
+      element.showModal();
+    });
+    const messages = page.locator("#chatMessages .chat-message");
+    const shortBody = messages.nth(0).locator(".chat-message__body");
+    const longBubble = messages.nth(1);
+    const longBody = longBubble.locator(".chat-message__body");
+    await expect(messages).toHaveCount(2);
+    expect(await shortBody.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    expect(await longBody.evaluate((element) => element.scrollHeight > element.clientHeight + 1)).toBe(true);
+    const [messagesBox, longBubbleBox] = await Promise.all([
+      page.locator("#chatMessages").boundingBox(), longBubble.boundingBox(),
+    ]);
+    expect(messagesBox).not.toBeNull();
+    expect(longBubbleBox).not.toBeNull();
+    expect(longBubbleBox.height).toBeLessThanOrEqual(messagesBox.height * 2 / 3 + 1);
+  });
+
   test("shows the refresh timestamp in the bottom status bar", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#currentTime")).toHaveCount(0);
@@ -4348,11 +4469,11 @@ test.describe("Engineering Status browser smoke", () => {
     // it prevents a worker teardown from masquerading as a browser failure.
     testInfo.setTimeout(60_000);
     const expectations = [
-      ["en", "Execution Host telemetry", "Operational trends for the last 90 days. Telemetry is not repository evidence."],
-      ["nl", "Execution Host-telemetrie", "Operationele trends van de laatste 90 dagen. Telemetrie is geen repositorybewijs."],
-      ["de", "Execution-Host-Telemetrie", "Betriebstrends der letzten 90 Tage. Telemetrie ist kein Repository-Nachweis."],
-      ["fr", "Télémétrie de l’hôte d’exécution", "Tendances opérationnelles des 90 derniers jours. La télémétrie n’est pas une preuve de dépôt."],
-      ["es", "Telemetría del host de ejecución", "Tendencias operativas de los últimos 90 días. La telemetría no es evidencia del repositorio."],
+      ["en", "Execution telemetry", "Operational trends for this project over the last 90 days. Telemetry is not repository evidence."],
+      ["nl", "Uitvoeringstelemetrie", "Operationele trends voor dit project van de laatste 90 dagen. Telemetrie is geen repositorybewijs."],
+      ["de", "Ausführungstelemetrie", "Betriebstrends für dieses Projekt der letzten 90 Tage. Telemetrie ist kein Repository-Nachweis."],
+      ["fr", "Télémétrie d’exécution", "Tendances opérationnelles de ce projet sur les 90 derniers jours. La télémétrie n’est pas une preuve de dépôt."],
+      ["es", "Telemetría de ejecución", "Tendencias operativas de este proyecto durante los últimos 90 días. La telemetría no es evidencia del repositorio."],
     ];
     for (const [language, title, description] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -5433,34 +5554,35 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("keeps accessible table focus separate from the house-style selection ring", async ({ page }) => {
+  test("keeps whole-table scroll regions free of focus decoration", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
-    const tableWrap = page.locator("#promptHistory .log-table-wrap");
-    await tableWrap.focus();
-    const focusStyle = await tableWrap.evaluate((element) => {
-      const probe = document.createElement("span");
-      probe.style.color = "var(--house-style)";
-      document.body.append(probe);
-      const houseStyle = getComputedStyle(probe).color;
-      probe.style.boxShadow = "0 0 0 4px var(--dashboard-input-focus-ring)";
-      const houseStyleRing = getComputedStyle(probe).boxShadow;
-      probe.remove();
-      const style = getComputedStyle(element);
-      return {
-        borderColor: style.borderColor,
-        boxShadow: style.boxShadow,
-        outlineColor: style.outlineColor,
-        outlineStyle: style.outlineStyle,
-        houseStyle,
-        houseStyleRing,
-      };
+    const focusStyles = await page.evaluate(() => {
+      const existing = document.querySelector("#promptHistory .log-table-wrap");
+      const probes = ["telemetry-scroll", "telemetry-detail-table-scroll"].map((className) => {
+        const element = document.createElement("div");
+        element.className = className;
+        element.tabIndex = 0;
+        document.body.append(element);
+        return element;
+      });
+      const styles = [existing, ...probes].map((element) => {
+        element.focus();
+        const style = getComputedStyle(element);
+        return {
+          boxShadow: style.boxShadow,
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+        };
+      });
+      probes.forEach((element) => element.remove());
+      return styles;
     });
-    expect(focusStyle.borderColor).not.toBe(focusStyle.houseStyle);
-    expect(focusStyle.outlineColor).not.toBe(focusStyle.houseStyle);
-    expect(focusStyle.outlineStyle).toBe("solid");
-    expect(focusStyle.boxShadow).not.toBe(focusStyle.houseStyleRing);
-    expect(focusStyle.borderColor).toBe("rgb(141, 199, 255)");
+    for (const focusStyle of focusStyles) {
+      expect(focusStyle.outlineStyle).toBe("none");
+      expect(focusStyle.outlineWidth).toBe("0px");
+      expect(focusStyle.boxShadow).toBe("none");
+    }
   });
 
   test("matches the iPhone portrait dashboard visual reference", async ({ page }, testInfo) => {
@@ -5831,6 +5953,20 @@ test.describe("Engineering Status browser smoke", () => {
 
     await page.locator("#dashboardLocaleButton").click();
     await expect(page.locator("#dashboardLocaleMenu")).toBeVisible();
+  });
+
+  test("synchronizes the visible project picker after CENTRAL replaces its options", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      const select = document.querySelector("#dashboardProject");
+      select.innerHTML = '<option value="">&lt;geen&gt;</option><option value="alpha" selected>alpha</option>';
+      select.value = "alpha";
+      select.dispatchEvent(new Event("dashboard-select-options-changed", { bubbles: true }));
+    });
+    const picker = page.locator("#dashboardProject + .dashboard-select-picker");
+    await openDashboardPicker(picker);
+    await expect(picker.locator('[data-dashboard-select-value=""]')).toHaveText("<geen>");
+    await expect(picker.locator('[data-dashboard-select-value="alpha"]')).toHaveText("alpha");
   });
 
   test("aligns the refresh action with status at compact desktop widths", async ({ page }) => {
@@ -6604,9 +6740,9 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
     expect(diagnosisBounds).not.toBeNull();
     expect(driftBounds).not.toBeNull();
-    expect(Math.abs(diagnosisBounds.width - driftBounds.width)).toBeLessThanOrEqual(1);
-    expect(diagnosisBounds.x).toBeGreaterThan(driftBounds.x);
-    expect(Math.abs(diagnosisBounds.y - driftBounds.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(diagnosisBounds.x - driftBounds.x)).toBeLessThanOrEqual(1);
+    expect(diagnosisBounds.width).toBeGreaterThan(driftBounds.width * 1.9);
+    expect(diagnosisBounds.y).toBeGreaterThan(driftBounds.y);
 
     await page.setViewportSize({ width: 760, height: 844 });
     await expect.poll(columns).toBe(1);
@@ -6690,6 +6826,39 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#technicalRuntimePathLabel")).toHaveText(
       DASHBOARD_MESSAGES[language]["detail.codex_cli_installation_path"],
     );
+  });
+
+  test("wraps a long Codex CLI installation path within host diagnostics", async ({ page }) => {
+    await page.setViewportSize({ width: 920, height: 844 });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      current_phase: "EXECUTE_AGENT",
+      run_id: "long-runtime-path",
+    }, {
+      host_preflight: {
+        outcome: "FAILED",
+        runtime_path: "/private/var/folders/2d/lvn8wp7x5rgcvz5by5g4sr3c0000gn/T/tmp.XrTdgyzLui/home/.local/share/engineering-platform/codex-cli/bin/codex",
+      },
+    }));
+    await expect(page.locator("#technicalDiagnosisDetails")).toBeVisible();
+
+    const metrics = await page.locator("#executionHostRuntimePath").evaluate((path) => {
+      const card = path.closest(".card");
+      return {
+        cardClientWidth: card.clientWidth,
+        cardScrollWidth: card.scrollWidth,
+        pageClientWidth: document.documentElement.clientWidth,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        pathHeight: path.getBoundingClientRect().height,
+        pathWrap: getComputedStyle(path).overflowWrap,
+      };
+    });
+
+    expect(metrics.pathWrap).toBe("anywhere");
+    expect(metrics.cardScrollWidth).toBeLessThanOrEqual(metrics.cardClientWidth + 1);
+    expect(metrics.pageScrollWidth).toBeLessThanOrEqual(metrics.pageClientWidth + 1);
+    expect(metrics.pathHeight).toBeGreaterThan(24);
   });
 
   test("shows technical diagnosis only for active or attention-needing executions", async ({ page }) => {
@@ -7693,7 +7862,7 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses shared semantic classes for download, copy and destructive actions", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download", "#workspaceDatabaseDownload"]) {
+    for (const selector of ["#downloadChat", "#promptHistoryReportDownload", "#componentLogs .component-log-download"]) {
       const action = page.locator(selector).first();
       await expect(action).toHaveClass(/dashboard-action--download/);
       await expect(action).toHaveCSS("font-size", "0px");
@@ -8562,7 +8731,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryReportModal")).not.toBeVisible();
     await page.route("**/api/prompt-history/**/details", (route) => route.fulfill({
       json: {
-        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 } },
+        history: { run_id: "inbox-history-25", status: "COMPLETE", title: "Geschiedenis prompt 25", executed_at: "2026-08-02T12:25:00Z", execution_mode: "GENESIS", repository: "pcvantol/djconnect", target_repository: "pcvantol/forge", target_checkout_path: "/Users/example/Documents/GitHub/forge", tracked_file_count: 1655, target_branch: "forge-phase-evidence", execution_metadata: { modified: 3, created: 2, deleted: 1, codex_commands_executed: 17 }, execution_activity_summary: { activity: { primary_codex_commands_total: 1 }, terminal_delivery_diff: { total_unique_changed_paths: 0 } } },
         execution: { seconds: 42, total_seconds: 61 },
         runtime: { runtime_provider: "codex_cli", codex_cli_version: "0.146.0" },
         usage: { input_tokens: 120, output_tokens: 45 },
@@ -8618,15 +8787,17 @@ test.describe("Engineering Status browser smoke", () => {
       const result = {
         label: getComputedStyle(element.querySelector(".lifecycle-detail-modal__content .label")).color,
         secondary: getComputedStyle(secondary).color,
-        phaseDivider: getComputedStyle(element.querySelector(".lifecycle-detail-modal__phase-list li")).borderBottomColor,
-        divider: getComputedStyle(divider).borderBottomColor,
+        phaseDividerWidth: getComputedStyle(element.querySelector(".lifecycle-detail-modal__phase-list li")).borderBottomWidth,
       };
       secondary.remove();
       divider.remove();
       return result;
     });
     expect(inheritedDetailTokens.label).toBe(inheritedDetailTokens.secondary);
-    expect(inheritedDetailTokens.phaseDivider).toBe(inheritedDetailTokens.divider);
+    // A one-item list is also its final item; it intentionally has no
+    // trailing ruler.  Intermediate items are covered by the multi-phase
+    // lifecycle fixture above.
+    expect(inheritedDetailTokens.phaseDividerWidth).toBe("0px");
     await page.locator("#lifecycleDetailClose").click();
     const executionSummary = page.locator("#promptHistoryDetailContent > .prompt-detail-leftbar > .prompt-detail-card--execution-summary");
     const executionContext = page.locator("#promptHistoryDetailContent > .prompt-detail-rightbar > .prompt-detail-card--execution-context");
@@ -8675,6 +8846,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#promptHistoryDetailContent .prompt-detail-status .indicator--green")).toHaveCount(1);
     await expect(detailSidebar).toHaveCount(1);
     await expect(detailSidebar).toContainText("Doorlooptijd");
+    const durationCard = detailSidebar.locator(".prompt-detail-card").filter({ hasText: "Doorlooptijd" });
+    const activityCard = detailSidebar.locator(".prompt-detail-card--execution-activity");
+    await expect(activityCard).toHaveCount(1);
+    await expect(activityCard).toContainText("Samenvatting uitvoeringsactiviteit");
+    expect(await activityCard.evaluate((card) => {
+      const cards = [...card.parentElement.children];
+      return cards.indexOf(card) === cards.indexOf(card.parentElement.querySelector(".prompt-detail-card")) + 1;
+    })).toBe(true);
+    const [durationBounds, activityBounds] = await Promise.all([durationCard.boundingBox(), activityCard.boundingBox()]);
+    expect(durationBounds).not.toBeNull();
+    expect(activityBounds).not.toBeNull();
+    expect(activityBounds.x).toBe(durationBounds.x);
+    expect(activityBounds.y).toBeGreaterThan(durationBounds.y);
     await expect(detailSidebar).toContainText("Runtime");
     await expect(detailSidebar).toContainText("Git-commit");
     await expect(detailSidebar).toContainText("Uitvoeringsbewijs");
@@ -9012,13 +9196,22 @@ test.describe("Engineering Status browser smoke", () => {
 
     const sizes = await page.locator("#chatMessages").evaluate((container) => {
       const message = container.querySelector(".chat-message");
+      const body = message.querySelector(".chat-message__body");
+      const bodyStyle = getComputedStyle(body);
       return {
         container: container.getBoundingClientRect().height,
         message: message.getBoundingClientRect().height,
+        bodyScrollable: body.scrollHeight > body.clientHeight,
+        bodyOverflowY: bodyStyle.overflowY,
+        bodyScrollbarGutter: bodyStyle.scrollbarGutter,
       };
     });
     expect(sizes.container).toBeGreaterThan(200);
     expect(sizes.message).toBeLessThan(100);
+    expect(sizes.message).toBeLessThanOrEqual(sizes.container * (2 / 3) + 2);
+    expect(sizes.bodyScrollable).toBe(false);
+    expect(sizes.bodyOverflowY).toBe("visible");
+    expect(sizes.bodyScrollbarGutter).toBe("auto");
   });
 
   test("caps long user and assistant chat bubbles and scrolls their bodies", async ({ page }) => {
@@ -9400,6 +9593,24 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
   });
 
+  test("renders CENTRAL FIFO items without offering a legacy file deferral", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => queueItems([
+      {
+        submission_id: "sub-central-fifo",
+        filename: "sub-central-fifo",
+        title_kind: "producer_submission",
+        producer_type: "CLI",
+        action_intent: "UNSPECIFIED",
+        modified_at: "2026-08-02T10:01:00Z",
+        queue_source: "CENTRAL",
+      },
+    ], 1));
+    await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
+    await expect(page.locator("#queueList .queue-defer")).toHaveCount(0);
+  });
+
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
     let deferRequests = 0;
     await page.route("**/api/events", (route) => route.abort());
@@ -9526,24 +9737,11 @@ test.describe("Engineering Status browser smoke", () => {
     expect(recoveryRequested).toBeTruthy();
   });
 
-  test("offers a downloadable offline backup for the engineering database", async ({ page }) => {
+  test("does not present a project-local engineering database", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await dispatchDashboardPointerClick(page.locator("#configuration > summary"));
-    await expect(page.locator("#workspaceFreeDiskSpace")).toHaveCount(1);
-    const databaseSection = page.locator(".workspace-database-section");
-    await expect(databaseSection).toHaveCount(1);
-    await expect(databaseSection.locator("xpath=..")).toHaveAttribute("id", "configuration");
-    await expect(databaseSection).toHaveCSS("border-top-color", "rgb(240, 182, 106)");
-    await expect(databaseSection.locator("#workspaceDatabaseHeading")).toHaveText("Engineering-database");
-    await expect(databaseSection.locator("#workspaceFreeDiskSpace")).toHaveCount(1);
-    for (const id of ["workspaceDatabaseField", "workspaceDatabaseSize", "workspaceSchemaVersion"])
-      await expect(databaseSection.locator(`#${id}`)).toHaveCount(1);
-    await expect(databaseSection.locator("#configurationDatabaseMaintenanceInterval")).toHaveCount(1);
-    await expect(page.locator("#workspaceCard #workspaceDatabaseField")).toHaveCount(0);
-    const download = page.locator("#workspaceDatabaseDownload");
-    await expect(download).toBeVisible();
-    await expect(download).toHaveAttribute("href", "/api/engineering-database/download?audit=download");
-    await expect(download).toHaveAttribute("aria-label", "Databaseback-up downloaden");
+    await expect(page.locator(".workspace-database-section")).toHaveCount(0);
+    await expect(page.locator("#workspaceDatabaseDownload")).toHaveCount(0);
+    await expect(page.locator("#configurationDatabaseMaintenanceInterval")).toHaveCount(0);
   });
 
   test("groups fixed platform settings in a read-only configuration subsection", async ({ page }) => {

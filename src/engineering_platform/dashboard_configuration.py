@@ -19,7 +19,6 @@ DEFAULTS = {
     "dashboard_stream_interval_seconds": 1,
     "platform_health_refresh_seconds": 15,
     "component_details_refresh_seconds": 5,
-    "database_maintenance_interval_seconds": 60 * 60,
     "provider_readiness_refresh_seconds": 300,
     "codex_capacity_reserve_percent": 0,
 }
@@ -32,7 +31,6 @@ OPTIONS = {
     "dashboard_stream_interval_seconds": frozenset(range(1, 11)),
     "platform_health_refresh_seconds": frozenset({5, 15, 30, 60}),
     "component_details_refresh_seconds": frozenset({5, 15, 30, 60}),
-    "database_maintenance_interval_seconds": frozenset({60, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60}),
     "provider_readiness_refresh_seconds": frozenset({60, 300, 600}),
     "codex_capacity_reserve_percent": frozenset({0, 5, 10, 15, 20, 25, 50, 75}),
 }

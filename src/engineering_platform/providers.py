@@ -8,10 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 import os
+import pwd
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from typing import Mapping, Protocol, Sequence
 
 
@@ -30,7 +32,9 @@ class RuntimeProvider(Protocol):
 class ProcessProvider(Protocol):
     """The sole boundary for local child-process execution."""
 
-    def execute(self, root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]: ...
+    def execute(
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]: ...
 
@@ -40,8 +44,13 @@ class ProcessProvider(Protocol):
 class LocalProcessProvider:
     """Default local process adapter; orchestration code never imports subprocess for work."""
 
-    def execute(self, root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(arguments, cwd=root, text=True, capture_output=True, check=False)
+    def execute(
+        self, root: Path, arguments: Sequence[str], *, environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            arguments, cwd=root, env=dict(environment) if environment is not None else None,
+            text=True, capture_output=True, check=False,
+        )
 
     def spawn(self, root: Path, arguments: Sequence[str]) -> subprocess.Popen[str]:
         return subprocess.Popen(
@@ -56,6 +65,23 @@ class LocalProcessProvider:
         )
 
 
+def installed_python_environment() -> dict[str, str]:
+    """Return the Server-owned interpreter environment for child validation.
+
+    An installed Engineering Platform Server is executed by its installation
+    virtual environment.  Child validation must retain that interpreter when a
+    repository asks for the conventional ``python -m ...`` command; otherwise
+    it can accidentally resolve a different system Python.
+    """
+    executable = Path(sys.executable).resolve()
+    environment = dict(os.environ)
+    environment["PATH"] = str(executable.parent) + os.pathsep + environment.get("PATH", "")
+    virtual_environment = executable.parent.parent
+    if (virtual_environment / "pyvenv.cfg").is_file():
+        environment["VIRTUAL_ENV"] = str(virtual_environment)
+    return environment
+
+
 class DeterministicValidationExecutor:
     """Run one resolved validation control outside provider-agent dispatch."""
 
@@ -64,7 +90,7 @@ class DeterministicValidationExecutor:
 
     def run(self, root: Path, command: tuple[str, ...]) -> "DeterministicValidationResult":
         try:
-            completed = self.process.execute(root, command)
+            completed = self.process.execute(root, command, environment=installed_python_environment())
             stdout = completed.stdout
             stderr = completed.stderr
             return DeterministicValidationResult(
@@ -109,9 +135,30 @@ class PrivateRemoteAccessProvider(Protocol):
     def status(self) -> ProviderStatus: ...
 
 
+MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT = "EP_MANAGED_CODEX_CLI_PREFIX"
+
+
+def default_engineering_platform_codex_cli_prefix() -> Path:
+    """Return the stable account-owned default, independent of ``$HOME``.
+
+    A runner may deliberately receive an isolated HOME for tool state.  That
+    must never manufacture a second EP-managed CLI installation location.
+    """
+    try:
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        account_home = Path.home()
+    return account_home / ".local" / "share" / "engineering-platform" / "codex-cli"
+
+
 def engineering_platform_codex_cli_prefix() -> Path:
-    """Return the user-owned prefix reserved for Engineering Platform's CLI."""
-    return Path.home() / ".local" / "share" / "engineering-platform" / "codex-cli"
+    """Return the installation-pinned CLI prefix, never a process HOME path."""
+    configured = os.environ.get(MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT)
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve(strict=False)
+    return default_engineering_platform_codex_cli_prefix()
 
 
 def codex_cli_executable() -> str | None:
@@ -179,18 +226,15 @@ class CodexCliProvider(LocalProcessProvider):
     ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
-        # Execution remains behind the provider boundary.  The current
-        # Engineering callers stream long-running work through ``spawn`` and
-        # do not supply a timeout here; retaining the argument preserves the
-        # public provider contract for compatible callers.
-        del timeout
+        # Reviewer invocations are bounded advisory work.  Primary execution
+        # streams through ``spawn`` and does not supply a timeout here.
         if environment is None and input_text is None:
             return self.execute(root, command)
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
         return subprocess.run(
             (self._executable, *command[1:]), cwd=root,
-            env=dict(environment) if environment is not None else None,
+            env=dict(environment) if environment is not None else None, timeout=timeout,
             text=True, input=input_text, capture_output=True, check=False,
         )
 

@@ -83,7 +83,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.log_retention_help": "How long redacted component-log records remain available locally. Reducing it permanently deletes expired records.",
     "configuration.log_level_help": "Controls how much detail local component logs record. Debug is intended for diagnosis.",
     "configuration.retention_confirm": "Reducing retention permanently removes expired local component-log records.",
-    "configuration.telemetry_retention_help": "How long local Execution Host telemetry remains available. Reducing it permanently removes expired telemetry projections while preserving receipts, reports and prompt history.",
+    "configuration.telemetry_retention_help": "How long project-scoped execution telemetry remains available. Reducing it permanently removes expired telemetry projections while preserving receipts, reports and prompt history.",
     "configuration.telemetry_retention_confirm": "Reducing telemetry retention permanently removes expired local telemetry projections. Execution Receipts, Engineering Reports and Prompt History remain available.",
     "configuration.days": "{days} days",
     "configuration.saved": "Saved locally.",
@@ -424,7 +424,7 @@ export const DASHBOARD_MESSAGES = {
     "section.ai_execution_diagnostics": "AI execution diagnostics",
     "section.ai_provider_limits": "AI provider limits",
     "section.ai_provider_usage": "AI provider usage",
-    "section.execution_host_telemetry": "Execution Host telemetry",
+    "section.execution_host_telemetry": "Execution telemetry",
     "section.inbox_queue": "Execution queue",
     "section.local_ai_processes": "Local AI processes",
     "section.logs": "Logs",
@@ -540,17 +540,17 @@ export const DASHBOARD_MESSAGES = {
     "telemetry.complete": "Complete",
     "telemetry.copy": "Copy telemetry",
     "telemetry.day": "Day",
-    "telemetry.description": "Operational trends for the last {days} days. Telemetry is not repository evidence.",
+    "telemetry.description": "Operational trends for this project over the last {days} days. Telemetry is not repository evidence.",
     "telemetry.download": "Download telemetry",
-    "telemetry.empty": "No completed Execution Host telemetry is available yet.",
+    "telemetry.empty": "No completed Execution telemetry is available yet.",
     "telemetry.failed": "Failed",
     "telemetry.input": "Input",
     "telemetry.output": "Output",
     "telemetry.prompts": "Executions",
-    "telemetry.table_label": "Daily Execution Host telemetry",
-    "telemetry.pagination_label": "Execution Host telemetry pagination",
+    "telemetry.table_label": "Daily Execution telemetry",
+    "telemetry.pagination_label": "Execution telemetry pagination",
     "telemetry.page": "Page {page} of {pages} · {count} days",
-    "telemetry.title": "Execution Host telemetry",
+    "telemetry.title": "Execution telemetry",
     "telemetry.total": "Total",
     "theme.dark": "Dark mode",
     "theme.enable_dark": "Enable dark mode",
@@ -719,7 +719,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.log_retention_help": "Hoe lang geredigeerde componentlogrecords lokaal beschikbaar blijven. Verkorten verwijdert verlopen records definitief.",
     "configuration.log_level_help": "Bepaalt hoeveel detail lokale componentlogs vastleggen. Debug is bedoeld voor diagnose.",
     "configuration.retention_confirm": "Een kortere bewaartermijn verwijdert verlopen lokale componentlogrecords definitief.",
-    "configuration.telemetry_retention_help": "Hoe lang lokale Execution Host-telemetrie beschikbaar blijft. Verkorten verwijdert verlopen telemetrieprojecties definitief, maar behoudt receipts, rapporten en prompthistorie.",
+    "configuration.telemetry_retention_help": "Hoe lang projectgebonden uitvoeringstelemetrie beschikbaar blijft. Verkorten verwijdert verlopen telemetrieprojecties definitief, maar behoudt receipts, rapporten en prompthistorie.",
     "configuration.telemetry_retention_confirm": "Een kortere telemetrie-bewaartermijn verwijdert verlopen lokale telemetrieprojecties definitief. Execution Receipts, Engineering Reports en Prompthistorie blijven beschikbaar.",
     "configuration.days": "{days} dagen",
     "configuration.saved": "Lokaal opgeslagen.",
@@ -1060,7 +1060,7 @@ export const DASHBOARD_MESSAGES = {
     "section.ai_execution_diagnostics": "AI-uitvoeringsdiagnose",
     "section.ai_provider_limits": "AI-providerlimieten",
     "section.ai_provider_usage": "AI-providergebruik",
-    "section.execution_host_telemetry": "Execution Host-telemetrie",
+    "section.execution_host_telemetry": "Uitvoeringstelemetrie",
     "section.inbox_queue": "Wachtrij voor uitvoeringen",
     "section.local_ai_processes": "Lokale AI-processen",
     "section.logs": "Logs",
@@ -1176,17 +1176,17 @@ export const DASHBOARD_MESSAGES = {
     "telemetry.complete": "Voltooid",
     "telemetry.copy": "Telemetrie kopiëren",
     "telemetry.day": "Dag",
-    "telemetry.description": "Operationele trends van de laatste {days} dagen. Telemetrie is geen repositorybewijs.",
+    "telemetry.description": "Operationele trends voor dit project van de laatste {days} dagen. Telemetrie is geen repositorybewijs.",
     "telemetry.download": "Telemetrie downloaden",
-    "telemetry.empty": "Nog geen voltooide Execution Host-telemetrie beschikbaar.",
+    "telemetry.empty": "Nog geen voltooide Uitvoeringstelemetrie beschikbaar.",
     "telemetry.failed": "Mislukt",
     "telemetry.input": "Input",
     "telemetry.output": "Output",
     "telemetry.prompts": "Uitvoeringen",
-    "telemetry.table_label": "Dagelijkse Execution Host-telemetrie",
-    "telemetry.pagination_label": "Paginering Execution Host-telemetrie",
+    "telemetry.table_label": "Dagelijkse Uitvoeringstelemetrie",
+    "telemetry.pagination_label": "Paginering Uitvoeringstelemetrie",
     "telemetry.page": "Pagina {page} van {pages} · {count} dagen",
-    "telemetry.title": "Execution Host-telemetrie",
+    "telemetry.title": "Uitvoeringstelemetrie",
     "telemetry.total": "Totaal",
     "theme.dark": "Donkere modus",
     "theme.enable_dark": "Donkere modus inschakelen",
@@ -1355,7 +1355,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.log_retention_help": "Wie lange bereinigte Komponentenprotokolle lokal verfügbar bleiben. Eine Verkürzung löscht abgelaufene Einträge dauerhaft.",
     "configuration.log_level_help": "Legt fest, wie viele Details lokale Komponentenprotokolle erfassen. Debug dient der Diagnose.",
     "configuration.retention_confirm": "Eine kürzere Aufbewahrungsfrist entfernt abgelaufene lokale Komponentenprotokolle dauerhaft.",
-    "configuration.telemetry_retention_help": "Wie lange lokale Execution-Host-Telemetrie verfügbar bleibt. Eine Verkürzung entfernt abgelaufene Telemetrieprojektionen dauerhaft, behält jedoch Receipts, Berichte und Promptverlauf.",
+    "configuration.telemetry_retention_help": "Wie lange projektbezogene Ausführungstelemetrie verfügbar bleibt. Eine Verkürzung entfernt abgelaufene Telemetrieprojektionen dauerhaft, behält jedoch Receipts, Berichte und Promptverlauf.",
     "configuration.telemetry_retention_confirm": "Eine kürzere Telemetrieaufbewahrung entfernt abgelaufene lokale Telemetrieprojektionen dauerhaft. Execution Receipts, Engineering Reports und Promptverlauf bleiben verfügbar.",
     "configuration.days": "{days} Tage",
     "configuration.saved": "Lokal gespeichert.",
@@ -1696,7 +1696,7 @@ export const DASHBOARD_MESSAGES = {
     "section.ai_execution_diagnostics": "KI-Ausführungsdiagnose",
     "section.ai_provider_limits": "KI-Anbieterlimits",
     "section.ai_provider_usage": "KI-Anbieternutzung",
-    "section.execution_host_telemetry": "Execution-Host-Telemetrie",
+    "section.execution_host_telemetry": "Ausführungstelemetrie",
     "section.inbox_queue": "Ausführungswarteschlange",
     "section.local_ai_processes": "Lokale KI-Prozesse",
     "section.logs": "Protokolle",
@@ -1812,17 +1812,17 @@ export const DASHBOARD_MESSAGES = {
     "telemetry.complete": "Abgeschlossen",
     "telemetry.copy": "Telemetry kopieren",
     "telemetry.day": "Tag",
-    "telemetry.description": "Betriebstrends der letzten {days} Tage. Telemetrie ist kein Repository-Nachweis.",
+    "telemetry.description": "Betriebstrends für dieses Projekt der letzten {days} Tage. Telemetrie ist kein Repository-Nachweis.",
     "telemetry.download": "Telemetry herunterladen",
-    "telemetry.empty": "Noch keine abgeschlossene Execution-Host-Telemetrie verfügbar.",
+    "telemetry.empty": "Noch keine abgeschlossene Ausführungstelemetrie verfügbar.",
     "telemetry.failed": "Fehlgeschlagen",
     "telemetry.input": "Eingabe",
     "telemetry.output": "Ausgabe",
     "telemetry.prompts": "Ausführungen",
-    "telemetry.table_label": "Tägliche Execution-Host-Telemetrie",
-    "telemetry.pagination_label": "Seitennavigation der Execution-Host-Telemetrie",
+    "telemetry.table_label": "Tägliche Ausführungstelemetrie",
+    "telemetry.pagination_label": "Seitennavigation der Ausführungstelemetrie",
     "telemetry.page": "Seite {page} von {pages} · {count} Tage",
-    "telemetry.title": "Execution-Host-Telemetrie",
+    "telemetry.title": "Ausführungstelemetrie",
     "telemetry.total": "Gesamt",
     "theme.dark": "Dunkler Modus",
     "theme.enable_dark": "Dunklen Modus aktivieren",
@@ -1925,7 +1925,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.log_retention_help": "Durée de disponibilité locale des journaux de composants filtrés. La réduire supprime définitivement les enregistrements expirés.",
     "configuration.log_level_help": "Détermine le niveau de détail enregistré dans les journaux locaux des composants. Débogage est destiné au diagnostic.",
     "configuration.retention_confirm": "Réduire la durée de conservation supprime définitivement les anciens enregistrements de journaux de composants locaux.",
-    "configuration.telemetry_retention_help": "Durée de disponibilité de la télémétrie locale de l’hôte d’exécution. La réduire supprime définitivement les projections expirées, mais conserve les reçus, rapports et l’historique des prompts.",
+    "configuration.telemetry_retention_help": "Durée de disponibilité de la télémétrie d’exécution limitée au projet. La réduire supprime définitivement les projections expirées, mais conserve les reçus, rapports et l’historique des prompts.",
     "configuration.telemetry_retention_confirm": "Réduire la conservation de la télémétrie supprime définitivement les projections locales expirées. Les Execution Receipts, Engineering Reports et l’historique des prompts restent disponibles.",
     "configuration.days": "{days} jours",
     "configuration.saved": "Enregistré localement.",
@@ -2266,7 +2266,7 @@ export const DASHBOARD_MESSAGES = {
     "section.ai_execution_diagnostics": "Diagnostic d’exécution IA",
     "section.ai_provider_limits": "Limites du fournisseur IA",
     "section.ai_provider_usage": "Utilisation du fournisseur IA",
-    "section.execution_host_telemetry": "Télémétrie de l’hôte d’exécution",
+    "section.execution_host_telemetry": "Télémétrie d’exécution",
     "section.inbox_queue": "File d’exécution",
     "section.local_ai_processes": "Processus IA locaux",
     "section.logs": "Journaux",
@@ -2382,17 +2382,17 @@ export const DASHBOARD_MESSAGES = {
     "telemetry.complete": "Terminé",
     "telemetry.copy": "Copier la télémétrie",
     "telemetry.day": "Jour",
-    "telemetry.description": "Tendances opérationnelles des {days} derniers jours. La télémétrie n’est pas une preuve de dépôt.",
+    "telemetry.description": "Tendances opérationnelles de ce projet sur les {days} derniers jours. La télémétrie n’est pas une preuve de dépôt.",
     "telemetry.download": "Télécharger la télémétrie",
-    "telemetry.empty": "Aucune télémétrie d’hôte d’exécution terminée n’est encore disponible.",
+    "telemetry.empty": "Aucune télémétrie d’exécution terminée n’est encore disponible.",
     "telemetry.failed": "Échec",
     "telemetry.input": "Entrée",
     "telemetry.output": "Sortie",
     "telemetry.prompts": "Exécutions",
-    "telemetry.table_label": "Télémétrie quotidienne de l’hôte d’exécution",
-    "telemetry.pagination_label": "Pagination de la télémétrie de l’hôte d’exécution",
+    "telemetry.table_label": "Télémétrie quotidienne d’exécution",
+    "telemetry.pagination_label": "Pagination de la télémétrie d’exécution",
     "telemetry.page": "Page {page} sur {pages} · {count} jours",
-    "telemetry.title": "Télémétrie de l’hôte d’exécution",
+    "telemetry.title": "Télémétrie d’exécution",
     "telemetry.total": "Total",
     "theme.dark": "Mode sombre",
     "theme.enable_dark": "Activer le mode sombre",
@@ -2495,7 +2495,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.log_retention_help": "Durante cuánto tiempo permanecen disponibles localmente los registros depurados de componentes. Reducirlo elimina permanentemente los registros caducados.",
     "configuration.log_level_help": "Controla cuánto detalle registran los componentes locales. Depuración está destinada al diagnóstico.",
     "configuration.retention_confirm": "Reducir la retención elimina permanentemente los registros caducados de componentes locales.",
-    "configuration.telemetry_retention_help": "Cuánto tiempo permanece disponible la telemetría local del host de ejecución. Reducirla elimina permanentemente proyecciones de telemetría caducadas, pero conserva recibos, informes e historial de prompts.",
+    "configuration.telemetry_retention_help": "Cuánto tiempo permanece disponible la telemetría de ejecución del proyecto. Reducirla elimina permanentemente proyecciones de telemetría caducadas, pero conserva recibos, informes e historial de prompts.",
     "configuration.telemetry_retention_confirm": "Reducir la retención de telemetría elimina permanentemente las proyecciones locales caducadas. Los Execution Receipts, Engineering Reports y el historial de prompts seguirán disponibles.",
     "configuration.days": "{days} días",
     "configuration.saved": "Guardado localmente.",
@@ -2836,7 +2836,7 @@ export const DASHBOARD_MESSAGES = {
     "section.ai_execution_diagnostics": "Diagnóstico de ejecución de IA",
     "section.ai_provider_limits": "Límites del proveedor de IA",
     "section.ai_provider_usage": "Uso del proveedor de IA",
-    "section.execution_host_telemetry": "Telemetría del host de ejecución",
+    "section.execution_host_telemetry": "Telemetría de ejecución",
     "section.inbox_queue": "Cola de ejecuciones",
     "section.local_ai_processes": "Procesos de IA locales",
     "section.logs": "Registros",
@@ -2952,17 +2952,17 @@ export const DASHBOARD_MESSAGES = {
     "telemetry.complete": "Completado",
     "telemetry.copy": "Copiar telemetría",
     "telemetry.day": "Día",
-    "telemetry.description": "Tendencias operativas de los últimos {days} días. La telemetría no es evidencia del repositorio.",
+    "telemetry.description": "Tendencias operativas de este proyecto durante los últimos {days} días. La telemetría no es evidencia del repositorio.",
     "telemetry.download": "Descargar telemetría",
-    "telemetry.empty": "Aún no hay telemetría completada del host de ejecución disponible.",
+    "telemetry.empty": "Aún no hay telemetría de ejecución completada disponible.",
     "telemetry.failed": "Fallido",
     "telemetry.input": "Entrada",
     "telemetry.output": "Salida",
     "telemetry.prompts": "Ejecuciones",
-    "telemetry.table_label": "Telemetría diaria del host de ejecución",
-    "telemetry.pagination_label": "Paginación de telemetría del host de ejecución",
+    "telemetry.table_label": "Telemetría diaria de ejecución",
+    "telemetry.pagination_label": "Paginación de telemetría de ejecución",
     "telemetry.page": "Página {page} de {pages} · {count} días",
-    "telemetry.title": "Telemetría del host de ejecución",
+    "telemetry.title": "Telemetría de ejecución",
     "telemetry.total": "Total",
     "theme.dark": "Modo oscuro",
     "theme.enable_dark": "Activar modo oscuro",
@@ -3670,11 +3670,12 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.readonly_platform_settings"
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.readonly_platform_settings":"Feste Plattformeinstellungen"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.readonly_platform_settings":"Paramètres fixes de la plateforme"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.readonly_platform_settings":"Ajustes fijos de la plataforma"});
-Object.assign(DASHBOARD_MESSAGES.en, {"configuration.database_maintenance_interval":"Database maintenance","configuration.database_maintenance_interval_help":"How often the Inbox watcher optimizes and compacts the local Engineering database when no execution is active. It never removes engineering evidence.","configuration.hour_1":"1 hour","configuration.day_1":"1 day","configuration.week_1":"1 week"});
-Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.database_maintenance_interval":"Databaseonderhoud","configuration.database_maintenance_interval_help":"Hoe vaak de Inbox-watcher de lokale Engineering-database optimaliseert en compacteert als geen uitvoering actief is. Engineeringbewijs wordt nooit verwijderd.","configuration.hour_1":"1 uur","configuration.day_1":"1 dag","configuration.week_1":"1 week"});
-Object.assign(DASHBOARD_MESSAGES.de, {"configuration.database_maintenance_interval":"Datenbankwartung","configuration.database_maintenance_interval_help":"Wie oft der Inbox-Watcher die lokale Engineering-Datenbank optimiert und komprimiert, wenn keine Ausführung aktiv ist. Engineering-Nachweise werden nie entfernt.","configuration.hour_1":"1 Stunde","configuration.day_1":"1 Tag","configuration.week_1":"1 Woche"});
-Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.database_maintenance_interval":"Maintenance de la base de données","configuration.database_maintenance_interval_help":"À quelle fréquence le watcher de la boîte de réception optimise et compacte la base Engineering locale lorsqu’aucune exécution n’est active. Les preuves Engineering ne sont jamais supprimées.","configuration.hour_1":"1 heure","configuration.day_1":"1 jour","configuration.week_1":"1 semaine"});
-Object.assign(DASHBOARD_MESSAGES.es, {"configuration.database_maintenance_interval":"Mantenimiento de la base de datos","configuration.database_maintenance_interval_help":"Con qué frecuencia el vigilante de la bandeja de entrada optimiza y compacta la base de datos local de Engineering cuando no hay una ejecución activa. Nunca elimina evidencias de Engineering.","configuration.hour_1":"1 hora","configuration.day_1":"1 día","configuration.week_1":"1 semana"});
+
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.ep_database":"EP database","configuration.ep_database_description":"Platform-wide storage for projects, executions, and configuration.","configuration.ep_database_download":"Download EP database","configuration.ep_database_open_folder":"Open EP database folder in Finder","configuration.ep_database_open_folder_failed":"The EP database folder could not be opened.","configuration.database_owner":"Database ownership","configuration.ep_database_owner":"Engineering Platform","configuration.database_location":"Database location","configuration.database_size":"Database size","configuration.schema_version":"Schema version","configuration.integrity":"Integrity","configuration.ep_database_maintenance":"Database maintenance","configuration.ep_database_maintenance_help":"Optimizes the EP database when no execution is active."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.ep_database":"EP-database","configuration.ep_database_description":"Platformbrede opslag voor projecten, uitvoeringen en configuratie.","configuration.ep_database_download":"Download EP-database","configuration.ep_database_open_folder":"Open EP-databasemap in Finder","configuration.ep_database_open_folder_failed":"De EP-databasemap kon niet worden geopend.","configuration.database_owner":"Database-eigendom","configuration.ep_database_owner":"Engineering Platform","configuration.database_location":"Databaselocatie","configuration.database_size":"Databasegrootte","configuration.schema_version":"Schema-versie","configuration.integrity":"Integriteit","configuration.ep_database_maintenance":"Databaseonderhoud","configuration.ep_database_maintenance_help":"Optimaliseert de EP-database wanneer geen uitvoering actief is."});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.ep_database":"EP-Datenbank","configuration.ep_database_description":"Plattformweiter Speicher für Projekte, Ausführungen und Konfiguration.","configuration.ep_database_download":"EP-Datenbank herunterladen","configuration.ep_database_open_folder":"EP-Datenbankordner im Finder öffnen","configuration.ep_database_open_folder_failed":"Der EP-Datenbankordner konnte nicht geöffnet werden.","configuration.database_owner":"Datenbankeigentum","configuration.ep_database_owner":"Engineering Platform","configuration.database_location":"Datenbankpfad","configuration.database_size":"Datenbankgröße","configuration.schema_version":"Schemakennung","configuration.integrity":"Integrität","configuration.ep_database_maintenance":"Datenbankwartung","configuration.ep_database_maintenance_help":"Optimiert die EP-Datenbank, wenn keine Ausführung aktiv ist."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.ep_database":"Base de données EP","configuration.ep_database_description":"Stockage à l’échelle de la plateforme pour les projets, les exécutions et la configuration.","configuration.ep_database_download":"Télécharger la base de données EP","configuration.ep_database_open_folder":"Ouvrir le dossier de la base de données EP dans le Finder","configuration.ep_database_open_folder_failed":"Le dossier de la base de données EP n’a pas pu être ouvert.","configuration.database_owner":"Propriété de la base de données","configuration.ep_database_owner":"Engineering Platform","configuration.database_location":"Emplacement de la base de données","configuration.database_size":"Taille de la base de données","configuration.schema_version":"Version du schéma","configuration.integrity":"Intégrité","configuration.ep_database_maintenance":"Maintenance de la base de données","configuration.ep_database_maintenance_help":"Optimise la base de données EP lorsqu’aucune exécution n’est active."});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.ep_database":"Base de datos EP","configuration.ep_database_description":"Almacenamiento de toda la plataforma para proyectos, ejecuciones y configuración.","configuration.ep_database_download":"Descargar base de datos EP","configuration.ep_database_open_folder":"Abrir la carpeta de la base de datos EP en Finder","configuration.ep_database_open_folder_failed":"No se pudo abrir la carpeta de la base de datos EP.","configuration.database_owner":"Propiedad de la base de datos","configuration.ep_database_owner":"Engineering Platform","configuration.database_location":"Ubicación de la base de datos","configuration.database_size":"Tamaño de la base de datos","configuration.schema_version":"Versión de esquema","configuration.integrity":"Integridad","configuration.ep_database_maintenance":"Mantenimiento de la base de datos","configuration.ep_database_maintenance_help":"Optimiza la base de datos EP cuando no hay ninguna ejecución activa."});
 
 Object.assign(DASHBOARD_MESSAGES.en, {"configuration.dashboard_settings":"Dashboard settings"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.dashboard_settings":"Dashboardinstellingen"});
@@ -3815,3 +3816,18 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"recovery.blocked_predecessor_title":"Gebl
 Object.assign(DASHBOARD_MESSAGES.de, {"recovery.blocked_predecessor_title":"Blockierte vorherige Ausführung","recovery.preceding_execution":"Vorherige Ausführung","recovery.title":"Blockierte Ausführung wiederherstellen","recovery.details":"Diese terminale Ausführung über die normale Inbox-Route erneut versuchen? Engineering Platform führt die aktuelle Vorprüfung erneut aus, bevor eine Ersatzausführung erstellt wird. Die fehlgeschlagene Ausführung und ihre Nachweise bleiben unverändert.","recovery.action":"Blockierte Ausführung wiederherstellen","recovery.preparing":"Wiederherstellungs-Vorprüfung wird geprüft…","recovery.ready":"Die Wiederherstellung ist eingeplant; der Inbox-Watcher übernimmt die Ersatzausführung.","recovery.failed":"Die blockierte Ausführung konnte nicht sicher wiederhergestellt werden."});
 Object.assign(DASHBOARD_MESSAGES.fr, {"recovery.blocked_predecessor_title":"Exécution précédente bloquée","recovery.preceding_execution":"Exécution précédente","recovery.title":"Rétablir l’exécution bloquée","recovery.details":"Réessayer cette exécution terminale via le flux Inbox normal ? Engineering Platform exécute à nouveau le précontrôle actuel avant de créer une exécution de remplacement. L’exécution échouée et ses preuves restent inchangées.","recovery.action":"Rétablir l’exécution bloquée","recovery.preparing":"Vérification préalable de la récupération…","recovery.ready":"La récupération est en file d’attente ; le watcher Inbox prendra en charge l’exécution de remplacement.","recovery.failed":"L’exécution bloquée n’a pas pu être rétablie en toute sécurité."});
 Object.assign(DASHBOARD_MESSAGES.es, {"recovery.blocked_predecessor_title":"Ejecución anterior bloqueada","recovery.preceding_execution":"Ejecución anterior","recovery.title":"Recuperar ejecución bloqueada","recovery.details":"¿Reintentar esta ejecución terminal mediante la ruta normal de Inbox? Engineering Platform vuelve a realizar la comprobación previa actual antes de crear una ejecución de sustitución. La ejecución fallida y sus evidencias no cambian.","recovery.action":"Recuperar ejecución bloqueada","recovery.preparing":"Comprobando la verificación previa de recuperación…","recovery.ready":"La recuperación está en cola; el watcher de Inbox reclamará la ejecución de sustitución.","recovery.failed":"No se pudo recuperar la ejecución bloqueada de forma segura."});
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.execution_runtime":"Python runtime","configuration.execution_runtime_repair":"Repair and recheck","configuration.execution_runtime_status.READY":"Ready to run","configuration.execution_runtime_status.UNAVAILABLE":"Unavailable","configuration.execution_runtime_status.CHECK_FAILED":"Status check unavailable","notification.execution_runtime.title":"Python runtime needs attention","notification.execution_runtime.unavailable":"Engineering Platform cannot verify the Python runtime it owns. Repair the installed Server environment before starting another execution.","notification.execution_runtime.check_failed":"Engineering Platform could not verify its Python runtime. Recheck before starting another execution.","notification.execution_runtime.repair_failed":"The Python runtime is still unavailable. Reinstall or restart the installed Engineering Platform Server, then recheck."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.execution_runtime":"Python-runtime","configuration.execution_runtime_repair":"Herstel en controleer","configuration.execution_runtime_status.READY":"Klaar voor uitvoering","configuration.execution_runtime_status.UNAVAILABLE":"Niet beschikbaar","configuration.execution_runtime_status.CHECK_FAILED":"Statuscontrole niet beschikbaar","notification.execution_runtime.title":"Python-runtime heeft aandacht nodig","notification.execution_runtime.unavailable":"Engineering Platform kan de eigen Python-runtime niet verifiëren. Herstel de geïnstalleerde Server-omgeving voordat je een nieuwe uitvoering start.","notification.execution_runtime.check_failed":"Engineering Platform kon de Python-runtime niet verifiëren. Controleer opnieuw voordat je een nieuwe uitvoering start.","notification.execution_runtime.repair_failed":"De Python-runtime is nog niet beschikbaar. Installeer de geïnstalleerde Engineering Platform Server opnieuw of herstart hem en controleer daarna opnieuw."});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.execution_runtime":"Python-Laufzeit","configuration.execution_runtime_repair":"Reparieren und prüfen","configuration.execution_runtime_status.READY":"Ausführungsbereit","configuration.execution_runtime_status.UNAVAILABLE":"Nicht verfügbar","configuration.execution_runtime_status.CHECK_FAILED":"Statusprüfung nicht verfügbar","notification.execution_runtime.title":"Python-Laufzeit benötigt Aufmerksamkeit","notification.execution_runtime.unavailable":"Engineering Platform kann seine eigene Python-Laufzeit nicht prüfen. Reparieren Sie die installierte Serverumgebung vor einer neuen Ausführung.","notification.execution_runtime.check_failed":"Engineering Platform konnte seine Python-Laufzeit nicht prüfen. Vor einer neuen Ausführung erneut prüfen.","notification.execution_runtime.repair_failed":"Die Python-Laufzeit ist weiterhin nicht verfügbar. Installieren oder starten Sie den installierten Engineering-Platform-Server neu und prüfen Sie erneut."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.execution_runtime":"Runtime Python","configuration.execution_runtime_repair":"Réparer et vérifier","configuration.execution_runtime_status.READY":"Prêt à exécuter","configuration.execution_runtime_status.UNAVAILABLE":"Indisponible","configuration.execution_runtime_status.CHECK_FAILED":"Contrôle d’état indisponible","notification.execution_runtime.title":"La runtime Python nécessite une attention","notification.execution_runtime.unavailable":"Engineering Platform ne peut pas vérifier la runtime Python dont il est propriétaire. Réparez l’environnement Server installé avant une nouvelle exécution.","notification.execution_runtime.check_failed":"Engineering Platform n’a pas pu vérifier sa runtime Python. Vérifiez à nouveau avant une nouvelle exécution.","notification.execution_runtime.repair_failed":"La runtime Python est toujours indisponible. Réinstallez ou redémarrez le Server Engineering Platform installé, puis vérifiez à nouveau."});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.execution_runtime":"Runtime de Python","configuration.execution_runtime_repair":"Reparar y comprobar","configuration.execution_runtime_status.READY":"Listo para ejecutar","configuration.execution_runtime_status.UNAVAILABLE":"No disponible","configuration.execution_runtime_status.CHECK_FAILED":"Comprobación de estado no disponible","notification.execution_runtime.title":"La runtime de Python requiere atención","notification.execution_runtime.unavailable":"Engineering Platform no puede verificar la runtime de Python que posee. Repare el entorno Server instalado antes de iniciar otra ejecución.","notification.execution_runtime.check_failed":"Engineering Platform no pudo verificar su runtime de Python. Compruébela de nuevo antes de iniciar otra ejecución.","notification.execution_runtime.repair_failed":"La runtime de Python sigue sin estar disponible. Reinstale o reinicie el Server de Engineering Platform instalado y vuelva a comprobar."});
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.validation_environment":"Validation environment","configuration.python_path":"Python path","configuration.python_version":"Python version","configuration.provider_cli_path":"{provider} CLI path","configuration.provider_cli_version":"{provider} CLI version"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.validation_environment":"Validatieomgeving","configuration.python_path":"Python-pad","configuration.python_version":"Python-versie","configuration.provider_cli_path":"{provider} CLI-pad","configuration.provider_cli_version":"{provider} CLI-versie"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.validation_environment":"Validierungsumgebung","configuration.python_path":"Python-Pfad","configuration.python_version":"Python-Version","configuration.provider_cli_path":"{provider}-CLI-Pfad","configuration.provider_cli_version":"{provider}-CLI-Version"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.validation_environment":"Environnement de validation","configuration.python_path":"Chemin Python","configuration.python_version":"Version de Python","configuration.provider_cli_path":"Chemin CLI {provider}","configuration.provider_cli_version":"Version CLI {provider}"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.validation_environment":"Entorno de validación","configuration.python_path":"Ruta de Python","configuration.python_version":"Versión de Python","configuration.provider_cli_path":"Ruta de CLI de {provider}","configuration.provider_cli_version":"Versión de CLI de {provider}"});
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.timeout_policy":"Provider timeout policy","configuration.timeout_policy_description":"Fixed host-owned limits for each provider action. These limits are not editable in the dashboard.","configuration.timeout.specialist_review":"Specialist review","configuration.timeout.implementation":"Implementation","configuration.timeout.local_repository_validation":"Local repository validation","configuration.timeout.autonomous_quality_control":"Autonomous quality control","configuration.timeout.repair":"Repair","configuration.timeout.finalization":"Finalization","configuration.timeout.end_reconciliation":"End reconciliation","configuration.minutes_15":"15 minutes"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.timeout_policy":"Timeoutbeleid provider","configuration.timeout_policy_description":"Vaste, host-eigen grenzen per provideractie. Deze grenzen zijn niet wijzigbaar in het dashboard.","configuration.timeout.specialist_review":"Specialistenreview","configuration.timeout.implementation":"Implementatie","configuration.timeout.local_repository_validation":"Lokale repositoryvalidatie","configuration.timeout.autonomous_quality_control":"Autonome kwaliteitscontrole","configuration.timeout.repair":"Reparatie","configuration.timeout.finalization":"Finalisatie","configuration.timeout.end_reconciliation":"Eindreconciliatie","configuration.minutes_15":"15 minuten"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.timeout_policy":"Timeout-Richtlinie für Anbieter","configuration.timeout_policy_description":"Feste, hosteigene Grenzen für jede Anbieteraktion. Diese Grenzen können im Dashboard nicht geändert werden.","configuration.timeout.specialist_review":"Spezialistenprüfung","configuration.timeout.implementation":"Implementierung","configuration.timeout.local_repository_validation":"Lokale Repository-Validierung","configuration.timeout.autonomous_quality_control":"Autonome Qualitätskontrolle","configuration.timeout.repair":"Reparatur","configuration.timeout.finalization":"Finalisierung","configuration.timeout.end_reconciliation":"Endabgleich","configuration.minutes_15":"15 Minuten"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.timeout_policy":"Politique de délai fournisseur","configuration.timeout_policy_description":"Limites fixes détenues par l’hôte pour chaque action fournisseur. Elles ne sont pas modifiables dans le tableau de bord.","configuration.timeout.specialist_review":"Revue spécialisée","configuration.timeout.implementation":"Implémentation","configuration.timeout.local_repository_validation":"Validation locale du dépôt","configuration.timeout.autonomous_quality_control":"Contrôle qualité autonome","configuration.timeout.repair":"Correction","configuration.timeout.finalization":"Finalisation","configuration.timeout.end_reconciliation":"Réconciliation finale","configuration.minutes_15":"15 minutes"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.timeout_policy":"Política de tiempo de espera del proveedor","configuration.timeout_policy_description":"Límites fijos controlados por el host para cada acción del proveedor. No se pueden modificar en el panel.","configuration.timeout.specialist_review":"Revisión especializada","configuration.timeout.implementation":"Implementación","configuration.timeout.local_repository_validation":"Validación local del repositorio","configuration.timeout.autonomous_quality_control":"Control de calidad autónomo","configuration.timeout.repair":"Reparación","configuration.timeout.finalization":"Finalización","configuration.timeout.end_reconciliation":"Reconciliación final","configuration.minutes_15":"15 minutos"});

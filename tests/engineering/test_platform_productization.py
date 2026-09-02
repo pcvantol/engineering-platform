@@ -88,6 +88,17 @@ class PlatformProductizationTest(unittest.TestCase):
                 (transport / "Inbox").resolve(),
             )
 
+    def test_execution_host_default_inbox_uses_engineering_platform_icloud_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            with patch("engineering_platform.platform_api.Path.home", return_value=home):
+                inbox = execution_host_configuration(root).resolve_runtime_prompt_transport().inbox
+        self.assertEqual(
+            inbox,
+            home / "Library/Mobile Documents/com~apple~CloudDocs/Engineering Platform/Inbox",
+        )
+
     def test_runtime_environment_pins_the_resolved_launcher_for_child_processes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

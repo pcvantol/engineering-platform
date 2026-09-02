@@ -25,5 +25,10 @@ installation diagnostic, not an Operations Console replacement.
 
 **UNACCOUNTED: 0.**
 
+This parity accounting does not mean that every restored surface is already
+CENTRAL-native.  The retained local-root dependencies, their current
+disposition, and the required replacement evidence are tracked separately in
+the [Phase P migration-gaps register](PHASE_P_MIGRATION_GAPS_REGISTER.md).
+
 P-B is a presentation/action adapter only.  It does not invent lifecycle
 semantics, dispatch a provider, or start Project Agent execution.

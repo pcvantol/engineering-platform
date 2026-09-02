@@ -20,7 +20,6 @@ import sqlite3
 import socket
 import subprocess  # noqa: F401 - Compatibility mock target; process execution is provider-owned.
 import sys
-import tempfile
 from threading import Lock, Timer
 import time
 import uuid
@@ -28,7 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_runtime_workspace as provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
-from .provider_readiness import status as provider_readiness_status
+from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
 from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
@@ -64,10 +63,8 @@ from .report_analysis import analyze as analyze_terminal_report
 from .recommendation_handoff import handoff_from_report
 from .storage import (
     EngineeringStorageError,
-    ai_capacity_history,
     load_projection,
     open_storage,
-    record_ai_capacity_bi_hourly,
     storage_activation_required,
 )
 from .provider_usage import provider_usage_summary
@@ -171,7 +168,6 @@ AUDITABLE_USER_ACTIONS = frozenset(
         "prompt_history_analysis_downloaded",
         "prompt_history_details_json_downloaded",
         "prompt_history_details_markdown_downloaded",
-        "engineering_database_downloaded",
         "report_copied",
         "report_analysis_copied",
     }
@@ -272,18 +268,9 @@ def _sse_snapshot(root: Path) -> bytes:
     # to its transaction branch after the operator opens the dashboard.
     payload["workspace_git"] = _workspace_git_projection(root)
     payload["workspace_worktrees"] = _workspace_worktrees(root)
-    rate_limits = payload.get("rate_limits")
-    if isinstance(rate_limits, dict):
-        provider = rate_limits.get("provider")
-        remaining = _remaining_rate_limit_capacity(rate_limits)
-        if isinstance(provider, str) and remaining is not None:
-            try:
-                record_ai_capacity_bi_hourly(root, provider=provider, remaining_percent=remaining)
-                payload["ai_capacity_history"] = ai_capacity_history(root, provider=provider)
-            except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-                # The live quota status remains useful if local history is
-                # temporarily unavailable; a chart must never block it.
-                payload["ai_capacity_history"] = []
+    # Provider capacity belongs to the account and EP installation, never to
+    # this repository root.  The standalone Server overlays CENTRAL capacity
+    # history onto this otherwise historical projection.
     fingerprint = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     # HTTP refreshes and SSE delivery can complete out of order in a browser.
     # Attach one process-scoped monotone revision to every changed projection,
@@ -837,40 +824,14 @@ def _codex_cli_update_status(root: Path, *, refresh: bool = False) -> dict[str, 
 
 
 def _install_codex_cli_update(root: Path) -> dict[str, object]:
-    """Install the exact checked release, then verify the executable's version."""
-    global _codex_identity_cache, _codex_update_cache
+    """Provision the EP-owned runtime through the canonical lifecycle."""
     with _codex_update_install_lock:
         if _execution_active(root):
             raise CodexCliUpdateError("codex_cli_update_execution_active")
-        status = _codex_cli_update_status(root, refresh=True)
-        if status.get("state") == "unavailable":
-            raise CodexCliUpdateError("codex_cli_update_unavailable")
-        if not status.get("update_available"):
-            return {"updated": False, "current_version": status.get("current_version")}
-        latest = status.get("latest_version")
-        npm = _npm_executable()
-        if not isinstance(latest, str) or npm is None:
-            raise CodexCliUpdateError("codex_cli_update_unavailable")
         try:
-            completed = LocalProcessProvider().execute(
-                root,
-                (npm, "install", "--global", "--prefix", str(engineering_platform_codex_cli_prefix()), f"{CODEX_CLI_PACKAGE}@{latest}"),
-            )
-        except OSError as error:
-            raise CodexCliUpdateError("codex_cli_update_failed") from error
-        if completed.returncode:
-            diagnostic = f"{completed.stdout}\n{completed.stderr}".lower()
-            if "eacces" in diagnostic or "permission denied" in diagnostic:
-                raise CodexCliUpdateError("codex_cli_update_permissions_required")
-            raise CodexCliUpdateError("codex_cli_update_failed")
-        with _codex_identity_cache_lock:
-            _codex_identity_cache = None
-        with _codex_update_cache_lock:
-            _codex_update_cache = None
-        installed = _codex_cli_version(_codex_provider_identity(refresh=True).get("provider_version"))
-        if installed is None or _codex_cli_version_key(installed) < _codex_cli_version_key(latest):
-            raise CodexCliUpdateError("codex_cli_update_failed")
-        return {"updated": True, "current_version": installed}
+            return managed_codex_runtime.provision(root)
+        except managed_codex_runtime.ManagedCodexRuntimeError as error:
+            raise CodexCliUpdateError(str(error)) from error
 
 
 def _consume_codex_rate_limit_reset_credit() -> str:
@@ -2575,13 +2536,28 @@ def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
     """Dashboard projection of the shared token-free provider readiness check."""
     global _provider_login_active, _provider_login_started_at
     statuses = provider_readiness_status(root)
+    runtime = provider_runtime_details(root)
     with _provider_login_lock:
         active = _provider_login_active
         expired = time.monotonic() - _provider_login_started_at >= _PROVIDER_LOGIN_TIMEOUT_SECONDS
         if active and (expired or statuses.get(active.lower(), {}).get("state") == "READY"):
             _provider_login_active = None
             _provider_login_started_at = 0.0
-    return statuses
+    return {
+        provider: {**value, **runtime.get(provider, {})}
+        for provider, value in statuses.items()
+    }
+
+
+def _execution_runtime_status() -> dict[str, str]:
+    """Project a token-free readiness check for the installed Server Python."""
+    executable = Path(sys.executable).resolve()
+    ready = executable.is_file() and os.access(executable, os.X_OK)
+    return {
+        "state": "READY" if ready else "UNAVAILABLE",
+        "executable": str(executable) if ready else "",
+        "version": sys.version.split()[0] if ready else "",
+    }
 
 
 def _start_provider_login(root: Path, provider: str) -> None:
@@ -2758,54 +2734,6 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
     return {"available": True, "worktrees": worktrees}
 
 
-def _engineering_database_details(root: Path) -> dict[str, str]:
-    """Return read-only local SQLite identity details without creating storage."""
-    database = root.resolve() / ".engineering" / "engineering.db"
-    details = {
-        "path": str(database),
-        "size": "Niet beschikbaar",
-        "schema_version": "Niet beschikbaar",
-    }
-    try:
-        megabytes = database.stat().st_size / 1_000_000
-        details["size"] = f"{megabytes:.2f}".replace(".", ",") + " MB"
-    except OSError:
-        return details
-    try:
-        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as connection:
-            row = connection.execute(
-                "SELECT MAX(version) FROM engineering_schema_migrations"
-            ).fetchone()
-    except (OSError, sqlite3.DatabaseError):
-        return details
-    if row and row[0] is not None:
-        details["schema_version"] = str(row[0])
-    return details
-
-
-def _engineering_database_snapshot(root: Path) -> bytes | None:
-    """Create a consistent SQLite backup without modifying the source database."""
-    database = root.resolve() / ".engineering" / "engineering.db"
-    if not database.is_file():
-        return None
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(prefix="engineering-backup-", suffix=".db", delete=False) as temporary:
-            temporary_path = Path(temporary.name)
-        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as source:
-            with sqlite3.connect(temporary_path) as backup:
-                source.backup(backup)
-        return temporary_path.read_bytes()
-    except (OSError, sqlite3.DatabaseError):
-        return None
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
 def _dashboard_html(
     title: str,
     build_commit: str = "onbekend",
@@ -2814,9 +2742,6 @@ def _dashboard_html(
     workspace_location: str = ".",
     workspace_free_disk_space: str = "Niet beschikbaar",
     tracked_files: str = "Niet beschikbaar",
-    engineering_database_path: str = "Niet beschikbaar",
-    engineering_database_size: str = "Niet beschikbaar",
-    engineering_database_schema_version: str = "Niet beschikbaar",
     workspace_branch: str = "Niet beschikbaar",
     workspace_commit: str = "Niet beschikbaar",
     origin_main_commit: str = "Niet beschikbaar",
@@ -2856,6 +2781,7 @@ def _dashboard_html(
 <aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
 <aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="githubProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="github-provider-readiness-banner"><strong id="githubProviderReadinessTitle"></strong><span id="githubProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="githubProviderReadinessAction" type="button" hidden></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--execution-runtime" id="executionRuntimeBanner" role="alert" aria-live="assertive" hidden data-testid="execution-runtime-banner"><strong id="executionRuntimeTitle"></strong><span id="executionRuntimeMessage"></span><button class="provider-readiness-banner__action" id="executionRuntimeRepair" type="button" hidden></button></aside>
 </div>
 <main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
 <details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
@@ -2896,8 +2822,8 @@ def _dashboard_html(
 <div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
-<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><section class="workspace-database-section" aria-labelledby="workspaceDatabaseHeading"><h2 id="workspaceDatabaseHeading" data-i18n="workspace.database"></h2><div class="field" id="workspaceDatabaseField"><span class="label" data-workspace-label="workspace.database_location" data-i18n="workspace.database_location"></span><pre>$ENGINEERING_DATABASE_PATH</pre></div><p class="field" id="workspaceDatabaseSize"><span class="label" data-workspace-label="workspace.database_size" data-i18n="workspace.database_size"></span><span>$ENGINEERING_DATABASE_SIZE</span></p><p class="field" id="workspaceSchemaVersion"><span class="label" data-workspace-label="workspace.schema_version" data-i18n="workspace.schema_version"></span><span>$ENGINEERING_DATABASE_SCHEMA_VERSION</span></p><label class="workspace-database-maintenance-field" for="configurationDatabaseMaintenanceInterval"><span><span data-i18n="configuration.database_maintenance_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.database_maintenance_interval_help" data-i18n-aria-label="configuration.database_maintenance_interval_help">i</span></span><select id="configurationDatabaseMaintenanceInterval"><option value="60" data-i18n="configuration.minute_1"></option><option value="3600" data-i18n="configuration.hour_1"></option><option value="86400" data-i18n="configuration.day_1"></option><option value="604800" data-i18n="configuration.week_1"></option></select></label></section><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
-<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section><section class="configuration-timeout-policy" aria-labelledby="configurationTimeoutPolicyTitle"><h2 id="configurationTimeoutPolicyTitle" data-i18n="configuration.timeout_policy"></h2><p data-i18n="configuration.timeout_policy_description"></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.specialist_review"></span><span data-i18n="configuration.minutes_5"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.implementation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.local_repository_validation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.autonomous_quality_control"></span><span data-i18n="configuration.minutes_10"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.repair"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.finalization"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.end_reconciliation"></span><span data-i18n="configuration.minutes_10"></span></p></section></details>
 <dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
@@ -2945,9 +2871,6 @@ def _dashboard_html(
         .replace("$WORKSPACE_LOCATION", escape(workspace_location))
         .replace("$WORKSPACE_FREE_DISK_SPACE", escape(workspace_free_disk_space))
         .replace("$TRACKED_FILES", escape(tracked_files))
-        .replace("$ENGINEERING_DATABASE_PATH", escape(engineering_database_path))
-        .replace("$ENGINEERING_DATABASE_SIZE", escape(engineering_database_size))
-        .replace("$ENGINEERING_DATABASE_SCHEMA_VERSION", escape(engineering_database_schema_version))
         .replace("$WORKSPACE_BRANCH", escape(workspace_branch))
         .replace("$WORKSPACE_COMMIT", escape(workspace_commit))
         .replace("$ORIGIN_MAIN_COMMIT", escape(origin_main_commit))
@@ -3042,6 +2965,19 @@ def handler(
                     self._send(b'{"error":"Provider repair did not start safely."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(b'{"started":true}', "application/json; charset=utf-8", 202)
+                return
+            if request_path == "/api/execution-runtime/repair":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length != 2 or self.rfile.read(length) != b"{}":
+                        raise ValueError
+                    runtime = _execution_runtime_status()
+                    if runtime["state"] != "READY":
+                        raise ValueError
+                except ValueError:
+                    self._send(b'{"error":"Execution runtime is still unavailable."}', "application/json; charset=utf-8", 409)
+                    return
+                self._send(json.dumps({"rechecked": True, "runtime": runtime}).encode(), "application/json; charset=utf-8")
                 return
             if request_path == "/api/telemetry/clear":
                 try:
@@ -3778,22 +3714,6 @@ def handler(
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 404)
                     return
                 return self._send(json.dumps({"messages": messages}, ensure_ascii=False).encode(), "application/json; charset=utf-8")
-            if request.path == "/api/engineering-database/download":
-                snapshot = _engineering_database_snapshot(root)
-                if snapshot is None:
-                    self._send(b'{"error":"Engineering-database is niet beschikbaar."}', "application/json; charset=utf-8", 404)
-                    return
-                if parse_qs(request.query).get("audit") == ["download"]:
-                    log_event(logger, logging.INFO, "engineering_database_downloaded")
-                filename = f"engineering-database-backup-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.sqlite3")
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                self.wfile.write(snapshot)
-                return
             if request.path.startswith("/api/prompt-history/") and request.path.endswith("/details"):
                 run_id = request.path.removeprefix("/api/prompt-history/").removesuffix("/details").strip("/")
                 detail = _prompt_history_detail(root, run_id)
@@ -3967,6 +3887,11 @@ def handler(
                     json.dumps({"providers": _provider_login_status(root)}, separators=(",", ":")).encode(),
                     "application/json; charset=utf-8",
                 )
+            if self.path == "/api/execution-runtime-status":
+                return self._send(
+                    json.dumps(_execution_runtime_status(), separators=(",", ":")).encode(),
+                    "application/json; charset=utf-8",
+                )
             if request.path == "/api/configuration":
                 return self._send(
                     json.dumps(dashboard_configuration(root)).encode(),
@@ -3977,7 +3902,6 @@ def handler(
             if self.path == "/api/prompt-started":
                 return self._send(_prompt_started(root), "application/json; charset=utf-8")
             if request.path == "/":
-                engineering_database = _engineering_database_details(root)
                 workspace_free_disk_space = _workspace_free_disk_space(root)
                 workspace_git = _workspace_git_projection(root)
                 workspace_open_pull_requests = _workspace_open_pull_requests(root)
@@ -3989,9 +3913,6 @@ def handler(
                         workspace_location,
                         workspace_free_disk_space,
                         tracked_files,
-                        engineering_database["path"],
-                        engineering_database["size"],
-                        engineering_database["schema_version"],
                         str(workspace_git["branch"]),
                         str(workspace_git["commit"]),
                         str(workspace_git["origin_main_commit"]),
