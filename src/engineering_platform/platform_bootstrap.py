@@ -348,7 +348,7 @@ def runtime_workspace(root: Path) -> Path:
 def _provision_workspace_paths(root: Path, workspace: Path) -> dict[str, Path]:
     """Create the repeatable directories for an already-selected workspace."""
     PlatformConfiguration.load(root)
-    paths = {"workspace": workspace, "reports": workspace / "reports", "status": workspace / "status", "runs": workspace / "engineering-runs", "diagnostics": workspace / "logs"}
+    paths = {"workspace": workspace, "reports": workspace / "reports", "status": workspace / "status", "runs": workspace / "engineering-runs", "diagnostics": workspace / "logs", "inbox_processing": workspace / "inbox-processing"}
     for path in paths.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return paths

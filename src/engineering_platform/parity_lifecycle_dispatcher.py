@@ -20,7 +20,7 @@ from .agent_state import StateStore, TransactionState
 from .execution_host import EngineeringRunner
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .parity_context import HistoricalCandidate, ParityProjectContext, historical_candidate, project_context
-from .platform_bootstrap import runtime_workspace
+from .platform_bootstrap import provision_runtime_workspace
 from .providers import CodexCliProvider
 from .execution_executor import CodexCliClient
 from .storage import record_run_qualification_context, record_submission
@@ -133,7 +133,9 @@ class ParityLifecycleDispatcher:
     @staticmethod
     def _persist_historical_input(repository_root: Path, candidate: HistoricalCandidate, run_id: str, prompt: Path) -> None:
         """Use the existing watcher-owned storage and admission primitives."""
-        runtime_workspace(repository_root)
+        # The preserved host preflight requires the standard runtime layout.
+        # Reuse its product bootstrap rather than creating a P-A-specific one.
+        provision_runtime_workspace(repository_root)
         prompt.write_text(candidate.prompt, encoding="utf-8")
         now = _utcnow()
         record_submission(

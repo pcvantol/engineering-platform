@@ -76,6 +76,8 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             row = connection.execute("SELECT project_id,repository_id,run_id,state FROM ep_parity_lifecycle_dispatches").fetchone()
         self.assertEqual(row, ("alpha", "alpha", first.run_id, "COMPLETE"))
         self.assertTrue((self.data / "artifacts" / "projects" / "alpha" / "runs" / first.run_id / "submission.md").is_file())
+        for directory in ("status", "reports", "logs", "inbox-processing"):
+            self.assertTrue((self.roots["alpha"] / ".engineering" / directory).is_dir())
 
     def test_context_never_crosses_project_binding(self) -> None:
         alpha, beta = self._submission("alpha"), self._submission("beta")
