@@ -80,6 +80,11 @@ def validate_graph(graph, repo=None, anchor=None, qualified=None):
         for r in edge.get("responsibilities",[]):
             if r not in origins: errors.append(f"invented responsibility: {r}")
     if errors or not cycle_free(pairs): return errors+["cycle detected"]
+    if repo is not None:
+        for edge in edges:
+            for predecessor in (item for item in edges if item.get("to")==edge.get("from")):
+                if not ancestor(repo, predecessor.get("governed_commit"), edge.get("governed_commit")):
+                    errors.append("backwards edge chronology")
     for r,start in origins.items():
         active=[start]; terminals=[]; visited=set()
         while active:
@@ -121,6 +126,10 @@ def traces(graph, responsibility=None, current_path=None):
                 if current_path and terminal.get("path")!=current_path: continue
                 result.append({"responsibility":r,"nodes":chain,"terminal":terminal.get("node_type"),"current_path":terminal.get("path")})
     return result
+
+def reverse_lookup(graph, path):
+    matches=[trace for trace in traces(graph) if trace.get("current_path")==path]
+    return {"classification":"HISTORICALLY_DESCENDED","traces":matches} if matches else {"classification":"NEW_POST_EXTRACTION","traces":[]}
 
 def stage1(source: Path, target: Path, baseline: dict, receipt: dict, ledger: dict, errors: list[str]) -> list[dict]:
     identity = ledger.get("historical_extraction", {})
@@ -204,14 +213,15 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
 def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source",type=Path,required=True); parser.add_argument("--target",type=Path,default=ROOT)
-    parser.add_argument("--baseline",type=Path,default=DEFAULT_BASELINE); parser.add_argument("--historical-receipt",type=Path,default=DEFAULT_RECEIPT); parser.add_argument("--ledger",type=Path,default=DEFAULT_LEDGER); parser.add_argument("--qualified-revision",required=True); parser.add_argument("--receipt",type=Path)
+    parser.add_argument("--baseline",type=Path,default=DEFAULT_BASELINE); parser.add_argument("--historical-receipt",type=Path,default=DEFAULT_RECEIPT); parser.add_argument("--ledger",type=Path,default=DEFAULT_LEDGER); parser.add_argument("--qualified-revision",required=True); parser.add_argument("--lookup-historical"); parser.add_argument("--lookup-current"); parser.add_argument("--receipt",type=Path)
     args=parser.parse_args(); errors=[]
     try:
         ledger=load(args.ledger); target=args.target.resolve(); anchor=ledger["historical_extraction"]["standalone_lineage_anchor_commit"]; qualified=run(target,"rev-parse",args.qualified_revision)
         if qualified != run(target,"rev-parse","HEAD"): errors.append("checkout HEAD does not equal qualified revision")
         errors.extend(validate_graph(ledger.get("graph",{}),target,anchor,qualified)); rows=stage1(args.source.resolve(),target,load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(target,rows,ledger,errors)
     except (OSError,ValueError,json.JSONDecodeError) as error: errors.append(str(error)); inventory=[]
-    result={"model":"TWO_STAGE_PROVENANCE","qualified_revision":args.qualified_revision,"stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"traces":traces(ledger.get("graph",{})) if 'ledger' in locals() else [],"failures":errors,"pass":not errors}
+    all_traces=traces(ledger.get("graph",{}),args.lookup_historical) if 'ledger' in locals() else []
+    result={"model":"TWO_STAGE_PROVENANCE","qualified_revision":args.qualified_revision,"stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"traces":all_traces,"reverse_lookup":reverse_lookup(ledger.get("graph",{}),args.lookup_current) if 'ledger' in locals() and args.lookup_current else None,"failures":errors,"pass":not errors}
     if args.receipt: args.receipt.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
     print(json.dumps({"files":len(inventory),"unaccounted":result["unaccounted"],"failures":errors,"pass":not errors},sort_keys=True)); return 0 if not errors else 1
 if __name__ == "__main__": raise SystemExit(main())
