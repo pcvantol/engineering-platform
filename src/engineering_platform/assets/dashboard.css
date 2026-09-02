@@ -633,7 +633,7 @@ html[data-theme="light"] :is(.log-table,.telemetry-table) tbody tr:hover>td:firs
 #currentRun{--category-color:#65c5d9;--category-secondary:#a7e7f2;background:#1e2b33}
 #currentRun{container-name:active-execution;container-type:inline-size}
 #currentRun .current-run__grid,#currentRun .current-run__grid>*{min-width:0}
-@container active-execution (min-width:760px){#currentRun .current-run__grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container active-execution (min-width:760px){#currentRun .current-run__grid{grid-template-columns:repeat(2,minmax(0,1fr))}#currentRun #currentDiagnostic{grid-column:1 / -1}}
 #currentRun .card,#currentRun .card:has(#currentTime),#currentRun .card:has(#executionEstimate),#currentRun .card:has(#runId),#currentRun .card:has(#executionMode){--category-color:#65c5d9;--category-secondary:#a7e7f2;background:#1b2931;border-color:#65c5d9}
 #currentRun :is(.execution-lifecycle,.execution-context--primary){background:#1b2931!important}
 #engineering-dashboard-content>#technicalDetails{--category-color:var(--house-style);--section-secondary:#a7e7f2;background:#302a24;border-color:var(--house-style)}

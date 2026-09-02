@@ -3026,6 +3026,10 @@ test.describe("Engineering Status browser smoke", () => {
       getComputedStyle(element).gridTemplateColumns.split(" ").length,
     );
     await expect.poll(columns).toBe(2);
+    await page.locator("#currentDiagnostic").evaluate((element) => {
+      element.hidden = false;
+      element.querySelector("pre").textContent = "Diagnostic evidence";
+    });
     const [executionIdentity, executionEstimate] = await Promise.all([
       page.locator("#executionIdentity").boundingBox(),
       page.locator("#executionEstimate").locator("xpath=..").boundingBox(),
@@ -3034,6 +3038,15 @@ test.describe("Engineering Status browser smoke", () => {
     expect(executionEstimate).not.toBeNull();
     expect(executionIdentity.y).toBe(executionEstimate.y);
     expect(executionIdentity.x).toBeLessThan(executionEstimate.x);
+
+    const [diagnosticBounds, identityBounds] = await Promise.all([
+      page.locator("#currentDiagnostic").boundingBox(),
+      page.locator("#executionIdentity").boundingBox(),
+    ]);
+    expect(diagnosticBounds).not.toBeNull();
+    expect(identityBounds).not.toBeNull();
+    expect(Math.abs(diagnosticBounds.x - identityBounds.x)).toBeLessThanOrEqual(1);
+    expect(diagnosticBounds.width).toBeGreaterThan(identityBounds.width * 1.9);
 
     const contained = async () => page.locator("#currentRun").evaluate((run) => {
       const runRight = run.getBoundingClientRect().right;
