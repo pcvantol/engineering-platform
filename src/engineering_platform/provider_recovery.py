@@ -180,8 +180,8 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def load_recovery_state(root: Path, run_id: str) -> dict[str, object] | None:
-    connection = open_storage(root)
+def load_recovery_state(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,"
