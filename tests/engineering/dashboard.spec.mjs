@@ -1289,8 +1289,11 @@ test.describe("Engineering Status browser smoke", () => {
         } });
         return;
       }
+      await route.fulfill({ status: 405, json: { error: "METHOD_NOT_ALLOWED" } });
+    });
+    await page.route("**/api/provider-capacity/configuration", async (route) => {
       writes.push(JSON.parse(route.request().postData() || "{}"));
-      await route.fulfill({ json: { key: "codex_capacity_reserve_percent", previous: 0, value: 25 } });
+      await route.fulfill({ json: { codex_capacity_reserve_percent: 25 } });
     });
     const configurationLoaded = page.waitForResponse("**/api/configuration");
     const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
@@ -1304,9 +1307,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(select.locator("option[value='75']")).toHaveText("75% reserve");
     await expect(select.locator("xpath=ancestor::details[1]")).toHaveAttribute("id", "rateLimits");
     await select.selectOption("25", { force: true });
-    await expect.poll(() => writes).toEqual([{
-      key: "codex_capacity_reserve_percent", value: 25, previous: 0,
-    }]);
+    await expect.poll(() => writes).toEqual([{ codex_capacity_reserve_percent: 25 }]);
     await expect(select.locator("xpath=ancestor::label[1]").locator(".configuration-field-status")).toHaveText(DASHBOARD_MESSAGES.nl["configuration.saved"]);
   });
 
@@ -1351,8 +1352,11 @@ test.describe("Engineering Status browser smoke", () => {
         } });
         return;
       }
+      await route.fulfill({ status: 405, json: { error: "METHOD_NOT_ALLOWED" } });
+    });
+    await page.route("**/api/provider-capacity/configuration", async (route) => {
       writes.push(JSON.parse(route.request().postData() || "{}"));
-      await route.fulfill({ json: { key: "codex_capacity_reserve_percent", previous: 25, value: 20 } });
+      await route.fulfill({ json: { codex_capacity_reserve_percent: 20 } });
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
@@ -1366,9 +1370,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#rateLimits")).toHaveAttribute("open", "");
     await expect(select).toBeFocused();
     await select.selectOption("20", { force: true });
-    await expect.poll(() => writes).toEqual([{
-      key: "codex_capacity_reserve_percent", value: 20, previous: 25,
-    }]);
+    await expect.poll(() => writes).toEqual([{ codex_capacity_reserve_percent: 20 }]);
     await expect(banner).toBeHidden();
   });
 
