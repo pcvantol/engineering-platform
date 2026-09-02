@@ -218,6 +218,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('/assets/dashboard.js', no_project)
         self.assertIn('id="componentLogs"', no_project)
         self.assertIn('id="configuration"', no_project)
+        self.assertIn('.workspace-database-section { display: none !important; }', no_project)
         self.assertIn('id="noProjectSelected"', unscoped)
         self.assertNotIn('data-project-id="djconnect"', unscoped)
         self.assertNotIn(str(roots[0]), unscoped)

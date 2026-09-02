@@ -575,13 +575,14 @@ def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
     boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(!select)return;select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)})})();</script>'''
-    empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen.</p></section>'''
+    empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</p></section>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
 body[data-project-id="none"] #promptHistory,
 body[data-project-id="none"] #currentRun,
 body[data-project-id="none"] #technicalDetails,
-body[data-project-id="none"] #workspaceCard { display: none !important; }
+body[data-project-id="none"] #workspaceCard,
+body[data-project-id="none"] .workspace-database-section { display: none !important; }
 </style>'''
     document = re.sub(
         br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
