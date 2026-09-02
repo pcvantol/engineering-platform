@@ -66,17 +66,18 @@ class ActivePhase:
     run_id: str
     phase_id: str
     started_monotonic: float | None
+    central_database: Path | None = None
 
 
 def start_phase(root: Path, run_id: str, phase_name: str, *, category: str | None = None,
                 parent_phase_id: str | None = None, attempt: int = 1,
                 metadata: Mapping[str, object] | None = None, started_at: datetime | None = None,
-                monotonic_clock: float | None = None) -> ActivePhase:
+                monotonic_clock: float | None = None, central_database: Path | None = None) -> ActivePhase:
     """Persist a real active phase boundary and return its monotonic handle."""
     if phase_name not in PHASES or not run_id or attempt < 1:
         raise EngineeringStorageError("Execution phase identity is invalid.")
     phase_id = f"phase-{uuid.uuid4()}"
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         ordinal = connection.execute(
             "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM execution_phase_spans WHERE run_id=?", (run_id,)
@@ -88,7 +89,7 @@ def start_phase(root: Path, run_id: str, phase_name: str, *, category: str | Non
         )
     finally:
         connection.close()
-    return ActivePhase(run_id, phase_id, monotonic() if monotonic_clock is None else monotonic_clock)
+    return ActivePhase(run_id, phase_id, monotonic() if monotonic_clock is None else monotonic_clock, central_database)
 
 
 def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE",
@@ -96,7 +97,7 @@ def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE"
     """Close an active span with its directly measured monotonic duration."""
     if outcome not in TERMINAL_OUTCOMES:
         raise EngineeringStorageError("Execution phase outcome is invalid.")
-    connection = open_storage(root)
+    connection = _connection(root, active.central_database)
     try:
         if active.started_monotonic is None:
             # A phase can outlive the runner process.  Its terminal boundary
@@ -131,7 +132,10 @@ def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: ob
     monotonic value, so its completion is explicitly bounded by persisted UTC
     timestamps rather than pretending a monotonic clock survived restart.
     """
-    connection = open_storage(root)
+    central_database = kwargs.get("central_database")
+    if central_database is not None and not isinstance(central_database, Path):
+        raise EngineeringStorageError("CENTRAL timing database is invalid.")
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT phase_id FROM execution_phase_spans WHERE run_id=? AND phase_name=? AND outcome='ACTIVE' ORDER BY ordinal LIMIT 1",
@@ -140,7 +144,7 @@ def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: ob
     finally:
         connection.close()
     if row:
-        return ActivePhase(run_id, str(row[0]), None)
+        return ActivePhase(run_id, str(row[0]), None, central_database)
     return start_phase(root, run_id, phase_name, **kwargs)
 
 
