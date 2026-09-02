@@ -1470,6 +1470,19 @@ def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "d
         except EngineeringStorageError as error:
             raise RetrySubmissionError("De afsluiting kon niet veilig worden vastgelegd.") from error
         complete_active_phase(repo, run_id, "TOTAL_EXECUTION", outcome="FAILED")
+        branches = (
+            state.branch,
+            state.implementation_branch,
+            state.finalization_branch,
+        )
+        try:
+            cleanup = SubprocessRepositoryClient().cleanup_transaction(repo, branches)
+        except Exception as error:
+            # The terminal abort is durable even when conservative workspace
+            # cleanup cannot proceed.  Keep the exact cleanup boundary visible
+            # so a later product recovery never needs to guess or force files.
+            cleanup = f"cleanup_pending:{redact_diagnostic(str(error), limit=240)}"
+        record = {**record, "workspace_cleanup": cleanup}
         status(
             repo,
             "JOB_FAILED",
