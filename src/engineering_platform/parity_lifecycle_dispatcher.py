@@ -285,12 +285,14 @@ class ParityLifecycleDispatcher:
             )
 
     @staticmethod
-    def _terminal_history_exists(repository_root: Path, run_id: str) -> bool:
-        return any(item.get("run_id") == run_id for item in prompt_history(repository_root))
+    def _terminal_history_exists(repository_root: Path, run_id: str, data_root: Path) -> bool:
+        return any(item.get("run_id") == run_id for item in prompt_history(
+            repository_root, central_database=data_root / "engineering.db"
+        ))
 
     @classmethod
     def _project_terminal_history(cls, repository_root: Path, state: TransactionState,
-                                  runner: object | None = None) -> None:
+                                  runner: object | None = None, data_root: Path | None = None) -> None:
         """Preserve the terminal report and full historical Console projection.
 
         CENTRAL composes the historical runner directly, bypassing its CLI
@@ -298,7 +300,9 @@ class ParityLifecycleDispatcher:
         that post-run boundary here keeps a completed CENTRAL run visible in
         its project-scoped Operations Console.
         """
-        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id):
+        if data_root is None:
+            raise ParityLifecycleDispatchError("CENTRAL_HISTORY_DATABASE_REQUIRED")
+        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id, data_root):
             return
         report = generate_terminal_report(
             repository_root, state,
@@ -337,7 +341,7 @@ class ParityLifecycleDispatcher:
                 # recovery candidate; never let such a row prevent Server
                 # startup or fresh project-scoped queue processing.
                 continue
-            self._project_terminal_history(context.local_repository_root, state)
+            self._project_terminal_history(context.local_repository_root, state, data_root=self.data_root)
 
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
                                      run_id: str, error: RunnerError) -> None:
@@ -370,7 +374,7 @@ class ParityLifecycleDispatcher:
                 # Report/history indexing is execution evidence too.  Keep it
                 # inside the explicit CENTRAL context; a terminal projection
                 # must never reopen the repository-local database.
-                self._project_terminal_history(repository_root, state, runner)
+                self._project_terminal_history(repository_root, state, runner, self.data_root)
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
