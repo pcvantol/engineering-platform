@@ -43,3 +43,23 @@ it does not turn the #27 compatibility environment into an authority solution.
 All new standalone operational lifecycle and execution evidence is owned by
 the installation CENTRAL database. Local repositories are physical execution
 bindings only.
+
+## StateStore callsite classification (post-#27 reinventory)
+
+This is deliberately per callsite, rather than a module-level allowlist. A
+reference remains **ACTIVE_STANDALONE_OPERATIONAL** until its caller is
+converted or removed from every supported installed entrypoint.
+
+| Path / symbol | Installed caller | Concern | Classification | Current authority | Required disposition |
+| --- | --- | --- | --- | --- | --- |
+| `parity_lifecycle_dispatcher._default_runner` | `LifecycleWorker` → dispatcher | checkpoint writes and Genesis conflict scan | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit binding) | migrated; retain test proof |
+| `parity_lifecycle_dispatcher.reconcile_terminal_history` | Server startup reconciliation | terminal checkpoint read | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit binding) | migrated; retain test proof |
+| `execution_host.main` | legacy `python -m engineering_platform` entrypoint | direct-host lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | replace or isolate behind historical/forensic entrypoint |
+| `inbox_watcher` retry, cancellation, merge-wait and recovery calls | watcher / Dashboard compatibility routes | retry, merge wait, recovery lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle repository; then Console adapter or fail closed |
+| `provider_recovery._validate_control_target` | qualification control CLI and Execution Host | recovery eligibility | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle repository; fault marker remains PHYSICAL_EXECUTION_ONLY |
+| `provider_interruption.terminalize_after_host_exit`, `prepare_same_run_recovery_after_host_exit` | watcher recovery scan | interruption terminalization and recovery | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repositories |
+| `emergency_recovery._plan`, `execute` | Dashboard emergency-recovery route | cancel/rollback lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repository; git rollback remains PHYSICAL_EXECUTION_ONLY |
+
+`StateStore` raw-module count is **6**. It is not a completion count: two
+dispatcher callsites are already CENTRAL-bound; all other rows above remain
+active operational migration work. No row is classified `DEAD_UNREACHABLE`.
