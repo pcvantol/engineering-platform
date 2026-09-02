@@ -83,6 +83,14 @@ class LifecycleWorker:
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
                 WHERE s.state='QUEUED' AND s.admission='ADMITTED'
                   AND (d.submission_id IS NULL OR d.state IN ('CLAIMED','RUNNING'))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM ep_parity_lifecycle_dispatches prior
+                    WHERE prior.project_id=s.project_id AND (
+                      (prior.state IN ('CLAIMED','RUNNING') AND prior.submission_id!=s.submission_id)
+                      OR (prior.state IN ('BLOCKED','FAILED') AND prior.operator_resolution='OPEN')
+                      OR (prior.operator_resolution='RETRIED' AND prior.resolution_submission_id!=s.submission_id)
+                    )
+                  )
                 ORDER BY s.project_id,
                   CASE WHEN d.state IN ('CLAIMED','RUNNING') THEN 0 ELSE 1 END,
                   COALESCE(d.claimed_at,s.created_at),s.created_at,s.submission_id""").fetchall()

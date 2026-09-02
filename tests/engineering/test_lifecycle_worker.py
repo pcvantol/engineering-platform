@@ -57,7 +57,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         # A dispatcher claim, not the worker, removes a candidate from future observation.
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-alpha", "alpha", "COMPLETE", "now", "now"))
-            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)", (alpha, "alpha", "alpha", "run-alpha", "COMPLETE", "prompt", "now", "now"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (alpha, "alpha", "alpha", "run-alpha", "COMPLETE", "prompt", "now", "now"))
         self.assertEqual(worker.eligible_submission_ids(), [beta])
 
     def test_observation_keeps_later_same_project_submission_behind_its_fifo_head(self) -> None:
@@ -66,6 +66,18 @@ class LifecycleWorkerTests(unittest.TestCase):
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertEqual(worker.eligible_submission_ids(), [alpha_first, beta])
         self.assertNotIn(alpha_second, worker.eligible_submission_ids())
+
+    def test_unresolved_failed_run_holds_its_project_fifo_lane(self) -> None:
+        first, later = self._submit("alpha"), self._submit("alpha")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("failed-run", "alpha", "FAILED", "now", "now"))
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (first, "alpha", "alpha", "failed-run", "FAILED", "prompt", "now", "now", "OPEN"),
+            )
+        self.assertEqual(LifecycleWorker(self.data, dispatcher_factory=_Dispatcher).eligible_submission_ids(), [])
 
     def test_running_projects_are_independent_but_never_start_a_second_same_project_item(self) -> None:
         from threading import Event, Lock
@@ -98,7 +110,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         submission = self._submit("alpha")
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("stable-run", "alpha", "RUNNING", "now", "now"))
-            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)", (submission, "alpha", "alpha", "stable-run", "RUNNING", "prompt", "now", "now"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (submission, "alpha", "alpha", "stable-run", "RUNNING", "prompt", "now", "now"))
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         worker.run_once()
         self.assertEqual(_Dispatcher.calls, [submission])

@@ -35,6 +35,7 @@ from . import project_topology
 from . import submission_service
 from . import managed_codex_runtime
 from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
+from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
 
@@ -49,7 +50,7 @@ SERVER_CONFIGURATION_VERSION = 1
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 46
+SERVER_STORE_SCHEMA_VERSION = 47
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 
@@ -313,6 +314,20 @@ def _migrate_schema_46(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=46")
 
 
+def _migrate_schema_47(connection: sqlite3.Connection) -> None:
+    """Keep failed project runs FIFO-blocking until CENTRAL records a resolution."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema46")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,47 FROM ep_installations_schema46")
+    connection.execute("DROP TABLE ep_installations_schema46")
+    connection.execute("ALTER TABLE ep_parity_lifecycle_dispatches ADD COLUMN operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED'))")
+    connection.execute("ALTER TABLE ep_parity_lifecycle_dispatches ADD COLUMN resolution_submission_id TEXT REFERENCES ep_submissions(submission_id)")
+    connection.execute("UPDATE ep_parity_lifecycle_dispatches SET operator_resolution='OPEN' WHERE state IN ('BLOCKED','FAILED')")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(47)")
+    connection.execute("UPDATE engineering_metadata SET value='47' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=47")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -328,7 +343,7 @@ def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, obje
         raise ServerConfigurationError("EP Server store is unavailable.") from error
     valid = schema == SERVER_STORE_SCHEMA_VERSION and SERVER_REQUIRED_TABLES <= tables and SERVER_REQUIRED_INDEXES <= indexes and integrity == ["ok"] and metadata == {"installation.instance_id": identity.instance_id, "installation.schema_version": str(SERVER_STORE_SCHEMA_VERSION)} and installation is not None
     if not valid:
-        raise ServerConfigurationError("EP Server store is not a valid official schema-46 installation.")
+        raise ServerConfigurationError("EP Server store is not a valid official schema-47 installation.")
     return {"schema_version": schema, "integrity": "PASS", "required_tables": sorted(SERVER_REQUIRED_TABLES), "required_indexes": sorted(SERVER_REQUIRED_INDEXES)}
 
 
@@ -361,14 +376,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
-                            "EP Server store is not a valid official schema-46 installation."
+                            "EP Server store is not a valid official schema-47 installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45}:
+                    if current_schema in {42, 43, 44, 45, 46}:
                         with sqlite3.connect(database_path) as connection:
                             connection.execute("PRAGMA foreign_keys=ON")
                             connection.execute("BEGIN IMMEDIATE")
@@ -378,7 +393,9 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_44(connection)
                             if current_schema in {42, 43, 44}:
                                 _migrate_schema_45(connection)
-                            _migrate_schema_46(connection)
+                            if current_schema in {42, 43, 44, 45}:
+                                _migrate_schema_46(connection)
+                            _migrate_schema_47(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -393,6 +410,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_44(connection)
         _migrate_schema_45(connection)
         _migrate_schema_46(connection)
+        _migrate_schema_47(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -517,7 +535,13 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
                 project_id=project_id,
                 repository_id=project["repository_id"],
             )
-            return ParityProjectStore(connection, context).console_queue_projection()
+            queue = ParityProjectStore(connection, context).console_queue_projection()
+            rows = connection.execute(
+                """SELECT run_id,operator_resolution FROM ep_parity_lifecycle_dispatches
+                    WHERE project_id=? AND operator_resolution IN ('DISMISSED','RETRIED')""",
+                (project_id,),
+            ).fetchall()
+            return {**queue, "operator_handling": {str(run_id): str(resolution) for run_id, resolution in rows}}
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
@@ -529,6 +553,12 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object]) -> bytes:
         return payload
     if not isinstance(decoded, dict):
         return payload
+    handling = queue.get("operator_handling")
+    if isinstance(handling, dict) and isinstance(decoded.get("runs"), list):
+        for run in decoded["runs"]:
+            if isinstance(run, dict) and handling.get(run.get("run_id")) == "DISMISSED":
+                run["dismissed"] = True
+                run["handling_state"] = "DISMISSED"
     status_payload = decoded.get("status")
     if isinstance(status_payload, dict):
         decoded["status"] = {**status_payload, **queue}
@@ -806,6 +836,37 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             selected = (parse_qs(request.query).get("project") or [None])[0]
         projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
+        if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
+            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 256:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                run_id = payload.get("run_id") if isinstance(payload, dict) and set(payload) == {"run_id"} else None
+                if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+                    raise ValueError
+                if request.path == "/api/execution-dismiss":
+                    result: dict[str, object] = dismiss_operator_gate(
+                        self.server.data_root, project_id=selected, run_id=run_id,  # type: ignore[attr-defined]
+                    )
+                else:
+                    result = retry_operator_gate(
+                        self.server.data_root, project_id=selected, run_id=run_id,  # type: ignore[attr-defined]
+                    ).to_dict()
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "INVALID_REQUEST"})
+                return
+            except ParityLifecycleDispatchError as error:
+                self._send(409, {"error": str(error)})
+                return
+            self._send(200, result)
+            return
         if method == "do_GET" and request.path == "/" and selected in {None, ""}:
             # No selection is a valid view.  It renders only the host-wide
             # controls and never substitutes the first project for content.
@@ -853,7 +914,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         def scoped_send(content: bytes, content_type: str, status_code: int = 200) -> None:
             if (
                 method == "do_GET"
-                and request.path in {"/api/dashboard-snapshot", "/api/status"}
+                and request.path in {"/api/dashboard-snapshot", "/api/status", "/api/prompt-history"}
                 and status_code == 200
                 and content_type.startswith("application/json")
             ):

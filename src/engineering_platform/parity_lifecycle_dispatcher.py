@@ -18,6 +18,7 @@ import sqlite3
 from typing import Callable, Protocol
 
 from . import inbox_watcher
+from . import submission_service
 from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
@@ -33,11 +34,78 @@ from .report_analysis import analyze as analyze_terminal_report
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+OPERATOR_RESOLUTION_OPEN = "OPEN"
+OPERATOR_RESOLUTION_DISMISSED = "DISMISSED"
+OPERATOR_RESOLUTION_RETRIED = "RETRIED"
 _LOCAL_PATH = re.compile(r"(?:/[^\s:]+)+")
 
 
 class ParityLifecycleDispatchError(RuntimeError):
     """A stable failure at the Phase-P composition boundary."""
+
+
+def dismiss_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> dict[str, str]:
+    """Explicitly release a failed CENTRAL run's project FIFO gate."""
+    with sqlite3.connect(data_root / "engineering.db") as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """UPDATE ep_parity_lifecycle_dispatches
+                SET operator_resolution=?,updated_at=?
+                WHERE project_id=? AND run_id=? AND state IN ('BLOCKED','FAILED')
+                  AND operator_resolution=?""",
+            (OPERATOR_RESOLUTION_DISMISSED, _utcnow(), project_id, run_id, OPERATOR_RESOLUTION_OPEN),
+        )
+        if cursor.rowcount != 1:
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
+        connection.execute("COMMIT")
+    return {"run_id": run_id, "handling_state": OPERATOR_RESOLUTION_DISMISSED}
+
+
+def retry_operator_gate(data_root: Path, *, project_id: str, run_id: str) -> submission_service.SubmissionResult:
+    """Create the only FIFO-successor allowed to resolve a failed run."""
+    with sqlite3.connect(data_root / "engineering.db") as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """SELECT d.repository_id,s.producer_id,s.producer_type,s.producer_version,
+                      s.prompt,s.transport,s.correlation_id,s.mission_id,s.engineering_action_id,s.constraints
+                FROM ep_parity_lifecycle_dispatches AS d
+                JOIN ep_submissions AS s ON s.submission_id=d.submission_id
+                WHERE d.project_id=? AND d.run_id=? AND d.state IN ('BLOCKED','FAILED')
+                  AND d.operator_resolution=?""",
+            (project_id, run_id, OPERATOR_RESOLUTION_OPEN),
+        ).fetchone()
+        if row is None:
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError("PROJECT_RUN_NOT_AWAITING_OPERATOR")
+        try:
+            constraints = json.loads(str(row[9]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID") from None
+        if not isinstance(constraints, dict):
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError("RETRY_CONSTRAINTS_INVALID")
+        request = submission_service.SubmissionRequest(
+            project_id=project_id, repository_id=str(row[0]), producer_id=str(row[1]),
+            producer_type=str(row[2]), producer_version=str(row[3]) if row[3] is not None else None,
+            prompt=f"Retry-Of: {run_id}\n\n{str(row[4])}", transport=str(row[5]),
+            correlation_id=str(row[6]) if row[6] is not None else None,
+            mission_id=str(row[7]) if row[7] is not None else None,
+            engineering_action_id=str(row[8]) if row[8] is not None else None, constraints=constraints,
+        )
+        result = submission_service.submit(connection, request)
+        cursor = connection.execute(
+            """UPDATE ep_parity_lifecycle_dispatches
+                SET operator_resolution=?,resolution_submission_id=?,updated_at=?
+                WHERE project_id=? AND run_id=? AND operator_resolution=?""",
+            (OPERATOR_RESOLUTION_RETRIED, result.submission_id, _utcnow(), project_id, run_id, OPERATOR_RESOLUTION_OPEN),
+        )
+        if cursor.rowcount != 1:
+            connection.execute("ROLLBACK")
+            raise ParityLifecycleDispatchError("PROJECT_RETRY_RESOLUTION_CONFLICT")
+        connection.execute("COMMIT")
+    return result
 
 
 class Runner(Protocol):
@@ -127,8 +195,12 @@ class ParityLifecycleDispatcher:
             context = project_context(connection, data_root=self.data_root, project_id=str(row[0]), repository_id=str(row[1]))
             active = connection.execute(
                 """SELECT run_id FROM ep_parity_lifecycle_dispatches
-                    WHERE project_id=? AND state IN ('CLAIMED','RUNNING') LIMIT 1""",
-                (context.project_id,),
+                    WHERE project_id=? AND (
+                        state IN ('CLAIMED','RUNNING')
+                        OR (state IN ('BLOCKED','FAILED') AND operator_resolution='OPEN')
+                        OR (operator_resolution='RETRIED' AND resolution_submission_id!=?)
+                    ) LIMIT 1""",
+                (context.project_id, submission_id),
             ).fetchone()
             if active is not None:
                 connection.execute("ROLLBACK")
@@ -189,7 +261,13 @@ class ParityLifecycleDispatcher:
         with sqlite3.connect(self.data_root / "engineering.db") as connection:
             now = _utcnow()
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
-            connection.execute("UPDATE ep_parity_lifecycle_dispatches SET state=?,updated_at=? WHERE submission_id=? AND run_id=?", (state, now, submission_id, run_id))
+            resolution = OPERATOR_RESOLUTION_OPEN if state in {"BLOCKED", "FAILED"} else "NONE"
+            connection.execute(
+                """UPDATE ep_parity_lifecycle_dispatches
+                    SET state=?,operator_resolution=?,updated_at=?
+                    WHERE submission_id=? AND run_id=?""",
+                (state, resolution, now, submission_id, run_id),
+            )
 
     @staticmethod
     def _terminal_history_exists(repository_root: Path, run_id: str) -> bool:
