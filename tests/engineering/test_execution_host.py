@@ -21,7 +21,7 @@ from engineering_platform.storage import (
     record_validation_control_result,
     record_validation_profile,
 )
-from engineering_platform.execution_errors import CodexHandoffTimeout
+from engineering_platform.execution_errors import CodexHandoffTimeout, CodexInvocationError
 from engineering_platform.execution_reporting import _target_repository_name
 from engineering_platform.execution_host import (
     AgentResult,
@@ -3353,6 +3353,23 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(blocked.next_action, "repair_agent_timeout")
         self.assertEqual(blocked.repair_audit[0]["outcome"], "agent_timed_out")
         self.assertEqual(self.store.load("repair-timeout").repair_audit[0]["outcome"], "agent_timed_out")
+
+    def test_implementation_timeout_becomes_a_durable_provider_failure(self) -> None:
+        state = TransactionState(
+            "implementation-timeout", "pcvantol/djconnect", str(self.prompt),
+            "EXECUTE_AGENT", branch="codex/implementation-timeout", owner_authorized=True,
+        )
+        agent = DeadlineFakeAgent()
+        runner = EngineeringRunner(
+            self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None,
+        )
+
+        with self.assertRaises(CodexInvocationError) as raised:
+            runner._invoke_agent_with_timing(state, "bounded implementation")
+
+        self.assertEqual(raised.exception.terminal_condition, "provider_invocation_timeout")
+        self.assertIn("15-minute", str(raised.exception))
+        self.assertIsNone(agent.deadline_callback)
 
     def test_finalization_pr_behind_main_enters_same_bounded_repair_loop(self) -> None:
         state = TransactionState(

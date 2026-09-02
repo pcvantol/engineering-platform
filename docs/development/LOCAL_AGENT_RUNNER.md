@@ -64,6 +64,34 @@ from repository evidence. Reports show selection reasons, contributions and
 reconciled recommendation counts; Engineering Memory retains bounded reviewer
 confidence, usage, outcome and duration metadata for future selection.
 
+### Provider timeout policy
+
+Every Codex provider action has a fixed, host-owned deadline. It is a safety
+boundary, not an operator preference: the Dashboard presents it read-only in
+**Configuration → Provider timeout policy** and no API or dashboard control can
+raise, disable or override it. The policy is versioned in
+`execution_timeout_policy.py` so the Console and lifecycle worker share the
+same contract.
+
+| Workflow action | Maximum provider time |
+| --- | ---: |
+| Specialist review | 5 minutes |
+| Implementation | 15 minutes |
+| Local repository validation | 15 minutes |
+| Autonomous quality control | 10 minutes |
+| Repair | 15 minutes |
+| Finalization | 15 minutes |
+| End reconciliation | 10 minutes |
+
+When the deadline expires, the host terminates the complete provider process
+group rather than only the CLI parent. This prevents a descendant that still
+owns stdout from holding the worker and the project's FIFO queue indefinitely.
+The host then records a durable `provider_invocation_timeout` failure. Repair
+and finalization retain their existing bounded recovery paths; no automatic
+unbounded retry is created. Operators should inspect the retained run evidence
+and submit a normal replacement only after the underlying provider issue is
+understood.
+
 Engineering Platform 1.2 complements those generic reviewers with deterministic
 product specialists for Apple Platform, Windows Platform, Home Assistant
 Integration, ESPHome Firmware, Pi Renderer, Universal Receiver, Website and
@@ -153,9 +181,10 @@ They are never loaded or streamed outside the private dashboard.
 ### Dashboard configuration
 
 The final **Configuration** disclosure in the private dashboard makes the
-effective local Inbox location, Dependabot admission scan and fixed monitoring intervals observable.
-It also presents the local machine diagnostics — free disk space, Engineering
-database path, database size and schema version — rather than presenting them
+effective local Inbox location, Dependabot admission scan and fixed monitoring
+intervals observable. It also presents the local machine diagnostics — free
+disk space, Engineering Platform database path, database size and schema
+version — rather than presenting them
 as project-specific **Workspace** metadata. The database remains in its current
 workspace-owned location for the 2.0 installation; this is a presentation
 boundary that already matches the planned central-installation migration.
@@ -163,7 +192,8 @@ The language picker and automatic-refresh toggle remain direct controls in the
 title bar and are therefore not duplicated here. The current entries cover Inbox scanning,
 operator-merge verification, required GitHub checks, open-pull-request status,
 dashboard status streaming, platform health, open component details, execution
-lease heartbeat/timeout and bounded GitHub-evidence retry backoff.
+lease heartbeat/timeout, bounded GitHub-evidence retry backoff and the
+read-only provider timeout policy.
 
 Every entry includes a keyboard-accessible information glyph with localized
 explanation in English, Dutch, German, French and Spanish. Workflow safety
@@ -173,7 +203,7 @@ days) and dashboard log level (`INFO` or `DEBUG`). Reducing retention first
 requires a confirmation because it prunes only expired local component-log
 rows. Each change is persisted only in local Engineering storage and is added
 to the append-only audit log. Audit logging itself is always enabled. The
-The Inbox location has a separate confirmation flow: it accepts only an
+Inbox location has a separate confirmation flow: it accepts only an
 existing absolute Engineering root that already contains a writable `Inbox`
 folder, refuses a change while an execution is active, writes the local
 host-owned override and restarts the Inbox watcher. The current Inbox must be
