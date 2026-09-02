@@ -718,6 +718,7 @@ class EngineeringRunner:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
                     required=True, currentness=state.repair_iterations,
+                    central_database=self.store.central_database,
                 )
                 validation_id = (
                     "git_diff_check" if kind == "format_or_diff" else
@@ -912,13 +913,23 @@ class EngineeringRunner:
     def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
         """Best-effort evidence instrumentation; it never changes lifecycle outcome."""
         try:
-            record_managed_action(self.root, run_id=state.run_id, action=action, authority=authority, actor=actor, evidence_ref=evidence_ref)
+            record_managed_action(
+                self.root, run_id=state.run_id, action=action, authority=authority,
+                actor=actor, evidence_ref=evidence_ref,
+                central_database=self.store.central_database,
+            )
         except EngineeringStorageError:
             LOGGER.warning("Managed-autonomy evidence is unavailable for run %s", state.run_id)
 
     def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False) -> None:
         try:
-            record_managed_gate(self.root, run_id=state.run_id, gate_type=gate_type, status=status, related_pr=pr, phase=state.phase, resolution_actor="operator" if resolved else None, resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None)
+            record_managed_gate(
+                self.root, run_id=state.run_id, gate_type=gate_type, status=status,
+                related_pr=pr, phase=state.phase,
+                resolution_actor="operator" if resolved else None,
+                resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None,
+                central_database=self.store.central_database,
+            )
         except EngineeringStorageError:
             LOGGER.warning("Managed governance-gate evidence is unavailable for run %s", state.run_id)
 
@@ -934,6 +945,7 @@ class EngineeringRunner:
                 pr_state=pr.state, merge_commit=pr.merge_commit,
                 required_checks_state=check_state, evidence_ref="github_pr_status_check_rollup",
                 currentness=state.repair_iterations,
+                central_database=self.store.central_database,
             )
         except EngineeringStorageError:
             LOGGER.warning("Managed PR check evidence is unavailable for run %s", state.run_id)
