@@ -214,7 +214,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.generate_terminal_report") as report, \
              patch("engineering_platform.parity_lifecycle_dispatcher.record_terminal_report") as record, \
              patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report") as analyze:
-            report.return_value = self.roots["alpha"] / ".engineering" / "reports" / "terminal.md"
+            report.return_value = self.data / "artifacts" / "projects" / "alpha" / "runs" / "terminal.md"
+            report.return_value.parent.mkdir(parents=True, exist_ok=True)
+            report.return_value.write_text("terminal", encoding="utf-8")
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         record.assert_called_once()

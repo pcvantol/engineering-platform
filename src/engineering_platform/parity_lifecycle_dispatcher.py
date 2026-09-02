@@ -30,6 +30,7 @@ from .execution_executor import CodexCliClient
 from .execution_reporting import generate_terminal_report
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    record_artifact,
     record_run_qualification_context,
     record_submission,
 )
@@ -313,6 +314,12 @@ class ParityLifecycleDispatcher:
             getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
         )
         record_terminal_report(repository_root, report, central_database=data_root / "engineering.db")
+        record_artifact(
+            repository_root, report, artifact_id=f"report:{state.run_id}",
+            artifact_type="TERMINAL_REPORT", content_type="text/markdown",
+            created_at=_utcnow(), run_id=state.run_id,
+            central_database=data_root / "engineering.db", artifact_root=data_root / "artifacts",
+        )
         analyze_terminal_report(repository_root, state.run_id, report)
 
     def reconcile_terminal_history(self) -> None:
