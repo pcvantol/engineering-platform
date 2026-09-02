@@ -116,3 +116,17 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertEqual(receipt.state, "COMPLETE")
         record.assert_called_once_with(self.roots["alpha"].resolve(), report.return_value)
         analyze.assert_called_once_with(self.roots["alpha"].resolve(), receipt.run_id, report.return_value)
+
+    def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs VALUES(?,?,?,?,?)",
+                ("historical-missing-checkpoint", "alpha", "COMPLETE", "now", "now"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)",
+                ("historical-submission", "alpha", "alpha", "historical-missing-checkpoint", "COMPLETE", "prompt", "now", "now"),
+            )
+
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        dispatcher.reconcile_terminal_history()

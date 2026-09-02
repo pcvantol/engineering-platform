@@ -18,7 +18,7 @@ import sqlite3
 from typing import Callable, Protocol
 
 from . import inbox_watcher
-from .agent_state import StateStore, TransactionState, redact_diagnostic
+from .agent_state import StateError, StateStore, TransactionState, redact_diagnostic
 from .execution_errors import RunnerError
 from .execution_host import EngineeringRunner
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
@@ -232,9 +232,17 @@ class ParityLifecycleDispatcher:
         for context, run_id in contexts:
             if context.local_repository_root is None:
                 continue
-            state = StateStore(context.local_repository_root / ".engineering" / "engineering-runs").load(run_id)
-            if state is not None:
-                self._project_terminal_history(context.local_repository_root, state)
+            try:
+                state = StateStore(
+                    context.local_repository_root / ".engineering" / "engineering-runs"
+                ).load(run_id)
+            except StateError:
+                # CENTRAL terminal history can outlive the local retained
+                # checkpoint. It is already durable history, not an active
+                # recovery candidate; never let such a row prevent Server
+                # startup or fresh project-scoped queue processing.
+                continue
+            self._project_terminal_history(context.local_repository_root, state)
 
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
                                      run_id: str, error: RunnerError) -> None:
