@@ -2585,7 +2585,7 @@ Mandatory autonomous refactor and quality-control stage:
             )
         attempts = 0
         while True:
-            pr_operation = start_phase(self.root, state.run_id, "PR_OR_MERGE")
+            pr_operation = self._start_phase(state.run_id, "PR_OR_MERGE")
             try:
                 pr = self.github.pull_request(state.pull_request)
             except RunnerError:
@@ -2604,7 +2604,7 @@ Mandatory autonomous refactor and quality-control stage:
                             next_action="retry_github_evidence",
                         )
                     )
-                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
+                wait = self._start_phase(state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
                 self.sleep(min(30, 2**attempts))
                 complete_phase(self.root, wait)
                 continue
@@ -2615,7 +2615,7 @@ Mandatory autonomous refactor and quality-control stage:
             # therefore take precedence over pre-merge check polling.
             if pr.state != "MERGED" and not pr.checks_terminal:
                 self._managed_action(state, "GITHUB_REQUIRED_CHECK", "EXTERNAL_PLATFORM_EVENT", actor="github", evidence_ref="required_check_waiting")
-                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
+                wait = self._start_phase(state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
                 self.sleep(15)
                 complete_phase(self.root, wait)
                 continue
@@ -2752,7 +2752,7 @@ Mandatory autonomous refactor and quality-control stage:
                 phase="WAIT_FOR_TERMINAL_EVIDENCE",
                 next_action="poll_required_checks",
             )
-        finalization_phase = start_phase(self.root, state.run_id, "REPOSITORY_FINALIZATION")
+        finalization_phase = self._start_phase(state.run_id, "REPOSITORY_FINALIZATION")
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
             synchronize(self.root)
@@ -2790,7 +2790,7 @@ Mandatory autonomous refactor and quality-control stage:
             "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "
             "push it, and only then return that PR number."
         )
-        finalization_span = start_phase(self.root, state.run_id, "FINALIZATION")
+        finalization_span = self._start_phase(state.run_id, "FINALIZATION")
         handoff_started = time.monotonic()
         set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
         if callable(set_handoff_deadline):
@@ -3029,7 +3029,7 @@ Mandatory autonomous refactor and quality-control stage:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
         self._managed_action(state, "RECONCILIATION")
         self._managed_action(state, "CLEANUP")
-        cleanup = start_phase(self.root, state.run_id, "REPOSITORY_CLEANUP")
+        cleanup = self._start_phase(state.run_id, "REPOSITORY_CLEANUP")
         try:
             result = self.finalization.cleanup(
                 root=self.root,
