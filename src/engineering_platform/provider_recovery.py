@@ -279,14 +279,15 @@ def _receipts(root: Path, run_id: str, invocation_id: str) -> list[dict[str, obj
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
-def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_code: str) -> bool:
+def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_code: str,
+                                        central_database: Path | None = None) -> bool:
     """Record the only proof that a claimed launch did not reach a provider.
 
     The real provider adapter invokes its process callback at the spawn
     boundary. Therefore this may only be written by the host while the row is
     still STARTING and no PROCESS_STARTED receipt exists.
     """
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -566,10 +567,11 @@ def record_replacement_terminal(
         connection.close()
 
 
-def mark_precheck_failed(root: Path, *, run_id: str, diagnostic_code: str) -> bool:
+def mark_precheck_failed(root: Path, *, run_id: str, diagnostic_code: str,
+                         central_database: Path | None = None) -> bool:
     return transition_recovery_state(
         root, run_id=run_id, expected="RECOVERY_AVAILABLE", target="PRECHECK_FAILED",
-        diagnostic_code=diagnostic_code,
+        diagnostic_code=diagnostic_code, central_database=central_database,
     )
 
 

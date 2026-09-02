@@ -1362,6 +1362,7 @@ class EngineeringRunner:
                 # authoritatively failed before entering provider execution.
                 record_pre_execution_launch_failure(
                     self.root, run_id=state.run_id, diagnostic_code=type(error).__name__,
+                    central_database=self.store.central_database,
                 )
             raise
         finally:
@@ -1418,7 +1419,10 @@ class EngineeringRunner:
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
                 precheck = self._provider_recovery_preflight(state)
                 if precheck is not None:
-                    mark_precheck_failed(self.root, run_id=state.run_id, diagnostic_code=precheck)
+                    mark_precheck_failed(
+                        self.root, run_id=state.run_id, diagnostic_code=precheck,
+                        central_database=self.store.central_database,
+                    )
                     self._project_durable_recovery(state, self._recovery_state(state.run_id) or recovery)
                     raise CodexInvocationError(
                         "Provider interruption recovery cannot continue.", "Recovery continuation preflight failed.",
