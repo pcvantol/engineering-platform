@@ -51,10 +51,10 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def _submission(self, project: str) -> str:
+    def _submission(self, project: str, prompt: str = "Validate only.") -> str:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
-                project, project, "canary", "HUMAN", "1", "Validate only.", "HTTP",
+                project, project, "canary", "HUMAN", "1", prompt, "HTTP",
             )).submission_id
 
     def test_claims_one_submission_once_and_preserves_central_run_linkage(self) -> None:
@@ -88,3 +88,13 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertNotEqual(alpha_receipt.run_id, beta_receipt.run_id)
         self.assertEqual(_Runner.calls[0][0].parents[2].resolve(), (self.data / "artifacts" / "projects" / "alpha").resolve())
         self.assertEqual(_Runner.calls[1][0].parents[2].resolve(), (self.data / "artifacts" / "projects" / "beta").resolve())
+
+    def test_genesis_mode_is_forwarded_to_the_preserved_host_input(self) -> None:
+        submission = self._submission("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+            receipt = dispatcher.dispatch(submission)
+        self.assertEqual(receipt.state, "COMPLETE")
+        self.assertIn("Execution Mode: Genesis", _Runner.calls[0][0].read_text(encoding="utf-8"))
