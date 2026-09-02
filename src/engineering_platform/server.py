@@ -1410,7 +1410,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             result = {"instance_id": initialize(args.data_root, bind_host=args.bind_host, bind_port=args.bind_port).instance_id, "initialized": True}
-        elif args.command == "start": result = start(args.data_root)
+        elif args.command == "start":
+            initialize(args.data_root)
+            configuration = ServerConfiguration.load(args.data_root)
+            if (configuration.bind_host, configuration.bind_port) != (args.bind_host, args.bind_port):
+                _write_json(args.data_root / SERVER_CONFIGURATION_FILENAME, {
+                    "version": configuration.version, "bind_host": args.bind_host,
+                    "bind_port": args.bind_port,
+                    "managed_codex_cli_prefix": configuration.managed_codex_cli_prefix,
+                })
+            result = start(args.data_root)
         elif args.command == "serve": return serve(args.data_root)
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
