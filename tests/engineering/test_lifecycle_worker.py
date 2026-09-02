@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 
 from engineering_platform import server, submission_service
@@ -37,6 +38,15 @@ class LifecycleWorkerTests(unittest.TestCase):
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(project, project, "test", "HUMAN", None, "Do the bounded thing.", "HTTP")).submission_id
 
+    def _wait_for_dispatches(self, expected: list[str], timeout_seconds: float = 1.0) -> None:
+        """Wait for the intentionally asynchronous worker dispatch boundary."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if _Dispatcher.calls == expected:
+                return
+            time.sleep(0.01)
+        self.assertEqual(_Dispatcher.calls, expected)
+
     def test_idle_queue_is_healthy_and_writes_nothing(self) -> None:
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertFalse(worker.run_once())
@@ -47,10 +57,8 @@ class LifecycleWorkerTests(unittest.TestCase):
         alpha, beta = self._submit("alpha"), self._submit("beta")
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertTrue(worker.run_once())
-        import time
-        for _ in range(20):
-            if len(_Dispatcher.calls) == 2:
-                break
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and len(_Dispatcher.calls) != 2:
             time.sleep(0.01)
         self.assertEqual(set(_Dispatcher.calls), {alpha, beta})
         self.assertEqual(worker.eligible_submission_ids(), [alpha, beta])
@@ -112,8 +120,8 @@ class LifecycleWorkerTests(unittest.TestCase):
             connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("stable-run", "alpha", "RUNNING", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (submission, "alpha", "alpha", "stable-run", "RUNNING", "prompt", "now", "now"))
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
-        worker.run_once()
-        self.assertEqual(_Dispatcher.calls, [submission])
+        self.assertTrue(worker.run_once())
+        self._wait_for_dispatches([submission])
 
     def test_dispatch_failure_is_bounded_and_worker_can_stop(self) -> None:
         self._submit("alpha")
