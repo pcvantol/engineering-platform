@@ -5441,34 +5441,35 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
-  test("keeps accessible table focus separate from the house-style selection ring", async ({ page }) => {
+  test("keeps whole-table scroll regions free of focus decoration", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => { document.querySelector("#promptHistory").open = true; });
-    const tableWrap = page.locator("#promptHistory .log-table-wrap");
-    await tableWrap.focus();
-    const focusStyle = await tableWrap.evaluate((element) => {
-      const probe = document.createElement("span");
-      probe.style.color = "var(--house-style)";
-      document.body.append(probe);
-      const houseStyle = getComputedStyle(probe).color;
-      probe.style.boxShadow = "0 0 0 4px var(--dashboard-input-focus-ring)";
-      const houseStyleRing = getComputedStyle(probe).boxShadow;
-      probe.remove();
-      const style = getComputedStyle(element);
-      return {
-        borderColor: style.borderColor,
-        boxShadow: style.boxShadow,
-        outlineColor: style.outlineColor,
-        outlineStyle: style.outlineStyle,
-        houseStyle,
-        houseStyleRing,
-      };
+    const focusStyles = await page.evaluate(() => {
+      const existing = document.querySelector("#promptHistory .log-table-wrap");
+      const probes = ["telemetry-scroll", "telemetry-detail-table-scroll"].map((className) => {
+        const element = document.createElement("div");
+        element.className = className;
+        element.tabIndex = 0;
+        document.body.append(element);
+        return element;
+      });
+      const styles = [existing, ...probes].map((element) => {
+        element.focus();
+        const style = getComputedStyle(element);
+        return {
+          boxShadow: style.boxShadow,
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+        };
+      });
+      probes.forEach((element) => element.remove());
+      return styles;
     });
-    expect(focusStyle.borderColor).not.toBe(focusStyle.houseStyle);
-    expect(focusStyle.outlineColor).not.toBe(focusStyle.houseStyle);
-    expect(focusStyle.outlineStyle).toBe("solid");
-    expect(focusStyle.boxShadow).not.toBe(focusStyle.houseStyleRing);
-    expect(focusStyle.borderColor).toBe("rgb(141, 199, 255)");
+    for (const focusStyle of focusStyles) {
+      expect(focusStyle.outlineStyle).toBe("none");
+      expect(focusStyle.outlineWidth).toBe("0px");
+      expect(focusStyle.boxShadow).toBe("none");
+    }
   });
 
   test("matches the iPhone portrait dashboard visual reference", async ({ page }, testInfo) => {

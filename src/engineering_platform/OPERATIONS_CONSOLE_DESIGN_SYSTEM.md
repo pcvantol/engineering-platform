@@ -151,6 +151,11 @@ separate focus or selection border around individual cells. Sortable headers
 may use their own thin focus edge because they are independently interactive;
 that edge must remain contained inside the sticky header cell.
 
+The scroll region around a table may receive keyboard focus to support keyboard
+scrolling, but it is not a selected control: it never receives an outer focus
+border, ring, glow or changed border colour. Focus feedback belongs only to an
+independently interactive element within the table, such as a sortable header.
+
 The **Operationeel overzicht** card grid is one column by default. Once its
 own container reaches **760px**, it uses two equal columns. This container
 query keeps individual evidence cards readable in narrow side-by-side layouts

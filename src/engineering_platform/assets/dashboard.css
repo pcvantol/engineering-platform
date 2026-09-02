@@ -1010,12 +1010,12 @@ dialog.dashboard-modal-shell,dialog.dashboard-modal-shell:is(:focus,:focus-visib
    including anchor actions inside dialogs. Deliberately non-focusing shells,
    table-row selection surfaces and lifecycle geometry remain excluded above. */
 :where(a[href],button,input,select,textarea,[role="button"],[tabindex]):not(:where(.dashboard-modal-shell,.component-log-row,.prompt-history-row,.telemetry-row,.execution-lifecycle__node,.theme-toggle,.section-state-toggle,.auto-refresh-toggle,.log-sortable,.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll)):is(:focus,:focus-visible){border-color:var(--house-style)!important;outline-color:var(--house-style)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-input-focus-ring)!important}
-/* Table focus is evidence navigation, not a selected control.  Keep it on a
-   quiet blue line so table scrollers and sortable headers can never inherit
-   the house-style orange selection ring. */
+/* Table scrollers are keyboard-scroll targets, not selected controls. Their
+   outer surface never receives a focus ring; only independently interactive
+   sortable headers retain their contained focus edge. */
 :is(.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll){--dashboard-table-focus-border:#8dc7ff;--dashboard-table-focus-ring:#8dc7ff44}
 html[data-theme="light"] :is(.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll){--dashboard-table-focus-border:#1763aa;--dashboard-table-focus-ring:#1763aa33}
-:is(.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll):is(:focus,:focus-visible){border-color:var(--dashboard-table-focus-border)!important;box-shadow:0 0 0 var(--dashboard-focus-ring-size) var(--dashboard-table-focus-ring)!important;outline:var(--dashboard-focus-outline-width) solid var(--dashboard-table-focus-border)!important;outline-color:var(--dashboard-table-focus-border)!important;outline-offset:var(--dashboard-focus-outline-offset)!important}
+:is(.log-table-wrap,.telemetry-scroll,.telemetry-detail-table-scroll):is(:focus,:focus-visible){box-shadow:none!important;outline:0!important;outline-offset:0!important}
 .log-table th.log-sortable:focus,.log-table th.log-sortable:focus-visible,.telemetry-table th.log-sortable:focus,.telemetry-table th.log-sortable:focus-visible{box-shadow:inset 0 0 0 1px var(--dashboard-table-focus-border,#8dc7ff)!important;outline:0!important;outline-offset:0!important;z-index:2}
 /* Title-bar labels are part of their switch control, not a separate focus
    target. Keep the compact house-style ring on the track for all three. */
