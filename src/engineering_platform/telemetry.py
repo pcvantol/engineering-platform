@@ -167,7 +167,8 @@ def _from_payload(raw: object) -> ExecutionTelemetry:
 
 
 def queue_terminal_telemetry(
-    root: Path, telemetry: ExecutionTelemetry, *, source: Literal["LIVE_TERMINAL", "RECOVERY", "BACKFILL"] = "LIVE_TERMINAL"
+    root: Path, telemetry: ExecutionTelemetry, *, source: Literal["LIVE_TERMINAL", "RECOVERY", "BACKFILL"] = "LIVE_TERMINAL",
+    central_database: Path | None = None,
 ) -> bool:
     """Synchronously record a terminal telemetry intent before projection work.
 
@@ -179,7 +180,11 @@ def queue_terminal_telemetry(
     payload = _payload(telemetry)
     # Reject malformed live telemetry before it can become a retry loop.
     _from_payload(json.loads(payload))
-    connection = open_storage(root, create=False)
+    if central_database is None:
+        connection = open_storage(root, create=False)
+    else:
+        connection = sqlite3.connect(central_database.resolve(), isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         with connection:
             existing = connection.execute(
@@ -198,11 +203,16 @@ def queue_terminal_telemetry(
     return True
 
 
-def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = None, limit: int = 25) -> dict[str, int]:
+def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = None, limit: int = 25,
+                                           central_database: Path | None = None) -> dict[str, int]:
     """Idempotently materialize durable intents; failures remain retryable."""
     if limit < 1 or limit > 250:
         raise ValueError("terminal telemetry recovery limit is invalid")
-    connection = open_storage(root, create=False)
+    if central_database is None:
+        connection = open_storage(root, create=False)
+    else:
+        connection = sqlite3.connect(central_database.resolve(), isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         query = "SELECT run_id,payload FROM terminal_telemetry_outbox WHERE state IN ('PENDING','FAILED_RETRYABLE')"
         parameters: tuple[object, ...] = ()
@@ -218,8 +228,8 @@ def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = N
             telemetry = _from_payload(json.loads(payload))
             if telemetry.run_id != queued_run_id:
                 raise ValueError("terminal telemetry outbox run identity is invalid")
-            persist_execution(root, telemetry, create=False)
-            connection = open_storage(root, create=False)
+            persist_execution(root, telemetry, create=False, central_database=central_database)
+            connection = (open_storage(root, create=False) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None))
             try:
                 with connection:
                     connection.execute(
@@ -231,7 +241,7 @@ def materialize_pending_terminal_telemetry(root: Path, *, run_id: str | None = N
                 connection.close()
             result["processed"] += 1
         except Exception as error:
-            connection = open_storage(root, create=False)
+            connection = (open_storage(root, create=False) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None))
             try:
                 with connection:
                     connection.execute(
