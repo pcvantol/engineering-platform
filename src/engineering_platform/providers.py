@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 import os
+import pwd
 from pathlib import Path
 import re
 import shutil
@@ -134,9 +135,30 @@ class PrivateRemoteAccessProvider(Protocol):
     def status(self) -> ProviderStatus: ...
 
 
+MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT = "EP_MANAGED_CODEX_CLI_PREFIX"
+
+
+def default_engineering_platform_codex_cli_prefix() -> Path:
+    """Return the stable account-owned default, independent of ``$HOME``.
+
+    A runner may deliberately receive an isolated HOME for tool state.  That
+    must never manufacture a second EP-managed CLI installation location.
+    """
+    try:
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        account_home = Path.home()
+    return account_home / ".local" / "share" / "engineering-platform" / "codex-cli"
+
+
 def engineering_platform_codex_cli_prefix() -> Path:
-    """Return the user-owned prefix reserved for Engineering Platform's CLI."""
-    return Path.home() / ".local" / "share" / "engineering-platform" / "codex-cli"
+    """Return the installation-pinned CLI prefix, never a process HOME path."""
+    configured = os.environ.get(MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT)
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve(strict=False)
+    return default_engineering_platform_codex_cli_prefix()
 
 
 def codex_cli_executable() -> str | None:

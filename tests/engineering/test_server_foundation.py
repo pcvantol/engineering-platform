@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import local_repository_binding, project_topology, server
+from engineering_platform import local_repository_binding, project_topology, providers, server
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -72,6 +73,26 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         (self.root / "server.json").write_text(json.dumps({"version": 2}), encoding="utf-8")
         with self.assertRaises(server.ServerConfigurationError):
             server.initialize(self.root)
+
+    def test_server_upgrades_home_derived_runtime_configuration_once(self) -> None:
+        self.root.mkdir(parents=True)
+        (self.root / "server.json").write_text(
+            json.dumps({"version": 1, "bind_host": "127.0.0.1", "bind_port": 8765}), encoding="utf-8"
+        )
+        prefix = Path("/Users/canonical/.local/share/engineering-platform/codex-cli")
+        with patch("engineering_platform.server.default_engineering_platform_codex_cli_prefix", return_value=prefix):
+            server.initialize(self.root)
+        configuration = json.loads((self.root / "server.json").read_text(encoding="utf-8"))
+        self.assertEqual(configuration["version"], 2)
+        self.assertEqual(configuration["managed_codex_cli_prefix"], str(prefix))
+
+    def test_managed_cli_prefix_is_not_derived_from_a_worker_home(self) -> None:
+        prefix = "/Users/canonical/.local/share/engineering-platform/codex-cli"
+        with patch.dict(os.environ, {
+            "HOME": "/private/var/folders/example/tmp/home",
+            providers.MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT: prefix,
+        }, clear=False):
+            self.assertEqual(providers.engineering_platform_codex_cli_prefix(), Path(prefix))
 
     def test_unauthenticated_foundation_refuses_a_non_loopback_bind(self) -> None:
         with self.assertRaises(server.ServerConfigurationError):

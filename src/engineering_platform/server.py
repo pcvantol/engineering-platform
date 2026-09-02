@@ -39,14 +39,18 @@ from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
-from .providers import LocalProcessProvider
+from .providers import (
+    MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
+    LocalProcessProvider,
+    default_engineering_platform_codex_cli_prefix,
+)
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
 SERVER_IDENTITY_FILENAME = "runtime-identity.json"
 SERVER_RUNTIME_FILENAME = "runtime.json"
 SERVER_DATABASE_FILENAME = "engineering.db"
-SERVER_CONFIGURATION_VERSION = 1
+SERVER_CONFIGURATION_VERSION = 2
 # ADR-0026 defines the first standalone store as the canonical schema-40
 # product definitions plus immutable control provenance.  This server-owned
 # bootstrap is deliberately separate from the retired DJConnect migration
@@ -106,6 +110,7 @@ class ServerConfiguration:
     version: int
     bind_host: str
     bind_port: int
+    managed_codex_cli_prefix: str
 
     @classmethod
     def load(cls, data_root: Path) -> "ServerConfiguration":
@@ -114,17 +119,27 @@ class ServerConfiguration:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ServerConfigurationError("EP Server configuration is unavailable.") from error
+        if not isinstance(raw, dict):
+            raise ServerConfigurationError("EP Server configuration is invalid.")
+        legacy_keys = {"version", "bind_host", "bind_port"}
+        current_keys = legacy_keys | {"managed_codex_cli_prefix"}
+        if set(raw) == legacy_keys and raw.get("version") == 1:
+            prefix = str(default_engineering_platform_codex_cli_prefix())
+        elif set(raw) == current_keys and raw.get("version") == SERVER_CONFIGURATION_VERSION:
+            prefix = raw.get("managed_codex_cli_prefix")
+        else:
+            raise ServerConfigurationError("EP Server configuration is invalid.")
+        candidate = Path(prefix).expanduser() if isinstance(prefix, str) else None
         if (
-            not isinstance(raw, dict)
-            or set(raw) != {"version", "bind_host", "bind_port"}
-            or raw["version"] != SERVER_CONFIGURATION_VERSION
-            or not isinstance(raw["bind_host"], str)
+            not isinstance(raw["bind_host"], str)
             or raw["bind_host"] != "127.0.0.1"
             or not isinstance(raw["bind_port"], int)
             or not 1 <= raw["bind_port"] <= 65535
+            or candidate is None
+            or not candidate.is_absolute()
         ):
             raise ServerConfigurationError("EP Server configuration is invalid.")
-        return cls(raw["version"], raw["bind_host"], raw["bind_port"])
+        return cls(int(raw["version"]), raw["bind_host"], raw["bind_port"], str(candidate.resolve(strict=False)))
 
 
 @dataclass(frozen=True)
@@ -357,8 +372,22 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
     if not config_path.exists():
         if bind_host != "127.0.0.1" or not 1 <= bind_port <= 65535:
             raise ServerConfigurationError("EP Server initial bind configuration is invalid.")
-        _write_json(config_path, asdict(ServerConfiguration(SERVER_CONFIGURATION_VERSION, bind_host, bind_port)))
-    ServerConfiguration.load(data_root)
+        _write_json(config_path, asdict(ServerConfiguration(
+            SERVER_CONFIGURATION_VERSION, bind_host, bind_port,
+            str(default_engineering_platform_codex_cli_prefix()),
+        )))
+    configuration = ServerConfiguration.load(data_root)
+    # Version 1 inferred the CLI installation at each process boundary from
+    # HOME.  Upgrade it once, under the server's stable account identity, so
+    # child workers and later restarts inherit one installation authority.
+    if configuration.version != SERVER_CONFIGURATION_VERSION:
+        configuration = ServerConfiguration(
+            SERVER_CONFIGURATION_VERSION,
+            configuration.bind_host,
+            configuration.bind_port,
+            configuration.managed_codex_cli_prefix,
+        )
+        _write_json(config_path, asdict(configuration))
     identity_path = data_root / SERVER_IDENTITY_FILENAME
     if identity_path.exists():
         try:
@@ -1183,6 +1212,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 def serve(data_root: Path) -> int:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
+    os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     worker = LifecycleWorker(data_root)
@@ -1212,12 +1242,14 @@ def start(data_root: Path) -> dict[str, object]:
     # installation-owned data root and discard Python import overrides so a
     # caller's checkout can never become the child Server's import authority.
     runtime_root = data_root.resolve()
+    configuration = ServerConfiguration.load(runtime_root)
     # npm is the preserved managed-runtime installer.  These are fixed host
     # tool directories, never a provider-executable fallback or caller PATH.
     environment = {
         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         "PYTHONNOUSERSITE": "1",
         "PYTHONSAFEPATH": "1",
+        MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT: configuration.managed_codex_cli_prefix,
     }
     if home := os.environ.get("HOME"):
         environment["HOME"] = home
