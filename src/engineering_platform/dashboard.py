@@ -837,40 +837,14 @@ def _codex_cli_update_status(root: Path, *, refresh: bool = False) -> dict[str, 
 
 
 def _install_codex_cli_update(root: Path) -> dict[str, object]:
-    """Install the exact checked release, then verify the executable's version."""
-    global _codex_identity_cache, _codex_update_cache
+    """Provision the EP-owned runtime through the canonical lifecycle."""
     with _codex_update_install_lock:
         if _execution_active(root):
             raise CodexCliUpdateError("codex_cli_update_execution_active")
-        status = _codex_cli_update_status(root, refresh=True)
-        if status.get("state") == "unavailable":
-            raise CodexCliUpdateError("codex_cli_update_unavailable")
-        if not status.get("update_available"):
-            return {"updated": False, "current_version": status.get("current_version")}
-        latest = status.get("latest_version")
-        npm = _npm_executable()
-        if not isinstance(latest, str) or npm is None:
-            raise CodexCliUpdateError("codex_cli_update_unavailable")
         try:
-            completed = LocalProcessProvider().execute(
-                root,
-                (npm, "install", "--global", "--prefix", str(engineering_platform_codex_cli_prefix()), f"{CODEX_CLI_PACKAGE}@{latest}"),
-            )
-        except OSError as error:
-            raise CodexCliUpdateError("codex_cli_update_failed") from error
-        if completed.returncode:
-            diagnostic = f"{completed.stdout}\n{completed.stderr}".lower()
-            if "eacces" in diagnostic or "permission denied" in diagnostic:
-                raise CodexCliUpdateError("codex_cli_update_permissions_required")
-            raise CodexCliUpdateError("codex_cli_update_failed")
-        with _codex_identity_cache_lock:
-            _codex_identity_cache = None
-        with _codex_update_cache_lock:
-            _codex_update_cache = None
-        installed = _codex_cli_version(_codex_provider_identity(refresh=True).get("provider_version"))
-        if installed is None or _codex_cli_version_key(installed) < _codex_cli_version_key(latest):
-            raise CodexCliUpdateError("codex_cli_update_failed")
-        return {"updated": True, "current_version": installed}
+            return managed_codex_runtime.provision(root)
+        except managed_codex_runtime.ManagedCodexRuntimeError as error:
+            raise CodexCliUpdateError(str(error)) from error
 
 
 def _consume_codex_rate_limit_reset_credit() -> str:

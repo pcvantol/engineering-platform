@@ -1612,25 +1612,9 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertEqual(execute.call_args_list[1].args[1], ("/usr/local/bin/npm", "view", "@openai/codex", "version", "--json"))
 
-        dashboard._codex_identity_cache = None
-        dashboard._codex_update_cache = None
-        with (
-            patch("engineering_platform.dashboard.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
-            patch("engineering_platform.dashboard.codex_cli_executable", return_value="/managed/bin/codex"),
-            patch("engineering_platform.dashboard.LocalProcessProvider.execute", side_effect=[
-                completed(("codex", "--version"), 0, "codex-cli 0.149.0", ""),
-                completed(("npm", "view"), 0, '"0.150.0"', ""),
-                completed(("npm", "install"), 0, "installed", ""),
-                completed(("codex", "--version"), 0, "codex-cli 0.150.0", ""),
-            ]) as execute,
-        ):
+        with patch("engineering_platform.dashboard.managed_codex_runtime.provision", return_value={"updated": True, "current_version": "0.150.0"}) as provision:
             self.assertEqual(dashboard._install_codex_cli_update(root), {"updated": True, "current_version": "0.150.0"})
-            self.assertEqual(
-                execute.call_args_list[2].args[1],
-                ("/usr/local/bin/npm", "install", "--global", "--prefix", str(dashboard.engineering_platform_codex_cli_prefix()), "@openai/codex@0.150.0"),
-            )
-        dashboard._codex_identity_cache = None
-        dashboard._codex_update_cache = None
+            provision.assert_called_once_with(root)
 
     def test_codex_cli_update_installation_is_blocked_during_an_active_execution(self) -> None:
         with patch(
@@ -1654,8 +1638,8 @@ class DashboardStatusTest(unittest.TestCase):
             )
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "current", "update_available": False, "current_version": "0.150.0"},
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            return_value={"updated": False, "current_version": "0.150.0"},
         ):
             self.assertEqual(
                 dashboard._install_codex_cli_update(root),
@@ -1663,18 +1647,15 @@ class DashboardStatusTest(unittest.TestCase):
             )
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "update_available", "update_available": True, "latest_version": "0.150.0"},
-        ), patch("engineering_platform.dashboard._npm_executable", return_value=None):
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_unavailable"),
+        ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_unavailable"):
                 dashboard._install_codex_cli_update(root)
 
         with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "update_available", "update_available": True, "latest_version": "0.150.0"},
-        ), patch("engineering_platform.dashboard._npm_executable", return_value="/usr/local/bin/npm"), patch(
-            "engineering_platform.dashboard.LocalProcessProvider.execute",
-            return_value=__import__("subprocess").CompletedProcess(("npm",), 1, "", "npm error code EACCES: permission denied"),
+            "engineering_platform.dashboard.managed_codex_runtime.provision",
+            side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_permissions_required"),
         ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_permissions_required"):
                 dashboard._install_codex_cli_update(root)
