@@ -25,5 +25,12 @@ class ResponsibilityLineageTests(unittest.TestCase):
         self.assertTrue(self.check([{"path":"../outside","responsibilities":["r1","r2","r3","r4"]}]))
         self.assertTrue(MODULE.cycle_free([("A","B"),("B","C")]))
         self.assertFalse(MODULE.cycle_free([("A","B"),("B","A")]))
+    def test_chained_split_merge_graph_and_failures(self):
+        nodes=[{"node_id":"A","node_type":"BASELINE","responsibilities":["r1","r2","r3","r4"]},{"node_id":"D","node_type":"BASELINE","responsibilities":["r5","r6"]},{"node_id":"B","node_type":"CURRENT_TARGET"},{"node_id":"C","node_type":"INTERMEDIATE_TARGET"},{"node_id":"E","node_type":"CURRENT_TARGET"}]
+        edges=[{"from":"A","to":"B","kind":"SPLIT","responsibilities":["r1","r2"]},{"from":"A","to":"C","kind":"SPLIT","responsibilities":["r3","r4"]},{"from":"C","to":"E","kind":"MERGE","responsibilities":["r3","r4"]},{"from":"D","to":"E","kind":"MERGE","responsibilities":["r5","r6"]}]
+        self.assertEqual([],MODULE.validate_graph({"nodes":nodes,"edges":edges}))
+        self.assertTrue(MODULE.validate_graph({"nodes":nodes,"edges":edges[:-1]}))
+        edges.append({"from":"E","to":"A","kind":"MOVE","responsibilities":["r3"]})
+        self.assertTrue(MODULE.validate_graph({"nodes":nodes,"edges":edges}))
 
 if __name__ == "__main__": unittest.main()

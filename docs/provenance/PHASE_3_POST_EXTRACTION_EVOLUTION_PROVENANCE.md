@@ -9,7 +9,15 @@ immutable Stage 1 record proves the historical DJConnect source at
 `d4d538559796f64f1ffa5136698dd207589a4ae0`.  Its input baseline and rendered
 receipt are retained byte-for-byte as historical evidence.
 
-Stage 2 reads `PHASE_3_POST_EXTRACTION_EVOLUTION_LEDGER.json`.  Each current
+Stage 2 reads `PHASE_3_POST_EXTRACTION_EVOLUTION_LEDGER.json` (schema v2). Its
+bounded DAG has immutable baseline nodes, explicit intermediate/current/retired
+nodes, and typed responsibility-flow edges (`MODIFY`, `MOVE`, `RENAME`,
+`SPLIT`, `MERGE`, `REPLACE`, `RETIRE`). Cycles, duplicate edges, invented
+responsibilities, orphan current nodes, dangling intermediates, and nonterminal
+responsibility flows fail closed. Explicit SHARED ownership is the sole way a
+responsibility may reach more than one current implementation.
+
+Each current
 historical target is either unchanged or has a receipt containing its baseline
 and current content hashes, path/disposition, responsibility coverage, reason,
 PR identity and governed commit chain.  The verifier checks the declared

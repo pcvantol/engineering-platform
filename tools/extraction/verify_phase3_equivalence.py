@@ -61,6 +61,39 @@ def cycle_free(edges):
         if node in done:return True
         active.add(node); result=all(visit(child) for child in graph.get(node,[])); active.remove(node); done.add(node); return result
     return all(visit(node) for node in graph)
+def validate_graph(graph):
+    """Validate a bounded explicit responsibility-flow DAG; returns diagnostics."""
+    errors=[]; nodes={n.get("node_id"):n for n in graph.get("nodes",[]) if isinstance(n,dict) and isinstance(n.get("node_id"),str)}; edges=graph.get("edges",[])
+    if len(nodes)>512 or len(edges)>2048: return ["graph exceeds bounded qualification size"]
+    seen=set(); pairs=[]; origins={}
+    for node in nodes.values():
+        if node.get("node_type")=="BASELINE":
+            for r in node.get("responsibilities",[]): origins[r]=node["node_id"]
+    for edge in edges:
+        if not isinstance(edge,dict) or edge.get("kind") not in {"MODIFY","MOVE","RENAME","SPLIT","MERGE","REPLACE","RETIRE"}: errors.append("invalid edge type"); continue
+        key=(edge.get("from"),edge.get("to"),tuple(edge.get("responsibilities",[])))
+        if key in seen: errors.append("duplicate edge")
+        seen.add(key); pairs.append((edge.get("from"),edge.get("to")))
+        if edge.get("from") not in nodes or edge.get("to") not in nodes or edge.get("from")==edge.get("to"): errors.append("invalid graph endpoint")
+        for r in edge.get("responsibilities",[]):
+            if r not in origins: errors.append(f"invented responsibility: {r}")
+    if errors or not cycle_free(pairs): return errors+["cycle detected"]
+    for r,start in origins.items():
+        active=[start]; terminals=[]; visited=set()
+        while active:
+            node=active.pop(); key=(node,r)
+            if key in visited: continue
+            visited.add(key); outgoing=[e for e in edges if e.get("from")==node and r in e.get("responsibilities",[])]
+            kind=nodes[node].get("node_type")
+            if kind in {"CURRENT_TARGET","RETIRED"}:
+                if outgoing: errors.append(f"terminal has outgoing flow: {r}")
+                terminals.append(node); continue
+            if not outgoing: errors.append(f"dangling responsibility: {r}"); continue
+            active.extend(e["to"] for e in outgoing)
+        if len(terminals)!=1: errors.append(f"invalid terminal count for {r}")
+    for node in nodes.values():
+        if node.get("node_type")=="CURRENT_TARGET" and not any(e.get("to")==node["node_id"] for e in edges): errors.append(f"orphan current target: {node['node_id']}")
+    return errors
 
 def stage1(source: Path, target: Path, baseline: dict, receipt: dict, ledger: dict, errors: list[str]) -> list[dict]:
     identity = ledger.get("historical_extraction", {})
@@ -147,7 +180,7 @@ def main() -> int:
     parser.add_argument("--baseline",type=Path,default=DEFAULT_BASELINE); parser.add_argument("--historical-receipt",type=Path,default=DEFAULT_RECEIPT); parser.add_argument("--ledger",type=Path,default=DEFAULT_LEDGER); parser.add_argument("--receipt",type=Path)
     args=parser.parse_args(); errors=[]
     try:
-        ledger=load(args.ledger); rows=stage1(args.source.resolve(),args.target.resolve(),load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(args.target.resolve(),rows,ledger,errors)
+        ledger=load(args.ledger); errors.extend(validate_graph(ledger.get("graph",{}))); rows=stage1(args.source.resolve(),args.target.resolve(),load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(args.target.resolve(),rows,ledger,errors)
     except (OSError,ValueError,json.JSONDecodeError) as error: errors.append(str(error)); inventory=[]
     result={"model":"TWO_STAGE_PROVENANCE","stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"failures":errors,"pass":not errors}
     if args.receipt: args.receipt.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
