@@ -3300,6 +3300,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(phaseRows.nth(0)).toContainText("3 sec");
     await expect(phaseRows.nth(1)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.provider_execution"]);
     await expect(phaseRows.nth(2)).toContainText(DASHBOARD_MESSAGES.nl["telemetry.phase.total_execution"]);
+    await expect(phaseRows.nth(0)).toHaveCSS("border-bottom-style", "solid");
+    await expect(phaseRows.nth(2)).toHaveCSS("border-bottom-style", "none");
   });
 
   test("reveals an initially off-screen active lifecycle step after page load", async ({ page }) => {
