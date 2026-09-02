@@ -422,12 +422,18 @@ class EngineeringRunner:
             self.root, run_id=state.run_id, phase=state.phase,
         )
 
+    def _recovery_state(self, run_id: str) -> dict[str, object] | None:
+        """Read recovery truth from this runner's explicit lifecycle authority."""
+        return load_recovery_state(
+            self.root, run_id, central_database=self.store.central_database,
+        )
+
     def _provider_process_boundary(self, state: TransactionState, process: object) -> None:
         """Record the real provider start boundary for a claimed recovery."""
         write_runner_process(self.root, state.run_id, process)
         if not isinstance(process, dict):
             return
-        recovery = load_recovery_state(self.root, state.run_id)
+        recovery = self._recovery_state(state.run_id)
         receipt_id = recovery.get("process_receipt_id") if isinstance(recovery, dict) else None
         if recovery and recovery.get("state") == "RECOVERY_STARTING" and isinstance(receipt_id, str):
             record_provider_started(
@@ -1298,7 +1304,7 @@ class EngineeringRunner:
             ) from error
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
-            recovery = load_recovery_state(self.root, state.run_id)
+            recovery = self._recovery_state(state.run_id)
             replacement_id = (
                 recovery.get("replacement_invocation_id")
                 if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_IN_PROGRESS"
@@ -1366,7 +1372,7 @@ class EngineeringRunner:
                 process_callback(None)
             if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
-        durable_recovery = load_recovery_state(self.root, state.run_id)
+        durable_recovery = self._recovery_state(state.run_id)
         replacement_id = (
             durable_recovery.get("replacement_invocation_id")
             if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS"
@@ -1402,12 +1408,12 @@ class EngineeringRunner:
         """
         current_attempt = attempt
         while True:
-            recovery = load_recovery_state(self.root, state.run_id)
+            recovery = self._recovery_state(state.run_id)
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
                 precheck = self._provider_recovery_preflight(state)
                 if precheck is not None:
                     mark_precheck_failed(self.root, run_id=state.run_id, diagnostic_code=precheck)
-                    self._project_durable_recovery(state, load_recovery_state(self.root, state.run_id) or recovery)
+                    self._project_durable_recovery(state, self._recovery_state(state.run_id) or recovery)
                     raise CodexInvocationError(
                         "Provider interruption recovery cannot continue.", "Recovery continuation preflight failed.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
@@ -1431,11 +1437,11 @@ class EngineeringRunner:
                         local_validation=local_validation, attempt=current_attempt,
                     )
                 except CodexInvocationError:
-                    completed_recovery = load_recovery_state(self.root, state.run_id)
+                    completed_recovery = self._recovery_state(state.run_id)
                     if isinstance(completed_recovery, dict):
                         self._project_durable_recovery(state, completed_recovery)
                     raise
-                completed_recovery = load_recovery_state(self.root, state.run_id)
+                completed_recovery = self._recovery_state(state.run_id)
                 if isinstance(completed_recovery, dict):
                     self._project_durable_recovery(state, completed_recovery)
                 return result
@@ -1520,12 +1526,12 @@ class EngineeringRunner:
                     state, prompt, repair=repair, quality=quality,
                     local_validation=local_validation, attempt=current_attempt,
                 )
-                recovery = load_recovery_state(self.root, state.run_id)
+                recovery = self._recovery_state(state.run_id)
                 if isinstance(recovery, dict):
                     self._project_durable_recovery(state, recovery)
                 return result
             except CodexInvocationError as error:
-                recovery = load_recovery_state(self.root, state.run_id)
+                recovery = self._recovery_state(state.run_id)
                 if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
                     self._project_durable_recovery(state, recovery)
                 if not error.provider_turn_interrupted or not isinstance(recovery, dict):
@@ -1966,7 +1972,7 @@ Mandatory autonomous refactor and quality-control stage:
         if not passive_pr_wait and not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
-        recovery_snapshot = load_recovery_state(self.root, state.run_id)
+        recovery_snapshot = self._recovery_state(state.run_id)
         recovered_resume = (
             isinstance(recovery_snapshot, dict)
             and recovery_snapshot.get("state") == "RECOVERED"
@@ -2246,13 +2252,13 @@ Mandatory autonomous refactor and quality-control stage:
                         (
                             record_provider_started(
                                 self.root, run_id=state.run_id,
-                                receipt_id=str(load_recovery_state(self.root, state.run_id).get("process_receipt_id")),
+                                receipt_id=str(self._recovery_state(state.run_id).get("process_receipt_id")),
                                 pid=int(process["pid"]), process_group=int(process["process_group"]),
                             )
                             if isinstance(process, dict)
-                            and isinstance(load_recovery_state(self.root, state.run_id), dict)
-                            and load_recovery_state(self.root, state.run_id).get("state") == "RECOVERY_STARTING"
-                            and load_recovery_state(self.root, state.run_id).get("process_receipt_id")
+                            and isinstance(self._recovery_state(state.run_id), dict)
+                            and self._recovery_state(state.run_id).get("state") == "RECOVERY_STARTING"
+                            and self._recovery_state(state.run_id).get("process_receipt_id")
                             else None
                         ),
                     )
