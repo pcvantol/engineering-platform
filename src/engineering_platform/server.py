@@ -523,9 +523,10 @@ def _historical_dashboard_path(request: SplitResult) -> str:
     return request.path if not retained else f"{request.path}?{urlencode(retained, doseq=True)}"
 
 
-def _console_project_options(project_id: str, projects: list[dict[str, str]]) -> str:
-    """Render only registered CENTRAL project identities for the selector."""
-    return "".join(
+def _console_project_options(project_id: str | None, projects: list[dict[str, str]]) -> str:
+    """Render the safe empty choice plus registered CENTRAL identities."""
+    empty = '<option value=""' + (" selected" if project_id is None else "") + '>&lt;geen&gt;</option>'
+    return empty + "".join(
         f'<option value="{escape(item["project_id"], quote=True)}"'
         f'{" selected" if item["project_id"] == project_id else ""}>'
         f'{escape(item["project_id"])}</option>'
@@ -560,6 +561,40 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
         )
 
     return transform
+
+
+def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
+    """Return a data-free Console projection until an operator chooses scope."""
+    document = dashboard._dashboard_html(
+        "EP Operations",
+        workspace_id="none",
+        project_name="<geen>",
+        workspace_location="Niet beschikbaar",
+        configuration_inbox="Niet beschikbaar",
+    )
+    options = _console_project_options(None, projects)
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    boundary = '''<script>(function(){const select=document.getElementById('dashboardProject');if(!select)return;select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)})})();</script>'''
+    empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen.</p></section>'''
+    document = re.sub(
+        br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
+        b'<body data-project-id="none" data-project-name="&lt;geen&gt;">',
+        document,
+        count=1,
+    )
+    document = document.replace(
+        b'<label class="dashboard-locale"',
+        selector.encode("utf-8") + b'<label class="dashboard-locale"',
+        1,
+    )
+    document = re.sub(
+        br'<main\b[^>]*\bid="engineering-dashboard-content"[^>]*>.*?</main>',
+        b'<main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">' + empty_state.encode("utf-8") + boundary.encode("utf-8") + b'</main>',
+        document,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return re.sub(br'<script src="/assets/dashboard\.js[^>]*></script>', b'', document, count=1)
 
 
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
@@ -630,6 +665,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             selected = (parse_qs(request.query).get("project") or [None])[0]
         projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
+        if method == "do_GET" and request.path == "/" and selected in {None, ""}:
+            # No selection is a valid, deliberately data-free Console view.
+            # Never substitute the first registered project.
+            document = _no_project_console_document(projects)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(document)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(document)
+            return
         if not isinstance(selected, str) or selected not in project_ids:
             # Static package assets are scope-neutral and load before the
             # document's project-aware fetch wrapper exists.  Resolve a valid

@@ -172,6 +172,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 local_repository_binding.bind_local_repository(connection, project_id=declaration["project"]["id"], repository_id=declaration["repository"]["id"], local_root=checkout, data_root=self.root)
                 roots.append(checkout)
         server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{port}/") as response:
+            unscoped = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=djconnect") as response:
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
@@ -198,8 +200,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         selector = server._console_document_transform(
             "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0],
         )(b"<main></main>").decode("utf-8")
+        no_project = server._no_project_console_document(
+            [{"project_id": "djconnect", "repository_id": "djconnect"}],
+        ).decode("utf-8")
+        self.assertIn('&lt;geen&gt;</option>', selector)
         self.assertIn('>djconnect</option>', selector)
         self.assertNotIn('>DJConnect</option>', selector)
+        self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
+        self.assertIn('id="noProjectSelected"', no_project)
+        self.assertNotIn(str(roots[0]), no_project)
+        self.assertNotIn('/assets/dashboard.js', no_project)
+        self.assertIn('id="noProjectSelected"', unscoped)
+        self.assertNotIn('data-project-id="djconnect"', unscoped)
+        self.assertNotIn(str(roots[0]), unscoped)
         self.assertEqual(server._historical_dashboard_path(server.urlsplit("/api/events?project=djconnect")), "/api/events")
         self.assertEqual(
             server._historical_dashboard_path(server.urlsplit("/api/prompt-history/run/report?project=djconnect&audit=download")),
