@@ -654,7 +654,7 @@ class EngineeringRunner:
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
                 retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
                 usage_snapshots=snapshots if isinstance(snapshots, tuple) else (), invocation_id=invocation_id,
-            ))
+            ), central_database=self.store.central_database)
             self._last_provider_invocation_id = identifier
             return identifier
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError):

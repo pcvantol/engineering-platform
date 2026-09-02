@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import json
 from math import ceil
 from pathlib import Path
+import sqlite3
 import re
 from statistics import median
 from typing import Mapping
@@ -277,7 +278,7 @@ class ProviderInvocation:
     usage_snapshots: tuple[Mapping[str, object], ...] = ()
 
 
-def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> str:
+def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, central_database: Path | None = None) -> str:
     """Append one immutable provider invocation; unknowns remain NULL, never zero."""
     usage = dict(invocation.usage)
     input_tokens = _number(usage.get("input_tokens"))
@@ -330,7 +331,14 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation) -> s
         for snapshot in invocation.usage_snapshots
         if isinstance(snapshot, Mapping)
     )
-    connection = open_storage(root)
+    if central_database is None:
+        connection = open_storage(root)
+    else:
+        database = central_database.resolve()
+        if not database.is_file():
+            raise RuntimeError("CENTRAL provider-usage database is unavailable")
+        connection = sqlite3.connect(database, isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         connection.execute(
             """INSERT OR IGNORE INTO provider_invocations(
