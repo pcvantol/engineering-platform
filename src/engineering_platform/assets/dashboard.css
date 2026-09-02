@@ -1242,5 +1242,6 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
 
 /* A long message stays a bubble, rather than obscuring the conversation. */
 .chat-messages{--chat-bubble-max-block:calc(420px * 2 / 3)}
-.chat-message{display:block;max-block-size:var(--chat-bubble-max-block);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.chat-message{display:block;max-block-size:var(--chat-bubble-max-block);overflow:auto;overscroll-behavior:contain;scrollbar-width:none}
+.chat-message::-webkit-scrollbar,.chat-message__body::-webkit-scrollbar{display:none}
 .chat-message__body{min-block-size:0}
