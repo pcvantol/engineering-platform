@@ -489,7 +489,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
     options = "".join(
         f'<option value="{escape(item["project_id"], quote=True)}"'
         f'{" selected" if item["project_id"] == project_id else ""}>'
-        f'{escape("DJConnect" if item["project_id"] == "djconnect" else "Engineering Platform" if item["project_id"] == "engineering-platform" else item["project_id"])}</option>'
+        f'{escape(item["project_id"])}</option>'
         for item in projects
     )
     boundary = f'''<script>(function(){{const project={json.dumps(project_id)},options={json.dumps(options)},nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})}})();</script>'''
