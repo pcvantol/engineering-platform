@@ -184,6 +184,7 @@ def persist_validation_failure_diagnostic(
     root: Path, *, run_id: str, command_id: str, validation_id: str,
     control_identity: str, exit_code: int | None, stdout: str | None,
     stderr: str | None, capture_available: bool, captured_at: str | None = None,
+    central_database: Path | None = None, artifact_root: Path | None = None,
 ) -> str:
     """Persist bounded, redacted, supplementary output for any failed control."""
     # Extract stable unittest identifiers/counts before the generic redactor
@@ -214,7 +215,8 @@ def persist_validation_failure_diagnostic(
         "failing_test_identities": identities,
         "failure_count": counts.get("failures"), "error_count": counts.get("errors"),
     }
-    directory = root / ".engineering" / "artifacts" / "validation-failure-diagnostics"
+    directory = ((artifact_root / "validation-failure-diagnostics") if artifact_root else
+                 (root / ".engineering" / "artifacts" / "validation-failure-diagnostics"))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{artifact_id}.json"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{artifact_id}.", suffix=".tmp", dir=directory)
@@ -234,6 +236,7 @@ def persist_validation_failure_diagnostic(
             artifact_type="VALIDATION_FAILURE_DIAGNOSTIC",
             content_type="application/json", created_at=created_at, run_id=run_id,
             execution_id=command_id,
+            central_database=central_database, artifact_root=artifact_root,
         )
     except EngineeringStorageError:
         path.unlink(missing_ok=True)

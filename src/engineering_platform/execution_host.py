@@ -879,6 +879,8 @@ class EngineeringRunner:
                         stdout=diagnostic_stdout, stderr=diagnostic_stderr,
                         capture_available=diagnostic_capture_available,
                         captured_at=completed_at,
+                        central_database=self.store.central_database,
+                        artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                     )
                 except (EngineeringStorageError, OSError):
                     # Diagnostics are supplementary.  A capture failure must
