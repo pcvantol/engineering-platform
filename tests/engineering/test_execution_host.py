@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1318,6 +1319,8 @@ class ClientContractTest(unittest.TestCase):
             prompt.write_text("# objective", encoding="utf-8")
             central = Path(temporary) / "engineering.db"
             central.touch()
+            with sqlite3.connect(central) as connection:
+                connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
             self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 0)
 
     @patch("engineering_platform.execution_host.EngineeringRunner")
@@ -1486,6 +1489,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
             prompt.write_text("# objective", encoding="utf-8")
             central = Path(temporary) / "engineering.db"
             central.touch()
+            with sqlite3.connect(central) as connection:
+                connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
             self.assertEqual(
                 __import__("engineering_platform.execution_host", fromlist=["main"]).main(
                     [str(prompt), "--admitted-storage-schema", "18", "--central-database", str(central)]

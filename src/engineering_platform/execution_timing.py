@@ -203,7 +203,10 @@ def reconcile_interrupted_phases(root: Path, run_id: str, *, outcome: str = "STA
         connection.close()
 
 
-def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: str = "COMPLETE") -> bool:
+def complete_active_phase(
+    root: Path, run_id: str, phase_name: str, *, outcome: str = "COMPLETE",
+    central_database: Path | None = None,
+) -> bool:
     """Close the one active lifecycle envelope when its owner observes completion.
 
     Queue admission, the runner and the watcher are separate processes.  The
@@ -211,7 +214,7 @@ def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: 
     evidence persistence have completed.  This intentionally uses the stored
     UTC boundary rather than claiming a monotonic clock crosses processes.
     """
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT phase_id FROM execution_phase_spans WHERE run_id=? AND phase_name=? AND outcome='ACTIVE' ORDER BY ordinal LIMIT 1",
@@ -221,7 +224,7 @@ def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: 
         connection.close()
     if row is None:
         return False
-    complete_phase(root, ActivePhase(run_id, str(row[0]), None), outcome=outcome)
+    complete_phase(root, ActivePhase(run_id, str(row[0]), None, central_database), outcome=outcome)
     return True
 
 

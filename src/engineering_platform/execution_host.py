@@ -3204,7 +3204,10 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    report_phase = start_phase(root, state.run_id, "REPORT_GENERATION") if state.terminal else None
+    report_phase = (
+        start_phase(root, state.run_id, "REPORT_GENERATION", central_database=central_database)
+        if state.terminal else None
+    )
     try:
         report_path = (
             generate_terminal_report(
@@ -3227,7 +3230,9 @@ def main(argv: list[str] | None = None) -> int:
     if report_phase is not None:
         complete_phase(root, report_phase)
     if report_path:
-        evidence_phase = start_phase(root, state.run_id, "EVIDENCE_PERSISTENCE")
+        evidence_phase = start_phase(
+            root, state.run_id, "EVIDENCE_PERSISTENCE", central_database=central_database,
+        )
         try:
             record_terminal_report(root, report_path, central_database=central_database)
             analyze_terminal_report(root, state.run_id, report_path)
@@ -3271,7 +3276,11 @@ def main(argv: list[str] | None = None) -> int:
     # A watcher owns the outer envelope until it archives and persists its
     # evidence.  Direct invocations own that final boundary themselves.
     if args.admitted_storage_schema is None and state.terminal:
-        complete_active_phase(root, state.run_id, "TOTAL_EXECUTION", outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED")
+        complete_active_phase(
+            root, state.run_id, "TOTAL_EXECUTION",
+            outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED",
+            central_database=central_database,
+        )
     return 0 if state.phase == "COMPLETE" else 1
 
 
