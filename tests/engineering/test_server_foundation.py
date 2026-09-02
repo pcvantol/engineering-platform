@@ -148,6 +148,26 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["projects"], [])
         self.assertIn(b"/v1/operations/projects", server._operations_console_document())
 
+    def test_central_database_controls_read_and_back_up_only_the_server_store(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{port}/api/central-database/download") as response:
+            backup = response.read()
+            self.assertEqual(response.headers.get_content_type(), "application/vnd.sqlite3")
+        with tempfile.NamedTemporaryFile(suffix=".db") as file:
+            file.write(backup); file.flush()
+            with sqlite3.connect(file.name) as connection:
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 45)
+        request = Request(
+            f"http://127.0.0.1:{port}/api/central-database/configuration",
+            data=b'{"interval_seconds":86400}', method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request) as response:
+            self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
+        self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
+
     def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
         """Two requests select separate roots without exposing either path."""
         with socket.socket() as probe:
@@ -228,10 +248,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
         selector = server._console_document_transform(
-            "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0],
+            "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0], self.root,
         )(b"<main></main>").decode("utf-8")
         no_project = server._no_project_console_document(
             [{"project_id": "djconnect", "repository_id": "djconnect"}],
+            self.root,
         ).decode("utf-8")
         self.assertIn('&lt;geen&gt;</option>', selector)
         self.assertIn('>djconnect</option>', selector)
@@ -242,6 +263,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('/assets/dashboard.js', no_project)
         self.assertIn('id="componentLogs"', no_project)
         self.assertIn('id="configuration"', no_project)
+        self.assertIn('id="centralDatabaseHeading"', no_project)
+        self.assertIn('/api/central-database/download', no_project)
         self.assertNotIn('workspace-database-section', no_project)
         for hidden_project_section in ("#queueItems", "#promptHistory", "#currentRun", "#technicalDetails", "#workspaceCard"):
             self.assertIn(f'body[data-project-id="none"] {hidden_project_section}', no_project)

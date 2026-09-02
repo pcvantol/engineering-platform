@@ -14,6 +14,7 @@ from threading import Event, Lock, Thread
 from typing import Callable, Protocol
 
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher
+from . import central_database
 
 
 WORKER_RUNNING = "RUNNING"
@@ -130,6 +131,9 @@ class LifecycleWorker:
     def _loop(self) -> None:
         self._replace(state=WORKER_RUNNING)
         while not self._stop.is_set():
+            # CENTRAL is the sole operational store.  Its maintenance routine
+            # is interval-bound and skips every active lifecycle.
+            central_database.run_periodic_maintenance(self.data_root)
             self.run_once()
             # Even a successful nonterminal continuation gets a short yield:
             # recovery must never become a busy loop if the historical runner

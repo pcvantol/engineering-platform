@@ -28,6 +28,7 @@ from urllib.parse import SplitResult, parse_qs, parse_qsl, urlencode, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
+from . import central_database
 from . import dashboard
 from . import local_repository_binding
 from . import project_topology
@@ -534,7 +535,35 @@ def _console_project_options(project_id: str | None, projects: list[dict[str, st
     )
 
 
-def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path):
+def _central_database_section(data_root: Path) -> str:
+    """Render the one installation-owned database panel for Configuration."""
+    details = central_database.details(data_root)
+    interval = central_database.maintenance_configuration(data_root)["interval_seconds"]
+    size = f"{int(details['size_bytes']) / 1_000_000:.2f}".replace(".", ",") + " MB"
+    options = "".join(
+        f'<option value="{value}"{" selected" if value == interval else ""}>{label}</option>'
+        for value, label in ((60, "1 minuut"), (3600, "1 uur"), (86400, "1 dag"), (604800, "1 week"))
+    )
+    return (
+        '<section class="configuration-central-database" aria-labelledby="centralDatabaseHeading">'
+        '<h2 id="centralDatabaseHeading">CENTRAL database</h2>'
+        '<p class="field"><span class="label">Database-eigendom</span><span>Engineering Platform (CENTRAL)</span></p>'
+        f'<div class="field"><span class="label">Databaselocatie</span><pre>{escape(str(details["path"]))}</pre></div>'
+        f'<p class="field"><span class="label">Databasegrootte</span><span>{size}</span></p>'
+        f'<p class="field"><span class="label">Schema-versie</span><span>{details["schema_version"]}</span></p>'
+        f'<p class="field"><span class="label">Integriteit</span><span>{details["integrity"]}</span></p>'
+        '<div class="field"><span class="label">Databaseback-up</span><a class="dashboard-action dashboard-action--download" href="/api/central-database/download" download>Download CENTRAL database</a></div>'
+        f'<label for="centralDatabaseMaintenanceInterval"><span class="label">Databaseonderhoud</span><select id="centralDatabaseMaintenanceInterval">{options}</select></label>'
+        '<p id="centralDatabaseMaintenanceStatus" role="status" aria-live="polite"></p></section>'
+    )
+
+
+def _central_database_script() -> str:
+    """Keep the CENTRAL-only maintenance preference host-scoped in the Console."""
+    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{maintenance.disabled=true;try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:Number(maintenance.value)})});if(!response.ok)throw Error();if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud is bijgewerkt.'}catch{if(maintenanceStatus)maintenanceStatus.textContent='CENTRAL databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false}});'''
+
+
+def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path, data_root: Path):
     """Bind CENTRAL project scope to the historical title-bar selector.
 
     The Operations Console already owns its project selector in the title bar.
@@ -546,7 +575,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
         f'<body data-project-id="{escape(project_id, quote=True)}" '
         f'data-project-name="{escape(project_id, quote=True)}">'
     ).encode("utf-8")
-    boundary = f'''<script>(function(){{const project={json.dumps(project_id)},options={json.dumps(options)},nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})}})();</script>'''
+    boundary = '''<script>(function(){const project=$PROJECT,options=$OPTIONS,nativeFetch=window.fetch.bind(window);window.fetch=(input,init={})=>{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{...init,headers})};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})})();</script>'''.replace("$PROJECT", json.dumps(project_id)).replace("$OPTIONS", json.dumps(options)).replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
     root_bytes = str(root).encode("utf-8")
 
     def transform(document: bytes) -> bytes:
@@ -556,14 +585,21 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
             document,
             count=1,
         )
-        return scoped.replace(root_bytes, b"Project-scoped local workspace").replace(
+        central_section = _central_database_section(data_root).encode("utf-8")
+        scoped = scoped.replace(root_bytes, b"Project-scoped local workspace")
+        scoped = scoped.replace(
+            b'<p class="category-description" data-i18n="description.configuration"></p>',
+            b'<p class="category-description" data-i18n="description.configuration"></p>' + central_section,
+            1,
+        )
+        return scoped.replace(
             b"</main>", boundary.encode("utf-8") + b"</main>", 1,
         )
 
     return transform
 
 
-def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
+def _no_project_console_document(projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render global Console controls without selecting project-owned data."""
     document = dashboard._dashboard_html(
         "EP Operations",
@@ -574,7 +610,7 @@ def _no_project_console_document(projects: list[dict[str, str]]) -> bytes:
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
-    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(!select)return;select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)})})();</script>'''
+    boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
     empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</p></section>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
@@ -600,6 +636,11 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         document,
         count=1,
         flags=re.DOTALL,
+    )
+    document = document.replace(
+        b'<p class="category-description" data-i18n="description.configuration"></p>',
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"),
+        1,
     )
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
 
@@ -648,6 +689,47 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _send_central_database_backup(self) -> None:
+        snapshot = central_database.snapshot(self.server.data_root)  # type: ignore[attr-defined]
+        if snapshot is None:
+            self._send(503, {"error": "CENTRAL_DATABASE_UNAVAILABLE"})
+            return
+        filename = f"engineering-platform-central-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.sqlite3")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(snapshot)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(snapshot)
+
+    def _central_database_configuration(self, method: str) -> bool:
+        request = urlsplit(self.path)
+        if request.path == "/api/central-database/download" and method == "do_GET":
+            self._send_central_database_backup()
+            return True
+        if request.path != "/api/central-database/configuration":
+            return False
+        if method == "do_GET":
+            self._send(200, central_database.maintenance_configuration(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 4096:
+                raise ValueError
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError
+            result = central_database.update_maintenance_configuration(
+                self.server.data_root, payload.get("interval_seconds"),  # type: ignore[attr-defined]
+            )
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send(400, {"error": "CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID"})
+            return True
+        self._send(200, result)
+        return True
+
     def _stream_console_events(self, root: Path, project_id: str) -> None:
         """Stream preserved dashboard state with the selected CENTRAL FIFO."""
         self.send_response(200)
@@ -682,6 +764,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _delegate_dashboard(self, method: str) -> None:
         """Run the preserved handler after CENTRAL validates the selected scope."""
         request = urlsplit(self.path)
+        if self._central_database_configuration(method):
+            return
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
@@ -690,7 +774,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if method == "do_GET" and request.path == "/" and selected in {None, ""}:
             # No selection is a valid view.  It renders only the host-wide
             # controls and never substitutes the first project for content.
-            document = _no_project_console_document(projects)
+            document = _no_project_console_document(projects, self.server.data_root)  # type: ignore[attr-defined]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(document)))
@@ -720,7 +804,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._stream_console_events(root, selected)
                 return
             historical = dashboard.handler(
-                root, document_transform=_console_document_transform(selected, projects, root),
+                root, document_transform=_console_document_transform(selected, projects, root, self.server.data_root),  # type: ignore[attr-defined]
             )
         except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
             self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
