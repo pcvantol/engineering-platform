@@ -20,6 +20,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--producer-version")
     parser.add_argument("--prompt-file", required=True, type=Path)
     parser.add_argument("--idempotency-key")
+    parser.add_argument("--correlation-id")
+    parser.add_argument("--mission-id")
+    parser.add_argument("--engineering-action-id")
+    parser.add_argument("--constraints-file", type=Path, help="JSON object for canonical submission constraints")
     parser.add_argument("--credential-env", default="EP_CONSUMER_TOKEN")
     args = parser.parse_args(argv)
     token = os.environ.get(args.credential_env)
@@ -29,12 +33,34 @@ def main(argv: list[str] | None = None) -> int:
         prompt = args.prompt_file.read_text(encoding="utf-8")
     except OSError as error:
         parser.error(str(error))
+    constraints: object | None = None
+    if args.constraints_file is not None:
+        try:
+            constraints = json.loads(args.constraints_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            parser.error(f"invalid constraints file: {error}")
+        if not isinstance(constraints, dict):
+            parser.error("constraints file must contain a JSON object")
     payload: dict[str, object] = {"repository_id": args.repository, "producer": {"id": args.producer_id, "type": args.producer_type}, "prompt": prompt}
     if args.producer_version:
         payload["producer"] = {**payload["producer"], "version": args.producer_version}  # type: ignore[arg-type]
     if args.idempotency_key:
         payload["idempotency_key"] = args.idempotency_key
-    request = Request(args.server.rstrip("/") + f"/v1/projects/{args.project}/submissions", data=json.dumps(payload).encode("utf-8"), method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+    for field in ("correlation_id", "mission_id", "engineering_action_id"):
+        value = getattr(args, field)
+        if value:
+            payload[field] = value
+    if constraints is not None:
+        payload["constraints"] = constraints
+    request = Request(
+        args.server.rstrip("/") + f"/v1/projects/{args.project}/submissions",
+        data=json.dumps(payload).encode("utf-8"), method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "EP-Submission-Transport": "CLI",
+        },
+    )
     try:
         with urlopen(request, timeout=15) as response:  # nosec B310 -- operator supplied loopback CENTRAL URL
             print(response.read().decode("utf-8"))

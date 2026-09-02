@@ -19,6 +19,20 @@ from typing import Any, Mapping
 MAX_PROMPT_BYTES = 65536
 MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
+VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "LEGACY_FILE"})
+
+# This is the complete B8D lifecycle.  The final value deliberately says what
+# CENTRAL has *not* done: admission makes a submission eligible for a later
+# execution protocol, but it never invokes a provider or a local Codex binary.
+SUBMISSION_LIFECYCLE_VERSION = "1"
+SUBMISSION_ACCEPTED = "ACCEPTED"
+ADMISSION_GRANTED = "ADMITTED"
+EXECUTION_NOT_DISPATCHED = "NOT_DISPATCHED"
+_LIFECYCLE_EVENT_KINDS = (
+    "SUBMISSION_ACCEPTED",
+    "ADMISSION_GRANTED",
+    "EXECUTION_NOT_DISPATCHED",
+)
 
 
 class SubmissionError(ValueError):
@@ -26,6 +40,18 @@ class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 400) -> None:
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def _lifecycle_payload(*, transport: str, producer_id: str) -> dict[str, str]:
+    """Return the one durable lifecycle meaning shared by every adapter."""
+    return {
+        "version": SUBMISSION_LIFECYCLE_VERSION,
+        "submission": SUBMISSION_ACCEPTED,
+        "admission": ADMISSION_GRANTED,
+        "execution": EXECUTION_NOT_DISPATCHED,
+        "transport": transport,
+        "producer_id": producer_id,
+    }
 
 
 @dataclass(frozen=True)
@@ -52,13 +78,19 @@ class SubmissionResult:
     state: str
     created_at: str
     admission: str
+    transport: str
+    producer_id: str
     duplicate: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {"submission_id": self.submission_id, "project_id": self.project_id,
                 "repository_id": self.repository_id, "state": self.state,
                 "created_at": self.created_at, "admission": self.admission,
-                "duplicate": self.duplicate}
+                "transport": self.transport, "duplicate": self.duplicate,
+                "lifecycle": _lifecycle_payload(
+                    transport=self.transport,
+                    producer_id=self.producer_id,
+                )}
 
 
 def _now() -> str:
@@ -87,6 +119,12 @@ def _json_object(value: object) -> dict[str, object]:
     return dict(value)
 
 
+def _transport(value: object) -> str:
+    if not isinstance(value, str) or value not in VALID_TRANSPORTS:
+        raise SubmissionError("INVALID_TRANSPORT")
+    return value
+
+
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
     if not isinstance(payload, Mapping):
         raise SubmissionError("MALFORMED_REQUEST")
@@ -105,7 +143,7 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
         producer_id=_token(producer.get("id"), "producer_id") or "",
         producer_type=_token(producer.get("type"), "producer_type") or "",
         producer_version=_token(producer.get("version"), "producer_version", optional=True),
-        prompt=prompt.replace("\r\n", "\n").replace("\r", "\n"), transport=transport,
+        prompt=prompt.replace("\r\n", "\n").replace("\r", "\n"), transport=_transport(transport),
         idempotency_key=_token(payload.get("idempotency_key"), "idempotency_key", optional=True),
         correlation_id=_token(payload.get("correlation_id"), "correlation_id", optional=True),
         mission_id=_token(payload.get("mission_id"), "mission_id", optional=True),
@@ -114,8 +152,69 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
     )
 
 
+def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest) -> bool:
+    """Ensure an idempotency key cannot silently alias another submission."""
+    stored = {
+        "repository_id": row[0], "producer_id": row[1], "producer_type": row[2],
+        "producer_version": row[3], "prompt": row[4], "constraints": row[5],
+        "correlation_id": row[6], "mission_id": row[7],
+        "engineering_action_id": row[8],
+    }
+    requested = {
+        "repository_id": request.repository_id, "producer_id": request.producer_id,
+        "producer_type": request.producer_type, "producer_version": request.producer_version,
+        "prompt": request.prompt,
+        "constraints": json.dumps(request.constraints or {}, sort_keys=True),
+        "correlation_id": request.correlation_id, "mission_id": request.mission_id,
+        "engineering_action_id": request.engineering_action_id,
+    }
+    return stored == requested
+
+
+def _persist_lifecycle_events(
+    connection: sqlite3.Connection,
+    *, submission_id: str,
+    transport: str,
+    producer_id: str,
+    recorded_at: str,
+) -> None:
+    """Persist all three lifecycle boundaries in their canonical order."""
+    payload = json.dumps(
+        _lifecycle_payload(transport=transport, producer_id=producer_id), sort_keys=True,
+    )
+    for event_kind in _LIFECYCLE_EVENT_KINDS:
+        connection.execute(
+            "INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)",
+            (submission_id, event_kind, payload, recorded_at),
+        )
+
+
+def lifecycle(connection: sqlite3.Connection, submission_id: str) -> dict[str, str]:
+    """Read and validate the durable submission/admission/execution boundary.
+
+    This is an observation helper.  It never performs dispatch and rejects a
+    partial or reordered event history rather than inventing lifecycle state.
+    """
+    row = connection.execute(
+        "SELECT producer_id,transport,state,admission FROM ep_submissions WHERE submission_id=?",
+        (submission_id,),
+    ).fetchone()
+    if row is None:
+        raise SubmissionError("UNKNOWN_SUBMISSION", 404)
+    events = [
+        str(event[0]) for event in connection.execute(
+            "SELECT event_kind FROM ep_submission_events WHERE submission_id=? ORDER BY event_id",
+            (submission_id,),
+        )
+    ]
+    if tuple(events) != _LIFECYCLE_EVENT_KINDS or row[2:] != ("QUEUED", ADMISSION_GRANTED):
+        raise SubmissionError("SUBMISSION_LIFECYCLE_INCOMPLETE", 500)
+    return _lifecycle_payload(transport=str(row[1]), producer_id=str(row[0]))
+
+
 def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> SubmissionResult:
     """Persist and admit one request; no provider or Agent is selected here."""
+    _transport(request.transport)
     project = connection.execute("SELECT status FROM ep_project_registrations WHERE project_id=?", (request.project_id,)).fetchone()
     if project is None:
         raise SubmissionError("UNKNOWN_PROJECT", 404)
@@ -127,9 +226,19 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
     if repository[0] != request.project_id:
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
     if request.idempotency_key:
-        duplicate = connection.execute("SELECT submission_id,created_at,state,admission FROM ep_submissions WHERE project_id=? AND idempotency_key=?", (request.project_id, request.idempotency_key)).fetchone()
+        duplicate = connection.execute(
+            "SELECT submission_id,created_at,state,admission,repository_id,producer_id,producer_type,producer_version,prompt,constraints,correlation_id,mission_id,engineering_action_id,transport "
+            "FROM ep_submissions WHERE project_id=? AND idempotency_key=?",
+            (request.project_id, request.idempotency_key),
+        ).fetchone()
         if duplicate is not None:
-            return SubmissionResult(str(duplicate[0]), request.project_id, request.repository_id, str(duplicate[2]), str(duplicate[1]), str(duplicate[3]), True)
+            if not _same_idempotent_request(tuple(duplicate[4:13]), request):
+                raise SubmissionError("IDEMPOTENCY_CONFLICT", 409)
+            lifecycle(connection, str(duplicate[0]))
+            return SubmissionResult(
+                str(duplicate[0]), request.project_id, str(duplicate[4]), str(duplicate[2]),
+                str(duplicate[1]), str(duplicate[3]), str(duplicate[13]), str(duplicate[5]), True,
+            )
     submission_id, created_at = "sub-" + secrets.token_hex(16), _now()
     # Admission intentionally validates CENTRAL topology only at submission
     # time. Agent selection, leases and provider execution remain downstream.
@@ -137,9 +246,16 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
     prompt_digest = hashlib.sha256(request.prompt.encode("utf-8")).hexdigest()
     connection.execute("""INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (submission_id, request.project_id, request.repository_id, request.producer_id, request.producer_type, request.producer_version, request.transport, request.prompt, prompt_digest, json.dumps(request.constraints or {}, sort_keys=True), request.idempotency_key, request.correlation_id, request.mission_id, request.engineering_action_id, state, admission, created_at))
-    connection.execute("INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)", (submission_id, "SUBMITTED", json.dumps({"transport": request.transport, "producer_id": request.producer_id}, sort_keys=True), created_at))
+    _persist_lifecycle_events(
+        connection, submission_id=submission_id, transport=request.transport,
+        producer_id=request.producer_id, recorded_at=created_at,
+    )
     connection.execute("INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at) VALUES(?,?,?)", (submission_id, prompt_digest, created_at))
-    return SubmissionResult(submission_id, request.project_id, request.repository_id, state, created_at, admission)
+    lifecycle(connection, submission_id)
+    return SubmissionResult(
+        submission_id, request.project_id, request.repository_id, state, created_at,
+        admission, request.transport, request.producer_id,
+    )
 
 
 def register_consumer(connection: sqlite3.Connection, *, consumer_id: str, project_id: str) -> None:
