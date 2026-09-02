@@ -32,7 +32,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.status(self.root)
         self.assertTrue((self.root / server.SERVER_DATABASE_FILENAME).is_file())
         self.assertEqual(report["instance_id"], identity.instance_id)
-        self.assertEqual(report["schema_version"], 47)
+        self.assertEqual(report["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
@@ -109,7 +109,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(
                 connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0],
-                47,
+                server.SERVER_STORE_SCHEMA_VERSION,
             )
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_installations").fetchone()[0], 1)
             for table in (
@@ -145,7 +145,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("CREATE TABLE engineering_schema_migrations(version INTEGER PRIMARY KEY)")
             connection.execute("INSERT INTO engineering_schema_migrations(version) VALUES(40)")
-        with self.assertRaisesRegex(server.ServerConfigurationError, "schema-47"):
+        with self.assertRaisesRegex(
+            server.ServerConfigurationError, f"schema-{server.SERVER_STORE_SCHEMA_VERSION}"
+        ):
             server.initialize(self.root)
 
     def test_restart_preserves_clean_identity_and_schema(self) -> None:
@@ -159,13 +161,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.health(self.root)
         self.assertTrue(report["ready"])
         self.assertEqual(report["instance_id"], identity.instance_id)
-        self.assertEqual(report["schema_version"], 47)
+        self.assertEqual(report["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
 
     def test_operations_console_projection_is_central_owned_and_empty_safe(self) -> None:
         identity = server.initialize(self.root)
         projection = server.operations_projection(self.root)
         self.assertEqual(projection["installation_id"], identity.instance_id)
-        self.assertEqual(projection["schema_version"], 47)
+        self.assertEqual(projection["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
         self.assertEqual(projection["projects"], [])
         self.assertIn(b"/v1/operations/projects", server._operations_console_document())
 
@@ -189,7 +191,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".db") as file:
             file.write(backup); file.flush()
             with sqlite3.connect(file.name) as connection:
-                self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 47)
+                self.assertEqual(connection.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], server.SERVER_STORE_SCHEMA_VERSION)
         request = Request(
             f"http://127.0.0.1:{port}/api/central-database/configuration",
             data=b'{"interval_seconds":86400}', method="POST", headers={"Content-Type": "application/json"},

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -10,9 +11,31 @@ from unittest.mock import patch
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_lease import LeaseConflictError, LeaseHeartbeat, acquire, heartbeat, history, liveness, reconcile_stale, release
 from engineering_platform.storage import open_storage
+from engineering_platform import server
 
 
 class ExecutionLeaseTest(unittest.TestCase):
+    def test_central_context_owns_lease_without_a_local_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
+            server.initialize(data)
+            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            try:
+                StateStore(checkout / ".engineering" / "engineering-runs").save(
+                    TransactionState("inbox-central-lease", "repo", "prompt.md", "INITIALIZE")
+                )
+                lease = acquire(checkout, "inbox-central-lease", identity="host", instance_id="central")
+                release(checkout, lease)
+            finally:
+                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
+                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+            self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
+            self.assertFalse((checkout / ".engineering" / "engineering-runs").exists())
+            with sqlite3.connect(data / "engineering.db") as connection:
+                self.assertIsNotNone(connection.execute(
+                    "SELECT 1 FROM execution_run_leases WHERE run_id='inbox-central-lease'"
+                ).fetchone())
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

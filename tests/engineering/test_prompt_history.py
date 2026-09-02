@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 import tempfile
 import unittest
 
@@ -17,9 +18,26 @@ from engineering_platform.prompt_history import (
 from engineering_platform.storage import open_storage, record_admission_decision, record_submission
 from engineering_platform.execution_timing import record_phase
 from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
+from engineering_platform import server
 
 
 class PromptHistoryTest(unittest.TestCase):
+    def test_central_artifact_report_survives_checkout_rebind(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
+            server.initialize(data)
+            report = data / "artifacts" / "reports" / "central.md"; report.parent.mkdir(parents=True)
+            report.write_text("# Engineering Report\n\n- Run ID: `inbox-central`\n- Terminal state: `COMPLETE`\n", encoding="utf-8")
+            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            try:
+                record_terminal_report(checkout, report)
+                self.assertEqual(report_path_for_prompt_history(checkout, "inbox-central"), report.resolve())
+                self.assertEqual(report_for_prompt_history(checkout, "inbox-central"), report.read_bytes())
+            finally:
+                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
+                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+
     def test_projects_admission_execution_mode_when_telemetry_has_not_materialized(self) -> None:
         """A CENTRAL parity run records its admission before terminal telemetry."""
         with tempfile.TemporaryDirectory() as temporary:
