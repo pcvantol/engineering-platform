@@ -77,7 +77,9 @@ def _latest_interrupted_invocation(
     return invocation_id, "interrupted_child_span_without_provider_result"
 
 
-def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+def terminalize_after_host_exit(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> TransactionState | None:
     """Close a non-terminal run only when its latest provider evidence proves interruption.
 
     This is intentionally a watcher-side recovery boundary: the detached
@@ -85,18 +87,18 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
     active provider work.  Generic stale leases remain recoverable and are not
     converted into failures here.
     """
-    recovery = load_recovery_state(root, run_id)
+    recovery = load_recovery_state(root, run_id, central_database=central_database)
     # Durable recovery state takes precedence over retrospective provider
     # evidence.  Only exhausted/unsafe recovery reaches the old terminalizer.
     if isinstance(recovery, dict) and recovery.get("state") in {
         "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS", "RECOVERED",
     }:
         return None
-    evidence = _latest_interrupted_invocation(root, run_id)
+    evidence = _latest_interrupted_invocation(root, run_id, central_database=central_database)
     if evidence is None:
         return None
     invocation_id, classification = evidence
-    store = StateStore(root / ".engineering" / "engineering-runs")
+    store = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None)
     try:
         state = store.load(run_id)
     except StateError:
@@ -115,11 +117,11 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
         ),
     )
     store.save(terminal)
-    reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED")
+    reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED", central_database=central_database)
     # The checkpoint is durable before cleanup. A cleanup failure therefore
     # cannot overwrite the proven failure outcome.
     try:
-        release_terminal_lease(root, run_id)
+        release_terminal_lease(root, run_id, central_database=central_database)
     except Exception:
         # Lease cleanup is secondary evidence.  The durable checkpoint stays
         # authoritative and normal stale-lease reconciliation can record the
