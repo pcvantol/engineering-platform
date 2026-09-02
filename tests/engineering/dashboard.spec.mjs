@@ -3256,6 +3256,35 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal.locator(".lifecycle-detail-modal__status-indicator")).toHaveClass(/indicator--blue/);
   });
 
+  test("translates dynamic quality evidence with the bounded Codex translation route", async ({ page }) => {
+    const source = "No changed behavior or executable test surface exists, so no regression test was applicable.";
+    const translated = "Er is geen gewijzigd gedrag of uitvoerbaar testoppervlak, dus er was geen regressietest van toepassing.";
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { status: {} } }));
+    await page.route("**/api/dashboard-translate", async (route) => {
+      expect(route.request().method()).toBe("POST");
+      expect(await route.request().postDataJSON()).toEqual({ locale: "nl", texts: [source] });
+      await route.fulfill({ json: { translations: [translated] } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ source: result }) => r({
+      watcher_state: "ENGINEERING_RUN_ACTIVE",
+      run_id: "quality-control-translation",
+      lifecycle: {
+        available: true, run_id: "quality-control-translation", terminal_state: "ACTIVE",
+        steps: [{
+          id: "quality", presentation_key: "lifecycle.step.quality_control_agent", state: "ACTIVE",
+          quality_evidence: [{ activity: "TEST_COVERAGE", result }],
+        }],
+      },
+    }, {}), { source });
+    await page.locator("#currentRun").evaluate((element) => { element.open = true; });
+    await dispatchDashboardPointerClick(page.locator(".execution-lifecycle__node"));
+    const modal = page.locator("#lifecycleDetailModal");
+    await expect(modal).toContainText(translated);
+    await expect(modal).not.toContainText(source);
+  });
+
   test("summarizes repeated lifecycle phase timing records by phase", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({

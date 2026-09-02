@@ -1884,6 +1884,35 @@ function lifecyclePhaseTiming(spans) {
     duration_ms: hasDuration ? phase.duration_ms : null,
   }));
 }
+const dynamicEvidenceTranslationCache = new Map();
+async function localizeDynamicEvidence(rows) {
+  if (dashboardLocale === "en" || !rows.length) return;
+  const originals = [...new Set(rows.map(({ source }) => source).filter(
+    (source) => source && !dynamicEvidenceTranslationCache.has(`${dashboardLocale}\u0000${source}`),
+  ))];
+  if (originals.length) {
+    try {
+      const response = await fetch("/api/dashboard-translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale: dashboardLocale, texts: originals }),
+      });
+      const payload = response.ok ? await response.json() : null;
+      if (!Array.isArray(payload?.translations) || payload.translations.length !== originals.length) return;
+      payload.translations.forEach((translation, index) => {
+        if (typeof translation === "string" && translation.trim()) {
+          dynamicEvidenceTranslationCache.set(`${dashboardLocale}\u0000${originals[index]}`, translation);
+        }
+      });
+    } catch {
+      return;
+    }
+  }
+  rows.forEach(({ source, element }) => {
+    const translation = dynamicEvidenceTranslationCache.get(`${dashboardLocale}\u0000${source}`);
+    if (translation && element.textContent === source) element.textContent = translation;
+  });
+}
 function lifecycleQualityEvidence(step) {
   const evidence = Array.isArray(step?.quality_evidence) ? step.quality_evidence : [];
   if (!evidence.length) return null;
@@ -1894,22 +1923,26 @@ function lifecycleQualityEvidence(step) {
   }));
   const list = document.createElement("ol");
   list.className = "lifecycle-detail-modal__phase-list";
+  const dynamicRows = [];
   for (const item of evidence) {
     if (!item || typeof item !== "object") continue;
     const activity = String(item.activity || "").trim();
     const result = String(item.result || "").trim();
     if (!activity || !result) continue;
     const row = document.createElement("li");
+    const resultElement = Object.assign(document.createElement("span"), { textContent: result });
     row.append(
       Object.assign(document.createElement("strong"), {
         textContent: t("lifecycle.quality_evidence." + activity.toLowerCase(), {}, activity),
       }),
-      Object.assign(document.createElement("span"), { textContent: result }),
+      resultElement,
     );
+    dynamicRows.push({ source: result, element: resultElement });
     list.append(row);
   }
   if (!list.childElementCount) return null;
   section.append(list);
+  void localizeDynamicEvidence(dynamicRows);
   return section;
 }
 function lifecycleRepairEvidence(step) {

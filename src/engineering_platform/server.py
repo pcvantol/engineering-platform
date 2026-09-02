@@ -30,6 +30,7 @@ from uuid import uuid4
 from . import agent_trust
 from . import central_database
 from . import dashboard
+from . import dashboard_translation
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
@@ -866,6 +867,30 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return
             self._send(200, result)
+            return
+        if method == "do_POST" and request.path == "/api/dashboard-translate":
+            if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                self._send(403, {"error": "INVALID_ORIGIN"})
+                return
+            if not isinstance(selected, str) or selected not in project_ids:
+                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 4096:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"locale", "texts"}:
+                    raise ValueError
+                translations = dashboard_translation.translate(payload["locale"], payload["texts"])
+            except dashboard_translation.DashboardTranslationError as error:
+                status_code = 400 if str(error).endswith(("LOCALE_INVALID", "REQUEST_INVALID")) else 503
+                self._send(status_code, {"error": str(error)})
+                return
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "DASHBOARD_TRANSLATION_REQUEST_INVALID"})
+                return
+            self._send(200, {"translations": translations})
             return
         if method == "do_GET" and request.path == "/" and selected in {None, ""}:
             # No selection is a valid view.  It renders only the host-wide
