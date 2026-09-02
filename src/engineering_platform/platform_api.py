@@ -159,7 +159,7 @@ class ExecutionHostConfigurationResolver:
             Path(override).expanduser()
             if override
             else configured_inbox_root(self._root)
-            or Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/DJConnect Engineering"
+            or Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Engineering Platform"
         )
         return RuntimePromptTransport(provider, inbox_root / "Inbox")
 
