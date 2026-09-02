@@ -26,7 +26,10 @@ from .parity_context import HistoricalCandidate, ParityProjectContext, historica
 from .platform_bootstrap import provision_runtime_workspace
 from .providers import CodexCliProvider, GitProvider
 from .execution_executor import CodexCliClient
+from .execution_reporting import generate_terminal_report
 from .storage import record_run_qualification_context, record_submission
+from .prompt_history import prompt_history, record_terminal_report
+from .report_analysis import analyze as analyze_terminal_report
 
 
 TERMINAL_STATES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
@@ -180,6 +183,51 @@ class ParityLifecycleDispatcher:
             connection.execute("UPDATE ep_execution_runs SET state=?,updated_at=? WHERE run_id=?", (state, now, run_id))
             connection.execute("UPDATE ep_parity_lifecycle_dispatches SET state=?,updated_at=? WHERE submission_id=? AND run_id=?", (state, now, submission_id, run_id))
 
+    @staticmethod
+    def _terminal_history_exists(repository_root: Path, run_id: str) -> bool:
+        return any(item.get("run_id") == run_id for item in prompt_history(repository_root))
+
+    @classmethod
+    def _project_terminal_history(cls, repository_root: Path, state: TransactionState,
+                                  runner: object | None = None) -> None:
+        """Preserve the terminal report and full historical Console projection.
+
+        CENTRAL composes the historical runner directly, bypassing its CLI
+        entrypoint. The entrypoint normally writes this evidence; retaining
+        that post-run boundary here keeps a completed CENTRAL run visible in
+        its project-scoped Operations Console.
+        """
+        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id):
+            return
+        report = generate_terminal_report(
+            repository_root, state,
+            getattr(runner, "platform_manifest", None),
+            getattr(runner, "detected_codex_cli", None),
+            getattr(runner, "reviewer_records", ()),
+            getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
+            getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
+        )
+        record_terminal_report(repository_root, report)
+        analyze_terminal_report(repository_root, state.run_id, report)
+
+    def reconcile_terminal_history(self) -> None:
+        """Backfill only missing Console rows for terminal CENTRAL runs."""
+        with sqlite3.connect(self.data_root / "engineering.db") as connection:
+            rows = connection.execute(
+                "SELECT project_id,repository_id,run_id FROM ep_parity_lifecycle_dispatches "
+                "WHERE state IN ('COMPLETE','BLOCKED','FAILED') ORDER BY claimed_at"
+            ).fetchall()
+            contexts = [
+                (project_context(connection, data_root=self.data_root, project_id=str(project_id), repository_id=str(repository_id)), str(run_id))
+                for project_id, repository_id, run_id in rows
+            ]
+        for context, run_id in contexts:
+            if context.local_repository_root is None:
+                continue
+            state = StateStore(context.local_repository_root / ".engineering" / "engineering-runs").load(run_id)
+            if state is not None:
+                self._project_terminal_history(context.local_repository_root, state)
+
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
                                      run_id: str, error: RunnerError) -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
@@ -202,12 +250,14 @@ class ParityLifecycleDispatcher:
         try:
             if not duplicate:
                 self._persist_historical_input(repository_root, candidate, run_id, prompt)
+            runner = self.runner_factory(repository_root)
             with _historical_admission_environment(repository_root):
-                state = self.runner_factory(repository_root).run(
+                state = runner.run(
                     prompt, run_id=run_id, resume=duplicate,
                     owner_authorized=candidate.execution_mode == "MANAGED",
                 )
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
+            self._project_terminal_history(repository_root, state, runner)
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
         except RunnerError as error:

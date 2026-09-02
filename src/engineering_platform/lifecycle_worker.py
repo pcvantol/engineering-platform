@@ -23,6 +23,7 @@ WORKER_DEGRADED = "DEGRADED"
 
 class Dispatcher(Protocol):
     def dispatch(self, submission_id: str) -> object: ...
+    def reconcile_terminal_history(self) -> None: ...
 
 
 DispatcherFactory = Callable[[], Dispatcher]
@@ -120,6 +121,11 @@ class LifecycleWorker:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        # CENTRAL owns claims; the preserved Console owns terminal evidence.
+        # Restore an interrupted projection before accepting fresh work.
+        reconcile = getattr(self._dispatcher_factory(), "reconcile_terminal_history", None)
+        if callable(reconcile):
+            reconcile()
         self._stop.clear()
         self._thread = Thread(target=self._loop, name="engineering-platform-lifecycle-worker", daemon=True)
         self._thread.start()

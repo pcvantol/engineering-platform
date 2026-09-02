@@ -101,3 +101,18 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         self.assertIn("Execution Mode: Genesis", _Runner.calls[0][0].read_text(encoding="utf-8"))
+
+    def test_terminal_dispatch_projects_the_preserved_console_history(self) -> None:
+        submission = self._submission("alpha")
+        dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
+        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.generate_terminal_report") as report, \
+             patch("engineering_platform.parity_lifecycle_dispatcher.record_terminal_report") as record, \
+             patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report") as analyze:
+            report.return_value = self.roots["alpha"] / ".engineering" / "reports" / "terminal.md"
+            receipt = dispatcher.dispatch(submission)
+        self.assertEqual(receipt.state, "COMPLETE")
+        record.assert_called_once_with(self.roots["alpha"].resolve(), report.return_value)
+        analyze.assert_called_once_with(self.roots["alpha"].resolve(), receipt.run_id, report.return_value)
