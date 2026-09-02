@@ -24,7 +24,7 @@ from .platform_version import (
 )
 from .drift_diagnostics import evidence_for_checks, guidance, persist as persist_drift_evidence
 from .provider_readiness import failures as provider_readiness_failures
-from .dashboard_configuration import get as dashboard_configuration
+from .central_database import capacity_reserve_from_environment
 from .codex_capacity import read_remaining_percent
 from .resources import package_path
 
@@ -127,7 +127,7 @@ def execute(root: Path, prompt: str, *, run_id: str | None = None) -> Capability
             "Use the Engineering dashboard provider notification to install or sign in, then retry admission.",
         )
     )
-    reserve_percent = int(dashboard_configuration(root)["codex_capacity_reserve_percent"])
+    reserve_percent = capacity_reserve_from_environment()
     if reserve_percent:
         remaining = read_remaining_percent()
         capacity_ready = remaining is not None and remaining >= reserve_percent

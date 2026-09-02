@@ -1,11 +1,12 @@
 from __future__ import annotations
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
 from engineering_platform import capability_preflight
+from engineering_platform import central_database, server
 from engineering_platform import provider_readiness
-from engineering_platform.dashboard_configuration import update as update_dashboard_configuration
 
 
 class CapabilityPreflightTest(unittest.TestCase):
@@ -13,6 +14,8 @@ class CapabilityPreflightTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / ".engineering/status").mkdir(parents=True)
+        self.data_root = self.root / "central"
+        server.initialize(self.data_root)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -54,8 +57,8 @@ class CapabilityPreflightTest(unittest.TestCase):
         self.assertIn("CODEX, GITHUB", failed["provider_readiness"].reason)
 
     def test_capacity_reserve_blocks_only_new_admission_when_remaining_capacity_is_low(self) -> None:
-        update_dashboard_configuration(self.root, "codex_capacity_reserve_percent", 25)
-        with patch("engineering_platform.capability_preflight.provider_readiness_failures", return_value=()), patch(
+        central_database.update_capacity_configuration(self.data_root, 25)
+        with patch.dict(os.environ, {"EP_SERVER_DATA_ROOT": str(self.data_root)}), patch("engineering_platform.capability_preflight.provider_readiness_failures", return_value=()), patch(
             "engineering_platform.capability_preflight.read_remaining_percent", return_value=24
         ):
             result = capability_preflight.execute(self.root, "Execution Mode: MANAGED\n")
@@ -64,8 +67,8 @@ class CapabilityPreflightTest(unittest.TestCase):
         self.assertIn("24% remaining", failed["codex_capacity_reserve"].reason)
 
     def test_capacity_reserve_allows_admission_at_the_configured_boundary(self) -> None:
-        update_dashboard_configuration(self.root, "codex_capacity_reserve_percent", 25)
-        with patch("engineering_platform.capability_preflight.provider_readiness_failures", return_value=()), patch(
+        central_database.update_capacity_configuration(self.data_root, 25)
+        with patch.dict(os.environ, {"EP_SERVER_DATA_ROOT": str(self.data_root)}), patch("engineering_platform.capability_preflight.provider_readiness_failures", return_value=()), patch(
             "engineering_platform.capability_preflight.read_remaining_percent", return_value=25
         ):
             result = capability_preflight.execute(self.root, "Execution Mode: MANAGED\n")

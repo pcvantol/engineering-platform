@@ -63,10 +63,8 @@ from .report_analysis import analyze as analyze_terminal_report
 from .recommendation_handoff import handoff_from_report
 from .storage import (
     EngineeringStorageError,
-    ai_capacity_history,
     load_projection,
     open_storage,
-    record_ai_capacity_bi_hourly,
     storage_activation_required,
 )
 from .provider_usage import provider_usage_summary
@@ -270,18 +268,9 @@ def _sse_snapshot(root: Path) -> bytes:
     # to its transaction branch after the operator opens the dashboard.
     payload["workspace_git"] = _workspace_git_projection(root)
     payload["workspace_worktrees"] = _workspace_worktrees(root)
-    rate_limits = payload.get("rate_limits")
-    if isinstance(rate_limits, dict):
-        provider = rate_limits.get("provider")
-        remaining = _remaining_rate_limit_capacity(rate_limits)
-        if isinstance(provider, str) and remaining is not None:
-            try:
-                record_ai_capacity_bi_hourly(root, provider=provider, remaining_percent=remaining)
-                payload["ai_capacity_history"] = ai_capacity_history(root, provider=provider)
-            except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-                # The live quota status remains useful if local history is
-                # temporarily unavailable; a chart must never block it.
-                payload["ai_capacity_history"] = []
+    # Provider capacity belongs to the account and EP installation, never to
+    # this repository root.  The standalone Server overlays CENTRAL capacity
+    # history onto this otherwise historical projection.
     fingerprint = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     # HTTP refreshes and SSE delivery can complete out of order in a browser.
     # Attach one process-scoped monotone revision to every changed projection,

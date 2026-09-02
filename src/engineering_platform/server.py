@@ -576,8 +576,8 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
-def _with_console_queue(payload: bytes, *, queue: dict[str, object]) -> bytes:
-    """Overlay CENTRAL queue evidence onto the preserved dashboard payload."""
+def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
+    """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
         decoded = json.loads(payload)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -595,7 +595,40 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object]) -> bytes:
         decoded["status"] = {**status_payload, **queue}
     else:
         decoded = {**decoded, **queue}
+    rate_limits = decoded.get("rate_limits")
+    if isinstance(rate_limits, dict):
+        provider = rate_limits.get("provider")
+        remaining = dashboard._remaining_rate_limit_capacity(rate_limits)
+        if isinstance(provider, str) and remaining is not None:
+            decoded["ai_capacity_history"] = central_database.record_provider_capacity(
+                data_root, provider=provider, remaining_percent=remaining,
+            )
+            decoded["capacity_scope"] = "EP"
+            decoded["capacity_configuration"] = central_database.capacity_configuration(data_root)
     return json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+
+
+def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
+    """Read the account-owned quota once and project it from CENTRAL."""
+    try:
+        payload = json.loads(dashboard._codex_rate_limits())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    provider = payload.get("provider")
+    remaining = dashboard._remaining_rate_limit_capacity(payload)
+    history: list[dict[str, object]] = []
+    if isinstance(provider, str) and remaining is not None:
+        history = central_database.record_provider_capacity(
+            data_root, provider=provider, remaining_percent=remaining,
+        )
+    return {
+        "rate_limits": payload,
+        "ai_capacity_history": history,
+        "scope": "EP",
+        "configuration": central_database.capacity_configuration(data_root),
+    }
 
 
 def _historical_dashboard_path(request: SplitResult) -> str:
@@ -955,7 +988,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             for iteration in range(300):
                 snapshot = _with_console_queue(
                     dashboard._sse_snapshot(root),
-                    queue=_console_queue_projection(self.server.data_root, project_id),  # type: ignore[attr-defined]
+                    queue=_console_queue_projection(self.server.data_root, project_id), data_root=self.server.data_root,  # type: ignore[attr-defined]
                 )
                 if snapshot != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
@@ -977,6 +1010,29 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         """Run the preserved handler after CENTRAL validates the selected scope."""
         request = urlsplit(self.path)
         if self._central_database_configuration(method):
+            return
+        if request.path == "/api/provider-capacity":
+            if method != "do_GET":
+                self._send(405, {"error": "METHOD_NOT_ALLOWED"})
+            else:
+                self._send(200, _provider_capacity_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return
+        if request.path == "/api/provider-capacity/configuration":
+            if method == "do_GET":
+                self._send(200, central_database.capacity_configuration(self.server.data_root))  # type: ignore[attr-defined]
+                return
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                reserve = payload.get("codex_capacity_reserve_percent") if isinstance(payload, dict) else None
+                live = _provider_capacity_projection(self.server.data_root)  # type: ignore[attr-defined]
+                remaining = dashboard._remaining_rate_limit_capacity(live["rate_limits"])
+                if not isinstance(reserve, int) or isinstance(reserve, bool) or (reserve and (remaining is None or reserve > remaining)):
+                    raise ValueError
+                self._send(200, central_database.update_capacity_configuration(self.server.data_root, reserve))  # type: ignore[attr-defined]
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
             return
         if method == "do_POST" and request.path == "/api/runtime-directory/open":
             try:
@@ -1102,7 +1158,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 and status_code == 200
                 and content_type.startswith("application/json")
             ):
-                content = _with_console_queue(content, queue=queue)
+                content = _with_console_queue(content, queue=queue, data_root=self.server.data_root)  # type: ignore[attr-defined]
             historical_send(content, content_type, status_code)
 
         self._send = scoped_send  # type: ignore[method-assign]
@@ -1212,6 +1268,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 def serve(data_root: Path) -> int:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
+    os.environ[SERVER_ENVIRONMENT_DATA_ROOT] = str(data_root.resolve())
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
@@ -1250,6 +1307,7 @@ def start(data_root: Path) -> dict[str, object]:
         "PYTHONNOUSERSITE": "1",
         "PYTHONSAFEPATH": "1",
         MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT: configuration.managed_codex_cli_prefix,
+        SERVER_ENVIRONMENT_DATA_ROOT: str(runtime_root),
     }
     if home := os.environ.get("HOME"):
         environment["HOME"] = home

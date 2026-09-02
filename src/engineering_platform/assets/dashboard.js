@@ -637,6 +637,25 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   button.hidden = !(credits > 0);
   button.disabled = false;
 }
+async function refreshPlatformProviderCapacity() {
+  try {
+    const response = await fetch("/api/provider-capacity", { cache: "no-store" });
+    const payload = response.ok ? await response.json() : null;
+    if (!payload || typeof payload.rate_limits !== "object") return;
+    latestDashboardSnapshot = {
+      ...(latestDashboardSnapshot || {}), rate_limits: payload.rate_limits,
+      ai_capacity_history: Array.isArray(payload.ai_capacity_history) ? payload.ai_capacity_history : [],
+    };
+    if (payload.configuration && typeof payload.configuration === "object") {
+      dashboardConfiguration = { ...dashboardConfiguration, ...payload.configuration };
+    }
+    rateLimits(latestDashboardSnapshot.rate_limits, latestDashboardSnapshot.ai_capacity_history);
+    renderCodexUsageLimitBanner({}, latestDashboardSnapshot.rate_limits);
+    renderCodexCapacityReserveBanner(latestDashboardSnapshot.rate_limits);
+  } catch {
+    // Do not manufacture provider capacity when the account cannot be read.
+  }
+}
 let latestCodexCliUpdateStatus = null;
 function codexCliVersionParts(value) {
   const match = typeof value === "string" && /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value);
@@ -2356,6 +2375,9 @@ function renderHealthStatus(x, snapshot = {}) {
   renderActiveLifecycle(x.lifecycle, x);
   renderOperatorMergeWait(x);
   renderEmergencyRecovery(snapshot.emergency_recovery, x);
+  if (snapshot.capacity_configuration && typeof snapshot.capacity_configuration === "object") {
+    dashboardConfiguration = { ...dashboardConfiguration, ...snapshot.capacity_configuration };
+  }
   renderCodexUsageLimitBanner(x, snapshot.rate_limits);
   renderCodexCapacityReserveBanner(snapshot.rate_limits);
   syncCodexCapacityReserveOptions(snapshot.rate_limits);
@@ -6491,10 +6513,13 @@ async function saveDashboardConfiguration(control) {
   control.disabled = true;
   syncDashboardSelectPicker(control);
   try {
-    const response = await fetch("/api/configuration", {
+    const capacityPolicy = key === "codex_capacity_reserve_percent";
+    const response = await fetch(capacityPolicy ? "/api/provider-capacity/configuration" : "/api/configuration", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value, previous: normalizer(previous) }),
+      body: capacityPolicy
+        ? JSON.stringify({ codex_capacity_reserve_percent: value })
+        : JSON.stringify({ key, value, previous: normalizer(previous) }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -6513,9 +6538,10 @@ async function saveDashboardConfiguration(control) {
       error.remainingPercent = Number(payload.remaining_percent);
       throw error;
     }
-    control.value = String(payload.value);
+    const saved = capacityPolicy ? payload.codex_capacity_reserve_percent : payload.value;
+    control.value = String(saved);
     control.dataset.savedValue = control.value;
-    dashboardConfiguration = { ...dashboardConfiguration, [key]: payload.value };
+    dashboardConfiguration = { ...dashboardConfiguration, [key]: saved };
     if (key === "codex_capacity_reserve_percent") {
       renderCodexCapacityReserveBanner(latestDashboardSnapshot?.rate_limits);
       syncCodexCapacityReserveOptions();
@@ -8625,5 +8651,10 @@ if (!NO_PROJECT_SELECTED) {
   void refreshOpenPullRequests();
 }
 void refreshGithubRateLimit();
-if (NO_PROJECT_SELECTED) void refreshComponentLogs({}, true);
-else startDashboardUpdates();
+if (NO_PROJECT_SELECTED) {
+  void refreshComponentLogs({}, true);
+  void refreshPlatformProviderCapacity();
+  window.setInterval(() => {
+    if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
+  }, 60_000);
+} else startDashboardUpdates();

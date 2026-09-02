@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -12,8 +13,11 @@ import tempfile
 DATABASE_FILENAME = "engineering.db"
 MAINTENANCE_INTERVAL_KEY = "central_database.maintenance_interval_seconds"
 MAINTENANCE_LAST_ATTEMPT_KEY = "central_database.maintenance_last_attempt_at"
+PROVIDER_CAPACITY_HISTORY_KEY = "ep.provider_capacity_history.v1"
+CODEX_CAPACITY_RESERVE_KEY = "ep.codex_capacity_reserve_percent"
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_OPTIONS = frozenset({60, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60})
+CODEX_CAPACITY_RESERVE_OPTIONS = frozenset({0, 5, 10, 15, 20, 25, 50, 75})
 
 
 def path(data_root: Path) -> Path:
@@ -78,6 +82,112 @@ def update_maintenance_configuration(data_root: Path, interval_seconds: object) 
         previous = maintenance_configuration(data_root)["interval_seconds"]
         connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (MAINTENANCE_INTERVAL_KEY, json.dumps(interval_seconds)))
     return {"previous": previous, "interval_seconds": interval_seconds}
+
+
+def capacity_configuration(data_root: Path) -> dict[str, int]:
+    """Return the one installation-wide admission reserve for Codex capacity."""
+    try:
+        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+            row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (CODEX_CAPACITY_RESERVE_KEY,)).fetchone()
+        value = int(json.loads(row[0])) if row else 0
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+        value = 0
+    return {"codex_capacity_reserve_percent": value if value in CODEX_CAPACITY_RESERVE_OPTIONS else 0}
+
+
+def capacity_reserve_from_environment() -> int:
+    """Resolve the active Server's platform policy for worker-side admission."""
+    configured_root = os.environ.get("EP_SERVER_DATA_ROOT")
+    if not configured_root:
+        return 0
+    return capacity_configuration(Path(configured_root))["codex_capacity_reserve_percent"]
+
+
+def update_capacity_configuration(data_root: Path, reserve_percent: object) -> dict[str, int]:
+    """Persist an EP-owned reserve; projects cannot choose different limits."""
+    if not isinstance(reserve_percent, int) or isinstance(reserve_percent, bool) or reserve_percent not in CODEX_CAPACITY_RESERVE_OPTIONS:
+        raise ValueError("CODEX_CAPACITY_RESERVE_INVALID")
+    previous = capacity_configuration(data_root)["codex_capacity_reserve_percent"]
+    with sqlite3.connect(path(data_root)) as connection:
+        connection.execute(
+            "INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (CODEX_CAPACITY_RESERVE_KEY, json.dumps(reserve_percent)),
+        )
+    return {"previous": previous, "codex_capacity_reserve_percent": reserve_percent}
+
+
+def record_provider_capacity(
+    data_root: Path, *, provider: str, remaining_percent: float, observed_at: datetime | None = None,
+) -> list[dict[str, object]]:
+    """Store a bounded, account-wide two-hour capacity series in CENTRAL."""
+    provider = provider.strip()[:120]
+    try:
+        remaining = float(remaining_percent)
+    except (TypeError, ValueError):
+        return []
+    if not provider or not 0 <= remaining <= 100:
+        return []
+    timestamp = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bucket = timestamp.replace(hour=timestamp.hour - timestamp.hour % 2, minute=0, second=0, microsecond=0)
+    cutoff = bucket - timedelta(days=7)
+    try:
+        with sqlite3.connect(path(data_root)) as connection:
+            row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (PROVIDER_CAPACITY_HISTORY_KEY,)).fetchone()
+            try:
+                payload = json.loads(row[0]) if row else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            providers = payload.get("providers") if isinstance(payload, dict) else None
+            providers = providers if isinstance(providers, dict) else {}
+            samples = providers.get(provider)
+            samples = samples if isinstance(samples, dict) else {}
+            key = bucket.isoformat()
+            current = samples.get(key)
+            if isinstance(current, (int, float)) and not isinstance(current, bool):
+                remaining = min(remaining, float(current))
+            samples[key] = remaining
+            filtered: dict[str, float] = {}
+            for sample_at, sample_value in samples.items():
+                try:
+                    parsed = datetime.fromisoformat(str(sample_at)).astimezone(timezone.utc)
+                except ValueError:
+                    continue
+                if parsed >= cutoff and isinstance(sample_value, (int, float)) and not isinstance(sample_value, bool) and 0 <= float(sample_value) <= 100:
+                    filtered[str(sample_at)] = float(sample_value)
+            providers[provider] = filtered
+            connection.execute(
+                "INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (PROVIDER_CAPACITY_HISTORY_KEY, json.dumps({"providers": providers}, separators=(",", ":"))),
+            )
+    except (OSError, sqlite3.DatabaseError):
+        return []
+    return provider_capacity_history(data_root, provider=provider)
+
+
+def provider_capacity_history(data_root: Path, *, provider: str, hours: int = 168) -> list[dict[str, object]]:
+    """Read CENTRAL-only provider capacity evidence; it is never project data."""
+    provider = provider.strip()[:120]
+    if not provider or hours < 1:
+        return []
+    try:
+        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+            row = connection.execute("SELECT value FROM engineering_metadata WHERE key=?", (PROVIDER_CAPACITY_HISTORY_KEY,)).fetchone()
+        payload = json.loads(row[0]) if row else {}
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+        return []
+    samples = payload.get("providers", {}).get(provider, {}) if isinstance(payload, dict) and isinstance(payload.get("providers"), dict) else {}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    result: list[dict[str, object]] = []
+    if not isinstance(samples, dict):
+        return result
+    for observed_at, remaining in sorted(samples.items()):
+        try:
+            parsed = datetime.fromisoformat(str(observed_at)).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if parsed >= cutoff and isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and 0 <= float(remaining) <= 100:
+            result.append({"at": str(observed_at), "remaining_percent": float(remaining)})
+    return result
 
 
 def run_periodic_maintenance(data_root: Path, *, now: datetime | None = None) -> dict[str, object]:
