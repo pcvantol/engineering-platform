@@ -131,29 +131,32 @@ def terminalize_after_host_exit(
     return terminal
 
 
-def prepare_same_run_recovery_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+def prepare_same_run_recovery_after_host_exit(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> TransactionState | None:
     """Persist the sole watcher-side continuation before it launches a host.
 
     This intentionally accepts only the exact evidence already accepted by
     ``terminalize_after_host_exit``.  It never creates a submission, branch,
     or lease; the normal resumed host owns those operations.
     """
-    evidence = _latest_interrupted_invocation(root, run_id)
+    evidence = _latest_interrupted_invocation(root, run_id, central_database=central_database)
     if evidence is None:
         return None
     invocation_id, _classification = evidence
-    store = StateStore(root / ".engineering" / "engineering-runs")
+    store = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None)
     try:
         state = store.load(run_id)
     except StateError:
         return None
-    if state.terminal or load_recovery_state(root, run_id) is not None:
+    if state.terminal or load_recovery_state(root, run_id, central_database=central_database) is not None:
         return None
     try:
         create_recovery_available(
             root, run_id=run_id, triggering_invocation_id=invocation_id,
             lifecycle_phase=state.phase, branch=state.branch,
             worktree_identity=str(root.resolve()), lease_id=None,
+            central_database=central_database,
         )
     except Exception:
         LOGGER.exception("Provider recovery evidence could not be persisted for %s", run_id)
