@@ -5913,6 +5913,13 @@ function syncInboxLocationChangeAvailability(queueDepth) {
 function enhanceDashboardSelectPickers() {
   document.querySelectorAll("select:not([multiple]):not(#dashboardLocale)").forEach(enhanceDashboardSelectPicker);
 }
+// The Server fills the CENTRAL project options only after the historical
+// dashboard document has loaded. Keep the visual picker in lockstep with
+// that authoritative native select instead of leaving a stale local option
+// list visible to the operator.
+document.addEventListener("dashboard-select-options-changed", (event) => {
+  if (event.target instanceof HTMLSelectElement) syncDashboardSelectPicker(event.target);
+});
 document.addEventListener("pointerdown", (event) => {
   dashboardSelectPickers.forEach((picker) => {
     if (!event.target.closest(".dashboard-select-picker")) setDashboardSelectPickerOpen(picker, false);

@@ -5932,6 +5932,20 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardLocaleMenu")).toBeVisible();
   });
 
+  test("synchronizes the visible project picker after CENTRAL replaces its options", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      const select = document.querySelector("#dashboardProject");
+      select.innerHTML = '<option value="">&lt;geen&gt;</option><option value="alpha" selected>alpha</option>';
+      select.value = "alpha";
+      select.dispatchEvent(new Event("dashboard-select-options-changed", { bubbles: true }));
+    });
+    const picker = page.locator("#dashboardProject + .dashboard-select-picker");
+    await openDashboardPicker(picker);
+    await expect(picker.locator('[data-dashboard-select-value=""]')).toHaveText("<geen>");
+    await expect(picker.locator('[data-dashboard-select-value="alpha"]')).toHaveText("alpha");
+  });
+
   test("aligns the refresh action with status at compact desktop widths", async ({ page }) => {
     await page.setViewportSize({ width: 1250, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });

@@ -282,6 +282,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('id="consoleProject"', first)
         self.assertNotIn('id="consoleProjectBoundary"', first)
         self.assertIn("getElementById('dashboardProject')", first)
+        self.assertIn("dashboard-select-options-changed", first)
         self.assertIn('const project="djconnect"', first)
         self.assertIn('const project="engineering-platform"', second)
         self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
@@ -294,6 +295,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.root,
         ).decode("utf-8")
         self.assertIn('&lt;geen&gt;</option>', selector)
+        self.assertIn("dashboard-select-options-changed", selector)
         self.assertIn('>djconnect</option>', selector)
         self.assertNotIn('>DJConnect</option>', selector)
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
