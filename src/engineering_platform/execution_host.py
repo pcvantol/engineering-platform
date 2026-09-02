@@ -832,8 +832,8 @@ class EngineeringRunner:
             )
             observed_at = datetime.now(timezone.utc).isoformat()
             command_id = f"required-control-{ordinal}-{uuid.uuid4().hex[:12]}"
-            span = start_phase(
-                self.root, validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
+            span = self._start_phase(
+                validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
                 attempt=max(1, validation.repair_iterations + 1),
                 metadata={"validation_id": launcher.validation_id, "command_id": command_id},
             )
@@ -1186,8 +1186,8 @@ class EngineeringRunner:
             # lifecycle projection uses this bounded marker to avoid showing
             # their combined duration on both visible steps.
             provider_metadata["lifecycle_step"] = "LOCAL_REPOSITORY_VALIDATION"
-        provider = start_phase(
-            self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
+        provider = self._start_phase(
+            state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
             attempt=provider_attempt, metadata=provider_metadata,
         )
         validation_spans: dict[str, ActivePhase | None] = {}
@@ -1210,8 +1210,7 @@ class EngineeringRunner:
                         validation_commands[command_id] = (validation_id, started_at)
                     except EngineeringStorageError:
                         LOGGER.warning("Validation command start evidence is unavailable for run %s", state.run_id)
-                    validation_spans[command_id] = start_phase(
-                        self.root,
+                    validation_spans[command_id] = self._start_phase(
                         state.run_id,
                         "VALIDATION",
                         parent_phase_id=provider.phase_id if provider else None,
