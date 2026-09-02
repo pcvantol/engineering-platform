@@ -393,6 +393,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows localized provider login states in Configuration", async ({ page }) => {
+    const openedRuntimes = [];
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
         codex: { provider: "CODEX", state: "READY", executable: "/ep/codex/bin/codex", version: "0.152.1" },
@@ -402,6 +403,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/execution-runtime-status", (route) => route.fulfill({ json: {
       state: "READY", executable: "/opt/engineering-platform/bin/python", version: "3.14.1",
     } }));
+    await page.route("**/api/runtime-directory/open", async (route) => {
+      openedRuntimes.push(JSON.parse(route.request().postData()).runtime);
+      await route.fulfill({ status: 202, json: { opened_directory: "/runtime/bin" } });
+    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
@@ -413,6 +418,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveClass(/local-folder-link/);
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
@@ -431,9 +437,14 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
     await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
     await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
+    await expect(validation.locator("[data-execution-runtime-path]")).toHaveClass(/local-folder-link/);
     await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
     await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
     await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
+    await dispatchDashboardPointerClick(block.locator('[data-provider="CODEX"] [data-provider-cli-path]'));
+    await dispatchDashboardPointerClick(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]'));
+    await dispatchDashboardPointerClick(validation.locator("[data-execution-runtime-path]"));
+    await expect.poll(() => openedRuntimes).toEqual(["codex", "github", "python"]);
   });
 
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {

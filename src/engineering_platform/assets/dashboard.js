@@ -1509,6 +1509,18 @@ async function openCentralDatabaseDirectory() {
     showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
   }
 }
+async function openRuntimeDirectory(runtime) {
+  if (!new Set(["codex", "github", "python"]).has(runtime)) return;
+  try {
+    const response = await fetch("/api/runtime-directory/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runtime }),
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
+  }
+}
 document.addEventListener("click", (event) => {
   if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
 });
@@ -1537,6 +1549,21 @@ function localFolderButton(value, options = {}) {
   const button = document.createElement("button");
   configureLocalFolderButton(button, value, options);
   return button;
+}
+function configureRuntimeDirectoryButton(button, value, runtime) {
+  const path = localFolderPath(value);
+  button.classList.add("local-folder-link", "runtime-directory-link");
+  button.type = "button";
+  button.textContent = String(value || "—");
+  button.disabled = !path;
+  button.onclick = null;
+  button.removeAttribute("title");
+  button.removeAttribute("aria-label");
+  if (!path) return;
+  const label = t("workspace.open_containing_folder", { path });
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.onclick = () => void openRuntimeDirectory(runtime);
 }
 function replaceWithLocalFolderButton(element, options = {}) {
   if (!element) return null;
@@ -6001,7 +6028,7 @@ function providerLoginStatusBlock() {
       const details = document.createElement("div");
       details.className = "configuration-provider-status__details";
       details.append(
-        validationEnvironmentDetail(t("configuration.provider_cli_path", { provider: providerDisplayName(provider) }), "providerCliPath"),
+        validationEnvironmentDetail(t("configuration.provider_cli_path", { provider: providerDisplayName(provider) }), "providerCliPath", provider.toLowerCase()),
         validationEnvironmentDetail(t("configuration.provider_cli_version", { provider: providerDisplayName(provider) }), "providerCliVersion"),
       );
       row.append(
@@ -6020,11 +6047,12 @@ function providerLoginStatusBlock() {
   }
   return block;
 }
-function validationEnvironmentDetail(label, attribute) {
+function validationEnvironmentDetail(label, attribute, runtime = null) {
   const detail = document.createElement("span");
   detail.className = "configuration-validation-environment__detail";
-  const value = document.createElement("code");
+  const value = document.createElement(runtime ? "button" : "code");
   value.dataset[attribute] = "true";
+  if (runtime) value.dataset.runtimeDirectory = runtime;
   value.textContent = "—";
   detail.append(Object.assign(document.createElement("span"), { textContent: label }), value);
   return detail;
@@ -6048,7 +6076,7 @@ function validationEnvironmentBlock() {
   const details = document.createElement("div");
   details.className = "configuration-validation-environment__details";
   details.append(
-    validationEnvironmentDetail(t("configuration.python_path"), "executionRuntimePath"),
+    validationEnvironmentDetail(t("configuration.python_path"), "executionRuntimePath", "python"),
     validationEnvironmentDetail(t("configuration.python_version"), "executionRuntimeVersion"),
   );
   runtime.append(
@@ -6111,7 +6139,7 @@ function renderProviderLoginStatus(block, providers) {
     row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
     const path = row.querySelector("[data-provider-cli-path]");
     const providerVersion = row.querySelector("[data-provider-cli-version]");
-    if (path) path.textContent = executable || "—";
+    if (path) configureRuntimeDirectoryButton(path, executable, provider);
     if (providerVersion) providerVersion.textContent = version || "—";
     logout.hidden = state !== "READY";
     logout.disabled = state !== "READY";
@@ -6137,7 +6165,7 @@ function renderExecutionRuntimeStatus(runtime) {
   row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
   const path = validation?.querySelector("[data-execution-runtime-path]");
   const runtimeVersion = validation?.querySelector("[data-execution-runtime-version]");
-  if (path) path.textContent = executable || "—";
+  if (path) configureRuntimeDirectoryButton(path, executable, "python");
   if (runtimeVersion) runtimeVersion.textContent = version || "—";
   const needsRepair = state !== "READY";
   repair.hidden = !needsRepair;

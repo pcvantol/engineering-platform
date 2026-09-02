@@ -642,6 +642,36 @@ def _open_central_database_directory(data_root: Path) -> dict[str, str]:
     return {"opened_directory": str(directory)}
 
 
+def _open_runtime_directory(data_root: Path, runtime: object) -> dict[str, str]:
+    """Open the parent of one currently reported runtime executable safely."""
+    if runtime not in {"codex", "github", "python"}:
+        raise ValueError("RUNTIME_DIRECTORY_INVALID")
+    projects = _bound_console_projects(data_root)
+    if not projects:
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
+    root = _console_root(data_root, projects[0]["project_id"])
+    if runtime == "python":
+        executable = dashboard._execution_runtime_status().get("executable", "")
+    else:
+        executable = dashboard._provider_login_status(root).get(runtime, {}).get("executable", "")
+    if not isinstance(executable, str) or not executable:
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
+    try:
+        resolved = Path(executable).resolve(strict=True)
+        directory = resolved.parent
+    except OSError as error:
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE") from error
+    if sys.platform != "darwin" or not resolved.is_file() or not os.access(resolved, os.X_OK) or not directory.is_dir():
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
+    try:
+        outcome = LocalProcessProvider().execute(directory, ("open", str(directory)))
+    except OSError as error:
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE") from error
+    if outcome.returncode:
+        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
+    return {"opened_directory": str(directory)}
+
+
 _WORKSPACE_ID_FIELD = re.compile(
     br'(<span class="label" data-workspace-label="workspace\.name" data-i18n="workspace\.name"></span><span>)[^<]*(</span>)'
 )
@@ -916,6 +946,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         """Run the preserved handler after CENTRAL validates the selected scope."""
         request = urlsplit(self.path)
         if self._central_database_configuration(method):
+            return
+        if method == "do_POST" and request.path == "/api/runtime-directory/open":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= length <= 64:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                runtime = payload.get("runtime") if isinstance(payload, dict) and set(payload) == {"runtime"} else None
+                self._send(202, _open_runtime_directory(self.server.data_root, runtime))  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                self._send(409, {"error": "RUNTIME_DIRECTORY_UNAVAILABLE"})
             return
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
