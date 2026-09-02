@@ -1385,6 +1385,8 @@ class EngineeringRunner:
         if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS":
             result_reference = persist_recovery_agent_result(
                 self.root, run_id=state.run_id, invocation_id=str(replacement_id), result=result,
+                central_database=self.store.central_database,
+                artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
             )
             record_replacement_terminal(
                 self.root, run_id=state.run_id, outcome="SUCCESS", result_evidence_ref=result_reference,

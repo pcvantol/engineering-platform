@@ -579,12 +579,14 @@ def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: s
     )
 
 
-def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str, result: object) -> str:
+def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str, result: object,
+                                  central_database: Path | None = None, artifact_root: Path | None = None) -> str:
     """Persist the bounded structured AgentResult once for post-crash consumption."""
     fields = ("terminal_state", "branch", "pull_request", "terminal_condition", "diagnostic", "repository_path", "commit_sha", "validation_evidence", "quality_evidence", "validation_disposition")
     payload = {field: getattr(result, field) for field in fields}
     artifact_id = f"provider-recovery-result:{run_id}:{invocation_id}"
-    directory = root / ".engineering" / "artifacts" / "provider-recovery-results"
+    directory = ((artifact_root / "provider-recovery-results") if artifact_root else
+                 (root / ".engineering" / "artifacts" / "provider-recovery-results"))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{invocation_id}.json"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{invocation_id}.", suffix=".tmp", dir=directory)
@@ -601,6 +603,7 @@ def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str
     record_artifact(
         root, path, artifact_id=artifact_id, artifact_type="PROVIDER_RECOVERY_AGENT_RESULT",
         content_type="application/json", created_at=_now(), run_id=run_id, execution_id=invocation_id,
+        central_database=central_database, artifact_root=artifact_root,
     )
     return f"artifact:{artifact_id}"
 
