@@ -1341,11 +1341,12 @@ def is_active_blocking_predecessor(root: Path, run_id: object, terminal_state: o
 
 
 def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
-                               dismissed_at: str, dismissed_by: str) -> dict[str, object]:
+                               dismissed_at: str, dismissed_by: str,
+                               central_database: Path | None = None) -> dict[str, object]:
     """Record one immutable dismissal after its terminal history row exists."""
     if terminal_state not in {"COMPLETE", "BLOCKED", "FAILED"}:
         raise EngineeringStorageError("Dismissal requires a terminal execution outcome.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_dismissals(run_id,terminal_state,handling_state,dismissed_at,dismissed_by) "
@@ -1363,7 +1364,8 @@ def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
 
 
 def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
-                              rolled_back: bool, removed_branch: str | None) -> None:
+                              rolled_back: bool, removed_branch: str | None,
+                              central_database: Path | None = None) -> None:
     """Append one immutable operator-authorized emergency recovery record."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
         raise EngineeringStorageError("Emergency recovery requires a valid Inbox run.")
@@ -1371,7 +1373,7 @@ def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
         raise EngineeringStorageError("Emergency recovery requires a timestamp.")
     if removed_branch is not None and (not isinstance(removed_branch, str) or not removed_branch.startswith("codex/")):
         raise EngineeringStorageError("Emergency recovery branch evidence is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_emergency_recoveries(run_id,cancelled_at,rolled_back,removed_branch,recorded_by) VALUES(?,?,?,?,?)",
