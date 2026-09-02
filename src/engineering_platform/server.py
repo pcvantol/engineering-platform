@@ -1392,7 +1392,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "register-topology", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -1433,6 +1433,28 @@ def main(argv: list[str] | None = None) -> int:
             from .submission_service import issue_consumer_credential
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command == "provision-declaration":
+            if not args.project_id or not args.repository_id or args.path is None:
+                raise ServerConfigurationError("--project-id, --repository-id and --path are required for declaration provisioning.")
+            initialize(args.data_root)
+            from .repository_attachment import config_path, load_repository_attachment, parse_repository_attachment
+            root = args.path.resolve(strict=True)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                row = connection.execute("SELECT attachment_contract FROM ep_repository_registrations WHERE project_id=? AND repository_id=?", (args.project_id, args.repository_id)).fetchone()
+            if row is None:
+                raise ServerConfigurationError("CENTRAL_REPOSITORY_NOT_REGISTERED")
+            declaration = json.loads(str(row[0]))
+            parse_repository_attachment(declaration)
+            target = config_path(root)
+            if target.exists():
+                existing = load_repository_attachment(root)
+                if (existing.project_id, existing.repository_id) != (args.project_id, args.repository_id):
+                    raise ServerConfigurationError("REPOSITORY_DECLARATION_CONFLICT")
+            else:
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                target.write_text(json.dumps(declaration, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                target.chmod(0o600)
+            result = {"project_id": args.project_id, "repository_id": args.repository_id, "path": str(target), "result": "PROVISIONED"}
         elif args.command in {"bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"}:
             if not args.project_id or not args.repository_id:
                 raise ServerConfigurationError("--project-id and --repository-id are required for local binding commands.")
