@@ -358,6 +358,12 @@ class EngineeringRunner:
         self._dispatch_guard_enforced = False
         self._last_provider_invocation_id: str | None = None
 
+    def _start_phase(self, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+        return start_phase(self.root, run_id, phase_name, central_database=self.store.central_database, **kwargs)
+
+    def _resume_phase(self, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+        return start_or_resume_phase(self.root, run_id, phase_name, central_database=self.store.central_database, **kwargs)
+
     def _provider_recovery_preflight(self, state: TransactionState) -> str | None:
         """Return a fail-closed reason before the sole same-run restart.
 
@@ -2013,10 +2019,10 @@ Mandatory autonomous refactor and quality-control stage:
         self.store.save(state)
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
-        self._total_phase = start_or_resume_phase(
-            self.root, state.run_id, "TOTAL_EXECUTION", category="EXECUTION"
+        self._total_phase = self._resume_phase(
+            state.run_id, "TOTAL_EXECUTION", category="EXECUTION"
         )
-        initialization = start_phase(self.root, state.run_id, "INITIALIZATION")
+        initialization = self._start_phase(state.run_id, "INITIALIZATION")
         readiness = evaluate_readiness(
             selected_profile(context.execution_mode),
             host_root=self.root,
@@ -2081,7 +2087,7 @@ Mandatory autonomous refactor and quality-control stage:
                     "genesis_workspace_conflict",
                     f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
                 )
-        reconciliation = start_phase(self.root, state.run_id, "RECONCILIATION")
+        reconciliation = self._start_phase(state.run_id, "RECONCILIATION")
         try:
             reconcile_stale(self.root, central_database=self.store.central_database)
         except Exception:
@@ -2144,7 +2150,7 @@ Mandatory autonomous refactor and quality-control stage:
                     "managed_target_baseline",
                     "Managed target baseline verification failed: expected clean main synchronized with origin/main.",
                 )
-        admission_phase = start_phase(self.root, state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
+        admission_phase = self._start_phase(state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
         state, admission_error = self._confirm_deterministic_admission(state)
         complete_phase(
             self.root,
