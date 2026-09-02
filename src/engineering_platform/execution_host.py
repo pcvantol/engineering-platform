@@ -1334,6 +1334,7 @@ class EngineeringRunner:
                         lifecycle_phase=state.phase, branch=state.branch,
                         worktree_identity=str(self.root.resolve()),
                         lease_id=self.active_lease.lease_id if self.active_lease else None,
+                        central_database=self.store.central_database,
                     )
                     capture_worktree_provenance(
                         self.root, run_id=state.run_id, phase=state.phase, stage="interrupted",

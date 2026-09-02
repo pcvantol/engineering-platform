@@ -398,11 +398,12 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
 def create_recovery_available(
     root: Path, *, run_id: str, triggering_invocation_id: str, lifecycle_phase: str,
     branch: str | None, worktree_identity: str, lease_id: str | None,
+    central_database: Path | None = None,
 ) -> dict[str, object]:
     """Create the only automatic-recovery budget atomically and idempotently."""
     replacement = f"provider-recovery-{run_id}-{uuid4().hex[:12]}"
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -418,7 +419,7 @@ def create_recovery_available(
         raise
     finally:
         connection.close()
-    state = load_recovery_state(root, run_id)
+    state = load_recovery_state(root, run_id, central_database=central_database)
     if state is None:
         raise EngineeringStorageError("Provider recovery evidence could not be persisted.")
     return state
