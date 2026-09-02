@@ -87,6 +87,7 @@ LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
 WATCHER_READY_PROJECTION = "inbox_watcher_ready"
+RETIRED_OPERATIONAL_COMMANDS = frozenset({"once", "run", "install"})
 
 
 def _source_revision(repo: Path) -> str | None:
@@ -2495,6 +2496,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--icloud-root")
     parser.add_argument("--interval", type=float, default=15)
     args = parser.parse_args(argv)
+    # The checkout-bound watcher contains retained forensic and migration
+    # helpers, but it is not a standalone Server lifecycle composition.  In
+    # particular, starting it would recreate its historical root-derived
+    # lifecycle, checkpoint and telemetry authority.  CENTRAL/LifecycleWorker
+    # is the only supported operational path.
+    if args.command in RETIRED_OPERATIONAL_COMMANDS:
+        print("WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED", file=sys.stderr)
+        return 2
     repo = args.repo.resolve()
     try:
         provision_workspace(repo)

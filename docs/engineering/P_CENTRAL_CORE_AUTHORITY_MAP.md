@@ -57,7 +57,7 @@ converted or removed from every supported installed entrypoint.
 | `parity_lifecycle_dispatcher._default_runner` | `LifecycleWorker` → dispatcher | checkpoint writes and Genesis conflict scan | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit binding) | migrated; retain test proof |
 | `parity_lifecycle_dispatcher.reconcile_terminal_history` | Server startup reconciliation | terminal checkpoint read | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit binding) | migrated; retain test proof |
 | `execution_host.main` | direct installed host entrypoint | direct-host lifecycle | ACTIVE_STANDALONE_OPERATIONAL | CENTRAL_CANONICAL (explicit `--central-database` required) | fail closed without the composition-root binding; no local StateStore projection |
-| `inbox_watcher` retry, cancellation, merge-wait and recovery calls | watcher / Dashboard compatibility routes | retry, merge wait, recovery lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle repository; then Console adapter or fail closed |
+| `inbox_watcher` retry, cancellation, merge-wait and recovery calls | retired checkout-bound watcher commands | retry, merge wait, recovery lifecycle | HISTORICAL_PROVENANCE | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | operational `once`, `run` and `install` commands fail closed; retained code is not reachable from Server/LifecycleWorker | focused retirement boundary test |
 | `provider_recovery._validate_control_target` | qualification control CLI and Execution Host | recovery eligibility | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle repository; fault marker remains PHYSICAL_EXECUTION_ONLY |
 | `provider_interruption.terminalize_after_host_exit`, `prepare_same_run_recovery_after_host_exit` | watcher recovery scan | interruption terminalization and recovery | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repositories |
 | `emergency_recovery._plan`, `execute` | Dashboard emergency-recovery route | cancel/rollback lifecycle | ACTIVE_STANDALONE_OPERATIONAL | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL lifecycle/recovery repository; git rollback remains PHYSICAL_EXECUTION_ONLY |
@@ -68,12 +68,13 @@ active operational migration work. No row is classified `DEAD_UNREACHABLE`.
 
 ## Active terminal telemetry boundary
 
-`inbox_watcher` owns the legacy terminal chain
+The retired `inbox_watcher` source retains the legacy terminal chain
 `queue_terminal_telemetry` → `terminal_telemetry_outbox` →
 `materialize_pending_terminal_telemetry` → `persist_execution`. It is
-**ACTIVE_STANDALONE_OPERATIONAL**, not historical: it claims work, launches
-the runner and is launched by supported watcher/Dashboard composition. The
-typed telemetry APIs now accept an explicit CENTRAL database binding, but the
-watcher has no such composition input yet. It must be migrated through an
-explicit lifecycle composition root or made unavailable; deriving CENTRAL from
+**HISTORICAL_PROVENANCE**, not active standalone authority: the CLI refuses
+`once`, `run` and `install` before workspace provisioning or storage access.
+The Server/LifecycleWorker composition has no watcher launch path. The typed
+telemetry APIs remain CENTRAL-bound on active lifecycle paths; the retained
+watcher implementation may only be exercised by isolated historical/forensic
+tests until a separate P-TRANSPORT contract replaces it. Deriving CENTRAL from
 the checkout is forbidden.

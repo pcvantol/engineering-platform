@@ -266,6 +266,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNone(admission.source)
         self.assertEqual(json_status(self.repo)["watcher_state"], "WAITING_FOR_PREDECESSOR")
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_run_logs_lifecycle_identity_on_orderly_shutdown(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -296,6 +297,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(log_event.call_args_list[-1].args[2], "watcher_shutdown_completed")
         self.assertEqual(log_event.call_args_list[-1].kwargs["context"], lifecycle_context)
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_restarts_after_a_completed_cycle_when_source_revision_changes(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -325,6 +327,7 @@ class InboxWatcherTest(unittest.TestCase):
             [call.args[2] for call in log_event.call_args_list],
         )
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_defers_source_restart_while_execution_ownership_is_active(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -363,6 +366,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(json.loads(row[0])["state"], "restart_pending_after_active_execution")
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_projects_dashboard_migration_block_instead_of_stale_merge_wait(self) -> None:
         from engineering_platform.platform_bootstrap import WorkspaceMigrationBlockedError
 
@@ -1628,9 +1632,9 @@ class InboxWatcherTest(unittest.TestCase):
             (self.repo / ".gitignore").write_text(".engineering/\n", encoding="utf-8")
             self.assertEqual(
                 inbox_watcher.main(["install", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
-                0,
+                2,
             )
-            launchd.return_value.install.assert_called_once()
+            launchd.return_value.install.assert_not_called()
             self.assertEqual(
                 inbox_watcher.main(["status", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
                 0,
@@ -1644,6 +1648,12 @@ class InboxWatcherTest(unittest.TestCase):
                 inbox_watcher.main(["doctor", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
                 1,
             )
+
+    def test_retired_operational_commands_fail_before_workspace_or_storage_access(self) -> None:
+        with patch("engineering_platform.inbox_watcher.provision_workspace") as provision:
+            for command in ("once", "run", "install"):
+                self.assertEqual(inbox_watcher.main([command, "--repo", str(self.repo)]), 2)
+        provision.assert_not_called()
 
     def test_blocked_predecessor_holds_later_inbox_prompts_without_claiming_them(self) -> None:
         (self.inbox / "next.md").write_text("# Later prompt", encoding="utf-8")
