@@ -439,6 +439,7 @@ class EngineeringRunner:
             record_provider_started(
                 self.root, run_id=state.run_id, receipt_id=receipt_id,
                 pid=int(process["pid"]), process_group=int(process["process_group"]),
+                central_database=self.store.central_database,
             )
 
     def _project_durable_recovery(self, state: TransactionState, recovery: dict[str, object]) -> None:
@@ -2260,6 +2261,7 @@ Mandatory autonomous refactor and quality-control stage:
                                 self.root, run_id=state.run_id,
                                 receipt_id=str(self._recovery_state(state.run_id).get("process_receipt_id")),
                                 pid=int(process["pid"]), process_group=int(process["process_group"]),
+                                central_database=self.store.central_database,
                             )
                             if isinstance(process, dict)
                             and isinstance(self._recovery_state(state.run_id), dict)

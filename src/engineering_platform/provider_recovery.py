@@ -487,11 +487,11 @@ def claim_replacement_launch(root: Path, *, run_id: str, central_database: Path 
 
 def record_provider_started(
     root: Path, *, run_id: str, receipt_id: str, pid: int, process_group: int,
-    identity: ProcessIdentity | None = None,
+    identity: ProcessIdentity | None = None, central_database: Path | None = None,
 ) -> bool:
     """Append immutable process-start evidence and enter IN_PROGRESS."""
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
