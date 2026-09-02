@@ -1401,9 +1401,17 @@ def store_projection(connection: sqlite3.Connection, name: str, payload: dict[st
     )
 
 
-def load_projection(root: Path, name: str) -> dict[str, object] | None:
+def load_projection(
+    root: Path, name: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Load a canonical projection without consulting its compatibility file."""
-    connection = open_storage(root)
+    if central_database is None:
+        connection = open_storage(root)
+    else:
+        database = central_database.resolve()
+        if not database.is_file():
+            raise EngineeringStorageError("CENTRAL projection database is unavailable.")
+        connection = sqlite3.connect(database, isolation_level=None)
     try:
         row = connection.execute("SELECT payload FROM execution_projections WHERE projection_name=?", (name,)).fetchone()
     finally:

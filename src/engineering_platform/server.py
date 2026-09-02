@@ -1172,6 +1172,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 return
             historical = dashboard.handler(
                 root, document_transform=_console_document_transform(selected, projects, root, self.server.data_root),  # type: ignore[attr-defined]
+                central_database=self.server.data_root / SERVER_DATABASE_FILENAME,  # type: ignore[attr-defined]
+                central_project_id=selected,
             )
         except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
             self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})

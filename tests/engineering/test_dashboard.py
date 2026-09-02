@@ -3085,7 +3085,9 @@ class DashboardStatusTest(unittest.TestCase):
                 dashboard._process_elapsed_seconds("1:2:3:4")
 
     @contextmanager
-    def _dashboard_http_connection(self):
+    def _dashboard_http_connection(
+        self, *, central_database: Path | None = None, central_project_id: str | None = None,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             configuration = root / "src" / "engineering_platform"
@@ -3103,7 +3105,12 @@ class DashboardStatusTest(unittest.TestCase):
             # cause the suite to activate or mutate that shared database.
             with open_storage(root):
                 pass
-            server = dashboard.DashboardHTTPServer((LOOPBACK_ADDRESS, 0), dashboard.handler(root))
+            server = dashboard.DashboardHTTPServer(
+                (LOOPBACK_ADDRESS, 0),
+                dashboard.handler(
+                    root, central_database=central_database, central_project_id=central_project_id,
+                ),
+            )
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
             # The dashboard landing page reads the current Git and pull-request
@@ -3117,6 +3124,26 @@ class DashboardStatusTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_dashboard_emergency_recovery_passes_the_central_project_binding(self) -> None:
+        database = Path("/installation/engineering.db")
+        with self._dashboard_http_connection(
+            central_database=database, central_project_id="project-alpha",
+        ) as (root, connection), patch(
+            "engineering_platform.dashboard.execute_emergency_recovery",
+            return_value={"run_id": "inbox-abcdef12", "stopped": True, "rolled_back": True},
+        ) as recover:
+            connection.request(
+                "POST", "/api/execution-emergency-rollback",
+                body='{"run_id":"inbox-abcdef12"}', headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 202)
+            response.read()
+
+        recover.assert_called_once_with(
+            root, "inbox-abcdef12", central_database=database, project_id="project-alpha",
+        )
 
     @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
     def test_http_dashboard_status_routes(self, _open_pull_requests: object) -> None:

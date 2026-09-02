@@ -47,11 +47,11 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _live(root: Path, run_id: str) -> dict[str, object]:
-    live = load_projection(root, "live_status") or {}
+def _live(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
+    live = load_projection(root, "live_status", central_database=central_database) or {}
     if live.get("run_id") != run_id:
         raise EmergencyRecoveryError("Deze uitvoering is niet de huidige uitvoering.")
-    if liveness(root, run_id).get("state") != "LIVE":
+    if liveness(root, run_id, central_database=central_database).get("state") != "LIVE":
         raise EmergencyRecoveryError("Deze uitvoering is niet meer actief; de noodactie is niet nodig.")
     if live.get("execution_mode") != "MANAGED":
         raise EmergencyRecoveryError("Noodherstel met rollback is alleen beschikbaar voor een beheerde uitvoering.")
@@ -86,15 +86,37 @@ def _host_pid(root: Path, run_id: str, *, central_database: Path | None = None) 
     return pid
 
 
+def _require_central_project_ownership(database: Path, project_id: str | None, run_id: str) -> None:
+    """Reject a dashboard action whose run is not owned by its selected project."""
+    if not isinstance(project_id, str) or not project_id:
+        raise EmergencyRecoveryError("Er is geen geldig project geselecteerd voor deze noodactie.")
+    try:
+        connection = sqlite3.connect(database.resolve(), isolation_level=None)
+        try:
+            row = connection.execute(
+                "SELECT project_id FROM ep_execution_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error as error:
+        raise EmergencyRecoveryError("De centrale uitvoeringstoestand is niet beschikbaar.") from error
+    if row is None or row[0] != project_id:
+        raise EmergencyRecoveryError("Deze uitvoering behoort niet tot het geselecteerde project.")
+
+
 def _process_command(root: Path, pid: int) -> str:
     result = LocalProcessProvider().execute(root, ("ps", "-p", str(pid), "-o", "command="))
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _plan(root: Path, run_id: str, *, central_database: Path | None = None) -> RecoveryPlan:
+def _plan(
+    root: Path, run_id: str, *, central_database: Path | None = None, project_id: str | None = None,
+) -> RecoveryPlan:
     if not RUN_ID_PATTERN.fullmatch(run_id):
         raise EmergencyRecoveryError("De opgegeven run-ID is ongeldig.")
-    live = _live(root, run_id)
+    if central_database is not None:
+        _require_central_project_ownership(central_database, project_id, run_id)
+    live = _live(root, run_id, central_database=central_database)
     state = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None).load(run_id)
     if state is None:
         raise EmergencyRecoveryError("De actieve uitvoering heeft geen canoniek checkpoint.")
@@ -138,12 +160,14 @@ def _plan(root: Path, run_id: str, *, central_database: Path | None = None) -> R
     return RecoveryPlan(run_id, branch, baseline_branch, baseline_head, group, host_pid)
 
 
-def preview(root: Path, run_id: object, *, central_database: Path | None = None) -> dict[str, object]:
+def preview(
+    root: Path, run_id: object, *, central_database: Path | None = None, project_id: str | None = None,
+) -> dict[str, object]:
     """Return a display-safe, non-mutating emergency recovery eligibility view."""
     if not isinstance(run_id, str):
         return {"available": False}
     try:
-        plan = _plan(root, run_id, central_database=central_database)
+        plan = _plan(root, run_id, central_database=central_database, project_id=project_id)
     except (EmergencyRecoveryError, EngineeringStorageError, OSError):
         return {"available": False}
     return {
@@ -190,9 +214,11 @@ def _release_lease(root: Path, run_id: str, *, central_database: Path | None = N
     release(root, Lease(row[0], run_id, row[1], row[2], row[3], row[4], row[5], row[6]), central_database=central_database)
 
 
-def execute(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
+def execute(
+    root: Path, run_id: str, *, central_database: Path | None = None, project_id: str | None = None,
+) -> dict[str, object]:
     """Stop exactly one verified host, then restore its clean local baseline."""
-    plan = _plan(root, run_id, central_database=central_database)
+    plan = _plan(root, run_id, central_database=central_database, project_id=project_id)
     _stop(plan, root)
     _release_lease(root, run_id, central_database=central_database)
     _git(root, "restore", "--source", plan.baseline_head, "--staged", "--worktree", "--", ".")

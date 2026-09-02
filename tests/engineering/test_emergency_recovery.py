@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -19,6 +20,19 @@ STATE = SimpleNamespace(
 
 
 class EmergencyRecoveryTest(unittest.TestCase):
+    def test_central_recovery_rejects_missing_or_cross_project_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "engineering.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE ep_execution_runs(run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL)")
+                connection.execute(
+                    "INSERT INTO ep_execution_runs(run_id,project_id) VALUES(?,?)",
+                    ("inbox-abcdef12", "project-beta"),
+                )
+            with self.assertRaisesRegex(emergency_recovery.EmergencyRecoveryError, "geen geldig project"):
+                emergency_recovery._require_central_project_ownership(database, None, "inbox-abcdef12")
+            with self.assertRaisesRegex(emergency_recovery.EmergencyRecoveryError, "behoort niet"):
+                emergency_recovery._require_central_project_ownership(database, "project-alpha", "inbox-abcdef12")
     def test_preview_requires_an_exact_live_run_with_a_clean_baseline(self) -> None:
         live = {
             "run_id": "inbox-abcdef12",
