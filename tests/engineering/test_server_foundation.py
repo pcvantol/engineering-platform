@@ -60,6 +60,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         report = server.health(self.root)
         self.assertTrue(report["healthy"])
         self.assertTrue(report["ready"])
+        with urlopen(f"http://127.0.0.1:{port}/readyz") as response:
+            readiness = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(readiness["lifecycle_worker"]["state"], "RUNNING")
         stopped = server.stop(self.root)
         self.assertFalse(stopped["running"])
 

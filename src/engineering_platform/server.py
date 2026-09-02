@@ -32,6 +32,7 @@ from . import local_repository_binding
 from . import project_topology
 from . import submission_service
 from . import managed_codex_runtime
+from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .local_api_credentials import verifier
 
 
@@ -405,6 +406,11 @@ def status(data_root: Path) -> dict[str, object]:
         "operational_state": "empty-valid",
         "running": running,
         "managed_codex_runtime": managed_codex_runtime.inspect(data_root),
+        "lifecycle_worker": {
+            # The worker is hosted by the sole installed Server process.  A
+            # stopped process is never reported as an active worker.
+            "state": WORKER_RUNNING if running else "STOPPED",
+        },
         "bind": {"host": config.bind_host, "port": config.bind_port},
     }
 
@@ -500,6 +506,13 @@ def _authenticated_consumer(connection: sqlite3.Connection, token: object, proje
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    def _status(self) -> dict[str, object]:
+        report = status(self.server.data_root)  # type: ignore[attr-defined]
+        worker = getattr(self.server, "lifecycle_worker", None)
+        if worker is not None:
+            report["lifecycle_worker"] = worker.diagnostics().to_dict()
+        return report
+
     def _send(self, status_code: int, payload: dict[str, object], instance_id: str | None = None) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status_code)
@@ -567,7 +580,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         try:
-            report = status(self.server.data_root)  # type: ignore[attr-defined]
+            report = self._status()
         except ServerConfigurationError:
             self._send(503, {"healthy": False, "ready": False})
             return
@@ -640,6 +653,8 @@ def serve(data_root: Path) -> int:
     config = ServerConfiguration.load(data_root)
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
+    worker = LifecycleWorker(data_root)
+    server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
         # ``shutdown`` must run outside the serve_forever thread.
@@ -647,9 +662,11 @@ def serve(data_root: Path) -> int:
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    worker.start()
     try:
         server.serve_forever()
     finally:
+        worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
     return 0
