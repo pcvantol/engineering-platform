@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timezone
 from html import escape
 import json
@@ -2962,7 +2963,11 @@ def _dashboard_html(
     )
 
 
-def handler(root: Path, logger: logging.Logger | None = None):
+def handler(
+    root: Path,
+    logger: logging.Logger | None = None,
+    document_transform: Callable[[bytes], bytes] | None = None,
+):
     configuration = PlatformConfiguration.load(root)
     title = configuration.workspace.dashboard_title
     workspace_id = configuration.workspace.id
@@ -3978,8 +3983,7 @@ def handler(root: Path, logger: logging.Logger | None = None):
                 workspace_free_disk_space = _workspace_free_disk_space(root)
                 workspace_git = _workspace_git_projection(root)
                 workspace_open_pull_requests = _workspace_open_pull_requests(root)
-                return self._send(
-                    _dashboard_html(
+                document = _dashboard_html(
                         title,
                         _build_commit(root),
                         workspace_id,
@@ -4003,7 +4007,9 @@ def handler(root: Path, logger: logging.Logger | None = None):
                         # each document request instead of retaining the startup
                         # fallback in the rendered page.
                         str(configuration.resolver(root).resolve_runtime_prompt_transport().inbox),
-                    ),
+                    )
+                return self._send(
+                    document_transform(document) if document_transform else document,
                     "text/html; charset=utf-8",
                 )
             # Browser asset misses and mistyped paths are normal HTTP noise. They

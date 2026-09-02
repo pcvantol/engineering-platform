@@ -6,8 +6,9 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+from urllib.request import urlopen
 
-from engineering_platform import server
+from engineering_platform import local_repository_binding, project_topology, server
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -126,3 +127,39 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["schema_version"], 44)
         self.assertEqual(projection["projects"], [])
         self.assertIn(b"/v1/operations/projects", server._operations_console_document())
+
+    def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
+        """Two requests select separate roots without exposing either path."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        template = json.loads((Path(__file__).parent / "fixtures" / "repository_attachment" / "python-authority.json").read_text(encoding="utf-8"))
+        declarations = []
+        for identifier in ("djconnect", "engineering-platform"):
+            declaration = json.loads(json.dumps(template))
+            declaration["project"]["id"] = identifier
+            declaration["project"]["authority_repository_id"] = identifier
+            declaration["repository"]["id"] = identifier
+            declarations.append(declaration)
+        roots: list[Path] = []
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_agent_registrations(agent_id,state,credential_id,credential_verifier,created_at,updated_at,last_seen_at) VALUES('console-agent','ACTIVE','console-credential',X'00','now','now','now')")
+            for declaration in declarations:
+                checkout = self.root.parent / declaration["project"]["id"]
+                attachment = checkout / ".engineering-platform" / "repository.json"
+                attachment.parent.mkdir(parents=True)
+                attachment.write_text(json.dumps(declaration), encoding="utf-8")
+                project_topology.register_attachment(connection, agent_id="console-agent", declaration=declaration, availability="AVAILABLE")
+                local_repository_binding.bind_local_repository(connection, project_id=declaration["project"]["id"], repository_id=declaration["repository"]["id"], local_root=checkout, data_root=self.root)
+                roots.append(checkout)
+        server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{port}/?project=djconnect") as response:
+            first = response.read().decode("utf-8")
+        with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
+            second = response.read().decode("utf-8")
+        self.assertIn('id="consoleProject"', first)
+        self.assertIn('value="djconnect" selected', first)
+        self.assertIn('value="engineering-platform" selected', second)
+        self.assertIn('/assets/dashboard.js', first)
+        self.assertNotIn(str(roots[0]), first)
+        self.assertNotIn(str(roots[1]), second)
