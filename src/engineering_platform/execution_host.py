@@ -2085,6 +2085,7 @@ Mandatory autonomous refactor and quality-control stage:
             failed_requirements=decision.failed_requirements,
             facts=vars(decision.facts),
             evaluated_at=decision.evaluated_at, diagnostic=readiness.diagnostic or decision.diagnostic,
+            central_database=self.store.central_database,
         )
         complete_phase(self.root, initialization, outcome="COMPLETE" if readiness.ready else "FAILED")
         if not readiness.ready:
@@ -2129,6 +2130,7 @@ Mandatory autonomous refactor and quality-control stage:
                 execution_mode=context.execution_mode, passed=False, failed_requirements=blocked.failed_requirements,
                 facts=vars(blocked.facts),
                 evaluated_at=blocked.evaluated_at, diagnostic=blocked.diagnostic,
+                central_database=self.store.central_database,
             )
             raise RunnerError("active-run ownership conflict; execution is refused") from error
         self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)

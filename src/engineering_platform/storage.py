@@ -2319,9 +2319,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, profile_version: int,
                                 execution_mode: str, passed: bool, failed_requirements: tuple[str, ...],
-                                facts: dict[str, object], evaluated_at: str, diagnostic: str | None) -> None:
+                                facts: dict[str, object], evaluated_at: str, diagnostic: str | None,
+                                central_database: Path | None = None) -> None:
     """Store one deterministic readiness decision for a transaction."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_readiness_evaluations(run_id,profile_id,profile_version,execution_mode,passed,failed_requirements,facts,evaluated_at,diagnostic) VALUES(?,?,?,?,?,?,?,?,?) "
@@ -2332,11 +2333,13 @@ def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, pro
         connection.close()
 
 
-def load_readiness_evaluation(root: Path, run_id: object) -> dict[str, object] | None:
+def load_readiness_evaluation(
+    root: Path, run_id: object, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Read one canonical readiness projection for dashboard/report consumers."""
     if not isinstance(run_id, str):
         return None
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT profile_id,profile_version,execution_mode,passed,failed_requirements,evaluated_at,diagnostic FROM execution_readiness_evaluations WHERE run_id=?", (run_id,)
