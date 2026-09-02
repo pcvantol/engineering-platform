@@ -9477,6 +9477,24 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#queueList")).not.toContainText("Later uitvoeren");
   });
 
+  test("renders CENTRAL FIFO items without offering a legacy file deferral", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
+    await page.evaluate(() => queueItems([
+      {
+        submission_id: "sub-central-fifo",
+        filename: "sub-central-fifo",
+        title_kind: "producer_submission",
+        producer_type: "CLI",
+        action_intent: "UNSPECIFIED",
+        modified_at: "2026-08-02T10:01:00Z",
+        queue_source: "CENTRAL",
+      },
+    ], 1));
+    await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
+    await expect(page.locator("#queueList .queue-defer")).toHaveCount(0);
+  });
+
   test("keeps a waiting Inbox item when deferring is cancelled", async ({ page }) => {
     let deferRequests = 0;
     await page.route("**/api/events", (route) => route.abort());

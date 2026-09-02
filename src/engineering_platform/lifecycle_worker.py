@@ -50,7 +50,7 @@ class LifecycleWorkerDiagnostics:
 
 
 class LifecycleWorker:
-    """One serial, installation-owned observer for canonical submissions."""
+    """One installation-owned observer with one active lifecycle per project."""
 
     def __init__(self, data_root, *, dispatcher_factory: DispatcherFactory | None = None,
                  idle_seconds: float = 0.25, failure_seconds: float = 1.0) -> None:
@@ -61,6 +61,7 @@ class LifecycleWorker:
         self._stop = Event()
         self._lock = Lock()
         self._thread: Thread | None = None
+        self._inflight: set[str] = set()
         self._diagnostics = LifecycleWorkerDiagnostics(WORKER_STOPPED, 0, 0, 0, None, None)
 
     def diagnostics(self) -> LifecycleWorkerDiagnostics:
@@ -74,38 +75,56 @@ class LifecycleWorker:
             self._diagnostics = LifecycleWorkerDiagnostics(**values)  # type: ignore[arg-type]
 
     def eligible_submission_ids(self) -> list[str]:
-        """Discover candidates only; the dispatcher remains the claim authority.
-
-        A serial creation-order scan preserves the former single-worker shape.
-        It intentionally does not classify provider work, construct lanes, or
-        reinterpret predecessor policy.  A persisted nonterminal claim is
-        revisited after restart with its existing run identity.
-        """
+        """Return one FIFO candidate per project; claims remain dispatcher-owned."""
         with sqlite3.connect(self.data_root / "engineering.db") as connection:
-            rows = connection.execute("""SELECT s.submission_id
+            rows = connection.execute("""SELECT s.submission_id,s.project_id,d.state,d.claimed_at,s.created_at
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
                 WHERE s.state='QUEUED' AND s.admission='ADMITTED'
                   AND (d.submission_id IS NULL OR d.state IN ('CLAIMED','RUNNING'))
-                ORDER BY s.created_at, s.submission_id""").fetchall()
-        return [str(row[0]) for row in rows]
+                ORDER BY s.project_id,
+                  CASE WHEN d.state IN ('CLAIMED','RUNNING') THEN 0 ELSE 1 END,
+                  COALESCE(d.claimed_at,s.created_at),s.created_at,s.submission_id""").fetchall()
+        candidates: list[str] = []
+        projects: set[str] = set()
+        for submission_id, project_id, _state, _claimed_at, _created_at in rows:
+            if str(project_id) in projects:
+                continue
+            projects.add(str(project_id))
+            candidates.append(str(submission_id))
+        return candidates
 
-    def run_once(self) -> bool:
-        candidates = self.eligible_submission_ids()
-        if not candidates:
-            return False
-        submission_id = candidates[0]
-        current = self.diagnostics()
-        self._replace(observed=current.observed + 1, last_submission_id=submission_id, last_error=None)
+    def _dispatch(self, submission_id: str) -> None:
         try:
             self._dispatcher_factory().dispatch(submission_id)
         except Exception as error:  # Dispatcher persists its own terminal/recovery boundary.
             current = self.diagnostics()
             self._replace(state=WORKER_DEGRADED, failures=current.failures + 1,
                           last_error=type(error).__name__)
-            return True
-        current = self.diagnostics()
-        self._replace(state=WORKER_RUNNING, dispatched=current.dispatched + 1)
+        else:
+            current = self.diagnostics()
+            self._replace(state=WORKER_RUNNING, dispatched=current.dispatched + 1)
+        finally:
+            with self._lock:
+                self._inflight.discard(submission_id)
+
+    def run_once(self) -> bool:
+        with self._lock:
+            inflight = frozenset(self._inflight)
+        candidates = [submission_id for submission_id in self.eligible_submission_ids() if submission_id not in inflight]
+        if not candidates:
+            return False
+        for submission_id in candidates:
+            current = self.diagnostics()
+            self._replace(observed=current.observed + 1, last_submission_id=submission_id, last_error=None)
+            with self._lock:
+                self._inflight.add(submission_id)
+            Thread(
+                target=self._dispatch,
+                args=(submission_id,),
+                name=f"engineering-platform-lifecycle-{submission_id[:12]}",
+                daemon=True,
+            ).start()
         return True
 
     def _loop(self) -> None:

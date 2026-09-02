@@ -125,6 +125,14 @@ class ParityLifecycleDispatcher:
                 connection.execute("ROLLBACK")
                 raise ParityLifecycleDispatchError("UNKNOWN_SUBMISSION")
             context = project_context(connection, data_root=self.data_root, project_id=str(row[0]), repository_id=str(row[1]))
+            active = connection.execute(
+                """SELECT run_id FROM ep_parity_lifecycle_dispatches
+                    WHERE project_id=? AND state IN ('CLAIMED','RUNNING') LIMIT 1""",
+                (context.project_id,),
+            ).fetchone()
+            if active is not None:
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError("PROJECT_RUN_ALREADY_ACTIVE")
             candidate = historical_candidate(connection, context=context, submission_id=submission_id)
             run_id = inbox_watcher._allocate_run_id()
             prompt = self._prompt_path(context, run_id)

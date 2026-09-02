@@ -908,19 +908,22 @@ function queueItems(x, queueDepth) {
         ? locale.dateTime(new Date(modified))
         : t("format.timestamp_unavailable"),
     });
-    const defer = document.createElement("button");
-    defer.className = "queue-defer";
-    defer.type = "button";
-    defer.textContent = t("queue.defer_action");
-    defer.title = t("queue.defer_action");
-    defer.setAttribute("aria-label", t("queue.defer_action"));
-    defer.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      deferQueueItem(item, defer);
-    });
+    const defer = item.queue_source === "CENTRAL" ? null : document.createElement("button");
+    if (defer) {
+      defer.className = "queue-defer";
+      defer.type = "button";
+      defer.textContent = t("queue.defer_action");
+      defer.title = t("queue.defer_action");
+      defer.setAttribute("aria-label", t("queue.defer_action"));
+      defer.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deferQueueItem(item, defer);
+      });
+    }
     body.append(title, meta);
-    row.append(number, body, defer);
+    row.append(number, body);
+    if (defer) row.append(defer);
     container.append(row);
   });
 }

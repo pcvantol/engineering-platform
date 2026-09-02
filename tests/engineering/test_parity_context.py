@@ -44,6 +44,10 @@ class ParityContextTests(unittest.TestCase):
             self.assertEqual(producer.parse_producer_submission(candidate.producer_envelope()).submission_id, alpha)
             store = parity_context.ParityProjectStore(connection, context)
             self.assertEqual([item["submission_id"] for item in store.dashboard_projection()["queue"]], [alpha])
+            console_queue = store.console_queue_projection()
+            self.assertEqual(console_queue["queue_depth"], 1)
+            self.assertEqual([item["submission_id"] for item in console_queue["queue_items"]], [alpha])
+            self.assertEqual(console_queue["queue_items"][0]["queue_source"], "CENTRAL")
             with self.assertRaisesRegex(parity_context.ParityContextError, "SUBMISSION_OUTSIDE_CONTEXT"):
                 parity_context.historical_candidate(connection, context=context, submission_id=beta)
             with self.assertRaisesRegex(parity_context.ParityContextError, "PROJECT_REPOSITORY_MISMATCH"):

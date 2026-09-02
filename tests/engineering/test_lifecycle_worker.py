@@ -43,17 +43,56 @@ class LifecycleWorkerTests(unittest.TestCase):
         self.assertEqual(worker.diagnostics().state, WORKER_STOPPED)
         self.assertEqual(_Dispatcher.calls, [])
 
-    def test_serial_observation_delegates_claim_and_preserves_project_scope(self) -> None:
+    def test_observation_starts_one_independent_candidate_per_project(self) -> None:
         alpha, beta = self._submit("alpha"), self._submit("beta")
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         self.assertTrue(worker.run_once())
-        self.assertEqual(_Dispatcher.calls, [alpha])
+        import time
+        for _ in range(20):
+            if len(_Dispatcher.calls) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(set(_Dispatcher.calls), {alpha, beta})
         self.assertEqual(worker.eligible_submission_ids(), [alpha, beta])
         # A dispatcher claim, not the worker, removes a candidate from future observation.
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_execution_runs VALUES(?,?,?,?,?)", ("run-alpha", "alpha", "COMPLETE", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)", (alpha, "alpha", "alpha", "run-alpha", "COMPLETE", "prompt", "now", "now"))
         self.assertEqual(worker.eligible_submission_ids(), [beta])
+
+    def test_observation_keeps_later_same_project_submission_behind_its_fifo_head(self) -> None:
+        alpha_first, alpha_second = self._submit("alpha"), self._submit("alpha")
+        beta = self._submit("beta")
+        worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
+        self.assertEqual(worker.eligible_submission_ids(), [alpha_first, beta])
+        self.assertNotIn(alpha_second, worker.eligible_submission_ids())
+
+    def test_running_projects_are_independent_but_never_start_a_second_same_project_item(self) -> None:
+        from threading import Event, Lock
+        import time
+
+        alpha_first, alpha_second = self._submit("alpha"), self._submit("alpha")
+        beta = self._submit("beta")
+        release, both_started, guard = Event(), Event(), Lock()
+
+        class BlockingDispatcher:
+            calls: list[str] = []
+
+            def dispatch(self, submission_id: str) -> None:
+                with guard:
+                    self.calls.append(submission_id)
+                    if len(self.calls) == 2:
+                        both_started.set()
+                release.wait(1)
+
+        worker = LifecycleWorker(self.data, dispatcher_factory=BlockingDispatcher)
+        self.assertTrue(worker.run_once())
+        self.assertTrue(both_started.wait(1))
+        self.assertEqual(set(BlockingDispatcher.calls), {alpha_first, beta})
+        self.assertFalse(worker.run_once())
+        self.assertNotIn(alpha_second, BlockingDispatcher.calls)
+        release.set()
+        time.sleep(0.02)
 
     def test_claimed_run_is_revisited_for_dispatcher_owned_restart_recovery(self) -> None:
         submission = self._submit("alpha")
@@ -80,4 +119,3 @@ class LifecycleWorkerTests(unittest.TestCase):
         time.sleep(0.02)
         self.assertEqual(worker.diagnostics().state, WORKER_RUNNING)
         worker.stop()
-

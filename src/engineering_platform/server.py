@@ -35,6 +35,7 @@ from . import submission_service
 from . import managed_codex_runtime
 from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .local_api_credentials import verifier
+from .parity_context import ParityProjectStore, project_context
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -480,6 +481,38 @@ def _console_root(data_root: Path, project_id: str) -> Path:
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
+def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, object]:
+    """Read the selected project's single transport-neutral CENTRAL FIFO."""
+    for project in _bound_console_projects(data_root):
+        if project["project_id"] != project_id:
+            continue
+        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+            context = project_context(
+                connection,
+                data_root=data_root,
+                project_id=project_id,
+                repository_id=project["repository_id"],
+            )
+            return ParityProjectStore(connection, context).console_queue_projection()
+    raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
+
+
+def _with_console_queue(payload: bytes, *, queue: dict[str, object]) -> bytes:
+    """Overlay CENTRAL queue evidence onto the preserved dashboard payload."""
+    try:
+        decoded = json.loads(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return payload
+    if not isinstance(decoded, dict):
+        return payload
+    status_payload = decoded.get("status")
+    if isinstance(status_payload, dict):
+        decoded["status"] = {**status_payload, **queue}
+    else:
+        decoded = {**decoded, **queue}
+    return json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+
+
 def _historical_dashboard_path(request: SplitResult) -> str:
     """Remove the Server-only project selector before historical routing."""
     retained = [
@@ -558,6 +591,37 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _stream_console_events(self, root: Path, project_id: str) -> None:
+        """Stream preserved dashboard state with the selected CENTRAL FIFO."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            stream_interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
+            previous: bytes | None = None
+            for iteration in range(300):
+                snapshot = _with_console_queue(
+                    dashboard._sse_snapshot(root),
+                    queue=_console_queue_projection(self.server.data_root, project_id),  # type: ignore[attr-defined]
+                )
+                if snapshot != previous:
+                    self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
+                    self.wfile.flush()
+                    previous = snapshot
+                elif iteration and iteration % 15 == 0:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+                if interval != stream_interval:
+                    self.wfile.write(f"retry: {interval * 1000}\n\n".encode())
+                    self.wfile.flush()
+                    stream_interval = interval
+                time.sleep(stream_interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _delegate_dashboard(self, method: str) -> None:
         """Run the preserved handler after CENTRAL validates the selected scope."""
         request = urlsplit(self.path)
@@ -578,6 +642,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 return
         try:
             root = _console_root(self.server.data_root, selected)  # type: ignore[attr-defined]
+            queue = _console_queue_projection(self.server.data_root, selected)  # type: ignore[attr-defined]
+            if method == "do_GET" and request.path == "/api/events":
+                self._stream_console_events(root, selected)
+                return
             historical = dashboard.handler(
                 root, document_transform=_console_document_transform(selected, projects, root),
             )
@@ -588,7 +656,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # small private helpers to this request instance, then invoke its route
         # method so every historical asset, modal, SSE endpoint and action
         # remains available without a route-by-route copy.
-        self._send = historical._send.__get__(self, type(self))  # type: ignore[method-assign]
+        historical_send = historical._send.__get__(self, type(self))
+
+        def scoped_send(content: bytes, content_type: str, status_code: int = 200) -> None:
+            if (
+                method == "do_GET"
+                and request.path in {"/api/dashboard-snapshot", "/api/status"}
+                and status_code == 200
+                and content_type.startswith("application/json")
+            ):
+                content = _with_console_queue(content, queue=queue)
+            historical_send(content, content_type, status_code)
+
+        self._send = scoped_send  # type: ignore[method-assign]
         self._same_origin = historical._same_origin.__get__(self, type(self))  # type: ignore[attr-defined]
         # EventSource cannot supply the scope header.  The document wrapper
         # therefore uses `?project=...`; it is consumed above and must not
