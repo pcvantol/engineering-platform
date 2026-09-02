@@ -27,7 +27,6 @@ class DashboardConfigurationTest(unittest.TestCase):
                 ("dashboard_stream_interval_seconds", 10),
                 ("platform_health_refresh_seconds", 60),
                 ("component_details_refresh_seconds", 15),
-                ("database_maintenance_interval_seconds", 24 * 60 * 60),
                 ("provider_readiness_refresh_seconds", 600),
                 ("codex_capacity_reserve_percent", 25),
             ):
@@ -40,15 +39,6 @@ class DashboardConfigurationTest(unittest.TestCase):
             self.assertEqual(update(root, "provider_readiness_refresh_seconds", 60)["value"], 60)
             with self.assertRaises(ValueError):
                 update(root, "provider_readiness_refresh_seconds", 15)
-
-    def test_database_maintenance_interval_defaults_to_hourly_and_is_bounded(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.assertEqual(get(root)["database_maintenance_interval_seconds"], 60 * 60)
-            for value in (60, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60):
-                self.assertEqual(update(root, "database_maintenance_interval_seconds", value)["value"], value)
-            with self.assertRaises(ValueError):
-                update(root, "database_maintenance_interval_seconds", 30)
 
     def test_dashboard_stream_interval_defaults_to_one_second_and_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

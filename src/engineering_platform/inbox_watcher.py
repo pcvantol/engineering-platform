@@ -63,7 +63,6 @@ from .execution_lease import reconcile_stale
 from .provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
 from .provider_recovery import watcher_resume_action
 from .dashboard_configuration import get as dashboard_configuration
-from .database_maintenance import run_periodic_database_maintenance
 from .central_store_migration import CutoverError, admission_status, mark_central_post_write
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .execution_timing import complete_active_phase, complete_phase, record_queue_wait_from_submission, start_or_resume_phase, start_phase
@@ -88,28 +87,6 @@ LAUNCH_PATH_FALLBACK = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin
 RUNNER_START_GRACE_SECONDS = 90
 OPERATOR_MERGE_POLL_SECONDS = 60
 WATCHER_READY_PROJECTION = "inbox_watcher_ready"
-
-
-def _run_periodic_database_maintenance(repo: Path, logger: logging.Logger) -> None:
-    """Run the bounded idle-only compaction pass without affecting execution."""
-    outcome = run_periodic_database_maintenance(repo)
-    state = outcome.get("state")
-    if state == "COMPACTED":
-        log_event(
-            logger,
-            logging.INFO,
-            "periodic_database_maintenance_completed",
-            diagnostic="tasks=PRAGMA optimize,VACUUM",
-        )
-    elif state == "SKIPPED_ACTIVE_RUN":
-        log_event(
-            logger,
-            logging.INFO,
-            "database_maintenance_skipped_active_run",
-            diagnostic="reason=active_execution_lease",
-        )
-    elif state == "DEFERRED":
-        log_event(logger, logging.WARNING, "database_maintenance_deferred")
 
 
 def _source_revision(repo: Path) -> str | None:
@@ -2581,7 +2558,6 @@ def main(argv: list[str] | None = None) -> int:
                                         diagnostic="Een andere watcher beheert de lokale Inbox-vergrendeling.",
                                     )
                                     log_event(logger, logging.ERROR, "watcher_cycle_failed", diagnostic=str(error))
-                            _run_periodic_database_maintenance(repo, logger)
                             current_revision = _source_revision(repo)
                             if started_revision and current_revision and current_revision != started_revision:
                                 if _active_transaction(repo):

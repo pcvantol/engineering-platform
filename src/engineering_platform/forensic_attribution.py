@@ -80,7 +80,7 @@ _WRITER_CANDIDATES = (
     WriterCandidate("local_api_credentials", "local_api_credentials.issue_or_rotate", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
     WriterCandidate("local_api_consumer_registrations", "local_api_credentials.register_consumer", ("src/engineering_platform/local_api.py",), ("tests/engineering",), ("src/engineering_platform/dashboard.py",)),
     WriterCandidate("engineering_component_logs", "component_logging.log_event", ("src/engineering_platform",), ("tests/engineering",), maintenance_callers=("src/engineering_platform/component_logging.py",)),
-    WriterCandidate("engineering_metadata", "dashboard_configuration.update / database_maintenance._record_attempt", ("src/engineering_platform/dashboard.py",), ("tests/engineering",), maintenance_callers=("src/engineering_platform/database_maintenance.py",)),
+    WriterCandidate("engineering_metadata", "dashboard_configuration.update", ("src/engineering_platform/dashboard.py",), ("tests/engineering",)),
     WriterCandidate("execution_projections", "storage.store_projection", ("src/engineering_platform",), ("tests/engineering",)),
 )
 
@@ -195,10 +195,6 @@ def _classify(change: dict[str, Any], literals: dict[str, list[str]]) -> dict[st
             return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "CONFIGURATION",
                     "evidence_status": "UNRESOLVED", "rule_id": "SHARED_CONFIGURATION_WRITER",
                     "evidence": _evidence("SHARED_CONFIGURATION_WRITER", {"type": "writer_index", "source": "src/engineering_platform/dashboard_configuration.py", "signals": ["configuration_key", "shared_api_no_caller_receipt"]})}
-        if key == "database_maintenance.last_attempt_at":
-            return {"ancestry_origin": "UNKNOWN", "writer_origin": "MAINTENANCE", "state_semantics": "RETENTION_STATE",
-                    "evidence_status": "PROVEN", "rule_id": "DATABASE_MAINTENANCE_METADATA",
-                    "evidence": _evidence("DATABASE_MAINTENANCE_METADATA", {"type": "repository_semantics", "source": "src/engineering_platform/database_maintenance.py", "signals": ["reserved_maintenance_key", "maintenance_writer"]})}
     if table == "execution_projections":
         return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "MUTABLE_PROJECTION",
                 "evidence_status": "UNRESOLVED", "rule_id": "SHARED_PROJECTION_WRITER",
