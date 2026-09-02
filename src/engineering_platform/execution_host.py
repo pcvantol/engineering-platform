@@ -1175,8 +1175,8 @@ class EngineeringRunner:
         if callable(process_callback):
             process_callback(lambda process: self._provider_process_boundary(state, process))
         parent = (
-            start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
-            if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
+            self._start_phase(state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
+            if repair else self._start_phase(state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
         )
         provider_attempt = attempt if attempt is not None else max(1, state.repair_iterations + 1)
         provider_metadata: dict[str, object] = {"provider": "codex_cli"}
@@ -2171,7 +2171,7 @@ Mandatory autonomous refactor and quality-control stage:
         }
         state = replace(state, phase="CAPABILITY_REVIEW", next_action="capability_review")
         self.store.save(state)
-        capability_review = start_phase(self.root, state.run_id, "CAPABILITY_REVIEW")
+        capability_review = self._start_phase(state.run_id, "CAPABILITY_REVIEW")
         reviewer_evidence = (
             ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
             if state.execution_mode == "MANAGED" and state.action_intent == "MUTATING_DELIVERY"
