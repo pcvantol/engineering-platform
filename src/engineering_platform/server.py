@@ -1392,7 +1392,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -1424,6 +1424,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")
             initialize(args.data_root)
             declaration = args.declaration.read_text(encoding="utf-8")
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = project_topology.register_server_local_topology(connection, declaration=declaration)
+        elif args.command == "bootstrap-topology":
+            if not args.project_id or not args.repository_id:
+                raise ServerConfigurationError("--project-id and --repository-id are required for topology bootstrap.")
+            initialize(args.data_root)
+            declaration = {"schema_version": "1.0", "project": {"id": args.project_id, "authority_repository_id": args.repository_id}, "repository": {"id": args.repository_id, "role": "authority"}, "validation": {"kind": "none"}}
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.register_server_local_topology(connection, declaration=declaration)
         elif args.command == "issue-consumer-credential":
