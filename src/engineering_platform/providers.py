@@ -204,18 +204,15 @@ class CodexCliProvider(LocalProcessProvider):
     ) -> subprocess.CompletedProcess[str]:
         """Execute a complete Codex command; callers never spawn its CLI directly."""
         command = self._arguments(arguments)
-        # Execution remains behind the provider boundary.  The current
-        # Engineering callers stream long-running work through ``spawn`` and
-        # do not supply a timeout here; retaining the argument preserves the
-        # public provider contract for compatible callers.
-        del timeout
+        # Reviewer invocations are bounded advisory work.  Primary execution
+        # streams through ``spawn`` and does not supply a timeout here.
         if environment is None and input_text is None:
             return self.execute(root, command)
         # The executable is this provider's configured Codex launcher, never a
         # caller-selected command. Remaining values are Codex CLI arguments.
         return subprocess.run(
             (self._executable, *command[1:]), cwd=root,
-            env=dict(environment) if environment is not None else None,
+            env=dict(environment) if environment is not None else None, timeout=timeout,
             text=True, input=input_text, capture_output=True, check=False,
         )
 

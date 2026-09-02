@@ -35,6 +35,7 @@ _CODEX_USAGE_LIMIT = re.compile(
 )
 _QUALITY_EVIDENCE_ACTIVITIES = frozenset({"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"})
 MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS = 8_000
+REVIEWER_INVOCATION_TIMEOUT_SECONDS = 300
 _VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
 _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
@@ -396,7 +397,7 @@ class CodexCliClient:
                     "--output-schema",
                     str(schema_path),
                         reviewer_prompt(selection, objective, evidence),
-                    ), environment=environment,
+                    ), environment=environment, timeout=REVIEWER_INVOCATION_TIMEOUT_SECONDS,
                 )
             self.last_context_escalations = proxy.context_escalations()
             self.last_execution_seconds = round(time.monotonic() - started, 3)
