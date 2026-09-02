@@ -77,7 +77,7 @@ from engineering_platform.execution_executor import (
     validation_failure_artifact_id,
     workspace_change_summary,
 )
-from engineering_platform.execution_lease import history as lease_history, liveness as lease_liveness, release as release_lease
+from engineering_platform.execution_lease import acquire as acquire_lease, history as lease_history, liveness as lease_liveness, release as release_lease
 from engineering_platform.execution_timing import complete_phase, phase_spans, start_phase
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import open_storage
@@ -3409,10 +3409,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = TransactionState("retry-run", "pcvantol/djconnect", str(self.prompt), "WAIT_FOR_TERMINAL_EVIDENCE", pull_request=13)
         github = FakeGitHub([RunnerError("temporary GitHub outage")] * 3)
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), github, FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.store.save(state)
+        runner.active_lease = acquire_lease(
+            self.root, state.run_id, identity="test-host", instance_id="test-instance"
+        )
         result = runner._poll(state)
         self.assertEqual(result.phase, "WAIT_FOR_TERMINAL_EVIDENCE")
         self.assertFalse(result.terminal)
         self.assertEqual(result.next_action, "retry_github_evidence")
+        self.assertEqual(lease_liveness(self.root, state.run_id)["lease_state"], "RELEASED")
 
     def test_dirty_workspace_has_no_agent_or_destructive_action(self) -> None:
         agent = FakeAgent(AgentResult("COMPLETE"))

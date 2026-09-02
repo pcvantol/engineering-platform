@@ -2539,10 +2539,17 @@ Mandatory autonomous refactor and quality-control stage:
                 complete_phase(self.root, pr_operation, outcome="FAILED")
                 attempts += 1
                 if attempts >= 3:
-                    return replace(
-                        state,
-                        phase="WAIT_FOR_TERMINAL_EVIDENCE",
-                        next_action="retry_github_evidence",
+                    # No provider or foreground GitHub operation remains after
+                    # the bounded evidence retries.  This is a durable passive
+                    # wait, so it must relinquish the run lease just like the
+                    # operator-merge hand-off.  Otherwise a lifecycle worker
+                    # cannot resume the same run after the transient outage.
+                    return self._save_operator_merge_wait(
+                        replace(
+                            state,
+                            phase="WAIT_FOR_TERMINAL_EVIDENCE",
+                            next_action="retry_github_evidence",
+                        )
                     )
                 wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
                 self.sleep(min(30, 2**attempts))
