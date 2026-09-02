@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -244,14 +245,19 @@ def persist_validation_failure_diagnostic(
     return f"artifact:{artifact_id}"
 
 
-def load_validation_failure_diagnostic(root: Path, artifact_reference: str) -> dict[str, object] | None:
+def load_validation_failure_diagnostic(
+    root: Path, artifact_reference: str, *, central_database: Path | None = None,
+    artifact_root: Path | None = None,
+) -> dict[str, object] | None:
     """Read a bound diagnostic only after its immutable artifact verifies."""
     if not artifact_reference.startswith("artifact:"):
         return None
     artifact_id = artifact_reference.removeprefix("artifact:")
-    if not verify_artifact_integrity(root, artifact_id):
+    if not verify_artifact_integrity(
+        root, artifact_id, central_database=central_database, artifact_root=artifact_root,
+    ):
         return None
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT storage_location,artifact_type FROM execution_artifact_records WHERE artifact_id=?",
@@ -262,7 +268,10 @@ def load_validation_failure_diagnostic(root: Path, artifact_reference: str) -> d
     if not row or row[1] != "VALIDATION_FAILURE_DIAGNOSTIC":
         return None
     try:
-        payload = json.loads(((root / ".engineering") / row[0]).read_text(encoding="utf-8"))
+        authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        payload_path = (authority_root / str(row[0])).resolve()
+        payload_path.relative_to(authority_root)
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
