@@ -1417,6 +1417,23 @@ def abort_operator_merge_wait(repo: Path, run_id: str, *, dismissed_by: str = "d
     with _lock(repo):
         state = _operator_merge_wait(repo)
         if state is None or state.run_id != run_id:
+            try:
+                connection = open_storage(repo)
+                try:
+                    row = connection.execute(
+                        "SELECT payload,phase FROM engineering_transactions WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                finally:
+                    connection.close()
+                candidate = TransactionState.from_dict(json.loads(row[0])) if row else None
+                state = candidate if (
+                    candidate is not None and not candidate.terminal
+                    and row[1] == "WAIT_FOR_TERMINAL_EVIDENCE"
+                    and candidate.pull_request is not None
+                ) else None
+            except (EngineeringStorageError, TypeError, json.JSONDecodeError, ValueError):
+                state = None
+        if state is None or state.run_id != run_id:
             raise RetrySubmissionError("Deze uitvoering wacht niet op een pull request-merge.")
         aborted = replace(
             state,
