@@ -1239,3 +1239,8 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
    win for retry actions after a successful reload or regeneration. */
 #promptHistoryReportReload[hidden],
 #promptHistoryReportRetry[hidden]{display:none!important}
+
+/* A long message stays a bubble, rather than obscuring the conversation. */
+.chat-messages{--chat-bubble-max-block:calc(420px * 2 / 3)}
+.chat-message{display:grid;grid-template-rows:auto auto minmax(0,1fr);max-block-size:var(--chat-bubble-max-block);min-block-size:0;overflow:hidden}
+.chat-message__body{min-block-size:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
