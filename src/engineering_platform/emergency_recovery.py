@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -70,8 +71,8 @@ def _runner(root: Path, run_id: str) -> tuple[int, int] | None:
     return pid, group
 
 
-def _host_pid(root: Path, run_id: str) -> int:
-    connection = open_storage(root)
+def _host_pid(root: Path, run_id: str, *, central_database: Path | None = None) -> int:
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT process_id FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE' ORDER BY created_at DESC LIMIT 1",
@@ -90,11 +91,11 @@ def _process_command(root: Path, pid: int) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _plan(root: Path, run_id: str) -> RecoveryPlan:
+def _plan(root: Path, run_id: str, *, central_database: Path | None = None) -> RecoveryPlan:
     if not RUN_ID_PATTERN.fullmatch(run_id):
         raise EmergencyRecoveryError("De opgegeven run-ID is ongeldig.")
     live = _live(root, run_id)
-    state = StateStore(root / ".engineering" / "engineering-runs").load(run_id)
+    state = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None).load(run_id)
     if state is None:
         raise EmergencyRecoveryError("De actieve uitvoering heeft geen canoniek checkpoint.")
     if any(
@@ -126,7 +127,7 @@ def _plan(root: Path, run_id: str) -> RecoveryPlan:
     if branch != "main" and (not BRANCH_PATTERN.fullmatch(branch) or branch in preexisting):
         raise EmergencyRecoveryError("De actieve branch is niet aantoonbaar door deze uitvoering aangemaakt.")
     runner = _runner(root, run_id)
-    host_pid = _host_pid(root, run_id)
+    host_pid = _host_pid(root, run_id, central_database=central_database)
     runner_pid, group = runner if runner is not None else (None, None)
     runner_command = _process_command(root, runner_pid) if runner_pid is not None else ""
     host_command = _process_command(root, host_pid)
@@ -137,12 +138,12 @@ def _plan(root: Path, run_id: str) -> RecoveryPlan:
     return RecoveryPlan(run_id, branch, baseline_branch, baseline_head, group, host_pid)
 
 
-def preview(root: Path, run_id: object) -> dict[str, object]:
+def preview(root: Path, run_id: object, *, central_database: Path | None = None) -> dict[str, object]:
     """Return a display-safe, non-mutating emergency recovery eligibility view."""
     if not isinstance(run_id, str):
         return {"available": False}
     try:
-        plan = _plan(root, run_id)
+        plan = _plan(root, run_id, central_database=central_database)
     except (EmergencyRecoveryError, EngineeringStorageError, OSError):
         return {"available": False}
     return {
