@@ -22,6 +22,24 @@ class ManagedCodexRuntimeTests(unittest.TestCase):
                     {"state": "MISSING", "path": str(prefix / "bin" / "codex"), "remediation_available": True},
                 )
 
+    def test_non_executable_runtime_is_never_accepted_as_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "codex-cli"
+            executable = prefix / "bin" / "codex"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("not executable", encoding="utf-8")
+            executable.chmod(0o600)
+            with patch("engineering_platform.managed_codex_runtime.engineering_platform_codex_cli_prefix", return_value=prefix), patch(
+                "engineering_platform.managed_codex_runtime.npm_executable", return_value=None
+            ):
+                self.assertEqual(
+                    runtime.inspect(Path(directory)),
+                    {"state": "BROKEN", "path": str(executable), "remediation_available": False},
+                )
+
+    def test_version_parser_accepts_the_preserved_cli_output(self) -> None:
+        self.assertEqual(runtime.version("codex-cli 0.152.1"), "0.152.1")
+
     def test_explicit_provision_is_pinned_and_verified(self) -> None:
         root = Path("/workspace")
         prefix = Path("/managed/codex-cli")
@@ -49,3 +67,12 @@ class ManagedCodexRuntimeTests(unittest.TestCase):
         ]):
             with self.assertRaisesRegex(runtime.ManagedCodexRuntimeError, "permissions_required"):
                 runtime.provision(Path("/workspace"))
+
+    def test_current_runtime_is_not_reinstalled(self) -> None:
+        with patch("engineering_platform.managed_codex_runtime.npm_executable", return_value="/usr/local/bin/npm"), patch(
+            "engineering_platform.managed_codex_runtime.inspect", return_value={"state": "READY", "version": "0.150.0"}
+        ), patch("engineering_platform.managed_codex_runtime.LocalProcessProvider.execute", return_value=subprocess.CompletedProcess(
+            ("npm", "view"), 0, '"0.150.0"', ""
+        )) as execute:
+            self.assertEqual(runtime.provision(Path("/workspace")), {"updated": False, "current_version": "0.150.0"})
+        self.assertEqual(execute.call_count, 1)
