@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,17 +27,15 @@ class ProviderUsageTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
             server.initialize(data)
-            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
-            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
-            try:
-                persist_provider_invocation(checkout, ProviderInvocation(
-                    "inbox-central-provider", 1, "codex_cli", "gpt-5.6-terra", "EXECUTE_AGENT", "agent",
-                    "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 1000,
-                    {"input_tokens": 1, "output_tokens": 2}, AUTHORITATIVE,
-                ))
-            finally:
-                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
-                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+            database = data / "engineering.db"
+            persist_provider_invocation(checkout, ProviderInvocation(
+                "inbox-central-provider", 1, "codex_cli", "gpt-5.6-terra", "EXECUTE_AGENT", "agent",
+                "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 1000,
+                {"input_tokens": 1, "output_tokens": 2}, AUTHORITATIVE,
+            ), central_database=database)
+            self.assertEqual(
+                provider_usage_summary(checkout, "inbox-central-provider", central_database=database)["output_tokens"], 2
+            )
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
             with sqlite3.connect(data / "engineering.db") as connection:
                 self.assertIsNotNone(connection.execute(

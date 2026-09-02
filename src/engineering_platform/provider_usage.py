@@ -405,9 +405,16 @@ def persist_provider_invocation(root: Path, invocation: ProviderInvocation, *, c
     return identifier
 
 
-def provider_usage_summary(root: Path, run_id: str) -> dict[str, object]:
+def provider_usage_summary(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
     """Derive run-level totals without treating cumulative input as context size."""
-    connection = open_storage(root)
+    if central_database is None:
+        connection = open_storage(root)
+    else:
+        database = central_database.resolve()
+        if not database.is_file():
+            raise RuntimeError("CENTRAL provider-usage database is unavailable")
+        connection = sqlite3.connect(database, isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         rows = connection.execute(
             "SELECT provider,model,model_authority,raw_provider_model,input_tokens,cached_input_tokens,uncached_input_tokens,output_tokens,duration_ms,estimated_credits,estimated_eur,speed_state,usage_authority,churn,role FROM provider_invocations WHERE run_id=? ORDER BY ordinal",
