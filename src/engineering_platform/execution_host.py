@@ -1424,7 +1424,9 @@ class EngineeringRunner:
                     central_database=self.store.central_database,
                 ):
                     continue
-                if claim_replacement_launch(self.root, run_id=state.run_id) is None:
+                if claim_replacement_launch(
+                    self.root, run_id=state.run_id, central_database=self.store.central_database,
+                ) is None:
                     raise CodexInvocationError(
                         "Provider interruption recovery launch is ambiguous.", "Replacement launch is already claimed.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
@@ -1493,7 +1495,9 @@ class EngineeringRunner:
             if isinstance(recovery, dict) and recovery.get("state") in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
                 reconciliation = reconcile_recovery(self.root, run_id=state.run_id)
                 if reconciliation == "LAUNCH_UNCLAIMED":
-                    claim = claim_replacement_launch(self.root, run_id=state.run_id)
+                    claim = claim_replacement_launch(
+                        self.root, run_id=state.run_id, central_database=self.store.central_database,
+                    )
                     if claim is None:
                         raise CodexInvocationError(
                             "Provider recovery launch is ambiguous.", "Replacement launch claim could not be acquired.",

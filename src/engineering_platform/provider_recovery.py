@@ -447,10 +447,10 @@ def transition_recovery_state(
     return changed == 1
 
 
-def claim_replacement_launch(root: Path, *, run_id: str) -> dict[str, object] | None:
+def claim_replacement_launch(root: Path, *, run_id: str, central_database: Path | None = None) -> dict[str, object] | None:
     """Claim the exact persisted replacement intent once, before process spawn."""
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
