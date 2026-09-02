@@ -512,7 +512,7 @@ class EngineeringRunner:
         if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
             raise RunnerError("active-run lease heartbeat was lost") from self.lease_heartbeat.error
         if self.active_lease is not None:
-            self.active_lease = heartbeat_lease(self.root, self.active_lease)
+            self.active_lease = heartbeat_lease(self.root, self.active_lease, central_database=self.store.central_database)
             if self.lease_heartbeat is not None:
                 self.lease_heartbeat.lease = self.active_lease
 
@@ -1878,11 +1878,11 @@ Mandatory autonomous refactor and quality-control stage:
             try:
                 self.active_lease = acquire_lease(
                     self.root, state.run_id, identity=self.host_identity,
-                    instance_id=self.host_instance_id, process_id=os.getpid(),
+                    instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database,
                 )
             except LeaseConflictError as error:
                 raise RunnerError("active-run ownership conflict; execution is refused") from error
-            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
             self.transaction = self.transaction.with_lease(self.active_lease)
             self.lease_heartbeat.start()
             write_live_status(self.root, state, state.next_action)
@@ -1895,7 +1895,7 @@ Mandatory autonomous refactor and quality-control stage:
                     if self.lease_heartbeat is not None:
                         self.active_lease = self.lease_heartbeat.stop()
                         self.lease_heartbeat = None
-                    release_lease(self.root, self.active_lease)
+                    release_lease(self.root, self.active_lease, central_database=self.store.central_database)
                     self.active_lease = None
         try:
             # Storage compatibility is verified below before reading the
@@ -2062,7 +2062,7 @@ Mandatory autonomous refactor and quality-control stage:
         complete_phase(self.root, reconciliation)
         self.store.save(state)
         try:
-            self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid())
+            self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database)
         except LeaseConflictError as error:
             blocked = decide_readiness(
                 readiness.profile,
@@ -2075,7 +2075,7 @@ Mandatory autonomous refactor and quality-control stage:
                 evaluated_at=blocked.evaluated_at, diagnostic=blocked.diagnostic,
             )
             raise RunnerError("active-run ownership conflict; execution is refused") from error
-        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
         if recovered_resume:
@@ -2919,7 +2919,7 @@ Mandatory autonomous refactor and quality-control stage:
                 if self.lease_heartbeat is not None:
                     lease = self.lease_heartbeat.stop()
                     self.lease_heartbeat = None
-                release_lease(self.root, lease)
+                release_lease(self.root, lease, central_database=self.store.central_database)
             except Exception:
                 # A durable terminal checkpoint is authoritative even when
                 # post-terminal lease cleanup is unavailable.  Stale lease
@@ -2965,7 +2965,7 @@ Mandatory autonomous refactor and quality-control stage:
             if self.lease_heartbeat is not None:
                 self.active_lease = self.lease_heartbeat.stop()
                 self.lease_heartbeat = None
-            release_lease(self.root, self.active_lease)
+            release_lease(self.root, self.active_lease, central_database=self.store.central_database)
             self.active_lease = None
         write_live_status(self.root, state, state.next_action)
         return state

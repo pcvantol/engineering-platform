@@ -19,17 +19,14 @@ class ExecutionLeaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
             server.initialize(data)
-            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
-            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
-            try:
-                StateStore(checkout / ".engineering" / "engineering-runs").save(
-                    TransactionState("inbox-central-lease", "repo", "prompt.md", "INITIALIZE")
-                )
-                lease = acquire(checkout, "inbox-central-lease", identity="host", instance_id="central")
-                release(checkout, lease)
-            finally:
-                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
-                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+            database = data / "engineering.db"
+            StateStore(
+                checkout / ".engineering" / "engineering-runs", central_database=database,
+                emit_local_projection=False,
+            ).save(TransactionState("inbox-central-lease", "repo", "prompt.md", "INITIALIZE"))
+            lease = acquire(checkout, "inbox-central-lease", identity="host", instance_id="central", central_database=database)
+            self.assertEqual(liveness(checkout, lease.run_id, central_database=database)["state"], "LIVE")
+            release(checkout, lease, central_database=database)
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
             self.assertFalse((checkout / ".engineering" / "engineering-runs").exists())
             with sqlite3.connect(data / "engineering.db") as connection:
