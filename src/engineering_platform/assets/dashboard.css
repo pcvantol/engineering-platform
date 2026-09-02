@@ -1106,6 +1106,10 @@ html[data-theme="light"] .prompt-detail-modal__content .execution-lifecycle--his
 .provider-readiness-banner__action[hidden]{display:none}
 .dashboard-status-banner--execution-runtime{align-items:center;background:#5b1d27;border-bottom:1px solid #ff6b7d;color:#ffe9ed}.dashboard-status-banner--execution-runtime strong{color:#ff99a7}html[data-theme="light"] .dashboard-status-banner--execution-runtime{background:#ffe8eb;color:#7d1726}html[data-theme="light"] .dashboard-status-banner--execution-runtime strong{color:#a51e3d}
 
+/* The absence of a selected project is neutral context, kept visible with
+   the other operational banners rather than as a scrolling dashboard card. */
+.dashboard-sticky-header:has(#noProjectSelected){padding-bottom:7px}.dashboard-status-banner--no-project{align-items:center;background:#163b59;border-bottom:1px solid #62bdf0;color:#e7f5ff;font:600 13px/1.45 system-ui}.dashboard-status-banner--no-project strong{color:#9bd7ff}html[data-theme="light"] .dashboard-status-banner--no-project{background:#e2f3ff;color:#12466b}html[data-theme="light"] .dashboard-status-banner--no-project strong{color:#075985}
+
 /* Managed PR evidence remains a normal link, positioned under execution
    context so both current and historical operational context stay scannable. */
 .prompt-detail-card--pull-requests,.active-run-pull-requests{grid-column:2}.prompt-detail-pr-link{border-bottom:1px solid currentColor;color:var(--category-color);font-weight:400;text-decoration:none}.prompt-detail-pr-link:hover{background:transparent;color:var(--category-color);outline:0}.prompt-detail-pr-link:focus-visible{background:transparent;color:var(--category-color);outline:2px solid var(--category-color);outline-offset:2px}.prompt-detail-pr-metrics{color:var(--dashboard-modal-muted);display:flex;flex-wrap:wrap;font-size:12px;gap:5px 12px;margin-top:7px}.prompt-detail-pr-metric{white-space:nowrap}@media (max-width:620px){.prompt-detail-card--pull-requests,.active-run-pull-requests{grid-column:1;grid-row:auto}}

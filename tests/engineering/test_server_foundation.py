@@ -300,6 +300,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('>DJConnect</option>', selector)
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
         self.assertIn('id="noProjectSelected"', no_project)
+        self.assertIn('dashboard-status-banner--no-project', no_project)
+        self.assertLess(no_project.index('id="noProjectSelected"'), no_project.index('<main class="dashboard-grid"'))
         self.assertNotIn(str(roots[0]), no_project)
         self.assertIn('/assets/dashboard.js', no_project)
         self.assertIn('id="componentLogs"', no_project)

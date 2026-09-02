@@ -746,7 +746,7 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
     boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
-    empty_state = '''<section class="card card--context" id="noProjectSelected" data-testid="no-project-selected"><h2>Geen project gekozen</h2><p>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</p></section>'''
+    empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong>Geen project gekozen</strong><span>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</span></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
 body[data-project-id="none"] #promptHistory,
@@ -765,12 +765,18 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         selector.encode("utf-8") + b'<label class="dashboard-locale"',
         1,
     )
-    document = re.sub(
-        br'(<main\b[^>]*\bid="engineering-dashboard-content"[^>]*>)',
-        rb'\1' + empty_state.encode("utf-8") + boundary.encode("utf-8"),
-        document,
-        count=1,
-        flags=re.DOTALL,
+    # Keep the unscoped explanation in the sticky header.  It is operational
+    # context, not a project card that should scroll away with the dashboard.
+    document = document.replace(
+        b'<aside class="dashboard-status-banner dashboard-status-banner--usage-limit"',
+        empty_state.encode("utf-8")
+        + b'<aside class="dashboard-status-banner dashboard-status-banner--usage-limit"',
+        1,
+    )
+    document = document.replace(
+        b'<main class="dashboard-grid"',
+        boundary.encode("utf-8") + b'<main class="dashboard-grid"',
+        1,
     )
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
