@@ -48,3 +48,20 @@ Run the control against the designated read-only historical checkout:
 python3 tools/extraction/verify_phase3_equivalence.py \
   --source /private/tmp/djconnect-extraction-source-3668eb77 --target .
 ```
+
+## Cutover assurance contract
+
+`P-PROV POST_EXTRACTION_LINEAGE_READY` requires immutable Stage-1 verification,
+real current-tree Stage-2 verification, complete responsibility accounting, zero
+unaccounted paths/responsibilities, bidirectional lookups for a baseline-unchanged
+and a governed target, and focused production-validator coverage of split, merge,
+chained split-to-merge, missing/duplicate responsibility rejection, explicit
+sharing, cycles, and chronology. It also requires the repository's B8E, full
+suite, projection, TDE, security, and exact-head hosted qualifications.
+
+`EXHAUSTIVE_COMBINATORIAL_E2E_CANARY_MATRIX = NOT_REQUIRED` for this cutover
+gate. Such a fixture matrix would duplicate the validator's combinatorial
+semantics without materially increasing assurance beyond immutable end-to-end
+verification, real-tree qualification, and focused production-validator tests.
+Additional fixtures remain permitted as future hardening, but are
+`OUT_OF_SCOPE_FOR_CUTOVER_ASSURANCE`.
