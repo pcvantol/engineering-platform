@@ -3150,6 +3150,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report["qualification"] == "PASS" else 1
     args = build_parser().parse_args(raw_args)
     central_database = args.central_database.resolve() if args.central_database is not None else None
+    if central_database is None:
+        raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")
     if central_database is not None and central_database.name != "engineering.db":
         raise SystemExit("--central-database must name engineering.db")
     if central_database is not None and not central_database.is_file():
@@ -3181,7 +3183,7 @@ def main(argv: list[str] | None = None) -> int:
         StateStore(
             root / ".engineering" / "engineering-runs",
             central_database=central_database,
-            emit_local_projection=central_database is None,
+            emit_local_projection=False,
         ),
         SubprocessRepositoryClient(),
         GhCliClient(),

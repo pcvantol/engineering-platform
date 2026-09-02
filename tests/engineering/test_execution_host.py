@@ -1316,7 +1316,9 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)]), 0)
+            central = Path(temporary) / "engineering.db"
+            central.touch()
+            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 0)
 
     @patch("engineering_platform.execution_host.EngineeringRunner")
     def test_main_reports_blocked_runner_and_writes_redacted_console_log(self, runner_type: object) -> None:
@@ -1324,7 +1326,16 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)]), 2)
+            central = Path(temporary) / "engineering.db"
+            central.touch()
+            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 2)
+
+    def test_main_rejects_unbound_operational_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
+            prompt = Path(temporary) / "prompt.md"
+            prompt.write_text("# objective", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "CENTRAL_OPERATIONAL_DATABASE_REQUIRED"):
+                __import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)])
 
     @patch.object(SubprocessRepositoryClient, "inspect")
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -1473,9 +1484,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
+            central = Path(temporary) / "engineering.db"
+            central.touch()
             self.assertEqual(
                 __import__("engineering_platform.execution_host", fromlist=["main"]).main(
-                    [str(prompt), "--admitted-storage-schema", "18"]
+                    [str(prompt), "--admitted-storage-schema", "18", "--central-database", str(central)]
                 ),
                 0,
             )
