@@ -454,8 +454,14 @@ test.describe("Engineering Status browser smoke", () => {
     const validation = page.locator("#configurationValidationEnvironmentStatus");
     await expect(validation).toBeVisible();
     await expect(validation).toContainText(DASHBOARD_MESSAGES.nl["configuration.validation_environment"]);
+    const runtime = validation.locator("[data-execution-runtime]");
+    await expect(runtime).toHaveAttribute("data-provider-state", "READY");
+    await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
+    await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
     await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
     await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
+    await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
+    await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
   });
 
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {
