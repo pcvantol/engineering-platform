@@ -2557,14 +2557,17 @@ Mandatory autonomous refactor and quality-control stage:
                 continue
             complete_phase(self.root, pr_operation)
             self._managed_pr_check(state, pr)
-            if not pr.checks_terminal:
+            # GitHub can omit or retire a check rollup once a pull request is
+            # merged.  The merge is authoritative remote evidence and must
+            # therefore take precedence over pre-merge check polling.
+            if pr.state != "MERGED" and not pr.checks_terminal:
                 self._managed_action(state, "GITHUB_REQUIRED_CHECK", "EXTERNAL_PLATFORM_EVENT", actor="github", evidence_ref="required_check_waiting")
                 wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
                 self.sleep(15)
                 complete_phase(self.root, wait)
                 continue
             repairable_mergeability = pr.state == "OPEN" and pr.merge_state_status in {"BEHIND", "DIRTY", "UNSTABLE"}
-            if not pr.checks_passed or repairable_mergeability:
+            if pr.state != "MERGED" and (not pr.checks_passed or repairable_mergeability):
                 if state.owner_authorized:
                     failed = (
                         ", ".join(pr.failed_checks) or "required CI check"
