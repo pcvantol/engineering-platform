@@ -131,6 +131,17 @@ def reverse_lookup(graph, path):
     matches=[trace for trace in traces(graph) if trace.get("current_path")==path]
     return {"classification":"HISTORICALLY_DESCENDED","traces":matches} if matches else {"classification":"NEW_POST_EXTRACTION","traces":[]}
 
+def unchanged_traces(rows, target):
+    """Direct immutable-baseline terminal evidence; no synthetic Stage-2 edge."""
+    result=[]
+    for row in rows:
+        path=row["target_path"]
+        try: current=sha(file(target,path).read_bytes())
+        except OSError: continue
+        if current == row["target_final_digest"]:
+            result.append({"responsibility":responsibility_id(path),"historical_source_path":row["source_path"],"baseline_path":path,"nodes":[f"baseline:{path}",f"current:{path}"],"terminal":"CURRENT_TARGET","current_path":path,"baseline_sha256":row["target_final_digest"],"current_sha256":current,"lineage_classification":"BASELINE_UNCHANGED"})
+    return result
+
 def stage1(source: Path, target: Path, baseline: dict, receipt: dict, ledger: dict, errors: list[str]) -> list[dict]:
     identity = ledger.get("historical_extraction", {})
     source_ref, target_ref = identity.get("source_commit"), identity.get("target_baseline_commit")
@@ -220,8 +231,12 @@ def main() -> int:
         if qualified != run(target,"rev-parse","HEAD"): errors.append("checkout HEAD does not equal qualified revision")
         errors.extend(validate_graph(ledger.get("graph",{}),target,anchor,qualified)); rows=stage1(args.source.resolve(),target,load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(target,rows,ledger,errors)
     except (OSError,ValueError,json.JSONDecodeError) as error: errors.append(str(error)); inventory=[]
-    all_traces=traces(ledger.get("graph",{}),args.lookup_historical) if 'ledger' in locals() else []
-    result={"model":"TWO_STAGE_PROVENANCE","qualified_revision":args.qualified_revision,"stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"traces":all_traces,"reverse_lookup":reverse_lookup(ledger.get("graph",{}),args.lookup_current) if 'ledger' in locals() and args.lookup_current else None,"failures":errors,"pass":not errors}
+    evolved=traces(ledger.get("graph",{})) if 'ledger' in locals() else []
+    all_traces=evolved+unchanged_traces(rows,target) if 'rows' in locals() else evolved
+    selected=[trace for trace in all_traces if not args.lookup_historical or trace["responsibility"]==args.lookup_historical]
+    reverse={"classification":"HISTORICALLY_DESCENDED","traces":[trace for trace in all_traces if trace.get("current_path")==args.lookup_current]} if args.lookup_current and any(trace.get("current_path")==args.lookup_current for trace in all_traces) else ({"classification":"NEW_POST_EXTRACTION","traces":[]} if args.lookup_current else None)
+    total=len({trace["responsibility"] for trace in all_traces}); accounted=len({trace["responsibility"] for trace in all_traces if trace["terminal"] in {"CURRENT_TARGET","RETIRED"}})
+    result={"model":"TWO_STAGE_PROVENANCE","qualified_revision":args.qualified_revision,"stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"total_historical_responsibilities":total,"accounted_responsibilities":accounted,"unaccounted_responsibilities":total-accounted,"traces":selected,"reverse_lookup":reverse,"failures":errors,"pass":not errors}
     if args.receipt: args.receipt.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
     print(json.dumps({"files":len(inventory),"unaccounted":result["unaccounted"],"failures":errors,"pass":not errors},sort_keys=True)); return 0 if not errors else 1
 if __name__ == "__main__": raise SystemExit(main())
