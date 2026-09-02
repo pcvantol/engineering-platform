@@ -1208,8 +1208,8 @@ def generate_terminal_report(
     activity_summary = persist_terminal_activity_summary(
         root, build_terminal_activity_summary(root, state, bundle)
     )
-    timing = timing_summary(root, state.run_id)
-    provider_usage = provider_usage_summary(root, state.run_id)
+    timing = timing_summary(root, state.run_id, central_database=central_database)
+    provider_usage = provider_usage_summary(root, state.run_id, central_database=central_database)
     churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
     provider_usage_lines = (
         "## Provider Usage",

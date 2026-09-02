@@ -228,8 +228,8 @@ def complete_active_phase(
     return True
 
 
-def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
-    connection = open_storage(root)
+def phase_spans(root: Path, run_id: str, *, central_database: Path | None = None) -> list[dict[str, object]]:
+    connection = _connection(root, central_database)
     try:
         rows = connection.execute(
             "SELECT phase_id,phase_name,phase_category,parent_phase_id,attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal", (run_id,)
@@ -245,7 +245,7 @@ def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
     return result
 
 
-def timing_summary(root: Path, run_id: str) -> dict[str, object]:
+def timing_summary(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
     """Return the one canonical timing read model for a completed run.
 
     ``phase_aggregates`` and ``longest_individual_spans`` intentionally answer
@@ -255,13 +255,13 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     envelope) and are ranked independently.  Consumers must use these fields
     rather than deriving their own bottleneck order.
     """
-    spans = phase_spans(root, run_id)
+    spans = phase_spans(root, run_id, central_database=central_database)
     historical_total: int | None = None
     if not spans:
         # Earlier runs already have a coarse immutable execution receipt.  It
         # remains useful total-duration evidence, but never becomes invented
         # phase detail.
-        connection = open_storage(root)
+        connection = _connection(root, central_database)
         try:
             row = connection.execute(
                 "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
