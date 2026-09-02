@@ -16,6 +16,7 @@ from .execution_errors import RunnerError
 from .execution_lease import history as lease_history, liveness as lease_liveness
 from .execution_timing import timing_summary
 from .execution_models import PullRequestEvidence, RepositoryEvidence
+from .execution_repository import github_repository_slug
 from .host_preflight import latest as latest_host_preflight
 from .workspace_preflight import latest as latest_workspace_preflight
 from .capability_preflight import latest as latest_capability_preflight
@@ -240,7 +241,7 @@ def _target_workspace(root: Path, state: TransactionState) -> Path:
 def _target_repository_name(target: Path, fallback: str) -> str:
     remote = _git_output(target, "remote", "get-url", "origin")
     if remote:
-        return remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
+        return github_repository_slug(remote)
     return fallback
 
 

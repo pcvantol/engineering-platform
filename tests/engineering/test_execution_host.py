@@ -21,6 +21,7 @@ from engineering_platform.storage import (
     record_validation_profile,
 )
 from engineering_platform.execution_errors import CodexHandoffTimeout
+from engineering_platform.execution_reporting import _target_repository_name
 from engineering_platform.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -1102,6 +1103,37 @@ class ClientContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RunnerError, "provider failed"):
             SubprocessRepositoryClient(FailingProvider())._run(Path("/tmp"), "git", "status")
+
+    def test_repository_client_normalizes_https_github_origin(self) -> None:
+        class Provider:
+            def command(self, root: Path, *args: str) -> str:
+                values = {
+                    ("git", "remote", "get-url", "origin"): "https://github.com/pcvantol/ep-pa1q-qualification.git",
+                    ("git", "branch", "--show-current"): "main",
+                    ("git", "rev-parse", "HEAD"): "a" * 40,
+                    ("git", "status", "--porcelain", "--untracked-files=all"): "",
+                }
+                return values[args]
+
+            def execute(self, _: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "BOOTSTRAP.md").write_text("contract", encoding="utf-8")
+            (root / ".git").mkdir()
+            evidence = SubprocessRepositoryClient(Provider()).inspect(root)
+
+        self.assertEqual(evidence.repository, "pcvantol/ep-pa1q-qualification")
+
+    def test_terminal_reporting_normalizes_https_github_origin(self) -> None:
+        with patch(
+            "engineering_platform.execution_reporting._git_output",
+            return_value="https://github.com/pcvantol/ep-pa1q-qualification.git",
+        ):
+            repository = _target_repository_name(Path("/qualification/repo"), "fallback/repository")
+
+        self.assertEqual(repository, "pcvantol/ep-pa1q-qualification")
 
     def test_github_client_interprets_checks_and_control_commands(self) -> None:
         class Provider:

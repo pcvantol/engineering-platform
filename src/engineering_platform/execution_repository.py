@@ -20,6 +20,16 @@ _TRANSIENT_INDEX_LOCK_CONFLICT = re.compile(
 )
 
 
+def github_repository_slug(remote: str) -> str:
+    """Return the canonical owner/repository slug for GitHub origin forms."""
+    value = remote.strip().removesuffix(".git")
+    if value.startswith("git@github.com:"):
+        return value.removeprefix("git@github.com:")
+    if value.startswith("https://github.com/"):
+        return value.removeprefix("https://github.com/")
+    return value
+
+
 class RepositoryClient(Protocol):
     def inspect(self, root: Path) -> RepositoryEvidence: ...
     def main_contains(self, root: Path, sha: str) -> bool: ...
@@ -49,7 +59,7 @@ class SubprocessRepositoryClient:
         if not (root / "BOOTSTRAP.md").is_file() or not (root / ".git").exists():
             raise RunnerError("this is not a repository with canonical BOOTSTRAP.md")
         remote = self._run(root, "git", "remote", "get-url", "origin")
-        repository = remote.removesuffix(".git").split(":")[-1].replace("github.com/", "")
+        repository = github_repository_slug(remote)
         branch, head_sha = self._run(root, "git", "branch", "--show-current"), self._run(root, "git", "rev-parse", "HEAD")
         clean = not self._run(root, "git", "status", "--porcelain", "--untracked-files=all")
         contained = self.provider.execute(root, "git", "merge-base", "--is-ancestor", head_sha, "main").returncode == 0
