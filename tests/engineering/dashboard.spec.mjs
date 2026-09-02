@@ -517,9 +517,16 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     const banner = page.locator("#codexProviderReadinessBanner");
     await expect(banner).toBeVisible();
+    await expect(banner).toHaveClass(/dashboard-status-banner--provider-unavailable/);
     await expect(page.locator("#codexProviderReadinessAction")).toHaveText(
       DASHBOARD_MESSAGES.nl["notification.provider_readiness.install"].replace("{provider}", "Codex"),
     );
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(122, 34, 48)");
+    await page.locator("#codexProviderReadinessAction").hover();
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("background-color", "rgb(169, 43, 64)");
+    await page.locator("#codexProviderReadinessAction").focus();
+    expect(await page.locator("#codexProviderReadinessAction").evaluate((element) => element.matches(":focus"))).toBeTruthy();
+    await expect(page.locator("#codexProviderReadinessAction")).toHaveCSS("outline-color", "rgb(255, 145, 161)");
     await page.locator("#codexProviderReadinessAction").click();
     await page.locator("#confirmationModalConfirm").click();
     await expect(banner).toBeHidden({ timeout: 3_000 });

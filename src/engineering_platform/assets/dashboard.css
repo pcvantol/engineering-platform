@@ -1175,6 +1175,15 @@ html[data-theme="light"] .dashboard-health__tooltip .dashboard-health__reason{co
   outline:0!important;
   outline-offset:0!important;
 }
+/* A missing provider is a blocking error.  The generic button hover/focus
+   rule above otherwise wins by specificity and turns the repair action
+   orange, which incorrectly reads as a recoverable warning. */
+.dashboard-status-banner--provider-unavailable .provider-readiness-banner__action{background:#7a2230!important;border-color:#ff91a1!important;color:#fff0f2!important}
+.dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:hover:not(:disabled){background:#a92b40!important;border-color:#ffc0c9!important;color:#fff!important}
+.dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:is(:focus,:focus-visible){box-shadow:0 0 0 4px #ff91a188!important;outline:2px solid #ff91a1!important;outline-color:#ff91a1!important;outline-offset:2px!important}
+:is(#codexProviderReadinessBanner,#githubProviderReadinessBanner).dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:is(:focus,:focus-visible){box-shadow:0 0 0 4px #ff91a188!important;outline:2px solid #ff91a1!important;outline-color:#ff91a1!important;outline-offset:2px!important}
+html[data-theme="light"] .dashboard-status-banner--provider-unavailable .provider-readiness-banner__action{background:#fff0f2!important;border-color:#b42335!important;color:#8a1728!important}
+html[data-theme="light"] .dashboard-status-banner--provider-unavailable .provider-readiness-banner__action:hover:not(:disabled){background:#ffd6dc!important;border-color:#8a1728!important;color:#6d1020!important}
 /* Component cards use a shorthand border in the health surface. Restate that
    shorthand for the complete selected interaction so its green status border
    cannot survive beside the single orange edge. */
