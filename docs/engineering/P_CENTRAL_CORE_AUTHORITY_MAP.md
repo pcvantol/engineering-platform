@@ -1,9 +1,9 @@
 # P-CENTRAL-CORE authority map
 
-**Status:** baseline inventory; child record of
+**Status:** active cutover inventory; child record of
 [`PHASE_P_MIGRATION_GAPS_REGISTER.md`](PHASE_P_MIGRATION_GAPS_REGISTER.md).
 
-**Audited commit:** `711d1ea102df12a5fbeb77573d79571378800cb6`.
+**Baseline commit:** `2e999a3ac49f3bca7c69b2a31d3feced78cc793a` (#27).
 
 All active lifecycle and evidence paths have a classification below;
 `AMBIGUOUS = 0`.  `CENTRAL_CANONICAL` means the installation-owned
@@ -17,8 +17,10 @@ context, not operational authority.
 | `parity_lifecycle_dispatcher.py`: `_claim`, `_set_state` | FIFO claim, run envelope, operator resolution | CENTRAL_CANONICAL | CENTRAL_CANONICAL | extend project/run repositories | two-project claim/operator tests |
 | `parity_lifecycle_dispatcher.py`: `_persist_historical_input`, `_default_runner`, terminal history reconciliation | runner input, admission, checkpoint, report/history projection | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL | inject explicit CENTRAL operational context into the preserved runner | installed managed/Genesis no-local-storage canaries |
 | `storage.py`: `database_path`, `open_storage` | historical root database resolver | REPOSITORY_LOCAL_DB | HISTORICAL_READ_ONLY | exclude from installed paths; isolate forensic tooling | path/symbol-aware source guard |
-| `agent_state.py`: `StateStore` | checkpoints, lifecycle events, JSON projections | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL | CENTRAL checkpoint/event repository; no JSON lifecycle projection | no `.engineering/engineering-runs` created |
-| `execution_host.py`, `execution_executor.py` | runner state, provider invocations, artifact records | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL | explicit CENTRAL repositories; retain only checkout/worktree/provider work locally | dispatcher-to-runner integration |
+| `agent_state.py`: `StateStore(central_database=...)` | checkpoints, lifecycle events | CENTRAL_CANONICAL | CENTRAL_CANONICAL | explicit database binding injected by parity composition; no JSON projection | dispatcher test proves no checkout `.engineering` directory |
+| `agent_state.py`: unbound `StateStore(directory)` | retained watcher/recovery compatibility state | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL or HISTORICAL/FORENSIC only | classify callsite-by-callsite before removal | not a completion authority |
+| `execution_host.py`: CENTRAL-bound runner | runner checkpoints and Genesis active-run scan | CENTRAL_CANONICAL | CENTRAL_CANONICAL | uses `StateStore.run_ids()` instead of checkpoint-file discovery | CENTRAL checkpoint test |
+| `execution_executor.py` | provider invocations, artifact records | REPOSITORY_LOCAL_DB | CENTRAL_CANONICAL | explicit CENTRAL telemetry/evidence repository pending | not yet a completion authority |
 | `execution_lease.py`, `provider_recovery.py`, `provider_interruption.py`, `emergency_recovery.py` | leases, heartbeats, recovery, retries, cancellation | REPOSITORY_LOCAL_DB + LOCAL_STATESTORE | CENTRAL_CANONICAL | CENTRAL transactional lifecycle/lease/recovery repository | stale lease, retry, recovery, isolation tests |
 | `execution_finalization.py`, `status_reconciliation.py`, `managed_autonomy.py` | merge wait, finalization and reconciliation evidence | REPOSITORY_LOCAL_DB | CENTRAL_CANONICAL | central lifecycle/evidence repository | merge wait/finalization tests |
 | `telemetry.py`, `execution_timing.py`, `provider_usage.py` | timing, phase spans, outbox, provider/model/token usage | REPOSITORY_LOCAL_DB | CENTRAL_CANONICAL | central telemetry/provider repositories; aggregates derived | project-isolation and retention tests |
@@ -30,9 +32,11 @@ context, not operational authority.
 
 At this baseline `SERVER_DATABASE_FILENAME` is `engineering.db`; a fresh
 installed Server uses `<data_root>/engineering.db`.  `ep-server.db` is not an
-active installed-Server database, and is classified **HISTORICAL_ONLY**.  The
-baseline nevertheless fails the single-authority target because active
-dispatcher, runner and delegated Console paths still use root-local storage.
+active installed-Server database, and is classified **HISTORICAL_ONLY**. The
+baseline still fails the single-authority target because active dispatcher
+compatibility, runner evidence/telemetry, recovery and delegated Console paths
+use root-local storage. The explicit checkpoint binding is a partial cutover;
+it does not turn the #27 compatibility environment into an authority solution.
 
 ## Cutover contract
 

@@ -134,6 +134,19 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row, ("COMPLETE",))
 
+    def test_explicit_central_store_never_derives_authority_from_checkout(self) -> None:
+        root = self.roots["alpha"]
+        store = StateStore(
+            root / ".engineering" / "engineering-runs",
+            central_database=self.data / server.SERVER_DATABASE_FILENAME,
+            emit_local_projection=False,
+        )
+        state = TransactionState("central-checkpoint", "fixture", "central", "COMPLETE", terminal=True)
+        store.save(state)
+        self.assertEqual(store.load(state.run_id).phase, "COMPLETE")
+        self.assertEqual(store.run_ids(), (state.run_id,))
+        self.assertFalse((root / ".engineering").exists())
+
     def test_failed_run_blocks_later_project_submission_until_central_operator_resolution(self) -> None:
         first, later = self._submission("alpha"), self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())

@@ -134,14 +134,18 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _default_runner(repository_root: Path) -> EngineeringRunner:
+def _default_runner(repository_root: Path, *, central_database: Path | None = None) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
     repository = match.group(1) if remote.returncode == 0 and match else None
     return EngineeringRunner(
         repository_root,
-        StateStore(repository_root / ".engineering" / "engineering-runs"),
+        StateStore(
+            repository_root / ".engineering" / "engineering-runs",
+            central_database=central_database,
+            emit_local_projection=False,
+        ),
         SubprocessRepositoryClient(),
         GhCliClient(repository=repository),
         CodexCliClient(CodexCliProvider()),
@@ -173,9 +177,11 @@ def _historical_admission_environment(repository_root: Path, data_root: Path):
 class ParityLifecycleDispatcher:
     """The one installed local writer allowed to claim a parity submission."""
 
-    def __init__(self, data_root: Path, *, runner_factory: RunnerFactory = _default_runner) -> None:
+    def __init__(self, data_root: Path, *, runner_factory: RunnerFactory | None = None) -> None:
         self.data_root = data_root.resolve()
-        self.runner_factory = runner_factory
+        self.runner_factory = runner_factory or (
+            lambda root: _default_runner(root, central_database=self.data_root / "engineering.db")
+        )
 
     def _prompt_path(self, context: ParityProjectContext, run_id: str) -> Path:
         # Prompts and mutable lifecycle evidence are installation-owned.  The

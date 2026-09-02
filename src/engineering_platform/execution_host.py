@@ -2302,9 +2302,9 @@ Mandatory autonomous refactor and quality-control stage:
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
         """Return another active Genesis run that owns the same local workspace."""
-        for checkpoint in self.store.directory.glob("*.json"):
+        for checkpoint_id in self.store.run_ids():
             try:
-                candidate = self.store.load(checkpoint.stem)
+                candidate = self.store.load(checkpoint_id)
             except StateError:
                 continue
             if (
