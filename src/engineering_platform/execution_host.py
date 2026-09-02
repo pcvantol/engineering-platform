@@ -89,7 +89,7 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import persist_validation_failure_diagnostic
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, open_storage, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
@@ -642,8 +642,11 @@ class EngineeringRunner:
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
         try:
-            from .storage import open_storage
-            connection = open_storage(self.root)
+            connection = (
+                sqlite3.connect(self.store.central_database, isolation_level=None)
+                if self.store.central_database is not None
+                else open_storage(self.root)
+            )
             try:
                 ordinal = int(connection.execute(
                     "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM provider_invocations WHERE run_id=?", (state.run_id,)
