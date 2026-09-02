@@ -147,6 +147,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="configurationInboxBrowse"', page)
         self.assertIn('id="configurationLogRetention"', page)
         self.assertIn('id="configurationLogLevel"', page)
+        self.assertIn('id="configurationTimeoutPolicyTitle"', page)
         self.assertNotIn('id="configurationAuditLogging"', page)
         self.assertNotIn('configuration.audit_logging', page)
         self.assertEqual(page.count('class="configuration-info"'), 7)
@@ -168,6 +169,14 @@ class DashboardStatusTest(unittest.TestCase):
             ("configuration.lease_heartbeat_interval", "configuration.seconds_15"),
             ("configuration.lease_timeout", "configuration.seconds_90"),
             ("configuration.github_retry_backoff", "configuration.github_retry_backoff_value"),
+            ("configuration.timeout_policy", None),
+            ("configuration.timeout.specialist_review", "configuration.minutes_5"),
+            ("configuration.timeout.implementation", "configuration.minutes_15"),
+            ("configuration.timeout.local_repository_validation", "configuration.minutes_15"),
+            ("configuration.timeout.autonomous_quality_control", "configuration.minutes_10"),
+            ("configuration.timeout.repair", "configuration.minutes_15"),
+            ("configuration.timeout.finalization", "configuration.minutes_15"),
+            ("configuration.timeout.end_reconciliation", "configuration.minutes_10"),
         ):
             self.assertIn(f'data-i18n="{key}"', page)
             if value is not None:
@@ -435,6 +444,11 @@ class DashboardStatusTest(unittest.TestCase):
             "configuration.seconds_5", "configuration.seconds_60", "configuration.seconds_90",
             "configuration.minute_1", "configuration.minutes_5", "configuration.minutes_10",
             "configuration.github_retry_backoff_value",
+            "configuration.timeout_policy", "configuration.timeout_policy_description",
+            "configuration.timeout.specialist_review", "configuration.timeout.implementation",
+            "configuration.timeout.local_repository_validation", "configuration.timeout.autonomous_quality_control",
+            "configuration.timeout.repair", "configuration.timeout.finalization",
+            "configuration.timeout.end_reconciliation", "configuration.minutes_15",
             "configuration.inbox_location_open", "configuration.inbox_location_modal_description",
             "configuration.inbox_location_queue_not_empty",
             "configuration.inbox_location_input", "configuration.inbox_location_browse", "configuration.inbox_location_requirement",

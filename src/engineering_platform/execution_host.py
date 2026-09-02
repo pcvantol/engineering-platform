@@ -75,6 +75,7 @@ from .reviewer_evidence import ReviewerEvidence
 from .investigation_ledger import InvocationInvestigationLedger
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
 from .execution_errors import ProviderReadinessBlocked
+from .execution_timeout_policy import FINALIZATION, REPAIR, agent_timeout
 from .provider_readiness import failures as provider_readiness_failures
 from .execution_repository import GitHubClient as ProviderGitHubClient, RepositoryClient as ProviderRepositoryClient
 from .execution_repository import GhCliClient as ProviderGhCliClient, SubprocessRepositoryClient as ProviderRepositoryClientImpl
@@ -116,8 +117,9 @@ from .component_logging import component_logger, shutdown_signal_logging
 
 
 LOGGER = logging.getLogger(__name__)
-FINALIZATION_PR_HANDOFF_MAX_SECONDS = 15 * 60
-REPAIR_AGENT_MAX_SECONDS = 15 * 60
+# Compatibility exports for integrations that already import these names.
+FINALIZATION_PR_HANDOFF_MAX_SECONDS = FINALIZATION.seconds
+REPAIR_AGENT_MAX_SECONDS = REPAIR.seconds
 
 # A repair remains scoped to its original PR, but it must also have a finite
 # attempt budget. This prevents a persistently failing required check from
@@ -1237,12 +1239,16 @@ class EngineeringRunner:
         invocation_started = datetime.now(timezone.utc).isoformat()
         set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
         deadline_started = time.monotonic()
-        if repair and callable(set_handoff_deadline):
-            # A same-PR repair has bounded autonomous authority too.  A
-            # provider that leaves its output pipe open must never keep the
-            # runner (or its credits) alive indefinitely.
+        timeout = agent_timeout(
+            phase=state.phase, repair=repair, quality=quality,
+            local_validation=local_validation,
+        )
+        if callable(set_handoff_deadline):
+            # Every managed provider action has a host-owned maximum.  The
+            # client terminates the whole invocation process group when it
+            # expires, so an inherited stdout pipe cannot strand the worker.
             set_handoff_deadline(
-                lambda: time.monotonic() - deadline_started >= REPAIR_AGENT_MAX_SECONDS
+                lambda: time.monotonic() - deadline_started >= timeout.seconds
             )
         prior_validation_run_id = os.environ.get("DJCONNECT_ENGINEERING_VALIDATION_RUN_ID")
         os.environ["DJCONNECT_ENGINEERING_VALIDATION_RUN_ID"] = state.run_id
@@ -1275,6 +1281,18 @@ class EngineeringRunner:
                 next_action="NONE",
                 terminal_condition="provider_turn_interrupted",
                 interruption_reason=interruption_reason,
+            ) from error
+        except CodexHandoffTimeout as error:
+            # Finalization has a dedicated reconciliation path below.  Every
+            # other timed-out action becomes an ordinary, durable provider
+            # failure rather than leaving the project lease active forever.
+            if repair or state.transaction_kind == "FINALIZATION" or state.phase.upper() == "FINALIZE_AGENT":
+                raise
+            raise CodexInvocationError(
+                f"Provider action exceeded the {timeout.seconds // 60}-minute host-owned deadline.",
+                "The provider invocation was stopped after its configured workflow deadline.",
+                next_action="inspect_codex_cli",
+                terminal_condition="provider_invocation_timeout",
             ) from error
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
@@ -1344,7 +1362,7 @@ class EngineeringRunner:
                 command_callback(None)
             if callable(process_callback):
                 process_callback(None)
-            if repair and callable(set_handoff_deadline):
+            if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
         durable_recovery = load_recovery_state(self.root, state.run_id)
         replacement_id = (

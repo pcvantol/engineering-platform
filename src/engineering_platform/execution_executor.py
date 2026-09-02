@@ -19,6 +19,7 @@ from .codex_observability import codex_final_message as _codex_final_message, ex
 from .evidence_projection import ToolProxyEnvironment
 from .execution_context import additional_workspace_write_roots
 from .execution_errors import CodexHandoffTimeout, CodexInvocationError, RunnerError
+from .execution_timeout_policy import SPECIALIST_REVIEW
 from .execution_models import AgentResult
 from .platform_version import detected_codex_cli_version
 from .provider_usage import churn_from_jsonl, usage_from_jsonl, usage_snapshots_from_jsonl
@@ -35,7 +36,7 @@ _CODEX_USAGE_LIMIT = re.compile(
 )
 _QUALITY_EVIDENCE_ACTIVITIES = frozenset({"REFACTOR", "TEST_COVERAGE", "DOCUMENTATION", "VALIDATION", "NO_CHANGE_REQUIRED"})
 MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS = 8_000
-REVIEWER_INVOCATION_TIMEOUT_SECONDS = 300
+REVIEWER_INVOCATION_TIMEOUT_SECONDS = SPECIALIST_REVIEW.seconds
 _VALIDATION_STREAM_LIMIT = MAX_RETAINED_VALIDATION_OUTPUT_CHARACTERS // 2
 _UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): [^(]+ \(([^)]+)\)$", re.MULTILINE)
 _UNITTEST_COUNTS = re.compile(r"FAILED \((?P<details>[^)]*)\)")
