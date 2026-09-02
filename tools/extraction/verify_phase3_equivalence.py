@@ -61,7 +61,7 @@ def cycle_free(edges):
         if node in done:return True
         active.add(node); result=all(visit(child) for child in graph.get(node,[])); active.remove(node); done.add(node); return result
     return all(visit(node) for node in graph)
-def validate_graph(graph):
+def validate_graph(graph, repo=None, anchor=None, qualified=None):
     """Validate a bounded explicit responsibility-flow DAG; returns diagnostics."""
     errors=[]; nodes={n.get("node_id"):n for n in graph.get("nodes",[]) if isinstance(n,dict) and isinstance(n.get("node_id"),str)}; edges=graph.get("edges",[])
     if len(nodes)>512 or len(edges)>2048: return ["graph exceeds bounded qualification size"]
@@ -75,6 +75,8 @@ def validate_graph(graph):
         if key in seen: errors.append("duplicate edge")
         seen.add(key); pairs.append((edge.get("from"),edge.get("to")))
         if edge.get("from") not in nodes or edge.get("to") not in nodes or edge.get("from")==edge.get("to"): errors.append("invalid graph endpoint")
+        commit=edge.get("governed_commit")
+        if repo is not None and (not isinstance(commit,str) or len(commit)!=40 or not ancestor(repo,anchor,commit) or not ancestor(repo,commit,qualified)): errors.append("invalid edge revision")
         for r in edge.get("responsibilities",[]):
             if r not in origins: errors.append(f"invented responsibility: {r}")
     if errors or not cycle_free(pairs): return errors+["cycle detected"]
@@ -93,7 +95,32 @@ def validate_graph(graph):
         if len(terminals)!=1: errors.append(f"invalid terminal count for {r}")
     for node in nodes.values():
         if node.get("node_type")=="CURRENT_TARGET" and not any(e.get("to")==node["node_id"] for e in edges): errors.append(f"orphan current target: {node['node_id']}")
+    if repo is not None:
+        for node in nodes.values():
+            if node.get("node_type")=="CURRENT_TARGET":
+                try:
+                    if not safe(node.get("path")): errors.append("unsafe current node path")
+                    elif not file(repo,node["path"]).is_file(): errors.append("missing current terminal path")
+                    elif node.get("sha256") and sha(file(repo,node["path"]).read_bytes()) != node["sha256"]: errors.append("current terminal blob mismatch")
+                except OSError: errors.append("missing current terminal path")
     return errors
+
+def traces(graph, responsibility=None, current_path=None):
+    nodes={n.get("node_id"):n for n in graph.get("nodes",[]) if isinstance(n,dict)}; edges=graph.get("edges",[]); result=[]
+    for base in nodes.values():
+        if base.get("node_type")!="BASELINE": continue
+        for r in base.get("responsibilities",[]):
+            if responsibility and r!=responsibility: continue
+            stack=[([base["node_id"]],base["node_id"])]; paths=[]
+            while stack:
+                chain,node=stack.pop(); outgoing=[e for e in edges if e.get("from")==node and r in e.get("responsibilities",[])]
+                if not outgoing and nodes[node].get("node_type") in {"CURRENT_TARGET","RETIRED"}: paths.append(chain); continue
+                stack.extend((chain+[e["to"]],e["to"]) for e in outgoing)
+            for chain in paths:
+                terminal=nodes[chain[-1]]
+                if current_path and terminal.get("path")!=current_path: continue
+                result.append({"responsibility":r,"nodes":chain,"terminal":terminal.get("node_type"),"current_path":terminal.get("path")})
+    return result
 
 def stage1(source: Path, target: Path, baseline: dict, receipt: dict, ledger: dict, errors: list[str]) -> list[dict]:
     identity = ledger.get("historical_extraction", {})
@@ -177,12 +204,14 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
 def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source",type=Path,required=True); parser.add_argument("--target",type=Path,default=ROOT)
-    parser.add_argument("--baseline",type=Path,default=DEFAULT_BASELINE); parser.add_argument("--historical-receipt",type=Path,default=DEFAULT_RECEIPT); parser.add_argument("--ledger",type=Path,default=DEFAULT_LEDGER); parser.add_argument("--receipt",type=Path)
+    parser.add_argument("--baseline",type=Path,default=DEFAULT_BASELINE); parser.add_argument("--historical-receipt",type=Path,default=DEFAULT_RECEIPT); parser.add_argument("--ledger",type=Path,default=DEFAULT_LEDGER); parser.add_argument("--qualified-revision",required=True); parser.add_argument("--receipt",type=Path)
     args=parser.parse_args(); errors=[]
     try:
-        ledger=load(args.ledger); errors.extend(validate_graph(ledger.get("graph",{}))); rows=stage1(args.source.resolve(),args.target.resolve(),load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(args.target.resolve(),rows,ledger,errors)
+        ledger=load(args.ledger); target=args.target.resolve(); anchor=ledger["historical_extraction"]["standalone_lineage_anchor_commit"]; qualified=run(target,"rev-parse",args.qualified_revision)
+        if qualified != run(target,"rev-parse","HEAD"): errors.append("checkout HEAD does not equal qualified revision")
+        errors.extend(validate_graph(ledger.get("graph",{}),target,anchor,qualified)); rows=stage1(args.source.resolve(),target,load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(target,rows,ledger,errors)
     except (OSError,ValueError,json.JSONDecodeError) as error: errors.append(str(error)); inventory=[]
-    result={"model":"TWO_STAGE_PROVENANCE","stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"failures":errors,"pass":not errors}
+    result={"model":"TWO_STAGE_PROVENANCE","qualified_revision":args.qualified_revision,"stage_1":"HISTORICAL_EXTRACTION_PROVENANCE","stage_2":"GOVERNED_POST_EXTRACTION_EVOLUTION","inventory":inventory,"unaccounted":sum(x["classification"]=="UNACCOUNTED" for x in inventory),"traces":traces(ledger.get("graph",{})) if 'ledger' in locals() else [],"failures":errors,"pass":not errors}
     if args.receipt: args.receipt.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
     print(json.dumps({"files":len(inventory),"unaccounted":result["unaccounted"],"failures":errors,"pass":not errors},sort_keys=True)); return 0 if not errors else 1
 if __name__ == "__main__": raise SystemExit(main())

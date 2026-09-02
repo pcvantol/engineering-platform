@@ -14,7 +14,7 @@
   "graph": {
     "nodes": [
       {"node_id":"baseline:dashboard","node_type":"BASELINE","path":"src/engineering_platform/dashboard.py","responsibilities":["src/engineering_platform/dashboard.py::module"]},
-      {"node_id":"current:dashboard","node_type":"CURRENT_TARGET","path":"src/engineering_platform/dashboard.py"}
+      {"node_id":"current:dashboard","node_type":"CURRENT_TARGET","path":"src/engineering_platform/dashboard.py","sha256":"03027b7f6556e9d074d8df80572c1ad7d2744db1e406c790cae06ace48705862"}
     ],
     "edges": [
       {"from":"baseline:dashboard","to":"current:dashboard","kind":"MODIFY","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"0a4c95d021c63921ca96c5617be24dac48fb7390","supporting_pr":22}
