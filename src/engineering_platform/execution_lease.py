@@ -232,12 +232,12 @@ def release_terminal_lease(root: Path, run_id: str, *, central_database: Path | 
         connection.close()
 
 
-def reconcile_stale(root: Path) -> list[dict[str, str]]:
+def reconcile_stale(root: Path, *, central_database: Path | None = None) -> list[dict[str, str]]:
     """Reconcile datastore ownership only; never fabricate a terminal lifecycle state."""
     now = _now().isoformat()
     outcomes: list[dict[str, str]] = []
     interrupted_runs: list[str] = []
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute("SELECT lease_id,run_id,host_instance_id,last_heartbeat_at FROM execution_run_leases WHERE lease_state='ACTIVE' AND expires_at<?", (now,)).fetchall()
@@ -321,7 +321,7 @@ def reconcile_stale(root: Path) -> list[dict[str, str]]:
     for run_id in interrupted_runs:
         # Completed timing evidence remains immutable.  This deliberately uses
         # the actual reconciliation boundary rather than an invented expiry.
-        reconcile_interrupted_phases(root, run_id)
+        reconcile_interrupted_phases(root, run_id, central_database=central_database)
     return outcomes
 
 

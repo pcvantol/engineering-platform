@@ -2055,7 +2055,7 @@ Mandatory autonomous refactor and quality-control stage:
                 )
         reconciliation = start_phase(self.root, state.run_id, "RECONCILIATION")
         try:
-            reconcile_stale(self.root)
+            reconcile_stale(self.root, central_database=self.store.central_database)
         except Exception:
             complete_phase(self.root, reconciliation, outcome="FAILED")
             raise

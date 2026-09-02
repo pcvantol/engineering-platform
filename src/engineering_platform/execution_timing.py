@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 from time import monotonic
 from typing import Mapping
 import uuid
@@ -29,6 +30,19 @@ PHASES = frozenset({
 })
 TERMINAL_OUTCOMES = frozenset({"COMPLETE", "FAILED", "INTERRUPTED", "STALE"})
 _MAX_METADATA_BYTES = 2048
+
+
+def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open timing storage from an explicit CENTRAL binding when supplied."""
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL timing database is unavailable.")
+    connection = sqlite3.connect(database, isolation_level=None)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
 
 
 def _utc(value: datetime | None = None) -> str:
@@ -167,11 +181,12 @@ def record_queue_wait_from_submission(root: Path, run_id: str, *, claimed_at: da
 
 
 def reconcile_interrupted_phases(root: Path, run_id: str, *, outcome: str = "STALE",
-                                 completed_at: datetime | None = None) -> int:
+                                 completed_at: datetime | None = None,
+                                 central_database: Path | None = None) -> int:
     """Close observable abandoned work at reconciliation, never backdating it."""
     if outcome not in {"STALE", "INTERRUPTED"}:
         raise EngineeringStorageError("Interrupted phase outcome is invalid.")
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         now = _utc(completed_at)
         # Monotonic state cannot survive a process restart, so a reconciled
