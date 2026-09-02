@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from engineering_platform import local_repository_binding, project_topology, server
 
@@ -175,11 +175,35 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.start(self.root)
         with urlopen(f"http://127.0.0.1:{port}/") as response:
             unscoped = response.read().decode("utf-8")
-        with urlopen(f"http://127.0.0.1:{port}/api/configuration") as response:
-            self.assertEqual(response.status, 200)
-        with self.assertRaises(HTTPError) as unscoped_history:
-            urlopen(f"http://127.0.0.1:{port}/api/prompt-history")
-        self.assertEqual(unscoped_history.exception.code, 409)
+        # Empty project selection retains read-only, host-wide operations.
+        # It must never turn into an implicit first-project projection.
+        for path in (
+            "/health",
+            "/api/configuration",
+            "/api/provider-login-status",
+            "/api/execution-runtime-status",
+            "/api/logs/inbox",
+            "/api/logs/dashboard",
+        ):
+            try:
+                with urlopen(f"http://127.0.0.1:{port}{path}") as response:
+                    self.assertEqual(response.status, 200, path)
+            except HTTPError as error:
+                # A minimal fresh host may correctly report itself unhealthy
+                # (503), but an empty project selection must never reject a
+                # host-wide endpoint as missing project scope.
+                self.assertNotEqual(error.code, 409, path)
+        for path in ("/api/prompt-history", "/api/dashboard-snapshot", "/api/events"):
+            with self.assertRaises(HTTPError) as blocked:
+                urlopen(f"http://127.0.0.1:{port}{path}")
+            self.assertEqual(blocked.exception.code, 409, path)
+        with self.assertRaises(HTTPError) as mutation:
+            urlopen(Request(
+                f"http://127.0.0.1:{port}/api/configuration",
+                data=b'{"key":"log_level","value":"DEBUG"}', method="POST",
+                headers={"Content-Type": "application/json"},
+            ))
+        self.assertEqual(mutation.exception.code, 409)
         with urlopen(f"http://127.0.0.1:{port}/?project=djconnect") as response:
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
@@ -219,6 +243,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('id="componentLogs"', no_project)
         self.assertIn('id="configuration"', no_project)
         self.assertIn('.workspace-database-section { display: none !important; }', no_project)
+        for hidden_project_section in ("#queueItems", "#promptHistory", "#currentRun", "#technicalDetails", "#workspaceCard"):
+            self.assertIn(f'body[data-project-id="none"] {hidden_project_section}', no_project)
+        self.assertIn('ENGINEERING_PLATFORM_NO_PROJECT=true', no_project)
         self.assertIn('id="noProjectSelected"', unscoped)
         self.assertNotIn('data-project-id="djconnect"', unscoped)
         self.assertNotIn(str(roots[0]), unscoped)
