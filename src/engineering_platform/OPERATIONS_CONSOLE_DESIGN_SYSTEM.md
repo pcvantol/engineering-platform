@@ -156,6 +156,13 @@ scrolling, but it is not a selected control: it never receives an outer focus
 border, ring, glow or changed border colour. Focus feedback belongs only to an
 independently interactive element within the table, such as a sortable header.
 
+Conversation bubbles retain their natural content height. Only when one
+message exceeds two-thirds of the definite available message-area height may
+its body become vertically scrollable. The role, timestamp and copy action
+remain fixed in that bubble. Short messages reserve neither scrollbar space nor
+scrollbar chrome; the surrounding conversation area remains the only ordinary
+message-list scroller.
+
 The **Operationeel overzicht** card grid is one column by default. Once its
 own container reaches **760px**, it uses two equal columns. This container
 query keeps individual evidence cards readable in narrow side-by-side layouts

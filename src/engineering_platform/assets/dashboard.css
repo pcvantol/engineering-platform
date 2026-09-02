@@ -537,8 +537,9 @@ html[data-theme="light"] .chat-message__body code{background:transparent;color:i
    Conversation-specific rules begin at the chat surface inside that frame. */
 .prompt-chat-modal__panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);height:100%;overflow:hidden}.prompt-chat-modal #codexChat{align-self:stretch;background:var(--modal-surface);border:0;border-radius:0;box-shadow:none;height:auto;min-height:0;overflow:hidden;padding:0}html[data-theme="light"] .prompt-chat-modal #codexChat{background:var(--modal-surface)}.prompt-chat-modal #codexChat .codex-chat__details{display:grid;grid-template-rows:minmax(0,1fr) auto auto auto;height:100%;min-height:0}.prompt-chat-modal .chat-messages{--chat-bubble-max-block:calc(100% * 2 / 3);max-height:none;min-height:0;overflow:auto}.prompt-chat-modal .chat-compose,.prompt-chat-modal .chat-status,.prompt-chat-modal #codexChat .field{flex:none}
 /* Keep role and timestamp fixed within a long bubble while only its message
-   body scrolls. The messages list owns the definite available chat height. */
-.prompt-chat-modal .chat-message{display:grid;grid-template-rows:auto auto minmax(0,1fr);max-block-size:var(--chat-bubble-max-block);min-block-size:0;overflow:hidden}.prompt-chat-modal .chat-message__body{min-block-size:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+   body scrolls. The messages list owns the definite available chat height.
+   `auto` deliberately reserves no scrollbar space for a short message. */
+.prompt-chat-modal .chat-message{display:grid;grid-template-rows:auto auto minmax(0,1fr);max-block-size:var(--chat-bubble-max-block);min-block-size:0;overflow:hidden}.prompt-chat-modal .chat-message__body{min-block-size:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:auto;scrollbar-width:thin}
 .prompt-chat-modal__header h2::before{content:"⋯"}
 
 /* AI antwoorden krijgen een eigen paarse laag, los van de chatmodal. */
@@ -1242,8 +1243,6 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
 #promptHistoryReportReload[hidden],
 #promptHistoryReportRetry[hidden]{display:none!important}
 
-/* A long message stays a bubble, rather than obscuring the conversation. */
-.chat-messages{--chat-bubble-max-block:calc(420px * 2 / 3)}
-.chat-message{display:block;max-block-size:var(--chat-bubble-max-block);overflow:auto;overscroll-behavior:contain;scrollbar-width:none}
-.chat-message::-webkit-scrollbar,.chat-message__body::-webkit-scrollbar{display:none}
-.chat-message__body{min-block-size:0}
+/* Bubble scrolling is owned by the prompt-history modal's definite message
+   area. Do not add a later global bubble scroller: it would force short
+   messages to reserve scrollbar chrome and defeat the 2/3 area limit. */

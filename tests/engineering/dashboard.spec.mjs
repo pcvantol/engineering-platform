@@ -9021,13 +9021,22 @@ test.describe("Engineering Status browser smoke", () => {
 
     const sizes = await page.locator("#chatMessages").evaluate((container) => {
       const message = container.querySelector(".chat-message");
+      const body = message.querySelector(".chat-message__body");
+      const bodyStyle = getComputedStyle(body);
       return {
         container: container.getBoundingClientRect().height,
         message: message.getBoundingClientRect().height,
+        bodyScrollable: body.scrollHeight > body.clientHeight,
+        bodyOverflowY: bodyStyle.overflowY,
+        bodyScrollbarGutter: bodyStyle.scrollbarGutter,
       };
     });
     expect(sizes.container).toBeGreaterThan(200);
     expect(sizes.message).toBeLessThan(100);
+    expect(sizes.message).toBeLessThanOrEqual(sizes.container * (2 / 3) + 2);
+    expect(sizes.bodyScrollable).toBe(false);
+    expect(sizes.bodyOverflowY).toBe("auto");
+    expect(sizes.bodyScrollbarGutter).toBe("auto");
   });
 
   test("caps long user and assistant chat bubbles and scrolls their bodies", async ({ page }) => {
