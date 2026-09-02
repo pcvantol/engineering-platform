@@ -1421,6 +1421,7 @@ class EngineeringRunner:
                     )
                 if not transition_recovery_state(
                     self.root, run_id=state.run_id, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+                    central_database=self.store.central_database,
                 ):
                     continue
                 if claim_replacement_launch(self.root, run_id=state.run_id) is None:

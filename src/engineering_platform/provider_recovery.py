@@ -428,12 +428,13 @@ def create_recovery_available(
 def transition_recovery_state(
     root: Path, *, run_id: str, expected: str, target: str, diagnostic_code: str | None = None,
     result: str | None = None, result_evidence_ref: str | None = None,
+    central_database: Path | None = None,
 ) -> bool:
     """Compare-and-swap one durable recovery transition."""
     if expected not in RECOVERY_STATES or target not in RECOVERY_STATES:
         raise ValueError("invalid provider recovery transition")
     completed = _now() if target in TERMINAL_RECOVERY_STATES else None
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         changed = connection.execute(
             "UPDATE provider_recovery_attempts SET state=?,diagnostic_code=COALESCE(?,diagnostic_code),"
