@@ -1530,9 +1530,9 @@ def record_admission_decision(
         connection.close()
 
 
-def load_admission_decision(root: Path, run_id: str) -> dict[str, object] | None:
+def load_admission_decision(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load one structured provider-free admission decision for rendering."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT submission_id,execution_mode,decision,failed_gate_ids,evidence,observed_at "
@@ -1605,9 +1605,9 @@ def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str,
     return snapshot
 
 
-def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None:
+def load_submission_for_run(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load immutable Producer provenance for one linked execution without prompt inspection."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
@@ -1798,9 +1798,9 @@ def record_validation_command_terminal(
         connection.close()
 
 
-def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None:
+def load_validation_context(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Return the resolved profile and current control evidence without inference."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         profile = connection.execute(
             "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "

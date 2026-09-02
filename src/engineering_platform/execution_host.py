@@ -483,7 +483,7 @@ class EngineeringRunner:
         source = "RUNNER"
         if state.execution_mode == "MANAGED" and os.environ.get("DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"):
             try:
-                admission = load_admission_decision(self.root, state.run_id)
+                admission = load_admission_decision(self.root, state.run_id, central_database=self.store.central_database)
             except EngineeringStorageError:
                 admission = None
             # A recovered row remains durable historical evidence after its
@@ -703,7 +703,7 @@ class EngineeringRunner:
         if not result.validation_evidence:
             return state
         try:
-            profile_context = load_validation_context(self.root, state.run_id)
+            profile_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             profile_context = None
         required_controls = set(profile_context["required_validation_controls"]) if profile_context else set()
@@ -788,7 +788,7 @@ class EngineeringRunner:
     def _execute_required_validation_controls(self, state: TransactionState) -> TransactionState:
         """Execute already-persisted required controls before qualification."""
         try:
-            validation_context = load_validation_context(self.root, state.run_id)
+            validation_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             validation_context = None
         if not isinstance(validation_context, dict):
@@ -1199,7 +1199,7 @@ class EngineeringRunner:
                 if kind is not None:
                     validation_id = self._validation_id(command, kind)
                     try:
-                        profile = load_validation_context(self.root, state.run_id)
+                        profile = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
                         required = validation_id in set(profile["required_validation_controls"]) if profile else False
                         started_at = datetime.now(timezone.utc).isoformat()
                         record_validation_command_invocation(
@@ -2004,7 +2004,7 @@ Mandatory autonomous refactor and quality-control stage:
             and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT"}
         )
         try:
-            persisted_submission = load_submission_for_run(self.root, state.run_id)
+            persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             persisted_submission = None
         producer_context = persisted_submission.get("execution_context") if isinstance(persisted_submission, dict) else None
@@ -2248,7 +2248,7 @@ Mandatory autonomous refactor and quality-control stage:
             if state.terminal:
                 return state
             try:
-                validation_context = load_validation_context(self.root, state.run_id)
+                validation_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
             except EngineeringStorageError:
                 validation_context = None
             required = validation_context.get("required_validation_controls", ()) if validation_context else ()
