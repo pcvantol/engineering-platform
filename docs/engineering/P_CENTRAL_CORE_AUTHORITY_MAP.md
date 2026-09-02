@@ -63,3 +63,15 @@ converted or removed from every supported installed entrypoint.
 `StateStore` raw-module count is **6**. It is not a completion count: two
 dispatcher callsites are already CENTRAL-bound; all other rows above remain
 active operational migration work. No row is classified `DEAD_UNREACHABLE`.
+
+## Active terminal telemetry boundary
+
+`inbox_watcher` owns the legacy terminal chain
+`queue_terminal_telemetry` → `terminal_telemetry_outbox` →
+`materialize_pending_terminal_telemetry` → `persist_execution`. It is
+**ACTIVE_STANDALONE_OPERATIONAL**, not historical: it claims work, launches
+the runner and is launched by supported watcher/Dashboard composition. The
+typed telemetry APIs now accept an explicit CENTRAL database binding, but the
+watcher has no such composition input yet. It must be migrated through an
+explicit lifecycle composition root or made unavailable; deriving CENTRAL from
+the checkout is forbidden.
