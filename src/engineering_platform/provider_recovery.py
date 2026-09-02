@@ -617,13 +617,16 @@ def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str
 
 def load_recovery_agent_result(
     root: Path, reference: str, *, run_id: str, invocation_id: str,
+    central_database: Path | None = None, artifact_root: Path | None = None,
 ) -> dict[str, object] | None:
     if not reference.startswith("artifact:"):
         return None
     artifact_id = reference.removeprefix("artifact:")
-    if not verify_artifact_integrity(root, artifact_id):
+    if not verify_artifact_integrity(
+        root, artifact_id, central_database=central_database, artifact_root=artifact_root,
+    ):
         return None
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT storage_location,artifact_type FROM execution_artifact_records "
@@ -635,7 +638,10 @@ def load_recovery_agent_result(
     if not row or row[1] != "PROVIDER_RECOVERY_AGENT_RESULT":
         return None
     try:
-        payload = json.loads((root / ".engineering" / str(row[0])).read_text(encoding="utf-8"))
+        authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        payload_path = (authority_root / str(row[0])).resolve()
+        payload_path.relative_to(authority_root)
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None

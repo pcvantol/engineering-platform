@@ -1503,6 +1503,8 @@ class EngineeringRunner:
                 payload = load_recovery_agent_result(
                     self.root, str(recovery.get("result_evidence_ref") or ""),
                     run_id=state.run_id, invocation_id=replacement_id,
+                    central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                 )
                 if payload is None:
                     raise CodexInvocationError(

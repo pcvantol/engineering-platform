@@ -1977,9 +1977,12 @@ def record_artifact(
         connection.close()
 
 
-def verify_artifact_integrity(root: Path, artifact_id: str) -> bool:
+def verify_artifact_integrity(
+    root: Path, artifact_id: str, *, central_database: Path | None = None,
+    artifact_root: Path | None = None,
+) -> bool:
     """Verify a registered payload without making the file itself authoritative."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT digest_algorithm,digest,storage_location FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,)
@@ -1990,8 +1993,9 @@ def verify_artifact_integrity(root: Path, artifact_id: str) -> bool:
         if algorithm != "sha256" or not isinstance(location, str):
             return False
         try:
-            payload = ((root / ".engineering") / location).resolve()
-            payload.relative_to((root / ".engineering").resolve())
+            authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+            payload = (authority_root / location).resolve()
+            payload.relative_to(authority_root)
             actual = hashlib.sha256(payload.read_bytes()).hexdigest()
         except (OSError, ValueError):
             actual = ""
