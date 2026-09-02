@@ -1498,7 +1498,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => window.executionTelemetry([{ date: "2026-08-25", prompt_count: 1 }]));
     await expect(page.locator("#executionTelemetry .category-description")).toHaveText(
-      "Operationele trends van de laatste 180 dagen. Telemetrie is geen repositorybewijs.",
+      "Operationele trends voor dit project van de laatste 180 dagen. Telemetrie is geen repositorybewijs.",
     );
     await expect(page.locator("#configurationTelemetryRetention")).toHaveValue("180");
     await expect(page.locator("#executionTelemetry > #configurationTelemetryRetention")).toHaveCount(0);
@@ -4467,11 +4467,11 @@ test.describe("Engineering Status browser smoke", () => {
     // it prevents a worker teardown from masquerading as a browser failure.
     testInfo.setTimeout(60_000);
     const expectations = [
-      ["en", "Execution Host telemetry", "Operational trends for the last 90 days. Telemetry is not repository evidence."],
-      ["nl", "Execution Host-telemetrie", "Operationele trends van de laatste 90 dagen. Telemetrie is geen repositorybewijs."],
-      ["de", "Execution-Host-Telemetrie", "Betriebstrends der letzten 90 Tage. Telemetrie ist kein Repository-Nachweis."],
-      ["fr", "Télémétrie de l’hôte d’exécution", "Tendances opérationnelles des 90 derniers jours. La télémétrie n’est pas une preuve de dépôt."],
-      ["es", "Telemetría del host de ejecución", "Tendencias operativas de los últimos 90 días. La telemetría no es evidencia del repositorio."],
+      ["en", "Execution telemetry", "Operational trends for this project over the last 90 days. Telemetry is not repository evidence."],
+      ["nl", "Uitvoeringstelemetrie", "Operationele trends voor dit project van de laatste 90 dagen. Telemetrie is geen repositorybewijs."],
+      ["de", "Ausführungstelemetrie", "Betriebstrends für dieses Projekt der letzten 90 Tage. Telemetrie ist kein Repository-Nachweis."],
+      ["fr", "Télémétrie d’exécution", "Tendances opérationnelles de ce projet sur les 90 derniers jours. La télémétrie n’est pas une preuve de dépôt."],
+      ["es", "Telemetría de ejecución", "Tendencias operativas de este proyecto durante los últimos 90 días. La telemetría no es evidencia del repositorio."],
     ];
     for (const [language, title, description] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
