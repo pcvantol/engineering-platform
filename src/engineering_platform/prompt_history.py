@@ -402,7 +402,7 @@ def prompt_history(
                 history.retry_generation, history.retry_timestamp, history.target_checkout_path,
                 history.tracked_file_count, history.target_branch,
                 COALESCE(NULLIF(history.execution_metadata, '{}'), runs.execution_metadata, '{}'),
-                runs.execution_mode, runs.repository,
+                COALESCE(runs.execution_mode, admission.execution_mode), runs.repository,
                 COALESCE(
                     runs.total_execution_seconds,
                     ROUND((
@@ -444,6 +444,7 @@ def prompt_history(
             LEFT JOIN execution_runs AS runs ON runs.run_id = history.run_id
             LEFT JOIN execution_submission_links AS submission_link ON submission_link.run_id = history.run_id
             LEFT JOIN execution_submissions AS submission ON submission.submission_id = submission_link.submission_id
+            LEFT JOIN execution_admission_decisions AS admission ON admission.run_id = history.run_id
             LEFT JOIN execution_dismissals AS dismissal ON dismissal.run_id = history.run_id
             LEFT JOIN execution_emergency_recoveries AS emergency ON emergency.run_id = history.run_id
             ORDER BY history.executed_at DESC, history.run_id DESC

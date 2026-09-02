@@ -138,8 +138,8 @@ class ParityLifecycleDispatcher:
             prompt = self._prompt_path(context, run_id)
             now = _utcnow()
             connection.execute(
-                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?, 'CLAIMED', ?, ?)",
-                (run_id, context.project_id, now, now),
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at,execution_mode) VALUES(?,?, 'CLAIMED', ?, ?, ?)",
+                (run_id, context.project_id, now, now, candidate.execution_mode),
             )
             connection.execute(
                 "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?, 'CLAIMED', ?,?,?)",

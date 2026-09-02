@@ -14,12 +14,33 @@ from engineering_platform.prompt_history import (
     report_path_for_prompt_history,
     report_for_prompt_history,
 )
-from engineering_platform.storage import open_storage, record_submission
+from engineering_platform.storage import open_storage, record_admission_decision, record_submission
 from engineering_platform.execution_timing import record_phase
 from engineering_platform.telemetry import ExecutionTelemetry, persist_execution
 
 
 class PromptHistoryTest(unittest.TestCase):
+    def test_projects_admission_execution_mode_when_telemetry_has_not_materialized(self) -> None:
+        """A CENTRAL parity run records its admission before terminal telemetry."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record_prompt_execution(
+                root, run_id="inbox-central-genesis", terminal_state="COMPLETE",
+                prompt_title="CENTRAL parity submission", executed_at="2026-08-15T12:00:00Z",
+            )
+            with open_storage(root) as connection:
+                connection.execute(
+                    "INSERT INTO execution_submissions(submission_id,producer_id,producer_type,contract_version,prompt_content,prompt_metadata,target_identity,original_envelope,received_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    ("submission-central-genesis", "canary", "HUMAN", "1.0", "Execution Mode: Genesis", "{}", "{}", "{}", "2026-08-15T12:00:00Z"),
+                )
+            record_admission_decision(
+                root, run_id="inbox-central-genesis", submission_id="submission-central-genesis",
+                execution_mode="GENESIS", decision="PASS", failed_gate_ids=(), evidence=(),
+                observed_at="2026-08-15T12:00:00Z",
+            )
+
+            self.assertEqual(prompt_history(root)[0]["execution_mode"], "GENESIS")
+
     def test_projects_only_retained_chat_messages_into_prompt_history(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

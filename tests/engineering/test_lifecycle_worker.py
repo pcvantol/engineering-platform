@@ -56,7 +56,7 @@ class LifecycleWorkerTests(unittest.TestCase):
         self.assertEqual(worker.eligible_submission_ids(), [alpha, beta])
         # A dispatcher claim, not the worker, removes a candidate from future observation.
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
-            connection.execute("INSERT INTO ep_execution_runs VALUES(?,?,?,?,?)", ("run-alpha", "alpha", "COMPLETE", "now", "now"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-alpha", "alpha", "COMPLETE", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)", (alpha, "alpha", "alpha", "run-alpha", "COMPLETE", "prompt", "now", "now"))
         self.assertEqual(worker.eligible_submission_ids(), [beta])
 
@@ -97,7 +97,7 @@ class LifecycleWorkerTests(unittest.TestCase):
     def test_claimed_run_is_revisited_for_dispatcher_owned_restart_recovery(self) -> None:
         submission = self._submit("alpha")
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
-            connection.execute("INSERT INTO ep_execution_runs VALUES(?,?,?,?,?)", ("stable-run", "alpha", "RUNNING", "now", "now"))
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("stable-run", "alpha", "RUNNING", "now", "now"))
             connection.execute("INSERT INTO ep_parity_lifecycle_dispatches VALUES(?,?,?,?,?,?,?,?)", (submission, "alpha", "alpha", "stable-run", "RUNNING", "prompt", "now", "now"))
         worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
         worker.run_once()

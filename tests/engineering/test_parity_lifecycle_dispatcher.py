@@ -101,6 +101,11 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         self.assertIn("Execution Mode: Genesis", _Runner.calls[0][0].read_text(encoding="utf-8"))
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            self.assertEqual(
+                connection.execute("SELECT execution_mode FROM ep_execution_runs WHERE run_id=?", (receipt.run_id,)).fetchone(),
+                ("GENESIS",),
+            )
 
     def test_terminal_dispatch_projects_the_preserved_console_history(self) -> None:
         submission = self._submission("alpha")
@@ -120,7 +125,7 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute(
-                "INSERT INTO ep_execution_runs VALUES(?,?,?,?,?)",
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("historical-missing-checkpoint", "alpha", "COMPLETE", "now", "now"),
             )
             connection.execute(
