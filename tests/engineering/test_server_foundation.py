@@ -157,9 +157,15 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
             second = response.read().decode("utf-8")
+        # Browser module and stylesheet requests precede the document's
+        # project-aware fetch wrapper, so neutral package assets must remain
+        # available without a scope header.
+        with urlopen(f"http://127.0.0.1:{port}/assets/dashboard.js") as response:
+            asset = response.read()
         self.assertIn('id="consoleProject"', first)
         self.assertIn('value="djconnect" selected', first)
         self.assertIn('value="engineering-platform" selected', second)
         self.assertIn('/assets/dashboard.js', first)
+        self.assertIn(b"fetch", asset)
         self.assertNotIn(str(roots[0]), first)
         self.assertNotIn(str(roots[1]), second)

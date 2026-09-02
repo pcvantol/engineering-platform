@@ -516,7 +516,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
         if not isinstance(selected, str) or selected not in project_ids:
-            if request.path == "/" and projects:
+            # Static package assets are scope-neutral and load before the
+            # document's project-aware fetch wrapper exists.  Resolve a valid
+            # bound root solely to reuse the installed asset handler; no
+            # project data is read or disclosed by these routes.
+            if (request.path == "/" or request.path.startswith("/assets/") or request.path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}) and projects:
                 selected = projects[0]["project_id"]
             else:
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
