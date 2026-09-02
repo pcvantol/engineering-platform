@@ -24,7 +24,7 @@ from .execution_host import EngineeringRunner
 from .execution_repository import GhCliClient, SubprocessRepositoryClient
 from .parity_context import HistoricalCandidate, ParityProjectContext, historical_candidate, project_context
 from .platform_bootstrap import provision_runtime_workspace
-from .providers import CodexCliProvider
+from .providers import CodexCliProvider, GitProvider
 from .execution_executor import CodexCliClient
 from .storage import record_run_qualification_context, record_submission
 
@@ -61,11 +61,14 @@ def _utcnow() -> str:
 
 def _default_runner(repository_root: Path) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
+    remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
+    match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
+    repository = match.group(1) if remote.returncode == 0 and match else None
     return EngineeringRunner(
         repository_root,
         StateStore(repository_root / ".engineering" / "engineering-runs"),
         SubprocessRepositoryClient(),
-        GhCliClient(),
+        GhCliClient(repository=repository),
         CodexCliClient(CodexCliProvider()),
     )
 
