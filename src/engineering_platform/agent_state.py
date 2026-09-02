@@ -9,7 +9,11 @@ from pathlib import Path
 import re
 import tempfile
 
-from .storage import EngineeringStorageError, open_storage
+from .storage import (
+    CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    EngineeringStorageError,
+    open_storage,
+)
 
 
 SCHEMA_VERSION = 1
@@ -400,8 +404,6 @@ class StateStore:
 
     def save(self, state: TransactionState) -> Path:
         path = self.path_for(state.run_id)
-        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        encoded = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         try:
             connection = open_storage(self.root)
@@ -424,6 +426,13 @@ class StateStore:
                 connection.close()
         except (EngineeringStorageError, OSError) as error:
             raise StateError("canonical engineering storage could not save checkpoint") from error
+        # CENTRAL runs must not create a repository-local checkpoint shadow.
+        # The database row above is the sole durable state and is sufficient
+        # for restart, recovery and Console/history projections.
+        if os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT):
+            return path
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        encoded = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
         descriptor, temporary = tempfile.mkstemp(prefix=f".{state.run_id}.", suffix=".tmp", dir=self.directory)
         try:
             os.fchmod(descriptor, 0o600)
@@ -453,7 +462,7 @@ class StateStore:
                 connection.close()
         except EngineeringStorageError as error:
             raise StateError("canonical engineering storage is unavailable") from error
-        if path.exists():
+        if not os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT) and path.exists():
             path.unlink()
 
     def _prune_completed_history(self) -> None:

@@ -28,7 +28,11 @@ from .platform_bootstrap import provision_runtime_workspace
 from .providers import CodexCliProvider, GitProvider
 from .execution_executor import CodexCliClient
 from .execution_reporting import generate_terminal_report
-from .storage import record_run_qualification_context, record_submission
+from .storage import (
+    CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    record_run_qualification_context,
+    record_submission,
+)
 from .prompt_history import prompt_history, record_terminal_report
 from .report_analysis import analyze as analyze_terminal_report
 
@@ -145,12 +149,17 @@ def _default_runner(repository_root: Path) -> EngineeringRunner:
 
 
 @contextmanager
-def _historical_admission_environment(repository_root: Path):
+def _historical_admission_environment(repository_root: Path, data_root: Path):
     """Keep the runner's existing persisted-admission guard in force."""
-    keys = ("DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA", "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT")
+    keys = (
+        "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA",
+        "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT",
+        CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    )
     previous = {key: os.environ.get(key) for key in keys}
     os.environ[keys[0]] = str(inbox_watcher.ENGINEERING_STORAGE_SCHEMA_VERSION)
     os.environ[keys[1]] = str(repository_root)
+    os.environ[CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT] = str(data_root / "engineering.db")
     try:
         yield
     finally:
@@ -311,9 +320,12 @@ class ParityLifecycleDispatcher:
             if context.local_repository_root is None:
                 continue
             try:
-                state = StateStore(
-                    context.local_repository_root / ".engineering" / "engineering-runs"
-                ).load(run_id)
+                with _historical_admission_environment(
+                    context.local_repository_root, self.data_root
+                ):
+                    state = StateStore(
+                        context.local_repository_root / ".engineering" / "engineering-runs"
+                    ).load(run_id)
             except StateError:
                 # CENTRAL terminal history can outlive the local retained
                 # checkpoint. It is already durable history, not an active
@@ -342,16 +354,19 @@ class ParityLifecycleDispatcher:
         repository_root = context.local_repository_root
         self._set_state(submission_id, run_id, "RUNNING")
         try:
-            if not duplicate:
-                self._persist_historical_input(repository_root, candidate, run_id, prompt)
-            runner = self.runner_factory(repository_root)
-            with _historical_admission_environment(repository_root):
+            with _historical_admission_environment(repository_root, self.data_root):
+                if not duplicate:
+                    self._persist_historical_input(repository_root, candidate, run_id, prompt)
+                runner = self.runner_factory(repository_root)
                 state = runner.run(
                     prompt, run_id=run_id, resume=duplicate,
                     owner_authorized=candidate.execution_mode == "MANAGED",
                 )
+                # Report/history indexing is execution evidence too.  Keep it
+                # inside the explicit CENTRAL context; a terminal projection
+                # must never reopen the repository-local database.
+                self._project_terminal_history(repository_root, state, runner)
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
-            self._project_terminal_history(repository_root, state, runner)
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
         except RunnerError as error:

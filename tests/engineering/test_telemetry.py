@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
+import os
+import sqlite3
 import tempfile
 from threading import Event
 import unittest
@@ -27,9 +29,30 @@ from engineering_platform.telemetry import (
 )
 from engineering_platform.producer import ProducerMetadata
 from engineering_platform.execution_timing import record_phase
+from engineering_platform import server
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
+    def test_central_context_persists_telemetry_without_a_checkout_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
+            server.initialize(data)
+            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            now = datetime.now(timezone.utc)
+            try:
+                persist_execution(checkout, ExecutionTelemetry(
+                    "inbox-central-telemetry", now, now, now, "COMPLETE", 0.0,
+                    1, 2, 3, "MANAGED", "central", "central", "test",
+                ))
+            finally:
+                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
+                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+            self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
+            with sqlite3.connect(data / "engineering.db") as connection:
+                self.assertIsNotNone(connection.execute(
+                    "SELECT 1 FROM execution_runs WHERE run_id='inbox-central-telemetry'"
+                ).fetchone())
     def _record(self, run_id: str, state: str, started: datetime) -> ExecutionTelemetry:
         return ExecutionTelemetry(
             run_id=run_id,

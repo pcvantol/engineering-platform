@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import re
 from pathlib import Path
 
@@ -52,6 +53,12 @@ def _safe_timestamp(value: object) -> str:
 def _relative_report(root: Path, report: Path | None) -> str | None:
     if report is None:
         return None
+    central = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+    if central:
+        try:
+            return "CENTRAL:" + str(report.resolve().relative_to(Path(central).resolve().parent / "artifacts"))
+        except (OSError, ValueError):
+            return None
     try:
         relative = report.resolve().relative_to((root / ".engineering" / "reports").resolve())
     except (OSError, ValueError):
@@ -547,6 +554,14 @@ def report_path_for_prompt_history(root: Path, run_id: object) -> Path | None:
         connection.close()
     if not row or not isinstance(row[0], str):
         return None
+    central = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+    if central and row[0].startswith("CENTRAL:"):
+        path = (Path(central).resolve().parent / "artifacts" / row[0].removeprefix("CENTRAL:")).resolve()
+        try:
+            path.relative_to(Path(central).resolve().parent / "artifacts")
+            return path if path.is_file() else None
+        except (OSError, ValueError):
+            return None
     path = (root / ".engineering" / "reports" / row[0]).resolve()
     try:
         path.relative_to((root / ".engineering" / "reports").resolve())

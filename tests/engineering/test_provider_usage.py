@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -18,9 +20,30 @@ from engineering_platform.provider_usage import (
     usage_snapshots_from_jsonl,
 )
 from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage
+from engineering_platform import server
 
 
 class ProviderUsageTests(unittest.TestCase):
+    def test_central_context_persists_provider_usage_without_local_database(self) -> None:
+        with TemporaryDirectory() as temporary:
+            data = Path(temporary) / "data"; checkout = Path(temporary) / "checkout"; checkout.mkdir()
+            server.initialize(data)
+            previous = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+            os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = str(data / "engineering.db")
+            try:
+                persist_provider_invocation(checkout, ProviderInvocation(
+                    "inbox-central-provider", 1, "codex_cli", "gpt-5.6-terra", "EXECUTE_AGENT", "agent",
+                    "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 1000,
+                    {"input_tokens": 1, "output_tokens": 2}, AUTHORITATIVE,
+                ))
+            finally:
+                if previous is None: os.environ.pop("EP_CENTRAL_OPERATIONAL_DATABASE", None)
+                else: os.environ["EP_CENTRAL_OPERATIONAL_DATABASE"] = previous
+            self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
+            with sqlite3.connect(data / "engineering.db") as connection:
+                self.assertIsNotNone(connection.execute(
+                    "SELECT 1 FROM provider_invocations WHERE run_id='inbox-central-provider'"
+                ).fetchone())
     def setUp(self) -> None:
         self.temporary = TemporaryDirectory()
         self.root = Path(self.temporary.name)

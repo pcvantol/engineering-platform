@@ -81,6 +81,11 @@ The rows below use these dispositions:
 
 ## Evidence inventory
 
+The detailed P-CENTRAL-CORE source inventory is maintained in
+[`P_CENTRAL_CORE_AUTHORITY_MAP.md`](P_CENTRAL_CORE_AUTHORITY_MAP.md).  It is a
+pre-cutover map, not closure evidence: entries remain ACTIVE until the
+installed-wheel and no-local-authority qualification gates pass.
+
 The audits inspected the Server boundary, CENTRAL database layer, retained
 dashboard handler and browser assets, lifecycle dispatcher, watcher, storage,
 telemetry, provider/preflight code, service launch configuration, CI and current

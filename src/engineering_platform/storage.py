@@ -28,6 +28,10 @@ JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
 ADMITTED_STORAGE_SCHEMA_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"
 ADMITTED_STORAGE_ROOT_ENVIRONMENT = "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT"
+# This is set only by the installed CENTRAL lifecycle composition boundary.
+# It is deliberately not inferred from a checkout: an explicit installation
+# database is the only supported operational authority for a standalone run.
+CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT = "EP_CENTRAL_OPERATIONAL_DATABASE"
 
 
 class EngineeringStorageError(RuntimeError):
@@ -2046,6 +2050,12 @@ def import_legacy_projection_once(root: Path, name: str, path: Path) -> dict[str
 
 def database_path(root: Path) -> Path:
     """Resolve the sole EP authority; corrupt authority control fails closed."""
+    central = os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
+    if central:
+        path = Path(central).expanduser().resolve()
+        if path.name != DATABASE_FILENAME or not path.is_file():
+            raise EngineeringStorageError("CENTRAL operational database is unavailable.")
+        return path
     legacy = root.resolve() / WORKSPACE_DIRECTORY / DATABASE_FILENAME
     pointer = _authority_pointer_path()
     if not pointer.exists():
@@ -2208,7 +2218,8 @@ def open_storage(
         connection.execute("PRAGMA busy_timeout=10000")
         connection.execute(f"PRAGMA journal_mode={journal_mode}")
         current = _schema_version(connection)
-        if current > ENGINEERING_STORAGE_SCHEMA_VERSION:
+        central = bool(os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT))
+        if current > ENGINEERING_STORAGE_SCHEMA_VERSION and not central:
             raise EngineeringStorageError(
                 "Engineering storage schema is newer than this Engineering Platform supports."
             )
@@ -2247,6 +2258,30 @@ def open_storage(
             raise
         raise EngineeringStorageError("Engineering storage could not be opened safely.") from error
     return connection
+
+
+def install_central_operational_compatibility_schema(connection: sqlite3.Connection) -> None:
+    """Install retained-runner tables in the already-versioned CENTRAL DB.
+
+    The historical action state machine is intentionally preserved during the
+    cutover.  Its tables are installed *inside* CENTRAL, never copied from a
+    repository and never used to create a project-local database.  The
+    Server's schema migration owns the outer transaction and schema version.
+    """
+    # Schema-41 introduced a deliberately minimal table with this name.  The
+    # retained runner's schema-5 history index has a different contract, so
+    # preserve the bootstrap evidence under an explicit historical name before
+    # installing the full CENTRAL-owned operational index.
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(prompt_execution_history)")
+    }
+    if columns and "terminal_state" not in columns:
+        connection.execute(
+            "ALTER TABLE prompt_execution_history RENAME TO ep_bootstrap_prompt_history"
+        )
+    for version in range(1, ENGINEERING_STORAGE_SCHEMA_VERSION + 1):
+        MIGRATIONS[version](connection)
 
 
 def activate_storage_schema(root: Path) -> sqlite3.Connection:

@@ -5,6 +5,7 @@ from __future__ import annotations
 # transaction and evidence inputs.
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 from typing import Callable, Mapping
@@ -1150,7 +1151,11 @@ def generate_terminal_report(
     execution_metadata: Mapping[str, int] | None = None,
 ) -> Path:
     """Write one immutable, local-only report for a terminal transaction."""
-    reports = root / ".engineering" / "reports"
+    central = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+    reports = (
+        Path(central).resolve().parent / "artifacts" / "reports"
+        if central else root / ".engineering" / "reports"
+    )
     reports.mkdir(mode=0o700, parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     path = reports / f"{timestamp}_{state.run_id}.md"

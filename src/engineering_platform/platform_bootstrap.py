@@ -348,7 +348,12 @@ def runtime_workspace(root: Path) -> Path:
 def _provision_workspace_paths(root: Path, workspace: Path) -> dict[str, Path]:
     """Create the repeatable directories for an already-selected workspace."""
     PlatformConfiguration.load(root)
-    paths = {"workspace": workspace, "reports": workspace / "reports", "status": workspace / "status", "runs": workspace / "engineering-runs", "diagnostics": workspace / "logs", "inbox_processing": workspace / "inbox-processing"}
+    paths = {"workspace": workspace, "reports": workspace / "reports", "status": workspace / "status", "diagnostics": workspace / "logs", "inbox_processing": workspace / "inbox-processing"}
+    # A CENTRAL lifecycle must not even create the historical checkpoint
+    # directory.  Checkout directories retained here are physical temporary
+    # execution concerns, not operational truth.
+    if not os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE"):
+        paths["runs"] = workspace / "engineering-runs"
     for path in paths.values():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return paths
