@@ -31,6 +31,19 @@ CONTROLLED_INTERRUPTION_PHASES = frozenset({"QUALITY_CONTROL_AGENT"})
 CONTROL_DIRECTORY = Path(".engineering/artifacts/provider-recovery-fault-injection")
 
 
+def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open recovery authority from an explicit CENTRAL binding when supplied."""
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL recovery database is unavailable")
+    connection = sqlite3.connect(database, isolation_level=None)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
+
+
 class ControlledInterruptionControlError(ValueError):
     """A bounded operator control request is invalid or unsafe."""
 
@@ -181,7 +194,7 @@ if __name__ == "__main__":
 
 
 def load_recovery_state(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
-    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,"
