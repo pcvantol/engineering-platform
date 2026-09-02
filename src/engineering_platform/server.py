@@ -23,7 +23,7 @@ import time
 from typing import Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
+from urllib.parse import SplitResult, parse_qs, parse_qsl, urlencode, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
@@ -479,12 +479,24 @@ def _console_root(data_root: Path, project_id: str) -> Path:
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
-def _historical_dashboard_path(request: object) -> str:
+def _historical_dashboard_path(request: SplitResult) -> str:
     """Remove the Server-only project selector before historical routing."""
-    path = str(getattr(request, "path"))
-    query = str(getattr(request, "query"))
-    retained = [(key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key != "project"]
-    return path if not retained else f"{path}?{urlencode(retained, doseq=True)}"
+    retained = [
+        (key, value)
+        for key, value in parse_qsl(request.query, keep_blank_values=True)
+        if key != "project"
+    ]
+    return request.path if not retained else f"{request.path}?{urlencode(retained, doseq=True)}"
+
+
+def _console_project_options(project_id: str, projects: list[dict[str, str]]) -> str:
+    """Render only registered CENTRAL project identities for the selector."""
+    return "".join(
+        f'<option value="{escape(item["project_id"], quote=True)}"'
+        f'{" selected" if item["project_id"] == project_id else ""}>'
+        f'{escape(item["project_id"])}</option>'
+        for item in projects
+    )
 
 
 def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path):
@@ -494,12 +506,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
     The Server supplies its authoritative options and request scoping there;
     it must not add a second selector to the dashboard content.
     """
-    options = "".join(
-        f'<option value="{escape(item["project_id"], quote=True)}"'
-        f'{" selected" if item["project_id"] == project_id else ""}>'
-        f'{escape(item["project_id"])}</option>'
-        for item in projects
-    )
+    options = _console_project_options(project_id, projects)
     boundary = f'''<script>(function(){{const project={json.dumps(project_id)},options={json.dumps(options)},nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})}})();</script>'''
     root_bytes = str(root).encode("utf-8")
     return lambda document: document.replace(root_bytes, b"Project-scoped local workspace").replace(

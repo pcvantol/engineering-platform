@@ -5968,47 +5968,51 @@ function providerLoginStatusBlock() {
       );
       block.append(row);
     }
-    const runtimeBlock = document.createElement("section");
-    runtimeBlock.id = "configurationValidationEnvironmentStatus";
-    runtimeBlock.className = "configuration-validation-environment";
-    runtimeBlock.setAttribute("aria-live", "polite");
-    runtimeBlock.append(Object.assign(document.createElement("h3"), {
-      textContent: t("configuration.validation_environment"),
-    }));
-    const runtime = document.createElement("div");
-    runtime.className = "configuration-provider-status__row configuration-validation-environment__row";
-    runtime.dataset.executionRuntime = "true";
-    const repair = Object.assign(document.createElement("button"), {
-      className: "configuration-provider-status__repair", type: "button", hidden: true,
-      textContent: t("configuration.execution_runtime_repair"),
-    });
-    repair.dataset.executionRuntimeRepair = "true";
-    const details = document.createElement("div");
-    details.className = "configuration-validation-environment__details";
-    const runtimeDetail = (label, attribute) => {
-      const detail = document.createElement("span");
-      detail.className = "configuration-validation-environment__detail";
-      const value = document.createElement("code");
-      value.dataset[attribute] = "true";
-      value.textContent = "—";
-      detail.append(Object.assign(document.createElement("span"), { textContent: label }), value);
-      return detail;
-    };
-    details.append(
-      runtimeDetail(t("configuration.python_path"), "executionRuntimePath"),
-      runtimeDetail(t("configuration.python_version"), "executionRuntimeVersion"),
-    );
-    runtime.append(
-      Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
-      Object.assign(document.createElement("strong"), { textContent: t("configuration.execution_runtime") }),
-      Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
-      repair,
-    );
-    runtimeBlock.append(runtime, details);
+    const runtimeBlock = validationEnvironmentBlock();
     configuration.querySelector("summary")?.after(block);
     block.after(runtimeBlock);
   }
   return block;
+}
+function validationEnvironmentDetail(label, attribute) {
+  const detail = document.createElement("span");
+  detail.className = "configuration-validation-environment__detail";
+  const value = document.createElement("code");
+  value.dataset[attribute] = "true";
+  value.textContent = "—";
+  detail.append(Object.assign(document.createElement("span"), { textContent: label }), value);
+  return detail;
+}
+function validationEnvironmentBlock() {
+  const runtimeBlock = document.createElement("section");
+  runtimeBlock.id = "configurationValidationEnvironmentStatus";
+  runtimeBlock.className = "configuration-validation-environment";
+  runtimeBlock.setAttribute("aria-live", "polite");
+  runtimeBlock.append(Object.assign(document.createElement("h3"), {
+    textContent: t("configuration.validation_environment"),
+  }));
+  const runtime = document.createElement("div");
+  runtime.className = "configuration-provider-status__row configuration-validation-environment__row";
+  runtime.dataset.executionRuntime = "true";
+  const repair = Object.assign(document.createElement("button"), {
+    className: "configuration-provider-status__repair", type: "button", hidden: true,
+    textContent: t("configuration.execution_runtime_repair"),
+  });
+  repair.dataset.executionRuntimeRepair = "true";
+  const details = document.createElement("div");
+  details.className = "configuration-validation-environment__details";
+  details.append(
+    validationEnvironmentDetail(t("configuration.python_path"), "executionRuntimePath"),
+    validationEnvironmentDetail(t("configuration.python_version"), "executionRuntimeVersion"),
+  );
+  runtime.append(
+    Object.assign(document.createElement("span"), { className: "configuration-provider-status__dot", ariaHidden: "true" }),
+    Object.assign(document.createElement("strong"), { textContent: t("configuration.execution_runtime") }),
+    Object.assign(document.createElement("span"), { className: "configuration-provider-status__label" }),
+    repair,
+  );
+  runtimeBlock.append(runtime, details);
+  return runtimeBlock;
 }
 const PROVIDER_READINESS_KEYS = Object.freeze(["codex", "github"]);
 const CHECK_FAILED_PROVIDERS = Object.freeze({
