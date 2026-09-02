@@ -797,6 +797,15 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
   });
 
+  test("uses the CENTRAL-only Finder route for the EP database location", () => {
+    const script = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8");
+    const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
+    expect(script).toContain('fetch("/api/central-database/open-directory"');
+    expect(script).toContain('event.target.closest("#centralDatabaseLocation")');
+    expect(stylesheet).toContain(".configuration-central-database__location-link{");
+    expect(stylesheet).toContain("text-decoration:underline");
+  });
+
   test("analyses every worktree before showing a safe removal action", async ({ page }) => {
     const projection = { available: true, worktrees: [
       { path: "/workspace", branch: "main", commit: "123456789abc" },

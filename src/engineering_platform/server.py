@@ -39,6 +39,7 @@ from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
+from .providers import LocalProcessProvider
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -608,7 +609,7 @@ def _central_database_section(data_root: Path) -> str:
         'aria-label="Download EP-database">Download EP-database</a></header>'
         '<dl class="configuration-central-database__facts">'
         '<div><dt class="label" data-i18n="configuration.database_owner">Database-eigendom</dt><dd data-i18n="configuration.ep_database_owner">Engineering Platform</dd></div>'
-        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd><code>{escape(str(details["path"]))}</code></dd></div>'
+        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd><button id="centralDatabaseLocation" class="local-folder-link configuration-central-database__location-link" type="button" data-i18n-aria-label="configuration.ep_database_open_folder" aria-label="Open EP-databasemap in Finder">{escape(str(details["path"]))}</button></dd></div>'
         f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd>{details["integrity"]}</dd></div>'
@@ -625,6 +626,20 @@ def _central_database_section(data_root: Path) -> str:
 def _central_database_script() -> str:
     """Keep the EP database maintenance preference host-scoped in the Console."""
     return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud bijgewerkt.'}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});'''
+
+
+def _open_central_database_directory(data_root: Path) -> dict[str, str]:
+    """Open exactly CENTRAL's owning directory in Finder, never a request path."""
+    directory = central_database.path(data_root).parent.resolve()
+    if sys.platform != "darwin" or directory != data_root.resolve() or not directory.is_dir():
+        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE")
+    try:
+        outcome = LocalProcessProvider().execute(directory, ("open", str(directory)))
+    except OSError as error:
+        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE") from error
+    if outcome.returncode:
+        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE")
+    return {"opened_directory": str(directory)}
 
 
 _WORKSPACE_ID_FIELD = re.compile(
@@ -784,6 +799,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         request = urlsplit(self.path)
         if request.path == "/api/central-database/download" and method == "do_GET":
             self._send_central_database_backup()
+            return True
+        if request.path == "/api/central-database/open-directory" and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                self._send(202, _open_central_database_directory(self.server.data_root))  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, ValueError):
+                self._send(409, {"error": "CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE"})
             return True
         if request.path != "/api/central-database/configuration":
             return False

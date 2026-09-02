@@ -188,10 +188,24 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('CENTRAL database', panel)
         self.assertIn('class="configuration-central-database__maintenance"', panel)
         self.assertIn('data-saved-value="3600"', panel)
+        self.assertIn('id="centralDatabaseLocation"', panel)
+        self.assertIn('configuration-central-database__location-link', panel)
+        self.assertIn('configuration.ep_database_open_folder', panel)
         self.assertIn('aria-describedby="centralDatabaseMaintenanceHelp centralDatabaseMaintenanceStatus"', panel)
         self.assertIn("maintenance.dataset.savedValue", script)
         self.assertIn("maintenance.value=previous", script)
         self.assertIn("Number(result.interval_seconds)!==requested", script)
+
+    @patch("engineering_platform.server.sys.platform", "darwin")
+    @patch("engineering_platform.server.LocalProcessProvider")
+    def test_ep_database_location_opens_only_the_central_owning_directory(self, process: MagicMock) -> None:
+        server.initialize(self.root)
+        process.return_value.execute.return_value = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
+
+        opened = server._open_central_database_directory(self.root)
+
+        self.assertEqual(opened, {"opened_directory": str(self.root.resolve())})
+        process.return_value.execute.assert_called_once_with(self.root.resolve(), ("open", str(self.root.resolve())))
 
     def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
         """Two requests select separate roots without exposing either path."""

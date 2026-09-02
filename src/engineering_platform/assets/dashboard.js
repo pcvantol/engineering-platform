@@ -1499,6 +1499,19 @@ async function openLocalFolder(directoryPath) {
     );
   }
 }
+async function openCentralDatabaseDirectory() {
+  try {
+    const response = await fetch("/api/central-database/open-directory", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!response.ok) throw Error();
+  } catch {
+    showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
+  }
+}
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
+});
 function configureLocalFolderButton(button, value, { containingFolder = false } = {}) {
   const path = localFolderPath(value);
   button.classList.add("local-folder-link");
