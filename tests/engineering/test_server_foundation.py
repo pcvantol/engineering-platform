@@ -176,6 +176,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
             second = response.read().decode("utf-8")
+        # EventSource supplies the CENTRAL scope as a query value because it
+        # cannot set the dashboard fetch header. Both bound projects must
+        # reach the preserved live route, not leak scope into a 404 path.
+        for identifier in ("djconnect", "engineering-platform"):
+            with urlopen(f"http://127.0.0.1:{port}/api/events?project={identifier}", timeout=2) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), "text/event-stream")
         # Browser module and stylesheet requests precede the document's
         # project-aware fetch wrapper, so neutral package assets must remain
         # available without a scope header.
@@ -191,6 +198,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         )(b"<main></main>").decode("utf-8")
         self.assertIn('>djconnect</option>', selector)
         self.assertNotIn('>DJConnect</option>', selector)
+        self.assertEqual(server._historical_dashboard_path(server.urlsplit("/api/events?project=djconnect")), "/api/events")
+        self.assertEqual(
+            server._historical_dashboard_path(server.urlsplit("/api/prompt-history/run/report?project=djconnect&audit=download")),
+            "/api/prompt-history/run/report?audit=download",
+        )
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
         self.assertNotIn(str(roots[0]), first)

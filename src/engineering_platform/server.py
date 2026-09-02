@@ -23,7 +23,7 @@ import time
 from typing import Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
@@ -479,6 +479,14 @@ def _console_root(data_root: Path, project_id: str) -> Path:
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
+def _historical_dashboard_path(request: object) -> str:
+    """Remove the Server-only project selector before historical routing."""
+    path = str(getattr(request, "path"))
+    query = str(getattr(request, "query"))
+    retained = [(key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key != "project"]
+    return path if not retained else f"{path}?{urlencode(retained, doseq=True)}"
+
+
 def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path):
     """Bind CENTRAL project scope to the historical title-bar selector.
 
@@ -560,7 +568,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # remains available without a route-by-route copy.
         self._send = historical._send.__get__(self, type(self))  # type: ignore[method-assign]
         self._same_origin = historical._same_origin.__get__(self, type(self))  # type: ignore[attr-defined]
-        getattr(historical, method)(self)
+        # EventSource cannot supply the scope header.  The document wrapper
+        # therefore uses `?project=...`; it is consumed above and must not
+        # reach the historical routes, several of which correctly compare
+        # their request path exactly (including `/api/events`).
+        original_path = self.path
+        self.path = _historical_dashboard_path(request)
+        try:
+            getattr(historical, method)(self)
+        finally:
+            self.path = original_path
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
