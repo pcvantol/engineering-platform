@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from math import sqrt
 from pathlib import Path
+import sqlite3
 from threading import Lock, Thread, current_thread
 from time import monotonic
 from typing import Callable, Literal
@@ -360,6 +361,7 @@ def persist_execution(
     *,
     create: bool = True,
     background: bool = False,
+    central_database: Path | None = None,
 ) -> None:
     """Persist one immutable run projection and refresh its daily aggregate."""
     if telemetry.terminal_state not in TERMINAL_STATES:
@@ -371,7 +373,14 @@ def persist_execution(
     if execution_seconds is not None and (isinstance(execution_seconds, bool) or execution_seconds < 0):
         raise ValueError("telemetry execution duration is invalid")
     execution_date = finished.date().isoformat()
-    connection = open_storage(root, create=create, journal_mode="MEMORY" if background else "DELETE")
+    if central_database is None:
+        connection = open_storage(root, create=create, journal_mode="MEMORY" if background else "DELETE")
+    else:
+        database = central_database.resolve()
+        if not database.is_file():
+            raise ValueError("CENTRAL telemetry database is unavailable")
+        connection = sqlite3.connect(database, isolation_level=None)
+        connection.execute("PRAGMA foreign_keys=ON")
     try:
         # One projection transaction: a crash can leave the durable outbox
         # pending, but never a half-refreshed run/daily aggregate pair.
