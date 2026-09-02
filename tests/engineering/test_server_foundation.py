@@ -181,9 +181,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         # available without a scope header.
         with urlopen(f"http://127.0.0.1:{port}/assets/dashboard.js") as response:
             asset = response.read()
-        self.assertIn('id="consoleProject"', first)
-        self.assertIn('value="djconnect" selected', first)
-        self.assertIn('value="engineering-platform" selected', second)
+        self.assertNotIn('id="consoleProject"', first)
+        self.assertNotIn('id="consoleProjectBoundary"', first)
+        self.assertIn("getElementById('dashboardProject')", first)
+        self.assertIn('const project="djconnect"', first)
+        self.assertIn('const project="engineering-platform"', second)
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
         self.assertNotIn(str(roots[0]), first)

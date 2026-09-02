@@ -480,14 +480,19 @@ def _console_root(data_root: Path, project_id: str) -> Path:
 
 
 def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path):
-    """Add the CENTRAL project boundary without replacing the historical UI."""
+    """Bind CENTRAL project scope to the historical title-bar selector.
+
+    The Operations Console already owns its project selector in the title bar.
+    The Server supplies its authoritative options and request scoping there;
+    it must not add a second selector to the dashboard content.
+    """
     options = "".join(
         f'<option value="{escape(item["project_id"], quote=True)}"'
         f'{" selected" if item["project_id"] == project_id else ""}>'
         f'{escape("DJConnect" if item["project_id"] == "djconnect" else "Engineering Platform" if item["project_id"] == "engineering-platform" else item["project_id"])}</option>'
         for item in projects
     )
-    boundary = f'''<section class="card" id="consoleProjectBoundary" aria-label="Project selection"><label for="consoleProject">Project</label><select id="consoleProject">{options}</select></section><script>(function(){{const project={json.dumps(project_id)},select=document.getElementById('consoleProject'),nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})();</script>'''
+    boundary = f'''<script>(function(){{const project={json.dumps(project_id)},options={json.dumps(options)},nativeFetch=window.fetch.bind(window);window.fetch=(input,init={{}})=>{{const headers=new Headers(init.headers || (input instanceof Request ? input.headers : undefined));headers.set('X-Engineering-Platform-Project',project);return nativeFetch(input,{{...init,headers}})}};const NativeEventSource=window.EventSource;window.EventSource=function(url,config){{const target=new URL(url,window.location.href);target.searchParams.set('project',project);return new NativeEventSource(target,config)}};window.EventSource.prototype=NativeEventSource.prototype;window.addEventListener('DOMContentLoaded',()=>{{const select=document.getElementById('dashboardProject');if(!select)return;select.innerHTML=options;select.value=project;select.addEventListener('change',()=>{{const url=new URL(window.location.href);url.searchParams.set('project',select.value);window.location.assign(url)}})}})}})();</script>'''
     root_bytes = str(root).encode("utf-8")
     return lambda document: document.replace(root_bytes, b"Project-scoped local workspace").replace(
         b"</main>", boundary.encode("utf-8") + b"</main>", 1,
