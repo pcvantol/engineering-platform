@@ -31,6 +31,7 @@ from . import dashboard
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
+from . import managed_codex_runtime
 from .local_api_credentials import verifier
 
 
@@ -403,6 +404,7 @@ def status(data_root: Path) -> dict[str, object]:
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
         "operational_state": "empty-valid",
         "running": running,
+        "managed_codex_runtime": managed_codex_runtime.inspect(data_root),
         "bind": {"host": config.bind_host, "port": config.bind_port},
     }
 
@@ -420,6 +422,7 @@ def operations_projection(data_root: Path) -> dict[str, object]:
     return {
         "installation_id": identity.instance_id,
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
+        "managed_codex_runtime": managed_codex_runtime.inspect(data_root),
         "projects": topology["projects"],
     }
 
@@ -660,7 +663,15 @@ def start(data_root: Path) -> dict[str, object]:
     # installation-owned data root and discard Python import overrides so a
     # caller's checkout can never become the child Server's import authority.
     runtime_root = data_root.resolve()
-    environment = {"PATH": os.defpath, "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"}
+    # npm is the preserved managed-runtime installer.  These are fixed host
+    # tool directories, never a provider-executable fallback or caller PATH.
+    environment = {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+    }
+    if home := os.environ.get("HOME"):
+        environment["HOME"] = home
     # Unit tests exercise the lifecycle from an unpackaged source tree.  This
     # explicit test-only bridge is never inherited by an installed process.
     if "unittest" in sys.argv[0]:

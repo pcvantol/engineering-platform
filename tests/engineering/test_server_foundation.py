@@ -34,6 +34,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
 
+    def test_server_surfaces_missing_managed_runtime_without_degrading_central(self) -> None:
+        identity = server.initialize(self.root)
+        report = server.status(self.root)
+        self.assertEqual(report["instance_id"], identity.instance_id)
+        self.assertIn(report["managed_codex_runtime"]["state"], {"MISSING", "BROKEN", "READY"})
+        self.assertEqual(server.operations_projection(self.root)["managed_codex_runtime"], report["managed_codex_runtime"])
+
     def test_start_stop_and_http_readiness_work_without_a_checkout(self) -> None:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))

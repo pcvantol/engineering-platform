@@ -86,6 +86,7 @@ from .dashboard_configuration import (
 )
 from . import dashboard_state
 from .workspace_preflight import execute as execute_workspace_preflight
+from . import managed_codex_runtime
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
@@ -2620,15 +2621,10 @@ def _install_provider(root: Path, provider: str) -> None:
         if _execution_active(root):
             raise ValueError("Provider installation is unavailable while an execution is active.")
         if provider == "CODEX":
-            npm = _npm_executable()
-            if npm is None:
-                raise ValueError("npm is required to install Codex CLI.")
-            latest = LocalProcessProvider().execute(root, (npm, "view", CODEX_CLI_PACKAGE, "version", "--json"))
-            version = _codex_cli_version(json.loads(latest.stdout)) if latest.returncode == 0 else None
-            if version is None:
-                raise ValueError("Codex CLI version could not be verified.")
-            completed = LocalProcessProvider().execute(root, (npm, "install", "--global", "--prefix", str(engineering_platform_codex_cli_prefix()), f"{CODEX_CLI_PACKAGE}@{version}"))
-            verification = CodexCliProvider().command("--version")
+            try:
+                managed_codex_runtime.provision(root)
+            except managed_codex_runtime.ManagedCodexRuntimeError as error:
+                raise ValueError(str(error)) from error
             key = "codex"
         elif provider == "GITHUB":
             brew = shutil.which("brew")
@@ -2639,7 +2635,9 @@ def _install_provider(root: Path, provider: str) -> None:
             key = "github"
         else:
             raise ValueError("Unsupported provider installation request.")
-        if completed.returncode or verification.returncode or _provider_login_status(root).get(key, {}).get("state") == "UNAVAILABLE":
+        if provider == "GITHUB" and (completed.returncode or verification.returncode):
+            raise ValueError("Provider installation could not be verified.")
+        if _provider_login_status(root).get(key, {}).get("state") == "UNAVAILABLE":
             raise ValueError("Provider installation could not be verified.")
     finally:
         _provider_install_lock.release()
