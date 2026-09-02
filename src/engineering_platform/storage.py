@@ -1691,6 +1691,7 @@ def record_validation_profile(
     required_validation_controls: tuple[str, ...], recorded_at: str,
     profile_reference: str | None = None, profile_selection_source: str | None = None,
     control_bindings: tuple[dict[str, object], ...] | None = None,
+    central_database: Path | None = None,
 ) -> None:
     """Persist the exact mandatory controls before their execution evidence."""
     if not run_id or not selected_validation_tier or not validation_profile_version or not recorded_at:
@@ -1718,7 +1719,7 @@ def record_validation_profile(
         "profile_selection_source": profile_selection_source or "registry",
         "control_bindings": list(control_bindings),
     }
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_profiles(run_id,selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at) VALUES(?,?,?,?,?)",
@@ -1731,12 +1732,12 @@ def record_validation_profile(
 def record_validation_control_result(
     root: Path, *, run_id: str, validation_id: str, category: str, control_identity: str,
     required_for_profile: bool, execution_status: str, result: str, evidence_ref: str,
-    observed_at: str, currentness: int,
+    observed_at: str, currentness: int, central_database: Path | None = None,
 ) -> None:
     """Append one machine-readable validation observation for its resolved profile."""
     if not all(isinstance(value, str) and value for value in (run_id, validation_id, category, control_identity, execution_status, result, evidence_ref, observed_at)) or currentness < 0:
         raise EngineeringStorageError("Validation control result is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_control_results("
@@ -1750,12 +1751,13 @@ def record_validation_control_result(
 def record_validation_command_invocation(
     root: Path, *, run_id: str, validation_id: str, command_id: str, category: str,
     control_identity: str, required_for_profile: bool, started_at: str, currentness: int,
+    central_database: Path | None = None,
 ) -> None:
     """Record authoritative command start before subprocess completion is known."""
     values = (run_id, validation_id, command_id, category, control_identity, started_at)
     if not all(isinstance(value, str) and value for value in values) or currentness < 0:
         raise EngineeringStorageError("Validation command invocation is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_command_invocations("
@@ -1769,7 +1771,7 @@ def record_validation_command_invocation(
 
 def record_validation_command_terminal(
     root: Path, *, run_id: str, command_id: str, completed_at: str, exit_code: int | None,
-    evidence_ref: str = "command_terminal",
+    evidence_ref: str = "command_terminal", central_database: Path | None = None,
 ) -> None:
     """Close a previously recorded command with its observed terminal outcome."""
     if not all(isinstance(value, str) and value for value in (run_id, command_id, completed_at, evidence_ref)):
@@ -1777,7 +1779,7 @@ def record_validation_command_terminal(
     if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
         raise EngineeringStorageError("Validation command exit code is invalid.")
     result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         started = connection.execute(
             "SELECT started_at FROM execution_validation_command_invocations WHERE run_id=? AND command_id=?",

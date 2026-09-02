@@ -732,6 +732,7 @@ class EngineeringRunner:
                     control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",
                     result=status, evidence_ref="agent_result", observed_at=datetime.now(timezone.utc).isoformat(),
                     currentness=state.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
@@ -778,6 +779,7 @@ class EngineeringRunner:
                 profile_selection_source="producer_execution_context",
                 control_bindings=bindings,
                 recorded_at=datetime.now(timezone.utc).isoformat(),
+                central_database=self.store.central_database,
             )
         except (EngineeringStorageError, ValidationProfileResolutionError):
             return self._save_terminal(
@@ -821,6 +823,7 @@ class EngineeringRunner:
                         required_for_profile=True, execution_status="NOT_EXECUTED",
                         result="UNAVAILABLE", evidence_ref="control_launcher_unavailable",
                         observed_at=datetime.now(timezone.utc).isoformat(), currentness=validation.repair_iterations,
+                        central_database=self.store.central_database,
                     )
                 except EngineeringStorageError:
                     return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control evidence could not be persisted.")
@@ -844,6 +847,7 @@ class EngineeringRunner:
                     command_id=command_id, category=launcher.category,
                     control_identity=launcher.control_identity, required_for_profile=True,
                     started_at=observed_at, currentness=validation.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
@@ -875,6 +879,7 @@ class EngineeringRunner:
                 record_validation_command_terminal(
                     self.root, run_id=validation.run_id, command_id=command_id,
                     completed_at=completed_at, exit_code=exit_code,
+                    central_database=self.store.central_database,
                 )
                 result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
                 record_validation_control_result(
@@ -883,6 +888,7 @@ class EngineeringRunner:
                     required_for_profile=True, execution_status="EXECUTED", result=result,
                     evidence_ref="command_terminal", observed_at=completed_at,
                     currentness=validation.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
@@ -1218,6 +1224,7 @@ class EngineeringRunner:
                             self.root, run_id=state.run_id, validation_id=validation_id, command_id=command_id,
                             category="agent", control_identity=command[:160], required_for_profile=required,
                             started_at=started_at, currentness=state.repair_iterations,
+                            central_database=self.store.central_database,
                         )
                         validation_commands[command_id] = (validation_id, started_at)
                     except EngineeringStorageError:
@@ -1256,6 +1263,7 @@ class EngineeringRunner:
                             self.root, run_id=state.run_id, command_id=command_id,
                             completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
                             evidence_ref=evidence_ref,
+                            central_database=self.store.central_database,
                         )
                     except EngineeringStorageError:
                         LOGGER.warning("Validation command terminal evidence is unavailable for run %s", state.run_id)
@@ -1617,6 +1625,7 @@ class EngineeringRunner:
                     profile_selection_source="diff_classification",
                     control_bindings=profile_control_bindings(profile),
                     recorded_at=datetime.now(timezone.utc).isoformat(),
+                    central_database=self.store.central_database,
                 )
             except (EngineeringStorageError, ValidationProfileResolutionError):
                 return self._save_terminal(
