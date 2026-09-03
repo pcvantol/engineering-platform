@@ -1561,48 +1561,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if not isinstance(selected, str) or selected not in project_ids:
             self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
             return
-        try:
-            root = _console_root(self.server.data_root, selected)  # type: ignore[attr-defined]
-            queue = _console_queue_projection(self.server.data_root, selected)  # type: ignore[attr-defined]
-            if method == "do_GET" and request.path == "/api/events":
-                self._stream_console_events(root, selected)
-                return
-            historical = dashboard.handler(
-                root, document_transform=_console_document_transform(selected, projects, root, self.server.data_root),  # type: ignore[attr-defined]
-                central_database=self.server.data_root / SERVER_DATABASE_FILENAME,  # type: ignore[attr-defined]
-                central_project_id=selected,
-            )
-        except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
-            self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
-            return
-        # The historical handler is deliberately reused verbatim.  Bind its
-        # small private helpers to this request instance, then invoke its route
-        # method so every historical asset, modal, SSE endpoint and action
-        # remains available without a route-by-route copy.
-        historical_send = historical._send.__get__(self, type(self))
-
-        def scoped_send(content: bytes, content_type: str, status_code: int = 200) -> None:
-            if (
-                method == "do_GET"
-                and request.path in {"/api/dashboard-snapshot", "/api/status", "/api/prompt-history"}
-                and status_code == 200
-                and content_type.startswith("application/json")
-            ):
-                content = _with_console_queue(content, queue=queue, data_root=self.server.data_root)  # type: ignore[attr-defined]
-            historical_send(content, content_type, status_code)
-
-        self._send = scoped_send  # type: ignore[method-assign]
-        self._same_origin = historical._same_origin.__get__(self, type(self))  # type: ignore[attr-defined]
-        # EventSource cannot supply the scope header.  The document wrapper
-        # therefore uses `?project=...`; it is consumed above and must not
-        # reach the historical routes, several of which correctly compare
-        # their request path exactly (including `/api/events`).
-        original_path = self.path
-        self.path = _historical_dashboard_path(request)
-        try:
-            getattr(historical, method)(self)
-        finally:
-            self.path = original_path
+        # Reaching this point would mean a route escaped the explicit Console
+        # projection table above. Never restore the historical root delegate.
+        self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
