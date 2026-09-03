@@ -60,6 +60,30 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 48
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
+_SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+
+
+def _attachment_content_disposition(filename: object) -> str:
+    """Build a fail-closed attachment header from a bounded ASCII filename.
+
+    Route validation is not a response-header security boundary.  This helper
+    rejects control characters and all non-allowlisted filenames before a
+    value reaches ``BaseHTTPRequestHandler.send_header``.
+    """
+    if not isinstance(filename, str):
+        raise ValueError("attachment filename is invalid")
+    sanitized = filename.replace("\r", "").replace("\n", "")
+    if sanitized != filename or not _SAFE_ATTACHMENT_FILENAME.fullmatch(sanitized):
+        raise ValueError("attachment filename is invalid")
+    return f'attachment; filename="{sanitized}"'
+
+
+def _report_content_disposition(report_id: object) -> str:
+    """Compose the report filename only after independently validating its id."""
+    if not isinstance(report_id, str) or not _SAFE_REPORT_ID.fullmatch(report_id):
+        raise ValueError("report identifier is invalid")
+    return _attachment_content_disposition(f"engineering-report-{report_id}.md")
 
 
 class ServerConfigurationError(ValueError):
@@ -544,50 +568,27 @@ def _operations_console_document() -> bytes:
     return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
 
 
-def _bound_console_projects(data_root: Path) -> list[dict[str, str]]:
-    """Return project identities with a validated schema-44 Console binding.
+def _console_projects(data_root: Path) -> list[dict[str, str]]:
+    """List CENTRAL project identities without opening their checkouts.
 
-    Local roots are resolved only at this Server boundary and are never sent to
-    the browser.  The historical dashboard remains root-based; CENTRAL decides
-    which root is permitted for each request.
+    The selector is a logical CENTRAL projection.  A local binding is checked
+    only later, when a user explicitly selects that project for a transitional
+    root-bound route.
     """
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         rows = connection.execute("""SELECT p.project_id, r.repository_id
-            FROM ep_project_registrations p JOIN ep_repository_registrations r
-              ON r.project_id=p.project_id JOIN ep_local_repository_bindings b
-              ON b.project_id=p.project_id AND b.repository_id=r.repository_id
-            WHERE p.status='ACTIVE' AND b.state='BOUND'
-            ORDER BY p.project_id, CASE r.role WHEN 'authority' THEN 0 ELSE 1 END, r.repository_id""").fetchall()
-        projects: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for project_id, repository_id in rows:
-            if str(project_id) in seen:
-                continue
-            try:
-                local_repository_binding.resolve_execution_repository(
-                    connection, project_id=str(project_id), repository_id=str(repository_id), data_root=data_root,
-                )
-            except local_repository_binding.LocalRepositoryBindingError:
-                continue
-            seen.add(str(project_id))
-            projects.append({"project_id": str(project_id), "repository_id": str(repository_id)})
-    return projects
-
-
-def _console_root(data_root: Path, project_id: str) -> Path:
-    """Resolve the selected project through schema-44 before every request."""
-    for project in _bound_console_projects(data_root):
-        if project["project_id"] == project_id:
-            with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-                return local_repository_binding.resolve_execution_repository(
-                    connection, project_id=project_id, repository_id=project["repository_id"], data_root=data_root,
-                ).local_root
-    raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
+            FROM ep_project_registrations AS p
+            JOIN ep_repository_registrations AS r
+              ON r.project_id=p.project_id AND r.role='authority'
+            WHERE p.status='ACTIVE'
+            ORDER BY p.project_id""").fetchall()
+    return [{"project_id": str(project_id), "repository_id": str(repository_id)}
+            for project_id, repository_id in rows]
 
 
 def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, object]:
     """Read the selected project's single transport-neutral CENTRAL FIFO."""
-    for project in _bound_console_projects(data_root):
+    for project in _console_projects(data_root):
         if project["project_id"] != project_id:
             continue
         with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
@@ -596,6 +597,7 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
                 data_root=data_root,
                 project_id=project_id,
                 repository_id=project["repository_id"],
+                require_local_root=False,
             )
             queue = ParityProjectStore(connection, context).console_queue_projection()
             rows = connection.execute(
@@ -605,6 +607,182 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
             ).fetchall()
             return {**queue, "operator_handling": {str(run_id): str(resolution) for run_id, resolution in rows}}
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
+
+
+def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
+    """Return the Slice-B project status/history projection from CENTRAL only."""
+    queue = _console_queue_projection(data_root, project_id)
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        runs = connection.execute(
+            """SELECT run_id,state,created_at,updated_at,execution_mode
+                FROM ep_execution_runs WHERE project_id=?
+                ORDER BY created_at DESC,run_id DESC LIMIT 1000""",
+            (project_id,),
+        ).fetchall()
+        dispatches = dict(connection.execute(
+            "SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=?",
+            (project_id,),
+        ).fetchall())
+    records = [
+        {
+            "run_id": str(run_id), "status": str(dispatches.get(run_id, state)),
+            "state": str(dispatches.get(run_id, state)), "created_at": str(created_at),
+            "updated_at": str(updated_at), "execution_mode": execution_mode,
+            "project_id": project_id,
+        }
+        for run_id, state, created_at, updated_at, execution_mode in runs
+    ]
+    active = next((record for record in records if record["state"] in {"CLAIMED", "RUNNING"}), None)
+    return {
+        "project_id": project_id,
+        "scope": "PROJECT",
+        "status": {
+            "project_id": project_id,
+            "queue_depth": queue["queue_depth"],
+            "queue_items": queue["queue_items"],
+            "active_run": active["run_id"] if active else None,
+            "last_executed_run": records[0]["run_id"] if records else None,
+            "lifecycle_source": "CENTRAL",
+        },
+        "runs": records,
+        "queue": queue,
+        "telemetry": _central_console_telemetry(data_root, project_id),
+    }
+
+
+def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -> dict[str, object] | None:
+    """Resolve a run by canonical project/run identity, never by checkout."""
+    snapshot = _central_console_project_snapshot(data_root, project_id)
+    return next((record for record in snapshot["runs"] if record["run_id"] == run_id), None)
+
+
+def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
+    """Read bounded daily telemetry through CENTRAL's run/project lineage."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            """SELECT r.execution_date,COUNT(*),
+                      SUM(r.terminal_state='COMPLETE'),SUM(r.terminal_state='BLOCKED'),SUM(r.terminal_state='FAILED'),
+                      AVG(r.execution_seconds),AVG(r.total_execution_seconds),AVG(r.queue_wait_seconds),
+                      SUM(r.input_tokens),SUM(r.output_tokens),SUM(r.total_tokens)
+                 FROM execution_runs AS r
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 WHERE d.project_id=?
+                 GROUP BY r.execution_date ORDER BY r.execution_date DESC LIMIT 360""",
+            (project_id,),
+        ).fetchall()
+    keys = (
+        "date", "prompt_count", "complete_count", "blocked_count", "failed_count",
+        "average_execution_seconds", "average_total_execution_seconds", "average_queue_wait_seconds",
+        "input_tokens", "output_tokens", "total_tokens",
+    )
+    return [dict(zip(keys, row, strict=True)) | {
+        "average_provider_execution_seconds": None, "average_validation_seconds": None,
+    } for row in rows]
+
+
+def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
+    """Provide a project-isolated CENTRAL telemetry day without root fallback."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
+        return None
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            """SELECT r.run_id,r.execution_started_at,r.terminal_state,r.total_execution_seconds,
+                      r.queue_wait_seconds,r.runtime_provider,r.runtime_model,r.reasoning_profile,
+                      r.producer_type,r.repository
+                 FROM execution_runs AS r
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 WHERE d.project_id=? AND r.execution_date=?
+                 ORDER BY r.execution_started_at DESC LIMIT 250""",
+            (project_id, execution_date),
+        ).fetchall()
+    if not rows:
+        return None
+    run_rows = [{
+        "run_id": str(row[0]), "started_at": row[1], "status": row[2],
+        "total_duration_ms": round(float(row[3]) * 1000) if isinstance(row[3], (float, int)) else None,
+        "queue_wait_ms": round(float(row[4]) * 1000) if isinstance(row[4], (float, int)) else None,
+        "provider_duration_ms": None, "validation_duration_ms": None, "external_wait_ms": None,
+        "largest_phase": None, "producer_type": row[8], "repository": row[9],
+        "provider": row[5], "model": row[6], "reasoning_profile": row[7],
+        "phase_telemetry": "NOT_RECORDED",
+    } for row in rows]
+    durations = [row["total_duration_ms"] for row in run_rows if isinstance(row["total_duration_ms"], int)]
+    waits = [row["queue_wait_ms"] for row in run_rows if isinstance(row["queue_wait_ms"], int)]
+    def aggregate(values: list[int]) -> dict[str, int] | None:
+        return {"average_ms": round(sum(values) / len(values)), "median_ms": sorted(values)[len(values) // 2], "total_ms": sum(values), "runs": len(values)} if values else None
+    return {
+        "date": execution_date, "timezone": "UTC", "runs": run_rows, "phases": [], "phase_telemetry_available": False,
+        "summary": {"executions": len(run_rows), "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
+                    "blocked": sum(row["status"] == "BLOCKED" for row in run_rows), "failed": sum(row["status"] == "FAILED" for row in run_rows),
+                    "total_wall_time": aggregate(durations), "queue_wait": aggregate(waits),
+                    "active_processing_time": None, "provider_execution": None, "validation": None, "external_wait": None, "overhead": None,
+                    "report_generation": None, "evidence_persistence": None},
+        "bottlenecks": {"longest_average_phase": None, "largest_accumulated_phase": None, "top_time_consumers": [], "shares": {}},
+    }
+
+
+def _central_console_report(data_root: Path, project_id: str, run_id: str) -> bytes | None:
+    """Read one CENTRAL-indexed immutable report with project authorization."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            """SELECT h.report_path FROM prompt_execution_history AS h
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=h.run_id
+                 WHERE d.project_id=? AND h.run_id=?""",
+            (project_id, run_id),
+        ).fetchone()
+    if row is None or not isinstance(row[0], str) or not row[0].startswith("CENTRAL:"):
+        return None
+    candidate = (data_root / "artifacts" / row[0].removeprefix("CENTRAL:")).resolve()
+    try:
+        candidate.relative_to((data_root / "artifacts").resolve())
+        return candidate.read_bytes() if candidate.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _central_console_chat_history(data_root: Path, project_id: str, run_id: str) -> list[dict[str, object]] | None:
+    """Return a project-authorized CENTRAL transcript; no root fallback exists."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        belongs = connection.execute(
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
+            (project_id, run_id),
+        ).fetchone()
+        if belongs is None:
+            return None
+        rows = connection.execute(
+            "SELECT role,content,model,created_at FROM execution_chat_messages WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    return [{"role": str(role), "content": str(content), "model": model, "created_at": str(created_at)}
+            for role, content, model, created_at in rows]
+
+
+def _central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
+    """Read Server-owned component logs only from CENTRAL's log index."""
+    if component not in {"dashboard", "inbox"}:
+        return None
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            "SELECT id,payload,created_at FROM engineering_component_logs WHERE component=? ORDER BY id DESC LIMIT 200",
+            (component,),
+        ).fetchall()
+    entries: list[dict[str, object]] = []
+    for identifier, payload, created_at in reversed(rows):
+        try:
+            decoded = json.loads(str(payload))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            decoded = {"event": "malformed_central_log"}
+        entries.append({"line": int(identifier), "timestamp": str(created_at), **(decoded if isinstance(decoded, dict) else {})})
+    return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
+
+
+def _central_console_configuration(data_root: Path) -> dict[str, object]:
+    """Expose only configuration already owned by CENTRAL in this phase."""
+    return {
+        "scope": "PLATFORM",
+        **central_database.maintenance_configuration(data_root),
+        **central_database.capacity_configuration(data_root),
+    }
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
@@ -732,36 +910,6 @@ def _open_central_database_directory(data_root: Path) -> dict[str, str]:
         raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE") from error
     if outcome.returncode:
         raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE")
-    return {"opened_directory": str(directory)}
-
-
-def _open_runtime_directory(data_root: Path, runtime: object) -> dict[str, str]:
-    """Open the parent of one currently reported runtime executable safely."""
-    if runtime not in {"codex", "github", "python"}:
-        raise ValueError("RUNTIME_DIRECTORY_INVALID")
-    projects = _bound_console_projects(data_root)
-    if not projects:
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
-    root = _console_root(data_root, projects[0]["project_id"])
-    if runtime == "python":
-        executable = dashboard._execution_runtime_status().get("executable", "")
-    else:
-        executable = dashboard._provider_login_status(root).get(runtime, {}).get("executable", "")
-    if not isinstance(executable, str) or not executable:
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
-    try:
-        resolved = Path(executable).resolve(strict=True)
-        directory = resolved.parent
-    except OSError as error:
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE") from error
-    if sys.platform != "darwin" or not resolved.is_file() or not os.access(resolved, os.X_OK) or not directory.is_dir():
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
-    try:
-        outcome = LocalProcessProvider().execute(directory, ("open", str(directory)))
-    except OSError as error:
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE") from error
-    if outcome.returncode:
-        raise RuntimeError("RUNTIME_DIRECTORY_UNAVAILABLE")
     return {"opened_directory": str(directory)}
 
 
@@ -911,19 +1059,55 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
 
 
-_NO_PROJECT_GLOBAL_PATHS = frozenset({
-    "/health", "/api/configuration", "/api/execution-runtime-status",
-    "/api/github-rate-limit", "/api/logs/dashboard", "/api/logs/inbox",
-    "/api/process-metrics", "/api/provider-login-status", "/api/usage",
-})
-
-
-def _is_no_project_global_request(method: str, request: SplitResult) -> bool:
-    """Allow only read-only host-wide Console endpoints without project scope."""
-    return method == "do_GET" and (
-        request.path in _NO_PROJECT_GLOBAL_PATHS
-        or (request.path.startswith("/api/components/") and request.path.endswith("/details"))
+def _selected_project_console_document(project_id: str, projects: list[dict[str, str]], data_root: Path) -> bytes:
+    """Render the installed Console shell without loading a project checkout."""
+    document = dashboard._dashboard_html(
+        "EP Operations", workspace_id=project_id, project_name=project_id,
+        workspace_location="Physical binding is not Console authority.",
+        configuration_inbox="Not available from the CENTRAL Console.",
     )
+    options = _console_project_options(project_id, projects)
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    document = document.replace(
+        b'<label class="dashboard-locale"', selector.encode("utf-8") + b'<label class="dashboard-locale"', 1,
+    )
+    document = document.replace(
+        b'<p class="category-description" data-i18n="description.configuration"></p>',
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,
+    )
+    return document.replace(b"</main>", _console_project_boundary(project_id, options).encode("utf-8") + b"</main>", 1)
+
+
+_CONSOLE_STATIC_ASSETS = {
+    "/assets/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
+    "/assets/dashboard_locales.mjs": ("dashboard_locales.mjs", "text/javascript; charset=utf-8"),
+    "/assets/dashboard_status_store.mjs": ("dashboard_status_store.mjs", "text/javascript; charset=utf-8"),
+    "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
+    "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
+    "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),
+    "/assets/operations-console/apple-touch-icon-dark.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-light.png": (dashboard.APP_ICON_LIGHT, "image/png"),
+    "/assets/operations-console/manifest.webmanifest": (dashboard.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
+    "/favicon.ico": (dashboard.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon-precomposed.png": (dashboard.APP_ICON_DARK, "image/png"),
+}
+
+
+def _no_project_platform_projection(data_root: Path) -> dict[str, object]:
+    """Return a checkout-free platform projection for the ``<geen>`` view.
+
+    This deliberately has no project fallback.  It uses only installed Server
+    state and CENTRAL metadata, so rendering a Console before a checkout is
+    bound is a supported operation.
+    """
+    return {
+        "scope": "PLATFORM",
+        "server": status(data_root),
+        "central_database": central_database.details(data_root),
+        "capacity_configuration": central_database.capacity_configuration(data_root),
+    }
 
 
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
@@ -955,6 +1139,70 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _send_console_asset(self, request: SplitResult) -> bool:
+        """Serve installed Console assets without selecting a project/root."""
+        asset = _CONSOLE_STATIC_ASSETS.get(request.path)
+        if asset is None:
+            return False
+        name, content_type = asset
+        try:
+            content = (dashboard.ASSET_DIRECTORY / name).read_bytes()
+        except OSError:
+            self.send_error(404)
+            return True
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+        return True
+
+    def _no_project_platform_route(self, method: str, request: SplitResult) -> bool:
+        """Serve only explicit platform data when no project is selected.
+
+        Unsupported historical endpoints fail closed.  In particular, this
+        method never resolves a local repository binding merely to satisfy an
+        old Dashboard helper.
+        """
+        if method != "do_GET":
+            return False
+        if request.path == "/api/platform-status":
+            self._send(200, _no_project_platform_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        if request.path == "/health":
+            report = status(self.server.data_root)  # type: ignore[attr-defined]
+            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            return True
+        if request.path == "/api/configuration":
+            # CENTRAL-only settings presently supported by this phase.  The
+            # root-local dashboard configuration is intentionally unavailable.
+            self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        if request.path == "/api/execution-runtime-status":
+            self._send(200, dashboard._execution_runtime_status())
+            return True
+        if request.path == "/api/github-rate-limit":
+            self._send(200, dashboard._github_rate_limit_status())
+            return True
+        if request.path == "/api/provider-login-status":
+            # Provider identity is installation scoped.  Do not ask the
+            # retained helper to inspect a selected checkout in `<geen>`.
+            self._send(200, {"providers": {
+                "codex": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
+                "github": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
+            }})
+            return True
+        if request.path in {"/api/process-metrics", "/api/usage"}:
+            self._send(200, {"scope": "PLATFORM", "available": False})
+            return True
+        if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+            component = request.path.rsplit("/", 1)[-1]
+            self._send(200, _central_console_component_logs(self.server.data_root, component) or {"error": "LOG_COMPONENT_UNKNOWN"})  # type: ignore[attr-defined]
+            return True
+        return False
+
     def _send_central_database_backup(self) -> None:
         snapshot = central_database.snapshot(self.server.data_root)  # type: ignore[attr-defined]
         if snapshot is None:
@@ -963,7 +1211,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         filename = f"engineering-platform-central-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.sqlite3")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", _attachment_content_disposition(filename))
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1038,8 +1286,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return
 
     def _delegate_dashboard(self, method: str) -> None:
-        """Run the preserved handler after CENTRAL validates the selected scope."""
+        """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
+        if method == "do_GET" and self._send_console_asset(request):
+            return
         if self._central_database_configuration(method):
             return
         if request.path == "/api/provider-capacity":
@@ -1066,23 +1316,120 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
             return
         if method == "do_POST" and request.path == "/api/runtime-directory/open":
-            try:
-                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
-                    raise ValueError
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 2 <= length <= 64:
-                    raise ValueError
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                runtime = payload.get("runtime") if isinstance(payload, dict) and set(payload) == {"runtime"} else None
-                self._send(202, _open_runtime_directory(self.server.data_root, runtime))  # type: ignore[attr-defined]
-            except (OSError, RuntimeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
-                self._send(409, {"error": "RUNTIME_DIRECTORY_UNAVAILABLE"})
+            # This action historically resolved the first bound checkout.
+            # The installed CENTRAL Console deliberately has no root-bound
+            # runtime action; runtime paths remain display-only diagnostics.
+            self._send(410, {"error": "RUNTIME_DIRECTORY_RETIRED"})
             return
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
-        projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
+        # Listing projects is a CENTRAL-only operation.  Do not validate or
+        # inspect any checkout until a selected project needs a transitional
+        # project route below.
+        projects = _console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
+        if method == "do_GET" and isinstance(selected, str) and selected in project_ids:
+            # Slice B: the core project read model is available even when its
+            # checkout has been deleted or rebound.  Do this before the
+            # transitional handler can resolve a root.
+            if request.path == "/":
+                document = _selected_project_console_document(selected, projects, self.server.data_root)  # type: ignore[attr-defined]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(document)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(document)
+                return
+            if request.path == "/api/configuration":
+                self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
+                return
+            if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+                component = request.path.rsplit("/", 1)[-1]
+                payload = _central_console_component_logs(self.server.data_root, component)  # type: ignore[attr-defined]
+                if payload is None:
+                    self._send(404, {"error": "LOG_COMPONENT_UNKNOWN"})
+                else:
+                    self._send(200, payload)
+                return
+            if request.path in {"/api/dashboard-snapshot", "/api/status"}:
+                self._send(200, _central_console_project_snapshot(self.server.data_root, selected))  # type: ignore[attr-defined]
+                return
+            if request.path == "/api/prompt-history":
+                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
+                # Keep the established Console list contract while changing
+                # only its authority source.
+                encoded = json.dumps(snapshot["runs"], separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            report_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/report", request.path)
+            if report_match:
+                content = _central_console_report(self.server.data_root, selected, report_match.group(1))  # type: ignore[attr-defined]
+                if content is None:
+                    self._send(404, {"error": "REPORT_NOT_FOUND"})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header(
+                    "Content-Disposition",
+                    _report_content_disposition(report_match.group(1)),
+                )
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            chat_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/chat", request.path)
+            if chat_match:
+                messages = _central_console_chat_history(self.server.data_root, selected, chat_match.group(1))  # type: ignore[attr-defined]
+                if messages is None:
+                    self._send(404, {"error": "RUN_NOT_FOUND"})
+                else:
+                    self._send(200, {"messages": messages, "source": "CENTRAL"})
+                return
+            detail_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/details", request.path)
+            if detail_match:
+                detail = _central_console_run_detail(self.server.data_root, selected, detail_match.group(1))  # type: ignore[attr-defined]
+                if detail is None:
+                    self._send(404, {"error": "RUN_NOT_FOUND"})
+                else:
+                    self._send(200, {"project_id": selected, "run": detail, "source": "CENTRAL"})
+                return
+            telemetry_match = re.fullmatch(r"/api/telemetry/([0-9]{4}-[0-9]{2}-[0-9]{2})", request.path)
+            if telemetry_match:
+                detail = _central_console_telemetry_detail(
+                    self.server.data_root, selected, telemetry_match.group(1),  # type: ignore[attr-defined]
+                )
+                if detail is None:
+                    self._send(404, {"error": "TELEMETRY_NOT_FOUND"})
+                else:
+                    self._send(200, detail)
+                return
+            if request.path == "/api/events":
+                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
+                encoded = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(b"event: dashboard\ndata: " + encoded + b"\n\n")
+                return
+        if method == "do_POST" and isinstance(selected, str) and selected in project_ids and (
+            request.path == "/api/configuration" or request.path.startswith("/api/logs/")
+        ):
+            # The local dashboard's mutable metadata/log controls have no
+            # CENTRAL contract yet.  Fail closed rather than mutating a
+            # checkout-local store for compatibility.
+            self._send(405, {"error": "CONSOLE_CONFIGURATION_MUTATION_UNAVAILABLE"})
+            return
         if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
                 self._send(403, {"error": "INVALID_ORIGIN"})
@@ -1113,6 +1460,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return
             self._send(200, result)
+            return
+        if isinstance(selected, str) and selected in project_ids:
+            # No supported CENTRAL Console route may fall through to the
+            # retained dashboard handler.  New routes must be added above
+            # with an explicit Server/CENTRAL authority classification.
+            self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
             return
         if method == "do_POST" and request.path == "/api/dashboard-translate":
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
@@ -1149,63 +1502,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(document)
             return
-        if selected in {None, ""} and _is_no_project_global_request(method, request) and projects:
-            # The retained endpoints are host-wide and read-only. The legacy
-            # handler requires a bound root for package resolution, but its
-            # project-scoped endpoints remain unavailable in this state.
-            selected = projects[0]["project_id"]
-        if not isinstance(selected, str) or selected not in project_ids:
-            # Static package assets are scope-neutral and load before the
-            # document's project-aware fetch wrapper exists.  Resolve a valid
-            # bound root solely to reuse the installed asset handler; no
-            # project data is read or disclosed by these routes.
-            if (request.path == "/" or request.path.startswith("/assets/") or request.path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}) and projects:
-                selected = projects[0]["project_id"]
-            else:
-                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+        if selected in {None, ""}:
+            if self._no_project_platform_route(method, request):
                 return
-        try:
-            root = _console_root(self.server.data_root, selected)  # type: ignore[attr-defined]
-            queue = _console_queue_projection(self.server.data_root, selected)  # type: ignore[attr-defined]
-            if method == "do_GET" and request.path == "/api/events":
-                self._stream_console_events(root, selected)
-                return
-            historical = dashboard.handler(
-                root, document_transform=_console_document_transform(selected, projects, root, self.server.data_root),  # type: ignore[attr-defined]
-                central_database=self.server.data_root / SERVER_DATABASE_FILENAME,  # type: ignore[attr-defined]
-                central_project_id=selected,
-            )
-        except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
             self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
             return
-        # The historical handler is deliberately reused verbatim.  Bind its
-        # small private helpers to this request instance, then invoke its route
-        # method so every historical asset, modal, SSE endpoint and action
-        # remains available without a route-by-route copy.
-        historical_send = historical._send.__get__(self, type(self))
-
-        def scoped_send(content: bytes, content_type: str, status_code: int = 200) -> None:
-            if (
-                method == "do_GET"
-                and request.path in {"/api/dashboard-snapshot", "/api/status", "/api/prompt-history"}
-                and status_code == 200
-                and content_type.startswith("application/json")
-            ):
-                content = _with_console_queue(content, queue=queue, data_root=self.server.data_root)  # type: ignore[attr-defined]
-            historical_send(content, content_type, status_code)
-
-        self._send = scoped_send  # type: ignore[method-assign]
-        self._same_origin = historical._same_origin.__get__(self, type(self))  # type: ignore[attr-defined]
-        # EventSource cannot supply the scope header.  The document wrapper
-        # therefore uses `?project=...`; it is consumed above and must not
-        # reach the historical routes, several of which correctly compare
-        # their request path exactly (including `/api/events`).
-        original_path = self.path
-        self.path = _historical_dashboard_path(request)
-        try:
-            getattr(historical, method)(self)
-        finally:
-            self.path = original_path
+        if not isinstance(selected, str) or selected not in project_ids:
+            self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+            return
+        # Reaching this point would mean a route escaped the explicit Console
+        # projection table above. Never restore the historical root delegate.
+        self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
 
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)

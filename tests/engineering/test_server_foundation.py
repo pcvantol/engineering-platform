@@ -171,6 +171,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["projects"], [])
         self.assertIn(b"/v1/operations/projects", server._operations_console_document())
 
+    def test_no_project_console_never_resolves_a_checkout_for_shell_assets_or_platform_data(self) -> None:
+        """`<geen>` is a real CENTRAL/platform projection, not first-root fallback."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+
+        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
+            with urlopen(f"http://127.0.0.1:{port}{path}") as response:
+                self.assertEqual(response.status, 200, path)
+                if path == "/api/platform-status":
+                    self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
+        with urlopen(f"http://127.0.0.1:{port}/") as response:
+            document = response.read().decode("utf-8")
+        self.assertIn('data-project-id="none"', document)
+        self.assertIn('id="noProjectSelected"', document)
+
     def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
         historical = (
             b'<details id="workspaceCard"><span class="label" data-workspace-label="workspace.name" '
@@ -199,6 +216,30 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(request) as response:
             self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
         self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
+
+    def test_download_attachment_headers_reject_request_control_characters(self) -> None:
+        self.assertEqual(
+            server._report_content_disposition("dj-run-01"),
+            'attachment; filename="engineering-report-dj-run-01.md"',
+        )
+        self.assertEqual(
+            server._attachment_content_disposition("engineering-platform-central-20260903T000000Z.db"),
+            'attachment; filename="engineering-platform-central-20260903T000000Z.db"',
+        )
+        for report_id in (
+            "dj-run\rX-Injected: yes",
+            "dj-run\nX-Injected: yes",
+            "dj-run\r\nX-Injected: yes",
+            "dj-run%0dX-Injected%3A%20yes",
+            "dj-run%0aX-Injected%3A%20yes",
+            "dj-run%0d%0aX-Injected%3A%20yes",
+            "../dj-run",
+        ):
+            with self.subTest(report_id=report_id), self.assertRaises(ValueError):
+                server._report_content_disposition(report_id)
+        for filename in ("report\r.md", "report\n.md", "report\r\nX: yes.md", "report name.md", "report%0d.md"):
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                server._attachment_content_disposition(filename)
 
     def test_ep_database_panel_is_framed_and_maintenance_selection_recovers_safely(self) -> None:
         server.initialize(self.root)
@@ -230,27 +271,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(opened, {"opened_directory": str(self.root.resolve())})
         process.return_value.execute.assert_called_once_with(self.root.resolve(), ("open", str(self.root.resolve())))
 
-    def test_runtime_directory_opens_only_the_parent_of_a_server_reported_executable(self) -> None:
-        executable = self.root / "managed" / "bin" / "codex"
-        executable.parent.mkdir(parents=True)
-        executable.write_text("#!/bin/sh\n", encoding="utf-8")
-        executable.chmod(0o700)
-        with (
-            patch("engineering_platform.server.sys.platform", "darwin"),
-            patch("engineering_platform.server.LocalProcessProvider") as process,
-            patch("engineering_platform.server._bound_console_projects", return_value=[{"project_id": "alpha"}]),
-            patch("engineering_platform.server._console_root", return_value=self.root),
-            patch("engineering_platform.server.dashboard._provider_login_status", return_value={"codex": {"executable": str(executable)}}),
-        ):
-            process.return_value.execute.return_value = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
-            opened = server._open_runtime_directory(self.root, "codex")
-
-        self.assertEqual(opened, {"opened_directory": str(executable.parent.resolve())})
-        process.return_value.execute.assert_called_once_with(
-            executable.parent.resolve(), ("open", str(executable.parent.resolve())),
-        )
-        with self.assertRaises(ValueError):
-            server._open_runtime_directory(self.root, "/untrusted/path")
+    def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
+        identity = server.initialize(self.root)
+        self.assertIsNotNone(identity.instance_id)
+        self.assertFalse(hasattr(server, "_open_runtime_directory"))
 
     def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
         """Two requests retain distinct CENTRAL identities and local bindings."""
@@ -332,7 +356,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('const project = "engineering-platform"', second)
         self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
-        self.assertIn(str(roots[0]), first)
+        self.assertNotIn(str(roots[0]), first)
         self.assertNotIn("Project-scoped local workspace", first)
         selector = server._console_document_transform(
             "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0], self.root,
@@ -369,7 +393,73 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         )
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
-        self.assertIn(str(roots[0]), first)
+        self.assertNotIn(str(roots[0]), first)
         self.assertNotIn(str(roots[1]), first)
-        self.assertIn(str(roots[1]), second)
+        self.assertNotIn(str(roots[1]), second)
         self.assertNotIn(str(roots[0]), second)
+
+        # Slice B is a CENTRAL read projection: history and queue remain
+        # available after the physical checkout used by the legacy shell is
+        # gone, and a selected project never receives another project's run.
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("dj-run", "djconnect", "COMPLETE", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("ep-run", "engineering-platform", "COMPLETE", "2026-01-02T00:00:00+00:00", "2026-01-02T00:01:00+00:00"),
+            )
+            connection.execute(
+                """INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at)
+                   VALUES(?,?,?,?,?,'HTTP','telemetry','digest','{}','QUEUED','ADMITTED',?)""",
+                ("dj-submission", "djconnect", "djconnect", "test", "HUMAN", "2026-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("dj-submission", "djconnect", "djconnect", "dj-run", "COMPLETE", "CENTRAL:prompt", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),
+            )
+            connection.execute(
+                """INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version,total_execution_seconds)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("dj-run", "2026-01-01", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", "2026-01-01T00:00:04+00:00", 1.0, 3.0, "COMPLETE", 2, 3, 5, "MANAGED", "djconnect", "djconnect", "test", 4.0),
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,report_path,updated_at) VALUES(?,?,?,?,?,?)",
+                ("dj-run", "COMPLETE", "CENTRAL report", "2026-01-01T00:00:04+00:00", "CENTRAL:reports/dj-run.md", "2026-01-01T00:00:04+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) VALUES(?,?,?,?,?)",
+                ("dj-run", "assistant", "CENTRAL transcript", "test-model", "2026-01-01T00:00:04+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                ("dashboard", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
+            )
+        artifact = self.root / "artifacts" / "reports" / "dj-run.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# CENTRAL report\n", encoding="utf-8")
+        roots[0].rename(self.root.parent / "deleted-djconnect-checkout")
+        with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot?project=djconnect") as response:
+            snapshot = json.loads(response.read())
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history?project=djconnect") as response:
+            history = json.loads(response.read())
+        self.assertEqual(snapshot["status"]["project_id"], "djconnect")
+        self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
+        self.assertEqual([run["run_id"] for run in history], ["dj-run"])
+        self.assertEqual(snapshot["telemetry"][0]["total_tokens"], 5)
+        with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
+            telemetry_detail = json.loads(response.read())
+        self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/report?project=djconnect") as response:
+            self.assertEqual(
+                response.headers["Content-Disposition"],
+                'attachment; filename="engineering-report-dj-run.md"',
+            )
+            self.assertEqual(response.read(), b"# CENTRAL report\n")
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
+            self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/dashboard?project=djconnect") as response:
+            logs = json.loads(response.read())
+        self.assertEqual(logs["scope"], "PLATFORM")
+        self.assertEqual(logs["entries"][0]["event"], "central_console_test")
