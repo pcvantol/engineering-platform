@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import sqlite3
 from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Callable, Protocol
 
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatcher
@@ -20,6 +21,7 @@ from . import central_database
 WORKER_RUNNING = "RUNNING"
 WORKER_STOPPED = "STOPPED"
 WORKER_DEGRADED = "DEGRADED"
+OPERATOR_MERGE_RESUME_SECONDS = 60.0
 
 
 class Dispatcher(Protocol):
@@ -63,6 +65,7 @@ class LifecycleWorker:
         self._lock = Lock()
         self._thread: Thread | None = None
         self._inflight: set[str] = set()
+        self._next_merge_resume_at: dict[str, float] = {}
         self._diagnostics = LifecycleWorkerDiagnostics(WORKER_STOPPED, 0, 0, 0, None, None)
 
     def diagnostics(self) -> LifecycleWorkerDiagnostics:
@@ -82,12 +85,24 @@ class LifecycleWorker:
                 FROM ep_submissions s
                 LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id
                 WHERE s.state='QUEUED' AND s.admission='ADMITTED'
-                  AND (d.submission_id IS NULL OR d.state IN ('CLAIMED','RUNNING'))
+                  AND (
+                    d.submission_id IS NULL OR d.state IN ('CLAIMED','RUNNING')
+                    OR (
+                      d.state='BLOCKED' AND d.operator_resolution='OPEN'
+                      AND EXISTS (
+                        SELECT 1 FROM engineering_transactions wait_state
+                        WHERE wait_state.run_id=d.run_id
+                          AND wait_state.phase='WAIT_FOR_OPERATOR_MERGE'
+                          AND COALESCE(json_extract(wait_state.payload, '$.terminal'), 0) IN (0, 'false')
+                      )
+                    )
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM ep_parity_lifecycle_dispatches prior
                     WHERE prior.project_id=s.project_id AND (
                       (prior.state IN ('CLAIMED','RUNNING') AND prior.submission_id!=s.submission_id)
-                      OR (prior.state IN ('BLOCKED','FAILED') AND prior.operator_resolution='OPEN')
+                      OR (prior.state IN ('BLOCKED','FAILED') AND prior.operator_resolution='OPEN'
+                          AND prior.submission_id!=s.submission_id)
                       OR (prior.operator_resolution='RETRIED' AND prior.resolution_submission_id!=s.submission_id)
                     )
                   )
@@ -120,7 +135,12 @@ class LifecycleWorker:
     def run_once(self) -> bool:
         with self._lock:
             inflight = frozenset(self._inflight)
-        candidates = [submission_id for submission_id in self.eligible_submission_ids() if submission_id not in inflight]
+        now = monotonic()
+        candidates = [
+            submission_id for submission_id in self.eligible_submission_ids()
+            if submission_id not in inflight
+            and now >= self._next_merge_resume_at.get(submission_id, 0.0)
+        ]
         if not candidates:
             return False
         for submission_id in candidates:
@@ -128,6 +148,11 @@ class LifecycleWorker:
             self._replace(observed=current.observed + 1, last_submission_id=submission_id, last_error=None)
             with self._lock:
                 self._inflight.add(submission_id)
+                # A nonterminal merge wait returns quickly after its one
+                # authoritative remote poll.  Keep that same canonical run
+                # resumable, but never race it with another local lease
+                # acquisition before the next bounded poll window.
+                self._next_merge_resume_at[submission_id] = now + OPERATOR_MERGE_RESUME_SECONDS
             Thread(
                 target=self._dispatch,
                 args=(submission_id,),

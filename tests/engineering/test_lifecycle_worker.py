@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+import json
 
 from engineering_platform import server, submission_service
 from engineering_platform.lifecycle_worker import LifecycleWorker, WORKER_DEGRADED, WORKER_RUNNING, WORKER_STOPPED
@@ -86,6 +87,26 @@ class LifecycleWorkerTests(unittest.TestCase):
                 (first, "alpha", "alpha", "failed-run", "FAILED", "prompt", "now", "now", "OPEN"),
             )
         self.assertEqual(LifecycleWorker(self.data, dispatcher_factory=_Dispatcher).eligible_submission_ids(), [])
+
+    def test_operator_merge_wait_failed_resume_is_the_only_eligible_blocked_run(self) -> None:
+        submission = self._submit("alpha")
+        with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("merge-wait", "alpha", "RUNNING", "now", "now"))
+            connection.execute(
+                "INSERT INTO engineering_transactions(run_id,phase,payload,updated_at) VALUES(?,?,?,?)",
+                ("merge-wait", "WAIT_FOR_OPERATOR_MERGE", json.dumps({"terminal": False, "run_id": "merge-wait"}), "now"),
+            )
+            connection.execute(
+                """INSERT INTO ep_parity_lifecycle_dispatches(
+                    submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (submission, "alpha", "alpha", "merge-wait", "BLOCKED", "prompt", "now", "now", "OPEN"),
+            )
+        worker = LifecycleWorker(self.data, dispatcher_factory=_Dispatcher)
+        self.assertEqual(worker.eligible_submission_ids(), [submission])
+        self.assertTrue(worker.run_once())
+        self._wait_for_dispatches([submission])
+        self.assertFalse(worker.run_once())
 
     def test_running_projects_are_independent_but_never_start_a_second_same_project_item(self) -> None:
         from threading import Event, Lock
