@@ -2908,6 +2908,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
 
         self.assertEqual(set(captured["properties"]), set(captured["required"]))
 
+    def test_cli_output_schema_never_creates_repository_local_state_directory(self) -> None:
+        """Provider protocol scratch belongs in temporary storage, not a checkout."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def invoke_with_schema(command: tuple[str, ...], **_: object) -> object:
+                schema_path = Path(command[command.index("--output-schema") + 1])
+                self.assertTrue(schema_path.is_file())
+                self.assertFalse(schema_path.is_relative_to(root))
+                return __import__("subprocess").CompletedProcess(
+                    command,
+                    0,
+                    '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,'
+                    '"terminal_condition":"repository_reconciled","diagnostic":"",'
+                    '"repository_path":null,"commit_sha":null}\n',
+                    "",
+                )
+
+            with patch("engineering_platform.execution_host.subprocess.run", side_effect=invoke_with_schema):
+                CodexCliClient().invoke(root, "test")
+
+            self.assertFalse((root / ".engineering" / "engineering-runs").exists())
+
     def test_cli_adds_configured_sibling_project_root(self) -> None:
         local = self.root / ".engineering"
         local.mkdir(exist_ok=True)

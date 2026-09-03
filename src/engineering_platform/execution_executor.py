@@ -459,8 +459,6 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
-        state_directory = root / ".engineering" / "engineering-runs"
-        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -514,7 +512,7 @@ class CodexCliClient:
             },
         }
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False
+            "w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
             json.dump(schema, handle)
             schema_path = Path(handle.name)
