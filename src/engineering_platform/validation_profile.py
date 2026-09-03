@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -16,7 +17,12 @@ REQUIRED_CONTROLS = {
     "DASHBOARD": ("git_diff_check", "engineering_python", "dashboard_browser"),
     "RUNTIME": ("git_diff_check", "engineering_python", "dashboard_browser"),
     "FULL": ("git_diff_check", "repository_suite"),
+    # A governed P-CENTRAL-CORE change retains the full Python/core suite but
+    # deliberately does not claim the deferred Operations Console browser
+    # qualification.  It is selected only by the CI phase boundary below.
+    "P_CENTRAL_CORE": ("git_diff_check", "engineering_python"),
 }
+P_CENTRAL_CORE_BRANCH = re.compile(r"^codex/phase-p-central-core(?:-.+)?$")
 
 
 @dataclass(frozen=True)
@@ -140,8 +146,10 @@ class ValidationProfile:
     def required_controls(self) -> tuple[str, ...]:
         return REQUIRED_CONTROLS[self.tier]
 
-def classify(paths: list[str] | tuple[str, ...]) -> ValidationProfile:
+def classify(paths: list[str] | tuple[str, ...], *, governed_phase: str | None = None) -> ValidationProfile:
     items = tuple(sorted({path.strip() for path in paths if path.strip()}))
+    if governed_phase == "P_CENTRAL_CORE":
+        return ValidationProfile("P_CENTRAL_CORE", items, ("relevant Engineering Python tests", "P-CENTRAL-CONSOLE browser deferred"))
     if items and all(path.startswith(DOCUMENTATION_PREFIXES) or path.endswith(".md") for path in items):
         return ValidationProfile("DOCUMENTATION", items, ("markdown/link/document-contract validation",))
     if items and all(path.startswith(DASHBOARD_PREFIXES) or path in DASHBOARD_FILES for path in items):
@@ -149,6 +157,16 @@ def classify(paths: list[str] | tuple[str, ...]) -> ValidationProfile:
     if items and all(path.startswith(RUNTIME_PREFIXES) for path in items):
         return ValidationProfile("RUNTIME", items, ("relevant Engineering Python tests", "npm run test:engineering-dashboard when projection is affected"))
     return ValidationProfile("FULL", items, ("full required repository suite",))
+
+
+def browser_dashboard_required(profile: ValidationProfile) -> bool:
+    """Browser coverage is mandatory except for the governed CORE boundary."""
+    return profile.tier not in {"DOCUMENTATION", "P_CENTRAL_CORE"}
+
+
+def phase_for_branch(branch: str | None) -> str | None:
+    """Return the only branch-governed exception to the browser requirement."""
+    return "P_CENTRAL_CORE" if isinstance(branch, str) and P_CENTRAL_CORE_BRANCH.fullmatch(branch) else None
 
 def changed_paths(root: Path, base: str) -> tuple[str, ...]:
     completed = subprocess.run(("git", "diff", "--name-only", f"{base}...HEAD"), cwd=root, text=True, capture_output=True, check=False)
@@ -160,10 +178,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--github-output")
+    parser.add_argument("--branch")
     args = parser.parse_args()
-    profile = classify(changed_paths(Path.cwd(), args.base))
+    phase = phase_for_branch(args.branch)
+    profile = classify(changed_paths(Path.cwd(), args.base), governed_phase=phase)
     if args.github_output:
-        Path(args.github_output).open("a", encoding="utf-8").write(f"tier={profile.tier}\n")
+        with Path(args.github_output).open("a", encoding="utf-8") as output:
+            output.write(f"tier={profile.tier}\n")
+            output.write(f"phase={phase or 'DEFAULT'}\n")
+            output.write(f"browser_dashboard_required={'true' if browser_dashboard_required(profile) else 'false'}\n")
     print(profile.tier)
     return 0
 

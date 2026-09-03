@@ -37,6 +37,14 @@ inside this increment. A future bounded, phase-aware workflow/profile change
 must be owned by P-CENTRAL-CONSOLE (or repository CI governance), preserve
 branch protection, and restore the full browser suite for that lane.
 
+The governed `codex/phase-p-central-core-*` branch profile is the bounded
+exception: it emits `P_CENTRAL_CORE` and
+`browser_dashboard_required=false`, while retaining the full Python/core
+qualification. All other runtime profiles, including P-CENTRAL-CONSOLE,
+continue to require `browser-dashboard`. Trusted Delivery accepts a skipped
+browser job only for that explicit CORE profile; when the browser is required,
+it still requires a successful four-shard result.
+
 ## Required P-CENTRAL-CONSOLE follow-up
 
 P-CENTRAL-CONSOLE must migrate the retained Dashboard delegation to

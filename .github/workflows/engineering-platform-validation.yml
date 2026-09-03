@@ -44,11 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tier: ${{ steps.profile.outputs.tier }}
+      phase: ${{ steps.profile.outputs.phase }}
+      browser_dashboard_required: ${{ steps.profile.outputs.browser_dashboard_required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with: {fetch-depth: 0}
       - id: profile
-        run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --github-output "$GITHUB_OUTPUT"
+        run: PYTHONPATH=src python3 -m engineering_platform.validation_profile --base "${{ github.event.pull_request.base.sha || github.event.before }}" --branch "${{ github.head_ref || github.ref_name }}" --github-output "$GITHUB_OUTPUT"
   validate:
     needs: validation-profile
     runs-on: ubuntu-latest
@@ -102,7 +104,7 @@ jobs:
           PY
   browser-dashboard:
     needs: validation-profile
-    if: needs.validation-profile.outputs.tier != 'DOCUMENTATION'
+    if: needs.validation-profile.outputs.browser_dashboard_required == 'true'
     runs-on: ubuntu-latest
     strategy:
       # The dashboard regression is intentionally complete, but split into
@@ -148,7 +150,11 @@ jobs:
           if-no-files-found: warn
   trusted-delivery-evidence:
     name: Qualify trusted delivery evidence
-    needs: [validate, browser-dashboard]
+    needs: [validation-profile, validate, browser-dashboard]
+    if: >-
+      always() && needs.validate.result == 'success' &&
+      (needs.validation-profile.outputs.browser_dashboard_required != 'true' ||
+      needs.browser-dashboard.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
