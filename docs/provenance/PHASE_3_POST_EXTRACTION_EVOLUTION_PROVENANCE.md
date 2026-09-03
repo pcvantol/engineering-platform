@@ -9,7 +9,7 @@ immutable Stage 1 record proves the historical DJConnect source at
 `d4d538559796f64f1ffa5136698dd207589a4ae0`.  Its input baseline and rendered
 receipt are retained byte-for-byte as historical evidence.
 
-Stage 2 reads `PHASE_3_POST_EXTRACTION_EVOLUTION_LEDGER.json` (schema v2). Its
+Stage 2 reads `PHASE_3_POST_EXTRACTION_EVOLUTION_LEDGER.json` (schema v3). Its
 bounded DAG has immutable baseline nodes, explicit intermediate/current/retired
 nodes, and typed responsibility-flow edges (`MODIFY`, `MOVE`, `RENAME`,
 `SPLIT`, `MERGE`, `REPLACE`, `RETIRE`). Cycles, duplicate edges, invented
@@ -17,13 +17,39 @@ responsibilities, orphan current nodes, dangling intermediates, and nonterminal
 responsibility flows fail closed. Explicit SHARED ownership is the sole way a
 responsibility may reach more than one current implementation.
 
-Each current
-historical target is either unchanged or has a receipt containing its baseline
-and current content hashes, path/disposition, responsibility coverage, reason,
-PR identity and governed commit chain.  The verifier checks the declared
-commits exist and are reachable from the standalone lineage anchor to the
-checked-out current head.  A working-tree mutation, disappearance, rename or
-replacement that is not covered by such a receipt fails closed.
+Each current historical target is either unchanged or has a receipt containing
+its baseline and current content hashes, path/disposition, responsibility
+coverage, reason, PR identity and governed commit chain. A receipt is either
+**CURRENT_PHASE_PROVENANCE**, whose declared commits must exist and remain
+reachable from the standalone lineage anchor to the checked-out current head,
+or an explicitly **SEALED_PREDECESSOR_PHASE_EVOLUTION**. A working-tree
+mutation, disappearance, rename or replacement that is not covered by such a
+receipt fails closed.
+
+## Governed phase baselines
+
+A **GOVERNED_PHASE** is a bounded, approved delivery phase. Its
+**PHASE_EVOLUTION_COMMITS** remain auditable in its immutable receipts. At
+completion it may declare one **PHASE_COMPLETION_BASELINE** and a
+`COMPLETE` seal in `governed_phase_seals`. The seal names every predecessor
+receipt it covers and hashes their canonical ledger entries; it also records
+the approved completion baseline and approval reference. Sealing is never
+inferred from a commit subject or a path name.
+
+For a sealed predecessor, the verifier requires the seal to be intact, its
+completion baseline to be reachable from the current head, the baseline to
+contain the sealed destination content, and each historical evolution commit
+to remain present with forward internal chronology. It does not require those
+internal commits to be direct ancestors of every later phase head. This makes
+sequential governed phases robust to a governed squash completion while
+preserving auditability.
+
+For the current phase, commit-chain reachability remains fail-closed. Missing
+or tampered seals, absent completion baselines, ambiguous receipt ownership,
+missing current-phase chains, and unaccounted paths all fail qualification.
+`P-CENTRAL-CORE` is the first sealed predecessor phase: completion baseline
+`a0694530ea54fac9a47e0898738105dfc719b935` seals its listed receipts without
+rewriting their historical evidence.
 
 The separate lineage anchor is required because the final historical target
 commit was reconciled on a parallel extraction branch.  The verifier proves

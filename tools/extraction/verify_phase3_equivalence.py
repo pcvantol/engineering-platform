@@ -36,6 +36,72 @@ def load(path: Path) -> dict:
 def ancestor(root: Path, older: str, newer: str) -> bool:
     return subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", older, newer], check=False).returncode == 0
 def responsibility_id(path: str) -> str: return f"{path}::module"
+def canonical_digest(value: object) -> str:
+    return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+def valid_commit(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 40
+
+def current_phase_chain_reachable(target: Path, anchor: str, head: str, first: object, last: object) -> bool:
+    return all(valid_commit(commit) and ancestor(target, anchor, commit) and ancestor(target, commit, head) for commit in (first, last))
+
+def validate_phase_seals(target: Path, anchor: str, head: str, records: list[dict], seals: object, errors: list[str]) -> dict[str, dict]:
+    """Return explicitly sealed predecessor receipts after fail-closed validation."""
+    if seals is None:
+        return {}
+    if not isinstance(seals, list):
+        errors.append("governed phase seals must be a list")
+        return {}
+    indexed = {record.get("historical_target_path"): record for record in records if isinstance(record, dict)}
+    sealed, phase_ids = {}, set()
+    for seal in seals:
+        if not isinstance(seal, dict):
+            errors.append("malformed governed phase seal")
+            continue
+        phase_id, status, completion = seal.get("phase_id"), seal.get("completion_status"), seal.get("completion_baseline")
+        paths, digest = seal.get("sealed_evolution_paths"), seal.get("sealed_evolutions_sha256")
+        if not isinstance(phase_id, str) or not phase_id or phase_id in phase_ids:
+            errors.append("ambiguous governed phase seal")
+            continue
+        phase_ids.add(phase_id)
+        if status != "COMPLETE" or not valid_commit(completion) or not isinstance(paths, list) or not paths or not isinstance(digest, str):
+            errors.append(f"invalid governed phase seal: {phase_id}")
+            continue
+        if len(paths) != len(set(paths)) or any(not isinstance(path, str) for path in paths):
+            errors.append(f"ambiguous sealed evolution ownership: {phase_id}")
+            continue
+        try:
+            run(target, "cat-file", "-e", f"{completion}^{{commit}}")
+        except ValueError:
+            errors.append(f"missing governed phase completion baseline: {phase_id}")
+            continue
+        if not ancestor(target, anchor, completion) or not ancestor(target, completion, head):
+            errors.append(f"unreachable governed phase completion baseline: {phase_id}")
+            continue
+        selected = [indexed.get(path) for path in paths]
+        if any(record is None for record in selected) or canonical_digest(selected) != digest:
+            errors.append(f"tampered or missing sealed provenance ledger: {phase_id}")
+            continue
+        for path, record in zip(paths, selected):
+            if path in sealed:
+                errors.append(f"ambiguous sealed evolution ownership: {path}")
+                continue
+            first, last = record.get("first_governed_commit"), record.get("last_governed_commit")
+            try:
+                if not valid_commit(first) or not valid_commit(last):
+                    raise ValueError("malformed governed commit")
+                run(target, "cat-file", "-e", f"{first}^{{commit}}")
+                run(target, "cat-file", "-e", f"{last}^{{commit}}")
+                if not ancestor(target, first, last):
+                    raise ValueError("backwards sealed governed commit chain")
+                for destination in record.get("destinations", []):
+                    if sha(blob(target, completion, destination["path"])) != destination.get("current_sha256"):
+                        raise ValueError("completion baseline does not prove sealed content")
+            except (ValueError, KeyError) as error:
+                errors.append(f"invalid sealed predecessor provenance: {path}: {error}")
+                continue
+            sealed[path] = {"phase_id": phase_id, "completion_baseline": completion}
+    return sealed
 def validate_responsibilities(expected, destinations, retirements, errors, label):
     claims,shared,retired={},set(),set()
     for destination in destinations:
@@ -185,6 +251,7 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
     identity, records = ledger.get("historical_extraction", {}), ledger.get("evolutions")
     if not isinstance(records, list): errors.append("ledger evolutions must be a list"); return []
     baseline, head = identity.get("standalone_lineage_anchor_commit", identity.get("target_baseline_commit")), run(target, "rev-parse", "HEAD")
+    sealed = validate_phase_seals(target, baseline, head, records, ledger.get("governed_phase_seals"), errors)
     indexed = {}
     for record in records:
         key = record.get("historical_target_path") if isinstance(record, dict) else None
@@ -211,13 +278,15 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
             except (OSError,ValueError): actual=None
             if kind != "INTENTIONAL_RETIREMENT" and actual != destination.get("current_sha256"): errors.append(f"unaccounted current content: {dst}")
         first,last=record.get("first_governed_commit"),record.get("last_governed_commit")
-        if not all(isinstance(x,str) and len(x)==40 and ancestor(target,baseline,x) and ancestor(target,x,head) for x in (first,last)): errors.append(f"invalid or unreachable governed commit chain: {path}")
-        elif kind != "INTENTIONAL_RETIREMENT":
+        sealed_predecessor = path in sealed
+        if not sealed_predecessor and not current_phase_chain_reachable(target, baseline, head, first, last):
+            errors.append(f"invalid or unreachable current-phase governed commit chain: {path}")
+        elif not sealed_predecessor and kind != "INTENTIONAL_RETIREMENT":
             for destination in destinations:
                 try:
                     if sha(blob(target,last,destination["path"])) != destination.get("current_sha256"): errors.append(f"last governed commit does not prove current content: {path}")
                 except ValueError as error: errors.append(str(error))
-        inventory.append({"path":path,"classification":kind})
+        inventory.append({"path":path,"classification":kind,"provenance_scope":"SEALED_PREDECESSOR_PHASE_EVOLUTION" if sealed_predecessor else "CURRENT_PHASE_PROVENANCE"})
     for path in indexed: errors.append(f"evolution receipt has no historical target: {path}")
     return inventory
 
@@ -228,6 +297,7 @@ def main() -> int:
     args=parser.parse_args(); errors=[]
     try:
         ledger=load(args.ledger); target=args.target.resolve(); anchor=ledger["historical_extraction"]["standalone_lineage_anchor_commit"]; qualified=run(target,"rev-parse",args.qualified_revision)
+        if ledger.get("schema_version") != 3: errors.append("unsupported governed phase baseline ledger schema")
         if qualified != run(target,"rev-parse","HEAD"): errors.append("checkout HEAD does not equal qualified revision")
         errors.extend(validate_graph(ledger.get("graph",{}),target,anchor,qualified)); rows=stage1(args.source.resolve(),target,load(args.baseline),load(args.historical_receipt),ledger,errors); inventory=stage2(target,rows,ledger,errors)
     except (OSError,ValueError,json.JSONDecodeError) as error: errors.append(str(error)); inventory=[]
