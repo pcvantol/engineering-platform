@@ -269,6 +269,15 @@ class ParityLifecycleDispatcher:
             execution_mode=candidate.execution_mode, results=(host, workspace, capability),
         )
         if decision != "PASS":
+            for result in (host, workspace, capability):
+                for check in getattr(result, "checks", ()):
+                    if getattr(check, "outcome", None) == "FAIL":
+                        raise ParityLifecycleDispatchError(
+                            "HISTORICAL_ADMISSION_BLOCKED|%s|%s|%s"
+                            % (type(result).__name__.removesuffix("Result"),
+                               getattr(check, "identifier", "unavailable"),
+                               redact_diagnostic(str(getattr(check, "reason", "Preflight check failed.")), limit=500))
+                        )
             raise ParityLifecycleDispatchError("HISTORICAL_ADMISSION_BLOCKED")
 
     def _set_state(self, submission_id: str, run_id: str, state: str) -> None:
@@ -355,11 +364,15 @@ class ParityLifecycleDispatcher:
                                      run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
         message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
+        component = code = None
+        if message.startswith("HISTORICAL_ADMISSION_BLOCKED|"):
+            _, component, code, message = message.split("|", 3)
         path = self.data_root / "artifacts" / "projects" / context.project_id / "runs" / run_id / "early-runner-failure.json"
         payload = {"submission_id": submission_id, "project_id": context.project_id,
                    "repository_id": context.repository_id, "run_id": run_id,
                    "failure_stage": stage, "error_type": type(error).__name__,
                    "diagnostic_code": "RUNNER_EARLY_FAILURE" if stage == "RUNNER_INITIALIZATION" else "PRECHECKPOINT_FAILURE", "message": message,
+                   "admission_component": component, "component_code": code,
                    "recorded_at": _utcnow()}
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)
