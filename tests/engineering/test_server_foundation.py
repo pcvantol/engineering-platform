@@ -217,6 +217,30 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
         self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
 
+    def test_download_attachment_headers_reject_request_control_characters(self) -> None:
+        self.assertEqual(
+            server._report_content_disposition("dj-run-01"),
+            'attachment; filename="engineering-report-dj-run-01.md"',
+        )
+        self.assertEqual(
+            server._attachment_content_disposition("engineering-platform-central-20260903T000000Z.db"),
+            'attachment; filename="engineering-platform-central-20260903T000000Z.db"',
+        )
+        for report_id in (
+            "dj-run\rX-Injected: yes",
+            "dj-run\nX-Injected: yes",
+            "dj-run\r\nX-Injected: yes",
+            "dj-run%0dX-Injected%3A%20yes",
+            "dj-run%0aX-Injected%3A%20yes",
+            "dj-run%0d%0aX-Injected%3A%20yes",
+            "../dj-run",
+        ):
+            with self.subTest(report_id=report_id), self.assertRaises(ValueError):
+                server._report_content_disposition(report_id)
+        for filename in ("report\r.md", "report\n.md", "report\r\nX: yes.md", "report name.md", "report%0d.md"):
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                server._attachment_content_disposition(filename)
+
     def test_ep_database_panel_is_framed_and_maintenance_selection_recovers_safely(self) -> None:
         server.initialize(self.root)
         panel = server._central_database_section(self.root)
@@ -428,6 +452,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             telemetry_detail = json.loads(response.read())
         self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/report?project=djconnect") as response:
+            self.assertEqual(
+                response.headers["Content-Disposition"],
+                'attachment; filename="engineering-report-dj-run.md"',
+            )
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
             self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")

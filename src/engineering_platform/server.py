@@ -60,6 +60,30 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 48
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
+_SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+
+
+def _attachment_content_disposition(filename: object) -> str:
+    """Build a fail-closed attachment header from a bounded ASCII filename.
+
+    Route validation is not a response-header security boundary.  This helper
+    rejects control characters and all non-allowlisted filenames before a
+    value reaches ``BaseHTTPRequestHandler.send_header``.
+    """
+    if not isinstance(filename, str):
+        raise ValueError("attachment filename is invalid")
+    sanitized = filename.replace("\r", "").replace("\n", "")
+    if sanitized != filename or not _SAFE_ATTACHMENT_FILENAME.fullmatch(sanitized):
+        raise ValueError("attachment filename is invalid")
+    return f'attachment; filename="{sanitized}"'
+
+
+def _report_content_disposition(report_id: object) -> str:
+    """Compose the report filename only after independently validating its id."""
+    if not isinstance(report_id, str) or not _SAFE_REPORT_ID.fullmatch(report_id):
+        raise ValueError("report identifier is invalid")
+    return _attachment_content_disposition(f"engineering-report-{report_id}.md")
 
 
 class ServerConfigurationError(ValueError):
@@ -1187,7 +1211,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         filename = f"engineering-platform-central-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.db"
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.sqlite3")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition", _attachment_content_disposition(filename))
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1353,7 +1377,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/markdown; charset=utf-8")
-                self.send_header("Content-Disposition", f'attachment; filename="engineering-report-{report_match.group(1)}.md"')
+                self.send_header(
+                    "Content-Disposition",
+                    _report_content_disposition(report_match.group(1)),
+                )
                 self.send_header("Content-Length", str(len(content)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
