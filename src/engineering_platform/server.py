@@ -599,6 +599,43 @@ def _alive(pid: object) -> bool:
     return True
 
 
+def _transport_components(data_root: Path, *, server_running: bool) -> dict[str, dict[str, object]]:
+    """Return secret-free, platform-scoped ingress observability from CENTRAL.
+
+    Submission timestamps are observation only.  They never change queue or
+    execution semantics and intentionally retain no credential or raw prompt.
+    """
+    latest: dict[str, str] = {}
+    with sqlite3.connect(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+        for transport, created_at in connection.execute(
+            "SELECT transport,MAX(created_at) FROM ep_submissions GROUP BY transport"
+        ):
+            latest[str(transport)] = str(created_at)
+    http_state = "HEALTHY" if server_running else "DOWN"
+    cli_state = "AVAILABLE" if server_running else "DEGRADED"
+    file_last = latest.get("FILE_INBOX")
+    file_state = "RUNNING" if file_last else "STOPPED"
+    return {
+        "http_ingress": {
+            "healthy": server_running, "state": http_state,
+            "detail": "CENTRAL listener endpoint" if server_running else "CENTRAL listener unavailable",
+            "version": "1",  # canonical submission protocol version
+            "last_successful_submission": latest.get("HTTP"), "recent_error": None,
+        },
+        "cli_ingress": {
+            "healthy": server_running, "state": cli_state,
+            "detail": "Canonical submission compatibility" if server_running else "CENTRAL endpoint unavailable",
+            "version": "1", "last_successful_submission": latest.get("CLI"), "recent_error": None,
+        },
+        "file_inbox_ingress": {
+            "healthy": file_state == "RUNNING", "state": file_state,
+            "detail": "Awaiting file transport heartbeat" if not file_last else "Last file submission accepted",
+            "watched_location": "Configured File Inbox", "last_successful_submission": file_last,
+            "delivery_retry": "NONE", "quarantine_count": 0, "recent_error": None,
+        },
+    }
+
+
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
@@ -618,6 +655,7 @@ def status(data_root: Path) -> dict[str, object]:
             "state": WORKER_RUNNING if running else "STOPPED",
         },
         "bind": {"host": config.bind_host, "port": config.bind_port},
+        "components": _transport_components(data_root, server_running=running),
     }
 
 
@@ -1365,6 +1403,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
         if method == "do_GET" and self._send_console_asset(request):
+            return
+        # Platform health is deliberately independent of the browser's
+        # selected project preference, so the same components remain visible
+        # in both Console modes.
+        if method == "do_GET" and request.path == "/health":
+            report = status(self.server.data_root)  # type: ignore[attr-defined]
+            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
             return
         if self._central_database_configuration(method):
             return

@@ -3549,6 +3549,9 @@ function healthComponentLabel(component) {
     dashboard: t("logs.status_dashboard"),
     inbox_watcher: t("component.execution_host"),
     dashboard_relay: t("component.dashboard_relay"),
+    http_ingress: "HTTP/API ingress",
+    cli_ingress: "CLI ingress",
+    file_inbox_ingress: "File Inbox ingress",
   }[component] || component;
 }
 let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;
@@ -3803,12 +3806,20 @@ function renderPlatformHealth(payload) {
       name.append(linkIcon);
     }
     detail.className = "platform-health__component-detail";
+    const transportFacts = [
+      component?.last_successful_submission ? "Last submission " + component.last_successful_submission : "",
+      component?.watched_location ? "Location " + component.watched_location : "",
+      component?.delivery_retry ? "Delivery retry " + component.delivery_retry : "",
+      Number.isFinite(Number(component?.quarantine_count)) ? "Quarantine " + component.quarantine_count : "",
+      component?.recent_error ? "Diagnostic " + component.recent_error : "",
+    ].filter(Boolean).join(" · ");
     detail.textContent =
-      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : String(component?.state || (componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")))) +
       " · " +
       String(component?.detail || component?.state || t("ui.no_component_explanation")) +
       version +
-      (uptime ? " · " + t("component.uptime") + " " + uptime : "");
+      (uptime ? " · " + t("component.uptime") + " " + uptime : "") +
+      (transportFacts ? " · " + transportFacts : "");
     info.className = "component-info";
     info.textContent = "i";
     info.setAttribute("aria-hidden", "true");

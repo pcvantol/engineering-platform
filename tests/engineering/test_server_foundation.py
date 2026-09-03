@@ -182,11 +182,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{port}{path}") as response:
                 self.assertEqual(response.status, 200, path)
                 if path == "/api/platform-status":
-                    self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
+                    projection = json.loads(response.read())
+                    self.assertEqual(projection["scope"], "PLATFORM")
         with urlopen(f"http://127.0.0.1:{port}/") as response:
             document = response.read().decode("utf-8")
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
+
+    def test_transport_components_are_platform_scoped_and_secret_free(self) -> None:
+        server.initialize(self.root)
+        components = server.status(self.root)["components"]
+        self.assertEqual(set(components), {"http_ingress", "cli_ingress", "file_inbox_ingress"})
+        self.assertEqual(components["http_ingress"]["state"], "DOWN")
+        self.assertEqual(components["cli_ingress"]["state"], "DEGRADED")
+        self.assertEqual(components["file_inbox_ingress"]["state"], "STOPPED")
+        self.assertNotIn("credential", repr(components).lower())
 
     def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
         historical = (
