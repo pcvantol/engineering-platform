@@ -574,6 +574,24 @@ def _bound_console_projects(data_root: Path) -> list[dict[str, str]]:
     return projects
 
 
+def _console_projects(data_root: Path) -> list[dict[str, str]]:
+    """List CENTRAL project identities without opening their checkouts.
+
+    The selector is a logical CENTRAL projection.  A local binding is checked
+    only later, when a user explicitly selects that project for a transitional
+    root-bound route.
+    """
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute("""SELECT p.project_id, r.repository_id
+            FROM ep_project_registrations AS p
+            JOIN ep_repository_registrations AS r
+              ON r.project_id=p.project_id AND r.role='authority'
+            WHERE p.status='ACTIVE'
+            ORDER BY p.project_id""").fetchall()
+    return [{"project_id": str(project_id), "repository_id": str(repository_id)}
+            for project_id, repository_id in rows]
+
+
 def _console_root(data_root: Path, project_id: str) -> Path:
     """Resolve the selected project through schema-44 before every request."""
     for project in _bound_console_projects(data_root):
@@ -911,19 +929,36 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
 
 
-_NO_PROJECT_GLOBAL_PATHS = frozenset({
-    "/health", "/api/configuration", "/api/execution-runtime-status",
-    "/api/github-rate-limit", "/api/logs/dashboard", "/api/logs/inbox",
-    "/api/process-metrics", "/api/provider-login-status", "/api/usage",
-})
+_CONSOLE_STATIC_ASSETS = {
+    "/assets/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
+    "/assets/dashboard_locales.mjs": ("dashboard_locales.mjs", "text/javascript; charset=utf-8"),
+    "/assets/dashboard_status_store.mjs": ("dashboard_status_store.mjs", "text/javascript; charset=utf-8"),
+    "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
+    "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
+    "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),
+    "/assets/operations-console/apple-touch-icon-dark.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-light.png": (dashboard.APP_ICON_LIGHT, "image/png"),
+    "/assets/operations-console/manifest.webmanifest": (dashboard.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
+    "/favicon.ico": (dashboard.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon-precomposed.png": (dashboard.APP_ICON_DARK, "image/png"),
+}
 
 
-def _is_no_project_global_request(method: str, request: SplitResult) -> bool:
-    """Allow only read-only host-wide Console endpoints without project scope."""
-    return method == "do_GET" and (
-        request.path in _NO_PROJECT_GLOBAL_PATHS
-        or (request.path.startswith("/api/components/") and request.path.endswith("/details"))
-    )
+def _no_project_platform_projection(data_root: Path) -> dict[str, object]:
+    """Return a checkout-free platform projection for the ``<geen>`` view.
+
+    This deliberately has no project fallback.  It uses only installed Server
+    state and CENTRAL metadata, so rendering a Console before a checkout is
+    bound is a supported operation.
+    """
+    return {
+        "scope": "PLATFORM",
+        "server": status(data_root),
+        "central_database": central_database.details(data_root),
+        "capacity_configuration": central_database.capacity_configuration(data_root),
+    }
 
 
 def _authenticated_consumer(connection: sqlite3.Connection, token: object, project_id: str) -> str | None:
@@ -954,6 +989,74 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("EP-Server-Instance", instance_id)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_console_asset(self, request: SplitResult) -> bool:
+        """Serve installed Console assets without selecting a project/root."""
+        asset = _CONSOLE_STATIC_ASSETS.get(request.path)
+        if asset is None:
+            return False
+        name, content_type = asset
+        try:
+            content = (dashboard.ASSET_DIRECTORY / name).read_bytes()
+        except OSError:
+            self.send_error(404)
+            return True
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+        return True
+
+    def _no_project_platform_route(self, method: str, request: SplitResult) -> bool:
+        """Serve only explicit platform data when no project is selected.
+
+        Unsupported historical endpoints fail closed.  In particular, this
+        method never resolves a local repository binding merely to satisfy an
+        old Dashboard helper.
+        """
+        if method != "do_GET":
+            return False
+        if request.path == "/api/platform-status":
+            self._send(200, _no_project_platform_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        if request.path == "/health":
+            report = status(self.server.data_root)  # type: ignore[attr-defined]
+            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            return True
+        if request.path == "/api/configuration":
+            # CENTRAL-only settings presently supported by this phase.  The
+            # root-local dashboard configuration is intentionally unavailable.
+            self._send(200, {
+                **central_database.maintenance_configuration(self.server.data_root),  # type: ignore[attr-defined]
+                **central_database.capacity_configuration(self.server.data_root),  # type: ignore[attr-defined]
+                "scope": "PLATFORM",
+            })
+            return True
+        if request.path == "/api/execution-runtime-status":
+            self._send(200, dashboard._execution_runtime_status())
+            return True
+        if request.path == "/api/github-rate-limit":
+            self._send(200, dashboard._github_rate_limit_status())
+            return True
+        if request.path == "/api/provider-login-status":
+            # Provider identity is installation scoped.  Do not ask the
+            # retained helper to inspect a selected checkout in `<geen>`.
+            self._send(200, {"providers": {
+                "codex": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
+                "github": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
+            }})
+            return True
+        if request.path in {"/api/process-metrics", "/api/usage"}:
+            self._send(200, {"scope": "PLATFORM", "available": False})
+            return True
+        if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+            component = request.path.rsplit("/", 1)[-1]
+            self._send(200, {"scope": "PLATFORM", "component": component, "entries": [], "total": 0, "events": []})
+            return True
+        return False
 
     def _send_central_database_backup(self) -> None:
         snapshot = central_database.snapshot(self.server.data_root)  # type: ignore[attr-defined]
@@ -1038,8 +1141,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return
 
     def _delegate_dashboard(self, method: str) -> None:
-        """Run the preserved handler after CENTRAL validates the selected scope."""
+        """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
+        if method == "do_GET" and self._send_console_asset(request):
+            return
         if self._central_database_configuration(method):
             return
         if request.path == "/api/provider-capacity":
@@ -1081,7 +1186,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         selected = self.headers.get("X-Engineering-Platform-Project")
         if not selected:
             selected = (parse_qs(request.query).get("project") or [None])[0]
-        projects = _bound_console_projects(self.server.data_root)  # type: ignore[attr-defined]
+        # Listing projects is a CENTRAL-only operation.  Do not validate or
+        # inspect any checkout until a selected project needs a transitional
+        # project route below.
+        projects = _console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
         if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
@@ -1149,21 +1257,14 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(document)
             return
-        if selected in {None, ""} and _is_no_project_global_request(method, request) and projects:
-            # The retained endpoints are host-wide and read-only. The legacy
-            # handler requires a bound root for package resolution, but its
-            # project-scoped endpoints remain unavailable in this state.
-            selected = projects[0]["project_id"]
-        if not isinstance(selected, str) or selected not in project_ids:
-            # Static package assets are scope-neutral and load before the
-            # document's project-aware fetch wrapper exists.  Resolve a valid
-            # bound root solely to reuse the installed asset handler; no
-            # project data is read or disclosed by these routes.
-            if (request.path == "/" or request.path.startswith("/assets/") or request.path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"}) and projects:
-                selected = projects[0]["project_id"]
-            else:
-                self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+        if selected in {None, ""}:
+            if self._no_project_platform_route(method, request):
                 return
+            self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+            return
+        if not isinstance(selected, str) or selected not in project_ids:
+            self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
+            return
         try:
             root = _console_root(self.server.data_root, selected)  # type: ignore[attr-defined]
             queue = _console_queue_projection(self.server.data_root, selected)  # type: ignore[attr-defined]

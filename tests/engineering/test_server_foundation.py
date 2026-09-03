@@ -171,6 +171,24 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["projects"], [])
         self.assertIn(b"/v1/operations/projects", server._operations_console_document())
 
+    def test_no_project_console_never_resolves_a_checkout_for_shell_assets_or_platform_data(self) -> None:
+        """`<geen>` is a real CENTRAL/platform projection, not first-root fallback."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+
+        with patch("engineering_platform.server._console_root", side_effect=AssertionError("root must not be read")):
+            for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
+                with urlopen(f"http://127.0.0.1:{port}{path}") as response:
+                    self.assertEqual(response.status, 200, path)
+                    if path == "/api/platform-status":
+                        self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
+        with urlopen(f"http://127.0.0.1:{port}/") as response:
+            document = response.read().decode("utf-8")
+        self.assertIn('data-project-id="none"', document)
+        self.assertIn('id="noProjectSelected"', document)
+
     def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
         historical = (
             b'<details id="workspaceCard"><span class="label" data-workspace-label="workspace.name" '
