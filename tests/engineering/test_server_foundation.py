@@ -426,6 +426,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) VALUES(?,?,?,?,?)",
                 ("dj-run", "assistant", "CENTRAL transcript", "test-model", "2026-01-01T00:00:04+00:00"),
             )
+            connection.execute(
+                "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                ("dashboard", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
+            )
         artifact = self.root / "artifacts" / "reports" / "dj-run.md"
         artifact.parent.mkdir(parents=True)
         artifact.write_text("# CENTRAL report\n", encoding="utf-8")
@@ -445,3 +449,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
             self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/dashboard?project=djconnect") as response:
+            logs = json.loads(response.read())
+        self.assertEqual(logs["scope"], "PLATFORM")
+        self.assertEqual(logs["entries"][0]["event"], "central_console_test")

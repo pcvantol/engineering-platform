@@ -20,7 +20,8 @@ physical execution binding only; it is not Console authority.
 | Evidence report downloads | CENTRAL_NATIVE | Report index and artifact path are authorized by `(project_id, run_id)` in CENTRAL. |
 | Prompt chat history | CENTRAL_NATIVE (read projection) | Immutable transcript lookup is scoped by CENTRAL project/run lineage. |
 | Provider-backed chat mutation and report analysis | RETIRED/UNREACHABLE from migrated routes | No CENTRAL Server authority is invented for historical root-backed mutation. |
-| Configuration and component logs | HISTORICAL_DASHBOARD_DELEGATE | Slice E. |
+| Configuration | CENTRAL_NATIVE (read projection) | Only CENTRAL maintenance/capacity policy is exposed; old root-local settings fail closed. |
+| Component logs | CENTRAL_NATIVE | Server-owned CENTRAL log index, explicitly `PLATFORM` scoped. |
 | Worktree, provider-login and update actions | HISTORICAL_DASHBOARD_DELEGATE | To retire or explicitly govern; not available at `<geen>`. |
 
 `AMBIGUOUS active routes = 0` for the Slice A boundary.  Selected-project
@@ -59,3 +60,10 @@ The report-download and chat-history routes no longer inspect a checkout.
 They first prove the requested run belongs to the selected CENTRAL project,
 then resolve only CENTRAL-indexed artifact/transcript records.  The deletion
 canary covers both paths.
+
+## Slice E configuration/log rule
+
+The installed Console reads configuration and component logs without a project
+root.  Historical configuration and log-clearing mutations are rejected until
+their explicit CENTRAL scope and safety contract exists; no local
+`engineering_metadata` fallback is permitted.

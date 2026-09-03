@@ -774,6 +774,34 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
             for role, content, model, created_at in rows]
 
 
+def _central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
+    """Read Server-owned component logs only from CENTRAL's log index."""
+    if component not in {"dashboard", "inbox"}:
+        return None
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            "SELECT id,payload,created_at FROM engineering_component_logs WHERE component=? ORDER BY id DESC LIMIT 200",
+            (component,),
+        ).fetchall()
+    entries: list[dict[str, object]] = []
+    for identifier, payload, created_at in reversed(rows):
+        try:
+            decoded = json.loads(str(payload))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            decoded = {"event": "malformed_central_log"}
+        entries.append({"line": int(identifier), "timestamp": str(created_at), **(decoded if isinstance(decoded, dict) else {})})
+    return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
+
+
+def _central_console_configuration(data_root: Path) -> dict[str, object]:
+    """Expose only configuration already owned by CENTRAL in this phase."""
+    return {
+        "scope": "PLATFORM",
+        **central_database.maintenance_configuration(data_root),
+        **central_database.capacity_configuration(data_root),
+    }
+
+
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
     """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
@@ -1178,11 +1206,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/configuration":
             # CENTRAL-only settings presently supported by this phase.  The
             # root-local dashboard configuration is intentionally unavailable.
-            self._send(200, {
-                **central_database.maintenance_configuration(self.server.data_root),  # type: ignore[attr-defined]
-                **central_database.capacity_configuration(self.server.data_root),  # type: ignore[attr-defined]
-                "scope": "PLATFORM",
-            })
+            self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path == "/api/execution-runtime-status":
             self._send(200, dashboard._execution_runtime_status())
@@ -1203,7 +1227,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return True
         if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
             component = request.path.rsplit("/", 1)[-1]
-            self._send(200, {"scope": "PLATFORM", "component": component, "entries": [], "total": 0, "events": []})
+            self._send(200, _central_console_component_logs(self.server.data_root, component) or {"error": "LOG_COMPONENT_UNKNOWN"})  # type: ignore[attr-defined]
             return True
         return False
 
@@ -1344,6 +1368,17 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # Slice B: the core project read model is available even when its
             # checkout has been deleted or rebound.  Do this before the
             # transitional handler can resolve a root.
+            if request.path == "/api/configuration":
+                self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
+                return
+            if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+                component = request.path.rsplit("/", 1)[-1]
+                payload = _central_console_component_logs(self.server.data_root, component)  # type: ignore[attr-defined]
+                if payload is None:
+                    self._send(404, {"error": "LOG_COMPONENT_UNKNOWN"})
+                else:
+                    self._send(200, payload)
+                return
             if request.path in {"/api/dashboard-snapshot", "/api/status"}:
                 self._send(200, _central_console_project_snapshot(self.server.data_root, selected))  # type: ignore[attr-defined]
                 return
@@ -1410,6 +1445,14 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"event: dashboard\ndata: " + encoded + b"\n\n")
                 return
+        if method == "do_POST" and isinstance(selected, str) and selected in project_ids and (
+            request.path == "/api/configuration" or request.path.startswith("/api/logs/")
+        ):
+            # The local dashboard's mutable metadata/log controls have no
+            # CENTRAL contract yet.  Fail closed rather than mutating a
+            # checkout-local store for compatibility.
+            self._send(405, {"error": "CONSOLE_CONFIGURATION_MUTATION_UNAVAILABLE"})
+            return
         if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
                 self._send(403, {"error": "INVALID_ORIGIN"})
