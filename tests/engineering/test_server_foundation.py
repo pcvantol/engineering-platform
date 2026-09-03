@@ -391,3 +391,24 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn(str(roots[1]), first)
         self.assertIn(str(roots[1]), second)
         self.assertNotIn(str(roots[0]), second)
+
+        # Slice B is a CENTRAL read projection: history and queue remain
+        # available after the physical checkout used by the legacy shell is
+        # gone, and a selected project never receives another project's run.
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("dj-run", "djconnect", "COMPLETE", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("ep-run", "engineering-platform", "COMPLETE", "2026-01-02T00:00:00+00:00", "2026-01-02T00:01:00+00:00"),
+            )
+        roots[0].rename(self.root.parent / "deleted-djconnect-checkout")
+        with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot?project=djconnect") as response:
+            snapshot = json.loads(response.read())
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history?project=djconnect") as response:
+            history = json.loads(response.read())
+        self.assertEqual(snapshot["status"]["project_id"], "djconnect")
+        self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
+        self.assertEqual([run["run_id"] for run in history], ["dj-run"])

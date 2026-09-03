@@ -605,7 +605,7 @@ def _console_root(data_root: Path, project_id: str) -> Path:
 
 def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, object]:
     """Read the selected project's single transport-neutral CENTRAL FIFO."""
-    for project in _bound_console_projects(data_root):
+    for project in _console_projects(data_root):
         if project["project_id"] != project_id:
             continue
         with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
@@ -614,6 +614,7 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
                 data_root=data_root,
                 project_id=project_id,
                 repository_id=project["repository_id"],
+                require_local_root=False,
             )
             queue = ParityProjectStore(connection, context).console_queue_projection()
             rows = connection.execute(
@@ -623,6 +624,52 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
             ).fetchall()
             return {**queue, "operator_handling": {str(run_id): str(resolution) for run_id, resolution in rows}}
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
+
+
+def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
+    """Return the Slice-B project status/history projection from CENTRAL only."""
+    queue = _console_queue_projection(data_root, project_id)
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        runs = connection.execute(
+            """SELECT run_id,state,created_at,updated_at,execution_mode
+                FROM ep_execution_runs WHERE project_id=?
+                ORDER BY created_at DESC,run_id DESC LIMIT 1000""",
+            (project_id,),
+        ).fetchall()
+        dispatches = dict(connection.execute(
+            "SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=?",
+            (project_id,),
+        ).fetchall())
+    records = [
+        {
+            "run_id": str(run_id), "status": str(dispatches.get(run_id, state)),
+            "state": str(dispatches.get(run_id, state)), "created_at": str(created_at),
+            "updated_at": str(updated_at), "execution_mode": execution_mode,
+            "project_id": project_id,
+        }
+        for run_id, state, created_at, updated_at, execution_mode in runs
+    ]
+    active = next((record for record in records if record["state"] in {"CLAIMED", "RUNNING"}), None)
+    return {
+        "project_id": project_id,
+        "scope": "PROJECT",
+        "status": {
+            "project_id": project_id,
+            "queue_depth": queue["queue_depth"],
+            "queue_items": queue["queue_items"],
+            "active_run": active["run_id"] if active else None,
+            "last_executed_run": records[0]["run_id"] if records else None,
+            "lifecycle_source": "CENTRAL",
+        },
+        "runs": records,
+        "queue": queue,
+    }
+
+
+def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -> dict[str, object] | None:
+    """Resolve a run by canonical project/run identity, never by checkout."""
+    snapshot = _central_console_project_snapshot(data_root, project_id)
+    return next((record for record in snapshot["runs"] if record["run_id"] == run_id), None)
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
@@ -1191,6 +1238,43 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # project route below.
         projects = _console_projects(self.server.data_root)  # type: ignore[attr-defined]
         project_ids = {item["project_id"] for item in projects}
+        if method == "do_GET" and isinstance(selected, str) and selected in project_ids:
+            # Slice B: the core project read model is available even when its
+            # checkout has been deleted or rebound.  Do this before the
+            # transitional handler can resolve a root.
+            if request.path in {"/api/dashboard-snapshot", "/api/status"}:
+                self._send(200, _central_console_project_snapshot(self.server.data_root, selected))  # type: ignore[attr-defined]
+                return
+            if request.path == "/api/prompt-history":
+                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
+                # Keep the established Console list contract while changing
+                # only its authority source.
+                encoded = json.dumps(snapshot["runs"], separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            detail_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/details", request.path)
+            if detail_match:
+                detail = _central_console_run_detail(self.server.data_root, selected, detail_match.group(1))  # type: ignore[attr-defined]
+                if detail is None:
+                    self._send(404, {"error": "RUN_NOT_FOUND"})
+                else:
+                    self._send(200, {"project_id": selected, "run": detail, "source": "CENTRAL"})
+                return
+            if request.path == "/api/events":
+                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
+                encoded = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(b"event: dashboard\ndata: " + encoded + b"\n\n")
+                return
         if method == "do_POST" and request.path in {"/api/execution-dismiss", "/api/execution-retry"}:
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
                 self._send(403, {"error": "INVALID_ORIGIN"})
