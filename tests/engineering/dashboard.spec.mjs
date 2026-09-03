@@ -4211,7 +4211,7 @@ test.describe("Engineering Status browser smoke", () => {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await statusLoaded;
       await page.waitForTimeout(0);
-      await selectDashboardLocale(page, language);
+      await selectDashboardLocale(page, language, { waitForInitialProjection: false });
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await expect(page.locator('.dashboard-locale > span[data-i18n="language.label"]')).toHaveText(localeLabel);
       await expect(page.locator(".auto-refresh-toggle span")).toHaveText(refreshLabel);
