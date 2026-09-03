@@ -7,7 +7,7 @@ physical execution binding only; it is not Console authority.
 
 | Surface | Current classification | Slice A disposition |
 | --- | --- | --- |
-| Console shell at `<geen>` | CENTRAL_NATIVE | The Server renders it without resolving a checkout. |
+| Console shell (selected or `<geen>`) | CENTRAL_NATIVE | The Server renders it without resolving a checkout. |
 | Project selector | CENTRAL_NATIVE | Logical active project identities are read from CENTRAL. |
 | Static CSS, JS, locales and icons | STATIC_ASSET | The Server serves package assets directly, before scope selection. |
 | Platform status | SERVER_PLATFORM_NATIVE | `/api/platform-status` uses Server runtime and CENTRAL metadata only. |
@@ -43,9 +43,9 @@ route could request a checkout.  The bounded run projection is keyed by
 `(project_id, run_id)`.  It remains available after checkout deletion and the
 focused server test verifies that project A cannot read project B's history.
 
-The selected-project HTML document itself is still a historical delegate in
-this intermediate slice; that is the remaining Slice A/B delegate boundary,
-not authority for the migrated read routes.
+The selected-project document is package presentation plus CENTRAL identity;
+it contains no checkout path. Unclassified selected-project requests fail
+closed before the retained dashboard delegate can run.
 
 ## Slice C telemetry rule
 
@@ -67,3 +67,10 @@ The installed Console reads configuration and component logs without a project
 root.  Historical configuration and log-clearing mutations are rejected until
 their explicit CENTRAL scope and safety contract exists; no local
 `engineering_metadata` fallback is permitted.
+
+## Historical delegate status
+
+`dashboard.handler` remains retained compatibility code only. Supported
+installed Console routes either have an explicit Server/CENTRAL projection or
+fail closed with `CENTRAL_CONSOLE_ROUTE_UNAVAILABLE`; they do not resolve a
+root to preserve historical route parity.

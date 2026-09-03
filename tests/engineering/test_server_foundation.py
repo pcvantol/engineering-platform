@@ -350,7 +350,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('const project = "engineering-platform"', second)
         self.assertIn('data-project-id="djconnect" data-project-name="djconnect"', first)
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
-        self.assertIn(str(roots[0]), first)
+        self.assertNotIn(str(roots[0]), first)
         self.assertNotIn("Project-scoped local workspace", first)
         selector = server._console_document_transform(
             "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0], self.root,
@@ -387,9 +387,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         )
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
-        self.assertIn(str(roots[0]), first)
+        self.assertNotIn(str(roots[0]), first)
         self.assertNotIn(str(roots[1]), first)
-        self.assertIn(str(roots[1]), second)
+        self.assertNotIn(str(roots[1]), second)
         self.assertNotIn(str(roots[0]), second)
 
         # Slice B is a CENTRAL read projection: history and queue remain

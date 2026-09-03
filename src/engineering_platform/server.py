@@ -1106,6 +1106,25 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
     return document.replace(b"</head>", scoped_style.encode("utf-8") + b"</head>", 1)
 
 
+def _selected_project_console_document(project_id: str, projects: list[dict[str, str]], data_root: Path) -> bytes:
+    """Render the installed Console shell without loading a project checkout."""
+    document = dashboard._dashboard_html(
+        "EP Operations", workspace_id=project_id, project_name=project_id,
+        workspace_location="Physical binding is not Console authority.",
+        configuration_inbox="Not available from the CENTRAL Console.",
+    )
+    options = _console_project_options(project_id, projects)
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    document = document.replace(
+        b'<label class="dashboard-locale"', selector.encode("utf-8") + b'<label class="dashboard-locale"', 1,
+    )
+    document = document.replace(
+        b'<p class="category-description" data-i18n="description.configuration"></p>',
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,
+    )
+    return document.replace(b"</main>", _console_project_boundary(project_id, options).encode("utf-8") + b"</main>", 1)
+
+
 _CONSOLE_STATIC_ASSETS = {
     "/assets/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
     "/assets/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -1368,6 +1387,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # Slice B: the core project read model is available even when its
             # checkout has been deleted or rebound.  Do this before the
             # transitional handler can resolve a root.
+            if request.path == "/":
+                document = _selected_project_console_document(selected, projects, self.server.data_root)  # type: ignore[attr-defined]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(document)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(document)
+                return
             if request.path == "/api/configuration":
                 self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
                 return
@@ -1483,6 +1511,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": str(error)})
                 return
             self._send(200, result)
+            return
+        if isinstance(selected, str) and selected in project_ids:
+            # No supported CENTRAL Console route may fall through to the
+            # retained dashboard handler.  New routes must be added above
+            # with an explicit Server/CENTRAL authority classification.
+            self._send(404 if method == "do_GET" else 405, {"error": "CENTRAL_CONSOLE_ROUTE_UNAVAILABLE"})
             return
         if method == "do_POST" and request.path == "/api/dashboard-translate":
             if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
