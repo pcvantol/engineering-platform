@@ -33,17 +33,24 @@ boundary, so durable receipts distinguish HTTP and CLI without splitting their
 lifecycle. `--correlation-id`, `--mission-id`, `--engineering-action-id` and a
 JSON-object `--constraints-file` cover the remaining normalized request fields.
 
-The optional legacy-file compatibility adapter accepts only UTF-8 JSON:
+The installed `engineering-platform-file-inbox` adapter accepts only UTF-8 JSON:
 
 ```json
-{"project_id":"djconnect","submission":{"repository_id":"djconnect","producer":{"id":"legacy-file","type":"HUMAN"},"prompt":"..."}}
+{"project_id":"djconnect","submission":{"repository_id":"djconnect","producer":{"id":"file-inbox","type":"HUMAN"},"prompt":"..."}}
 ```
 
-There is no default project or current-directory inference. Its polling,
-stable-file detection, archival and quarantine behavior remain transport
-concerns; once decoded it calls the same service with transport `LEGACY_FILE`.
-An idempotency key only replays the same immutable normalized request; a
-different request using that key is rejected with `IDEMPOTENCY_CONFLICT`.
+There is no default project or current-directory inference. It moves one file
+through `incoming/`, `processing/`, `accepted/`, or `quarantine/`. The SHA-256
+of the physical file is its deterministic transport receipt/idempotency key,
+so a restart after CENTRAL acceptance replays the same canonical request and
+cannot create another Action. An accepted archive has a bounded receipt JSON;
+malformed or authorization-rejected files have a bounded quarantine reason.
+If CENTRAL is unavailable, the file remains in `processing/` for delivery
+retry only. No file transport database, StateStore, queue, retry lifecycle, or
+execution state exists.
+
+`LEGACY_FILE` remains an internal, unreachable provenance helper only. It is
+not an installed ingress or a supported watcher path.
 
 ## Canonical lifecycle contract
 
@@ -79,6 +86,6 @@ database is migrated or read.
 3. Start an isolated installed-package CENTRAL and perform an acceptance-only
    HTTP/CLI/file canary with a disposable project submission; confirm all three
    event boundaries end in `NOT_DISPATCHED`. Do not use the live B8 CENTRAL.
-4. Optionally enable the legacy file adapter with its explicit project JSON
-   envelope. B9 remains forbidden until B8C passes, B8D passes and the
+4. Configure the file adapter with its explicit Server URL and scoped
+   credential. B9 remains forbidden until B8C passes, B8D passes and the
    execution protocol is explicitly ready.
