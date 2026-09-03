@@ -19,7 +19,7 @@ from typing import Any, Mapping
 MAX_PROMPT_BYTES = 65536
 MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
-VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "LEGACY_FILE"})
+VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "LEGACY_FILE"})
 
 # This is the complete B8D lifecycle.  The final value deliberately says what
 # CENTRAL has *not* done: admission makes a submission eligible for a later
@@ -68,6 +68,8 @@ class SubmissionRequest:
     mission_id: str | None = None
     engineering_action_id: str | None = None
     constraints: Mapping[str, object] | None = None
+    transport_receipt_id: str | None = None
+    transport_received_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,7 +130,7 @@ def _transport(value: object) -> str:
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
     if not isinstance(payload, Mapping):
         raise SubmissionError("MALFORMED_REQUEST")
-    allowed = {"repository_id", "producer", "prompt", "idempotency_key", "correlation_id", "mission_id", "engineering_action_id", "constraints"}
+    allowed = {"repository_id", "producer", "prompt", "idempotency_key", "correlation_id", "mission_id", "engineering_action_id", "constraints", "transport_receipt_id", "transport_received_at"}
     if set(payload) - allowed:
         raise SubmissionError("UNKNOWN_FIELD")
     producer = payload.get("producer")
@@ -149,6 +151,8 @@ def request_from_mapping(project_id: str, payload: object, *, transport: str) ->
         mission_id=_token(payload.get("mission_id"), "mission_id", optional=True),
         engineering_action_id=_token(payload.get("engineering_action_id"), "engineering_action_id", optional=True),
         constraints=_json_object(payload.get("constraints")),
+        transport_receipt_id=_token(payload.get("transport_receipt_id"), "transport_receipt_id", optional=True),
+        transport_received_at=_token(payload.get("transport_received_at"), "transport_received_at", optional=True),
     )
 
 
@@ -158,7 +162,7 @@ def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest
         "repository_id": row[0], "producer_id": row[1], "producer_type": row[2],
         "producer_version": row[3], "prompt": row[4], "constraints": row[5],
         "correlation_id": row[6], "mission_id": row[7],
-        "engineering_action_id": row[8],
+        "engineering_action_id": row[8], "transport_receipt_id": row[9],
     }
     requested = {
         "repository_id": request.repository_id, "producer_id": request.producer_id,
@@ -167,6 +171,7 @@ def _same_idempotent_request(row: tuple[object, ...], request: SubmissionRequest
         "constraints": json.dumps(request.constraints or {}, sort_keys=True),
         "correlation_id": request.correlation_id, "mission_id": request.mission_id,
         "engineering_action_id": request.engineering_action_id,
+        "transport_receipt_id": request.transport_receipt_id,
     }
     return stored == requested
 
@@ -227,25 +232,25 @@ def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> Submis
         raise SubmissionError("REPOSITORY_PROJECT_CONFLICT", 409)
     if request.idempotency_key:
         duplicate = connection.execute(
-            "SELECT submission_id,created_at,state,admission,repository_id,producer_id,producer_type,producer_version,prompt,constraints,correlation_id,mission_id,engineering_action_id,transport "
+            "SELECT submission_id,created_at,state,admission,repository_id,producer_id,producer_type,producer_version,prompt,constraints,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport "
             "FROM ep_submissions WHERE project_id=? AND idempotency_key=?",
             (request.project_id, request.idempotency_key),
         ).fetchone()
         if duplicate is not None:
-            if not _same_idempotent_request(tuple(duplicate[4:13]), request):
+            if not _same_idempotent_request(tuple(duplicate[4:14]), request):
                 raise SubmissionError("IDEMPOTENCY_CONFLICT", 409)
             lifecycle(connection, str(duplicate[0]))
             return SubmissionResult(
                 str(duplicate[0]), request.project_id, str(duplicate[4]), str(duplicate[2]),
-                str(duplicate[1]), str(duplicate[3]), str(duplicate[13]), str(duplicate[5]), True,
+                str(duplicate[1]), str(duplicate[3]), str(duplicate[14]), str(duplicate[5]), True,
             )
     submission_id, created_at = "sub-" + secrets.token_hex(16), _now()
     # Admission intentionally validates CENTRAL topology only at submission
     # time. Agent selection, leases and provider execution remain downstream.
     admission, state = "ADMITTED", "QUEUED"
     prompt_digest = hashlib.sha256(request.prompt.encode("utf-8")).hexdigest()
-    connection.execute("""INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (submission_id, request.project_id, request.repository_id, request.producer_id, request.producer_type, request.producer_version, request.transport, request.prompt, prompt_digest, json.dumps(request.constraints or {}, sort_keys=True), request.idempotency_key, request.correlation_id, request.mission_id, request.engineering_action_id, state, admission, created_at))
+    connection.execute("""INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport_received_at,state,admission,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (submission_id, request.project_id, request.repository_id, request.producer_id, request.producer_type, request.producer_version, request.transport, request.prompt, prompt_digest, json.dumps(request.constraints or {}, sort_keys=True), request.idempotency_key, request.correlation_id, request.mission_id, request.engineering_action_id, request.transport_receipt_id, request.transport_received_at, state, admission, created_at))
     _persist_lifecycle_events(
         connection, submission_id=submission_id, transport=request.transport,
         producer_id=request.producer_id, recorded_at=created_at,

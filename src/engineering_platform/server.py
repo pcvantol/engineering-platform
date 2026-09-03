@@ -57,7 +57,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 48
+SERVER_STORE_SCHEMA_VERSION = 49
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -290,7 +290,7 @@ def _migrate_schema_43(connection: sqlite3.Connection) -> None:
         submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
         repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
         producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
-        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','LEGACY_FILE')),
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','LEGACY_FILE')),
         prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
         idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
         state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
@@ -395,6 +395,77 @@ def _migrate_schema_48(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=48")
 
 
+def _migrate_schema_49(connection: sqlite3.Connection) -> None:
+    """Record bounded ingress receipts in the canonical submission row."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema48")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations(instance_id,created_at,schema_version) "
+        "SELECT instance_id,created_at,49 FROM ep_installations_schema48"
+    )
+    connection.execute("DROP TABLE ep_installations_schema48")
+    # SQLite cannot widen the schema-43 transport CHECK in place.  Rebuild the
+    # parent table while foreign-key enforcement is temporarily disabled by
+    # the caller; SQLite keeps dependent references pointed at its canonical
+    # name.  No submission facts are rewritten or inferred.
+    # Child tables must be rebuilt too: SQLite otherwise retains a foreign-key
+    # reference to the renamed historical parent table.
+    connection.execute("ALTER TABLE ep_submission_events RENAME TO ep_submission_events_schema48")
+    connection.execute("ALTER TABLE ep_submission_prompt_history RENAME TO ep_submission_prompt_history_schema48")
+    connection.execute("ALTER TABLE ep_parity_lifecycle_dispatches RENAME TO ep_parity_lifecycle_dispatches_schema48")
+    connection.execute("ALTER TABLE ep_submissions RENAME TO ep_submissions_schema48")
+    connection.execute("""CREATE TABLE ep_submissions (
+        submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','LEGACY_FILE')),
+        prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
+        idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
+        transport_receipt_id TEXT, transport_received_at TEXT,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        created_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submissions(
+        submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at)
+        SELECT submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at
+        FROM ep_submissions_schema48""")
+    connection.execute("""CREATE TABLE ep_submission_events (
+        event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id),
+        event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_events(event_id,submission_id,event_kind,payload,recorded_at)
+        SELECT event_id,submission_id,event_kind,payload,recorded_at FROM ep_submission_events_schema48""")
+    connection.execute("""CREATE TABLE ep_submission_prompt_history (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL,
+        recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at)
+        SELECT submission_id,prompt_digest,recorded_at FROM ep_submission_prompt_history_schema48""")
+    connection.execute("""CREATE TABLE ep_parity_lifecycle_dispatches (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')),
+        prompt_path TEXT NOT NULL, claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED')),
+        resolution_submission_id TEXT REFERENCES ep_submissions(submission_id))""")
+    connection.execute("""INSERT INTO ep_parity_lifecycle_dispatches(
+        submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id)
+        SELECT submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id
+        FROM ep_parity_lifecycle_dispatches_schema48""")
+    connection.execute("DROP TABLE ep_submission_events_schema48")
+    connection.execute("DROP TABLE ep_submission_prompt_history_schema48")
+    connection.execute("DROP TABLE ep_parity_lifecycle_dispatches_schema48")
+    connection.execute("DROP TABLE ep_submissions_schema48")
+    connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
+    connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    connection.execute("CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(49)")
+    connection.execute("UPDATE engineering_metadata SET value='49' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=49")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -459,16 +530,18 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48}:
                         with sqlite3.connect(database_path) as connection:
-                            connection.execute("PRAGMA foreign_keys=ON")
+                            # Schema-49 rebuilds the submission parent table
+                            # to widen its immutable transport constraint.
+                            connection.execute("PRAGMA foreign_keys=OFF")
                             connection.execute("BEGIN IMMEDIATE")
                             if current_schema == 42:
                                 _migrate_schema_43(connection)
@@ -480,7 +553,9 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_46(connection)
                             if current_schema in {42, 43, 44, 45, 46}:
                                 _migrate_schema_47(connection)
-                            _migrate_schema_48(connection)
+                            if current_schema in {42, 43, 44, 45, 46, 47}:
+                                _migrate_schema_48(connection)
+                            _migrate_schema_49(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -497,6 +572,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_46(connection)
         _migrate_schema_47(connection)
         _migrate_schema_48(connection)
+        _migrate_schema_49(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
