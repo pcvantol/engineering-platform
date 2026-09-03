@@ -31,6 +31,19 @@ CONTROLLED_INTERRUPTION_PHASES = frozenset({"QUALITY_CONTROL_AGENT"})
 CONTROL_DIRECTORY = Path(".engineering/artifacts/provider-recovery-fault-injection")
 
 
+def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open recovery authority from an explicit CENTRAL binding when supplied."""
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL recovery database is unavailable")
+    connection = sqlite3.connect(database, isolation_level=None)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
+
+
 class ControlledInterruptionControlError(ValueError):
     """A bounded operator control request is invalid or unsafe."""
 
@@ -180,8 +193,8 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def load_recovery_state(root: Path, run_id: str) -> dict[str, object] | None:
-    connection = open_storage(root)
+def load_recovery_state(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT run_id,recovery_ordinal,maximum_attempts,triggering_invocation_id,replacement_invocation_id,"
@@ -248,8 +261,8 @@ def watcher_resume_action(root: Path, run_id: str) -> str | None:
     return None
 
 
-def _receipts(root: Path, run_id: str, invocation_id: str) -> list[dict[str, object]]:
-    connection = open_storage(root)
+def _receipts(root: Path, run_id: str, invocation_id: str, *, central_database: Path | None = None) -> list[dict[str, object]]:
+    connection = _connection(root, central_database)
     try:
         rows = connection.execute(
             "SELECT receipt_id,run_id,invocation_id,launch_state,provider_session_id,process_pid,process_group,"
@@ -266,14 +279,15 @@ def _receipts(root: Path, run_id: str, invocation_id: str) -> list[dict[str, obj
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
-def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_code: str) -> bool:
+def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_code: str,
+                                        central_database: Path | None = None) -> bool:
     """Record the only proof that a claimed launch did not reach a provider.
 
     The real provider adapter invokes its process callback at the spawn
     boundary. Therefore this may only be written by the host while the row is
     still STARTING and no PROCESS_STARTED receipt exists.
     """
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -303,44 +317,45 @@ def record_pre_execution_launch_failure(root: Path, *, run_id: str, diagnostic_c
         connection.close()
 
 
-def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_identity) -> str:
+def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_identity,
+                       central_database: Path | None = None) -> str:
     """Classify a restart solely from immutable receipts and recovery state.
 
     A live provider is accepted only when its persisted session, birth
     fingerprint and executable identity verify as one invocation-bound unit.
     """
-    recovery = load_recovery_state(root, run_id)
+    recovery = load_recovery_state(root, run_id, central_database=central_database)
     if recovery is None:
         return "NOT_APPLICABLE"
     state = recovery.get("state")
     invocation_id = recovery.get("replacement_invocation_id")
     if not isinstance(invocation_id, str):
-        mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="missing_replacement_invocation")
+        mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="missing_replacement_invocation", central_database=central_database)
         return "AMBIGUOUS"
-    receipts = _receipts(root, run_id, invocation_id)
+    receipts = _receipts(root, run_id, invocation_id, central_database=central_database)
     claims = [receipt for receipt in receipts if receipt["launch_state"] == "CLAIMED"]
     starts = [receipt for receipt in receipts if receipt["launch_state"] == "PROCESS_STARTED"]
     terminals = [receipt for receipt in receipts if receipt["launch_state"] == "TERMINAL"]
     outcomes = {str(receipt["outcome"]) for receipt in terminals if receipt["outcome"] is not None}
     if len(claims) > 1 or len(starts) > 1 or len(terminals) > 1 or len(outcomes) > 1:
         if state in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
-            mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="contradictory_receipts")
+            mark_ambiguous(root, run_id=run_id, expected=str(state), diagnostic_code="contradictory_receipts", central_database=central_database)
         return "AMBIGUOUS"
     if state == "RECOVERY_STARTING":
         if starts or terminals:
             # Receipt ordering/state mismatch is never repaired by a launch.
-            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="starting_receipt_conflict")
+            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="starting_receipt_conflict", central_database=central_database)
             return "AMBIGUOUS"
         if not claims:
             return "LAUNCH_UNCLAIMED"
         diagnostic = str(recovery.get("diagnostic_code") or "")
         if diagnostic.startswith("LAUNCH_NOT_STARTED:"):
             return "LAUNCH_CLAIMED_PREEXEC_FAILURE"
-        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="claimed_launch_unresolved")
+        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_STARTING", diagnostic_code="claimed_launch_unresolved", central_database=central_database)
         return "AMBIGUOUS"
     if state == "RECOVERY_IN_PROGRESS":
         if len(starts) != 1:
-            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="missing_process_started_receipt")
+            mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="missing_process_started_receipt", central_database=central_database)
             return "AMBIGUOUS"
         if not terminals:
             start = starts[0]
@@ -353,7 +368,7 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
                 or not isinstance(start.get("process_start_fingerprint"), str)
                 or not isinstance(start.get("process_executable_identity"), str)
             ):
-                mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="provider_session_identity_invalid")
+                mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="provider_session_identity_invalid", central_database=central_database)
                 return "AMBIGUOUS"
             verification = verifier(ProcessIdentity(
                 pid=int(start["process_pid"]), process_group=int(start["process_group"]),
@@ -365,6 +380,7 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
             mark_ambiguous(
                 root, run_id=run_id, expected="RECOVERY_IN_PROGRESS",
                 diagnostic_code="provider_process_not_active" if verification == "NOT_ACTIVE" else "provider_process_identity_mismatch",
+                central_database=central_database,
             )
             return "AMBIGUOUS"
         outcome = next(iter(outcomes), "")
@@ -372,12 +388,13 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
             transition_recovery_state(
                 root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="RECOVERED",
                 result="SUCCESS", result_evidence_ref=str(terminals[0]["result_evidence_ref"]),
+                central_database=central_database,
             )
             return "RECOVERED"
         if outcome == "INTERRUPTED":
-            transition_recovery_state(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="EXHAUSTED", result="INTERRUPTED")
+            transition_recovery_state(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", target="EXHAUSTED", result="INTERRUPTED", central_database=central_database)
             return "EXHAUSTED"
-        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="terminal_failure_or_invalid_result")
+        mark_ambiguous(root, run_id=run_id, expected="RECOVERY_IN_PROGRESS", diagnostic_code="terminal_failure_or_invalid_result", central_database=central_database)
         return "AMBIGUOUS"
     return str(state)
 
@@ -385,11 +402,12 @@ def reconcile_recovery(root: Path, *, run_id: str, verifier=verify_process_ident
 def create_recovery_available(
     root: Path, *, run_id: str, triggering_invocation_id: str, lifecycle_phase: str,
     branch: str | None, worktree_identity: str, lease_id: str | None,
+    central_database: Path | None = None,
 ) -> dict[str, object]:
     """Create the only automatic-recovery budget atomically and idempotently."""
     replacement = f"provider-recovery-{run_id}-{uuid4().hex[:12]}"
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -405,7 +423,7 @@ def create_recovery_available(
         raise
     finally:
         connection.close()
-    state = load_recovery_state(root, run_id)
+    state = load_recovery_state(root, run_id, central_database=central_database)
     if state is None:
         raise EngineeringStorageError("Provider recovery evidence could not be persisted.")
     return state
@@ -414,12 +432,13 @@ def create_recovery_available(
 def transition_recovery_state(
     root: Path, *, run_id: str, expected: str, target: str, diagnostic_code: str | None = None,
     result: str | None = None, result_evidence_ref: str | None = None,
+    central_database: Path | None = None,
 ) -> bool:
     """Compare-and-swap one durable recovery transition."""
     if expected not in RECOVERY_STATES or target not in RECOVERY_STATES:
         raise ValueError("invalid provider recovery transition")
     completed = _now() if target in TERMINAL_RECOVERY_STATES else None
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         changed = connection.execute(
             "UPDATE provider_recovery_attempts SET state=?,diagnostic_code=COALESCE(?,diagnostic_code),"
@@ -432,10 +451,10 @@ def transition_recovery_state(
     return changed == 1
 
 
-def claim_replacement_launch(root: Path, *, run_id: str) -> dict[str, object] | None:
+def claim_replacement_launch(root: Path, *, run_id: str, central_database: Path | None = None) -> dict[str, object] | None:
     """Claim the exact persisted replacement intent once, before process spawn."""
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -472,11 +491,11 @@ def claim_replacement_launch(root: Path, *, run_id: str) -> dict[str, object] | 
 
 def record_provider_started(
     root: Path, *, run_id: str, receipt_id: str, pid: int, process_group: int,
-    identity: ProcessIdentity | None = None,
+    identity: ProcessIdentity | None = None, central_database: Path | None = None,
 ) -> bool:
     """Append immutable process-start evidence and enter IN_PROGRESS."""
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -509,6 +528,7 @@ def record_provider_started(
 
 def record_replacement_terminal(
     root: Path, *, run_id: str, outcome: str, result_evidence_ref: str | None = None,
+    central_database: Path | None = None,
 ) -> bool:
     """Append terminal provider evidence once and advance the recovery state.
 
@@ -524,7 +544,7 @@ def record_replacement_terminal(
     if target is None:
         raise ValueError("invalid provider recovery terminal outcome")
     now = _now()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -550,25 +570,30 @@ def record_replacement_terminal(
         connection.close()
 
 
-def mark_precheck_failed(root: Path, *, run_id: str, diagnostic_code: str) -> bool:
+def mark_precheck_failed(root: Path, *, run_id: str, diagnostic_code: str,
+                         central_database: Path | None = None) -> bool:
     return transition_recovery_state(
         root, run_id=run_id, expected="RECOVERY_AVAILABLE", target="PRECHECK_FAILED",
-        diagnostic_code=diagnostic_code,
+        diagnostic_code=diagnostic_code, central_database=central_database,
     )
 
 
-def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: str) -> bool:
+def mark_ambiguous(root: Path, *, run_id: str, expected: str, diagnostic_code: str,
+                   central_database: Path | None = None) -> bool:
     return transition_recovery_state(
         root, run_id=run_id, expected=expected, target="AMBIGUOUS", diagnostic_code=diagnostic_code,
+        central_database=central_database,
     )
 
 
-def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str, result: object) -> str:
+def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str, result: object,
+                                  central_database: Path | None = None, artifact_root: Path | None = None) -> str:
     """Persist the bounded structured AgentResult once for post-crash consumption."""
     fields = ("terminal_state", "branch", "pull_request", "terminal_condition", "diagnostic", "repository_path", "commit_sha", "validation_evidence", "quality_evidence", "validation_disposition")
     payload = {field: getattr(result, field) for field in fields}
     artifact_id = f"provider-recovery-result:{run_id}:{invocation_id}"
-    directory = root / ".engineering" / "artifacts" / "provider-recovery-results"
+    directory = ((artifact_root / "provider-recovery-results") if artifact_root else
+                 (root / ".engineering" / "artifacts" / "provider-recovery-results"))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{invocation_id}.json"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{invocation_id}.", suffix=".tmp", dir=directory)
@@ -585,19 +610,23 @@ def persist_recovery_agent_result(root: Path, *, run_id: str, invocation_id: str
     record_artifact(
         root, path, artifact_id=artifact_id, artifact_type="PROVIDER_RECOVERY_AGENT_RESULT",
         content_type="application/json", created_at=_now(), run_id=run_id, execution_id=invocation_id,
+        central_database=central_database, artifact_root=artifact_root,
     )
     return f"artifact:{artifact_id}"
 
 
 def load_recovery_agent_result(
     root: Path, reference: str, *, run_id: str, invocation_id: str,
+    central_database: Path | None = None, artifact_root: Path | None = None,
 ) -> dict[str, object] | None:
     if not reference.startswith("artifact:"):
         return None
     artifact_id = reference.removeprefix("artifact:")
-    if not verify_artifact_integrity(root, artifact_id):
+    if not verify_artifact_integrity(
+        root, artifact_id, central_database=central_database, artifact_root=artifact_root,
+    ):
         return None
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT storage_location,artifact_type FROM execution_artifact_records "
@@ -609,7 +638,10 @@ def load_recovery_agent_result(
     if not row or row[1] != "PROVIDER_RECOVERY_AGENT_RESULT":
         return None
     try:
-        payload = json.loads((root / ".engineering" / str(row[0])).read_text(encoding="utf-8"))
+        authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        payload_path = (authority_root / str(row[0])).resolve()
+        payload_path.relative_to(authority_root)
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None

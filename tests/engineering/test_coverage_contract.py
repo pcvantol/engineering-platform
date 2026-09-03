@@ -30,6 +30,14 @@ class EngineeringPlatformCoverageContractTests(unittest.TestCase):
         self.assertIn("--shard=${{ matrix.shard }}", workflow)
         self.assertIn("engineering-status-browser-screenshots-${{ matrix.artifact_suffix }}", workflow)
 
+    def test_governed_core_profile_defers_browser_without_weakening_console_ci(self) -> None:
+        workflow = Path(".github/workflows/engineering-platform-validation.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("browser_dashboard_required", workflow)
+        self.assertIn("needs.validation-profile.outputs.browser_dashboard_required == 'true'", workflow)
+        self.assertIn("needs.browser-dashboard.result == 'success'", workflow)
+
     def test_browser_ci_parity_contract_is_documented(self) -> None:
         supervisor = Path(
             "docs/engineering/LOCAL_DASHBOARD_SUPERVISOR.md"

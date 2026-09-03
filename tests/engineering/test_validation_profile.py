@@ -1,7 +1,7 @@
 from __future__ import annotations
 import unittest
 from engineering_platform.validation_profile import (
-    ValidationProfileResolutionError, classify, profile_control_bindings,
+    ValidationProfileResolutionError, browser_dashboard_required, classify, phase_for_branch, profile_control_bindings,
     producer_profile_payload, resolve_producer_profile,
 )
 
@@ -15,7 +15,21 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertEqual(profile.tier, "DOCUMENTATION")
 
     def test_dashboard_requires_browser_validation(self) -> None:
-        self.assertEqual(classify(["src/engineering_platform/dashboard.py"]).tier, "DASHBOARD")
+        profile = classify(["src/engineering_platform/dashboard.py"])
+        self.assertEqual(profile.tier, "DASHBOARD")
+        self.assertTrue(browser_dashboard_required(profile))
+
+    def test_governed_central_core_branch_defers_only_dashboard_browser(self) -> None:
+        self.assertEqual(phase_for_branch("codex/phase-p-central-core-completion"), "P_CENTRAL_CORE")
+        profile = classify(["src/engineering_platform/execution_host.py"], governed_phase="P_CENTRAL_CORE")
+        self.assertEqual(profile.tier, "P_CENTRAL_CORE")
+        self.assertFalse(browser_dashboard_required(profile))
+        self.assertEqual(profile.required_controls, ("git_diff_check", "engineering_python"))
+
+    def test_console_and_unrelated_runtime_branches_retain_browser_requirement(self) -> None:
+        self.assertIsNone(phase_for_branch("codex/phase-p-central-console"))
+        self.assertTrue(browser_dashboard_required(classify(["src/engineering_platform/dashboard.py"])))
+        self.assertTrue(browser_dashboard_required(classify(["src/engineering_platform/execution_host.py"])))
 
     def test_unknown_or_mixed_scope_fails_closed_to_full_validation(self) -> None:
         self.assertEqual(classify(["docs/engineering/a.md", "custom_components/djconnect/__init__.py"]).tier, "FULL")

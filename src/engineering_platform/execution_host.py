@@ -89,7 +89,7 @@ from .execution_executor import write_redacted_codex_cli_log as executor_write_r
 from .execution_executor import persist_validation_failure_diagnostic
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
-from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
+from .storage import EngineeringStorageError, load_admission_decision, load_submission_for_run, load_validation_context, open_storage, record_artifact, record_readiness_evaluation, record_validation_command_invocation, record_validation_command_terminal, record_validation_control_result, record_validation_profile
 from .dashboard_browser_validation import dashboard_evidence_path, load_dashboard_evidence
 from .storage import dismissal_for_run
 from .provider_usage import AUTHORITATIVE, ProviderInvocation, normalize_codex_model, persist_provider_invocation
@@ -358,6 +358,12 @@ class EngineeringRunner:
         self._dispatch_guard_enforced = False
         self._last_provider_invocation_id: str | None = None
 
+    def _start_phase(self, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+        return start_phase(self.root, run_id, phase_name, central_database=self.store.central_database, **kwargs)
+
+    def _resume_phase(self, run_id: str, phase_name: str, **kwargs: object) -> ActivePhase | None:
+        return start_or_resume_phase(self.root, run_id, phase_name, central_database=self.store.central_database, **kwargs)
+
     def _provider_recovery_preflight(self, state: TransactionState) -> str | None:
         """Return a fail-closed reason before the sole same-run restart.
 
@@ -422,17 +428,24 @@ class EngineeringRunner:
             self.root, run_id=state.run_id, phase=state.phase,
         )
 
+    def _recovery_state(self, run_id: str) -> dict[str, object] | None:
+        """Read recovery truth from this runner's explicit lifecycle authority."""
+        return load_recovery_state(
+            self.root, run_id, central_database=self.store.central_database,
+        )
+
     def _provider_process_boundary(self, state: TransactionState, process: object) -> None:
         """Record the real provider start boundary for a claimed recovery."""
         write_runner_process(self.root, state.run_id, process)
         if not isinstance(process, dict):
             return
-        recovery = load_recovery_state(self.root, state.run_id)
+        recovery = self._recovery_state(state.run_id)
         receipt_id = recovery.get("process_receipt_id") if isinstance(recovery, dict) else None
         if recovery and recovery.get("state") == "RECOVERY_STARTING" and isinstance(receipt_id, str):
             record_provider_started(
                 self.root, run_id=state.run_id, receipt_id=receipt_id,
                 pid=int(process["pid"]), process_group=int(process["process_group"]),
+                central_database=self.store.central_database,
             )
 
     def _project_durable_recovery(self, state: TransactionState, recovery: dict[str, object]) -> None:
@@ -470,7 +483,7 @@ class EngineeringRunner:
         source = "RUNNER"
         if state.execution_mode == "MANAGED" and os.environ.get("DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA"):
             try:
-                admission = load_admission_decision(self.root, state.run_id)
+                admission = load_admission_decision(self.root, state.run_id, central_database=self.store.central_database)
             except EngineeringStorageError:
                 admission = None
             # A recovered row remains durable historical evidence after its
@@ -512,7 +525,7 @@ class EngineeringRunner:
         if self.lease_heartbeat is not None and self.lease_heartbeat.error is not None:
             raise RunnerError("active-run lease heartbeat was lost") from self.lease_heartbeat.error
         if self.active_lease is not None:
-            self.active_lease = heartbeat_lease(self.root, self.active_lease)
+            self.active_lease = heartbeat_lease(self.root, self.active_lease, central_database=self.store.central_database)
             if self.lease_heartbeat is not None:
                 self.lease_heartbeat.lease = self.active_lease
 
@@ -635,8 +648,11 @@ class EngineeringRunner:
         raw_model = metadata.get("raw_provider_model") if isinstance(metadata, dict) else None
         normalized_model = normalize_codex_model(raw_model)
         try:
-            from .storage import open_storage
-            connection = open_storage(self.root)
+            connection = (
+                sqlite3.connect(self.store.central_database, isolation_level=None)
+                if self.store.central_database is not None
+                else open_storage(self.root)
+            )
             try:
                 ordinal = int(connection.execute(
                     "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM provider_invocations WHERE run_id=?", (state.run_id,)
@@ -654,7 +670,7 @@ class EngineeringRunner:
                 usage=usage, runtime_metadata=metadata if isinstance(metadata, dict) else None,
                 retry_ordinal=state.repair_iterations, churn=churn if isinstance(churn, dict) else None,
                 usage_snapshots=snapshots if isinstance(snapshots, tuple) else (), invocation_id=invocation_id,
-            ))
+            ), central_database=self.store.central_database)
             self._last_provider_invocation_id = identifier
             return identifier
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
@@ -687,7 +703,7 @@ class EngineeringRunner:
         if not result.validation_evidence:
             return state
         try:
-            profile_context = load_validation_context(self.root, state.run_id)
+            profile_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             profile_context = None
         required_controls = set(profile_context["required_validation_controls"]) if profile_context else set()
@@ -702,6 +718,7 @@ class EngineeringRunner:
                 record_managed_validation(
                     self.root, run_id=state.run_id, control=f"validation_{kind}", state=status,
                     required=True, currentness=state.repair_iterations,
+                    central_database=self.store.central_database,
                 )
                 validation_id = (
                     "git_diff_check" if kind == "format_or_diff" else
@@ -715,6 +732,7 @@ class EngineeringRunner:
                     control_identity=command[:160], required_for_profile=validation_id in required_controls, execution_status="EXECUTED",
                     result=status, evidence_ref="agent_result", observed_at=datetime.now(timezone.utc).isoformat(),
                     currentness=state.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 LOGGER.warning("Managed validation evidence is unavailable for run %s", state.run_id)
@@ -761,6 +779,7 @@ class EngineeringRunner:
                 profile_selection_source="producer_execution_context",
                 control_bindings=bindings,
                 recorded_at=datetime.now(timezone.utc).isoformat(),
+                central_database=self.store.central_database,
             )
         except (EngineeringStorageError, ValidationProfileResolutionError):
             return self._save_terminal(
@@ -772,7 +791,7 @@ class EngineeringRunner:
     def _execute_required_validation_controls(self, state: TransactionState) -> TransactionState:
         """Execute already-persisted required controls before qualification."""
         try:
-            validation_context = load_validation_context(self.root, state.run_id)
+            validation_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             validation_context = None
         if not isinstance(validation_context, dict):
@@ -804,6 +823,7 @@ class EngineeringRunner:
                         required_for_profile=True, execution_status="NOT_EXECUTED",
                         result="UNAVAILABLE", evidence_ref="control_launcher_unavailable",
                         observed_at=datetime.now(timezone.utc).isoformat(), currentness=validation.repair_iterations,
+                        central_database=self.store.central_database,
                     )
                 except EngineeringStorageError:
                     return self._save_terminal(validation, "BLOCKED", "validation_evidence_persistence", "Required validation control evidence could not be persisted.")
@@ -816,8 +836,8 @@ class EngineeringRunner:
             )
             observed_at = datetime.now(timezone.utc).isoformat()
             command_id = f"required-control-{ordinal}-{uuid.uuid4().hex[:12]}"
-            span = start_phase(
-                self.root, validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
+            span = self._start_phase(
+                validation.run_id, "VALIDATION", category="DETERMINISTIC_CONTROL",
                 attempt=max(1, validation.repair_iterations + 1),
                 metadata={"validation_id": launcher.validation_id, "command_id": command_id},
             )
@@ -827,6 +847,7 @@ class EngineeringRunner:
                     command_id=command_id, category=launcher.category,
                     control_identity=launcher.control_identity, required_for_profile=True,
                     started_at=observed_at, currentness=validation.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
@@ -858,6 +879,7 @@ class EngineeringRunner:
                 record_validation_command_terminal(
                     self.root, run_id=validation.run_id, command_id=command_id,
                     completed_at=completed_at, exit_code=exit_code,
+                    central_database=self.store.central_database,
                 )
                 result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
                 record_validation_control_result(
@@ -866,6 +888,7 @@ class EngineeringRunner:
                     required_for_profile=True, execution_status="EXECUTED", result=result,
                     evidence_ref="command_terminal", observed_at=completed_at,
                     currentness=validation.repair_iterations,
+                    central_database=self.store.central_database,
                 )
             except EngineeringStorageError:
                 complete_phase(self.root, span, outcome="FAILED")
@@ -879,6 +902,8 @@ class EngineeringRunner:
                         stdout=diagnostic_stdout, stderr=diagnostic_stderr,
                         capture_available=diagnostic_capture_available,
                         captured_at=completed_at,
+                        central_database=self.store.central_database,
+                        artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                     )
                 except (EngineeringStorageError, OSError):
                     # Diagnostics are supplementary.  A capture failure must
@@ -894,13 +919,23 @@ class EngineeringRunner:
     def _managed_action(self, state: TransactionState, action: str, authority: str = "AUTONOMOUS_EP_ACTION", *, actor: str = "execution_host", evidence_ref: str = "runtime") -> None:
         """Best-effort evidence instrumentation; it never changes lifecycle outcome."""
         try:
-            record_managed_action(self.root, run_id=state.run_id, action=action, authority=authority, actor=actor, evidence_ref=evidence_ref)
+            record_managed_action(
+                self.root, run_id=state.run_id, action=action, authority=authority,
+                actor=actor, evidence_ref=evidence_ref,
+                central_database=self.store.central_database,
+            )
         except EngineeringStorageError:
             LOGGER.warning("Managed-autonomy evidence is unavailable for run %s", state.run_id)
 
     def _managed_gate(self, state: TransactionState, gate_type: str, status: str, pr: int, *, resolved: bool = False) -> None:
         try:
-            record_managed_gate(self.root, run_id=state.run_id, gate_type=gate_type, status=status, related_pr=pr, phase=state.phase, resolution_actor="operator" if resolved else None, resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None)
+            record_managed_gate(
+                self.root, run_id=state.run_id, gate_type=gate_type, status=status,
+                related_pr=pr, phase=state.phase,
+                resolution_actor="operator" if resolved else None,
+                resolved_at=datetime.now(timezone.utc).isoformat() if resolved else None,
+                central_database=self.store.central_database,
+            )
         except EngineeringStorageError:
             LOGGER.warning("Managed governance-gate evidence is unavailable for run %s", state.run_id)
 
@@ -916,6 +951,7 @@ class EngineeringRunner:
                 pr_state=pr.state, merge_commit=pr.merge_commit,
                 required_checks_state=check_state, evidence_ref="github_pr_status_check_rollup",
                 currentness=state.repair_iterations,
+                central_database=self.store.central_database,
             )
         except EngineeringStorageError:
             LOGGER.warning("Managed PR check evidence is unavailable for run %s", state.run_id)
@@ -1157,8 +1193,8 @@ class EngineeringRunner:
         if callable(process_callback):
             process_callback(lambda process: self._provider_process_boundary(state, process))
         parent = (
-            start_phase(self.root, state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
-            if repair else start_phase(self.root, state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
+            self._start_phase(state.run_id, "REPAIR", attempt=state.repair_iterations, metadata={"iteration": state.repair_iterations})
+            if repair else self._start_phase(state.run_id, "QUALITY_CONTROL", metadata={"kind": "autonomous_refactor_quality"}) if quality else None
         )
         provider_attempt = attempt if attempt is not None else max(1, state.repair_iterations + 1)
         provider_metadata: dict[str, object] = {"provider": "codex_cli"}
@@ -1168,8 +1204,8 @@ class EngineeringRunner:
             # lifecycle projection uses this bounded marker to avoid showing
             # their combined duration on both visible steps.
             provider_metadata["lifecycle_step"] = "LOCAL_REPOSITORY_VALIDATION"
-        provider = start_phase(
-            self.root, state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
+        provider = self._start_phase(
+            state.run_id, "PROVIDER_EXECUTION", parent_phase_id=parent.phase_id if parent else None,
             attempt=provider_attempt, metadata=provider_metadata,
         )
         validation_spans: dict[str, ActivePhase | None] = {}
@@ -1181,19 +1217,19 @@ class EngineeringRunner:
                 if kind is not None:
                     validation_id = self._validation_id(command, kind)
                     try:
-                        profile = load_validation_context(self.root, state.run_id)
+                        profile = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
                         required = validation_id in set(profile["required_validation_controls"]) if profile else False
                         started_at = datetime.now(timezone.utc).isoformat()
                         record_validation_command_invocation(
                             self.root, run_id=state.run_id, validation_id=validation_id, command_id=command_id,
                             category="agent", control_identity=command[:160], required_for_profile=required,
                             started_at=started_at, currentness=state.repair_iterations,
+                            central_database=self.store.central_database,
                         )
                         validation_commands[command_id] = (validation_id, started_at)
                     except EngineeringStorageError:
                         LOGGER.warning("Validation command start evidence is unavailable for run %s", state.run_id)
-                    validation_spans[command_id] = start_phase(
-                        self.root,
+                    validation_spans[command_id] = self._start_phase(
                         state.run_id,
                         "VALIDATION",
                         parent_phase_id=provider.phase_id if provider else None,
@@ -1227,6 +1263,7 @@ class EngineeringRunner:
                             self.root, run_id=state.run_id, command_id=command_id,
                             completed_at=datetime.now(timezone.utc).isoformat(), exit_code=exit_code,
                             evidence_ref=evidence_ref,
+                            central_database=self.store.central_database,
                         )
                     except EngineeringStorageError:
                         LOGGER.warning("Validation command terminal evidence is unavailable for run %s", state.run_id)
@@ -1296,7 +1333,7 @@ class EngineeringRunner:
             ) from error
         except Exception as error:
             interruption_reason = error.interruption_reason if isinstance(error, CodexInvocationError) else None
-            recovery = load_recovery_state(self.root, state.run_id)
+            recovery = self._recovery_state(state.run_id)
             replacement_id = (
                 recovery.get("replacement_invocation_id")
                 if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_IN_PROGRESS"
@@ -1326,6 +1363,7 @@ class EngineeringRunner:
                         lifecycle_phase=state.phase, branch=state.branch,
                         worktree_identity=str(self.root.resolve()),
                         lease_id=self.active_lease.lease_id if self.active_lease else None,
+                        central_database=self.store.central_database,
                     )
                     capture_worktree_provenance(
                         self.root, run_id=state.run_id, phase=state.phase, stage="interrupted",
@@ -1345,12 +1383,14 @@ class EngineeringRunner:
                 record_replacement_terminal(
                     self.root, run_id=state.run_id,
                     outcome="INTERRUPTED" if interruption_reason else "FAILED",
+                    central_database=self.store.central_database,
                 )
             elif isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_STARTING":
                 # No process callback was observed, so the provider adapter
                 # authoritatively failed before entering provider execution.
                 record_pre_execution_launch_failure(
                     self.root, run_id=state.run_id, diagnostic_code=type(error).__name__,
+                    central_database=self.store.central_database,
                 )
             raise
         finally:
@@ -1364,7 +1404,7 @@ class EngineeringRunner:
                 process_callback(None)
             if callable(set_handoff_deadline):
                 set_handoff_deadline(None)
-        durable_recovery = load_recovery_state(self.root, state.run_id)
+        durable_recovery = self._recovery_state(state.run_id)
         replacement_id = (
             durable_recovery.get("replacement_invocation_id")
             if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS"
@@ -1374,9 +1414,12 @@ class EngineeringRunner:
         if isinstance(durable_recovery, dict) and durable_recovery.get("state") == "RECOVERY_IN_PROGRESS":
             result_reference = persist_recovery_agent_result(
                 self.root, run_id=state.run_id, invocation_id=str(replacement_id), result=result,
+                central_database=self.store.central_database,
+                artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
             )
             record_replacement_terminal(
                 self.root, run_id=state.run_id, outcome="SUCCESS", result_evidence_ref=result_reference,
+                central_database=self.store.central_database,
             )
         if state.provider_recovery_attempts and state.provider_recovery_attempts[0].get("result") in {"RECOVERY_AVAILABLE", "ACTIVE"}:
             prior = state.provider_recovery_attempts[0]
@@ -1400,21 +1443,27 @@ class EngineeringRunner:
         """
         current_attempt = attempt
         while True:
-            recovery = load_recovery_state(self.root, state.run_id)
+            recovery = self._recovery_state(state.run_id)
             if isinstance(recovery, dict) and recovery.get("state") == "RECOVERY_AVAILABLE":
                 precheck = self._provider_recovery_preflight(state)
                 if precheck is not None:
-                    mark_precheck_failed(self.root, run_id=state.run_id, diagnostic_code=precheck)
-                    self._project_durable_recovery(state, load_recovery_state(self.root, state.run_id) or recovery)
+                    mark_precheck_failed(
+                        self.root, run_id=state.run_id, diagnostic_code=precheck,
+                        central_database=self.store.central_database,
+                    )
+                    self._project_durable_recovery(state, self._recovery_state(state.run_id) or recovery)
                     raise CodexInvocationError(
                         "Provider interruption recovery cannot continue.", "Recovery continuation preflight failed.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
                     )
                 if not transition_recovery_state(
                     self.root, run_id=state.run_id, expected="RECOVERY_AVAILABLE", target="RECOVERY_STARTING",
+                    central_database=self.store.central_database,
                 ):
                     continue
-                if claim_replacement_launch(self.root, run_id=state.run_id) is None:
+                if claim_replacement_launch(
+                    self.root, run_id=state.run_id, central_database=self.store.central_database,
+                ) is None:
                     raise CodexInvocationError(
                         "Provider interruption recovery launch is ambiguous.", "Replacement launch is already claimed.",
                         next_action="NONE", terminal_condition="provider_turn_interrupted",
@@ -1429,11 +1478,11 @@ class EngineeringRunner:
                         local_validation=local_validation, attempt=current_attempt,
                     )
                 except CodexInvocationError:
-                    completed_recovery = load_recovery_state(self.root, state.run_id)
+                    completed_recovery = self._recovery_state(state.run_id)
                     if isinstance(completed_recovery, dict):
                         self._project_durable_recovery(state, completed_recovery)
                     raise
-                completed_recovery = load_recovery_state(self.root, state.run_id)
+                completed_recovery = self._recovery_state(state.run_id)
                 if isinstance(completed_recovery, dict):
                     self._project_durable_recovery(state, completed_recovery)
                 return result
@@ -1454,6 +1503,8 @@ class EngineeringRunner:
                 payload = load_recovery_agent_result(
                     self.root, str(recovery.get("result_evidence_ref") or ""),
                     run_id=state.run_id, invocation_id=replacement_id,
+                    central_database=self.store.central_database,
+                    artifact_root=(self.store.central_database.parent / "artifacts") if self.store.central_database else None,
                 )
                 if payload is None:
                     raise CodexInvocationError(
@@ -1481,9 +1532,13 @@ class EngineeringRunner:
                     next_action="NONE", terminal_condition="provider_turn_interrupted",
                 )
             if isinstance(recovery, dict) and recovery.get("state") in {"RECOVERY_STARTING", "RECOVERY_IN_PROGRESS"}:
-                reconciliation = reconcile_recovery(self.root, run_id=state.run_id)
+                reconciliation = reconcile_recovery(
+                    self.root, run_id=state.run_id, central_database=self.store.central_database,
+                )
                 if reconciliation == "LAUNCH_UNCLAIMED":
-                    claim = claim_replacement_launch(self.root, run_id=state.run_id)
+                    claim = claim_replacement_launch(
+                        self.root, run_id=state.run_id, central_database=self.store.central_database,
+                    )
                     if claim is None:
                         raise CodexInvocationError(
                             "Provider recovery launch is ambiguous.", "Replacement launch claim could not be acquired.",
@@ -1518,12 +1573,12 @@ class EngineeringRunner:
                     state, prompt, repair=repair, quality=quality,
                     local_validation=local_validation, attempt=current_attempt,
                 )
-                recovery = load_recovery_state(self.root, state.run_id)
+                recovery = self._recovery_state(state.run_id)
                 if isinstance(recovery, dict):
                     self._project_durable_recovery(state, recovery)
                 return result
             except CodexInvocationError as error:
-                recovery = load_recovery_state(self.root, state.run_id)
+                recovery = self._recovery_state(state.run_id)
                 if isinstance(recovery, dict) and recovery.get("state") in {"EXHAUSTED", "PRECHECK_FAILED", "AMBIGUOUS"}:
                     self._project_durable_recovery(state, recovery)
                 if not error.provider_turn_interrupted or not isinstance(recovery, dict):
@@ -1572,6 +1627,7 @@ class EngineeringRunner:
                     profile_selection_source="diff_classification",
                     control_bindings=profile_control_bindings(profile),
                     recorded_at=datetime.now(timezone.utc).isoformat(),
+                    central_database=self.store.central_database,
                 )
             except (EngineeringStorageError, ValidationProfileResolutionError):
                 return self._save_terminal(
@@ -1878,11 +1934,11 @@ Mandatory autonomous refactor and quality-control stage:
             try:
                 self.active_lease = acquire_lease(
                     self.root, state.run_id, identity=self.host_identity,
-                    instance_id=self.host_instance_id, process_id=os.getpid(),
+                    instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database,
                 )
             except LeaseConflictError as error:
                 raise RunnerError("active-run ownership conflict; execution is refused") from error
-            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+            self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
             self.transaction = self.transaction.with_lease(self.active_lease)
             self.lease_heartbeat.start()
             write_live_status(self.root, state, state.next_action)
@@ -1895,7 +1951,7 @@ Mandatory autonomous refactor and quality-control stage:
                     if self.lease_heartbeat is not None:
                         self.active_lease = self.lease_heartbeat.stop()
                         self.lease_heartbeat = None
-                    release_lease(self.root, self.active_lease)
+                    release_lease(self.root, self.active_lease, central_database=self.store.central_database)
                     self.active_lease = None
         try:
             # Storage compatibility is verified below before reading the
@@ -1964,14 +2020,14 @@ Mandatory autonomous refactor and quality-control stage:
         if not passive_pr_wait and not self.agent.available():
             raise RunnerError("Codex CLI is not installed or invokable")
         self._verify_engineering_platform()
-        recovery_snapshot = load_recovery_state(self.root, state.run_id)
+        recovery_snapshot = self._recovery_state(state.run_id)
         recovered_resume = (
             isinstance(recovery_snapshot, dict)
             and recovery_snapshot.get("state") == "RECOVERED"
             and recovery_snapshot.get("lifecycle_phase") in {"EXECUTE_AGENT", "QUALITY_CONTROL_AGENT", "REPAIR_AGENT", "FINALIZE_AGENT"}
         )
         try:
-            persisted_submission = load_submission_for_run(self.root, state.run_id)
+            persisted_submission = load_submission_for_run(self.root, state.run_id, central_database=self.store.central_database)
         except EngineeringStorageError:
             persisted_submission = None
         producer_context = persisted_submission.get("execution_context") if isinstance(persisted_submission, dict) else None
@@ -1985,10 +2041,10 @@ Mandatory autonomous refactor and quality-control stage:
         self.store.save(state)
         # This envelope is deliberately persisted once and can be resumed
         # after process restart.  It is excluded from bottleneck ranking.
-        self._total_phase = start_or_resume_phase(
-            self.root, state.run_id, "TOTAL_EXECUTION", category="EXECUTION"
+        self._total_phase = self._resume_phase(
+            state.run_id, "TOTAL_EXECUTION", category="EXECUTION"
         )
-        initialization = start_phase(self.root, state.run_id, "INITIALIZATION")
+        initialization = self._start_phase(state.run_id, "INITIALIZATION")
         readiness = evaluate_readiness(
             selected_profile(context.execution_mode),
             host_root=self.root,
@@ -2029,6 +2085,7 @@ Mandatory autonomous refactor and quality-control stage:
             failed_requirements=decision.failed_requirements,
             facts=vars(decision.facts),
             evaluated_at=decision.evaluated_at, diagnostic=readiness.diagnostic or decision.diagnostic,
+            central_database=self.store.central_database,
         )
         complete_phase(self.root, initialization, outcome="COMPLETE" if readiness.ready else "FAILED")
         if not readiness.ready:
@@ -2053,16 +2110,16 @@ Mandatory autonomous refactor and quality-control stage:
                     "genesis_workspace_conflict",
                     f"Genesis preflight blocked: target workspace is owned by active run {owner}.",
                 )
-        reconciliation = start_phase(self.root, state.run_id, "RECONCILIATION")
+        reconciliation = self._start_phase(state.run_id, "RECONCILIATION")
         try:
-            reconcile_stale(self.root)
+            reconcile_stale(self.root, central_database=self.store.central_database)
         except Exception:
             complete_phase(self.root, reconciliation, outcome="FAILED")
             raise
         complete_phase(self.root, reconciliation)
         self.store.save(state)
         try:
-            self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid())
+            self.active_lease = acquire_lease(self.root, state.run_id, identity=self.host_identity, instance_id=self.host_instance_id, process_id=os.getpid(), central_database=self.store.central_database)
         except LeaseConflictError as error:
             blocked = decide_readiness(
                 readiness.profile,
@@ -2073,9 +2130,10 @@ Mandatory autonomous refactor and quality-control stage:
                 execution_mode=context.execution_mode, passed=False, failed_requirements=blocked.failed_requirements,
                 facts=vars(blocked.facts),
                 evaluated_at=blocked.evaluated_at, diagnostic=blocked.diagnostic,
+                central_database=self.store.central_database,
             )
             raise RunnerError("active-run ownership conflict; execution is refused") from error
-        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease)
+        self.lease_heartbeat = LeaseHeartbeat(self.root, self.active_lease, central_database=self.store.central_database)
         self.transaction = self.transaction.with_lease(self.active_lease)
         self.lease_heartbeat.start()
         if recovered_resume:
@@ -2116,7 +2174,7 @@ Mandatory autonomous refactor and quality-control stage:
                     "managed_target_baseline",
                     "Managed target baseline verification failed: expected clean main synchronized with origin/main.",
                 )
-        admission_phase = start_phase(self.root, state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
+        admission_phase = self._start_phase(state.run_id, "DETERMINISTIC_ADMISSION", category="ADMISSION")
         state, admission_error = self._confirm_deterministic_admission(state)
         complete_phase(
             self.root,
@@ -2137,7 +2195,7 @@ Mandatory autonomous refactor and quality-control stage:
         }
         state = replace(state, phase="CAPABILITY_REVIEW", next_action="capability_review")
         self.store.save(state)
-        capability_review = start_phase(self.root, state.run_id, "CAPABILITY_REVIEW")
+        capability_review = self._start_phase(state.run_id, "CAPABILITY_REVIEW")
         reviewer_evidence = (
             ReviewerEvidence.from_repository(state.run_id, state.execution_mode, evidence)
             if state.execution_mode == "MANAGED" and state.action_intent == "MUTATING_DELIVERY"
@@ -2215,7 +2273,7 @@ Mandatory autonomous refactor and quality-control stage:
             if state.terminal:
                 return state
             try:
-                validation_context = load_validation_context(self.root, state.run_id)
+                validation_context = load_validation_context(self.root, state.run_id, central_database=self.store.central_database)
             except EngineeringStorageError:
                 validation_context = None
             required = validation_context.get("required_validation_controls", ()) if validation_context else ()
@@ -2244,13 +2302,14 @@ Mandatory autonomous refactor and quality-control stage:
                         (
                             record_provider_started(
                                 self.root, run_id=state.run_id,
-                                receipt_id=str(load_recovery_state(self.root, state.run_id).get("process_receipt_id")),
+                                receipt_id=str(self._recovery_state(state.run_id).get("process_receipt_id")),
                                 pid=int(process["pid"]), process_group=int(process["process_group"]),
+                                central_database=self.store.central_database,
                             )
                             if isinstance(process, dict)
-                            and isinstance(load_recovery_state(self.root, state.run_id), dict)
-                            and load_recovery_state(self.root, state.run_id).get("state") == "RECOVERY_STARTING"
-                            and load_recovery_state(self.root, state.run_id).get("process_receipt_id")
+                            and isinstance(self._recovery_state(state.run_id), dict)
+                            and self._recovery_state(state.run_id).get("state") == "RECOVERY_STARTING"
+                            and self._recovery_state(state.run_id).get("process_receipt_id")
                             else None
                         ),
                     )
@@ -2302,9 +2361,9 @@ Mandatory autonomous refactor and quality-control stage:
 
     def _active_genesis_transaction(self, target: Path, run_id: str) -> str | None:
         """Return another active Genesis run that owns the same local workspace."""
-        for checkpoint in self.store.directory.glob("*.json"):
+        for checkpoint_id in self.store.run_ids():
             try:
-                candidate = self.store.load(checkpoint.stem)
+                candidate = self.store.load(checkpoint_id)
             except StateError:
                 continue
             if (
@@ -2550,7 +2609,7 @@ Mandatory autonomous refactor and quality-control stage:
             )
         attempts = 0
         while True:
-            pr_operation = start_phase(self.root, state.run_id, "PR_OR_MERGE")
+            pr_operation = self._start_phase(state.run_id, "PR_OR_MERGE")
             try:
                 pr = self.github.pull_request(state.pull_request)
             except RunnerError:
@@ -2569,7 +2628,7 @@ Mandatory autonomous refactor and quality-control stage:
                             next_action="retry_github_evidence",
                         )
                     )
-                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
+                wait = self._start_phase(state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_evidence_retry"})
                 self.sleep(min(30, 2**attempts))
                 complete_phase(self.root, wait)
                 continue
@@ -2580,7 +2639,7 @@ Mandatory autonomous refactor and quality-control stage:
             # therefore take precedence over pre-merge check polling.
             if pr.state != "MERGED" and not pr.checks_terminal:
                 self._managed_action(state, "GITHUB_REQUIRED_CHECK", "EXTERNAL_PLATFORM_EVENT", actor="github", evidence_ref="required_check_waiting")
-                wait = start_phase(self.root, state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
+                wait = self._start_phase(state.run_id, "EXTERNAL_CI_WAIT", metadata={"reason": "github_checks"})
                 self.sleep(15)
                 complete_phase(self.root, wait)
                 continue
@@ -2717,7 +2776,7 @@ Mandatory autonomous refactor and quality-control stage:
                 phase="WAIT_FOR_TERMINAL_EVIDENCE",
                 next_action="poll_required_checks",
             )
-        finalization_phase = start_phase(self.root, state.run_id, "REPOSITORY_FINALIZATION")
+        finalization_phase = self._start_phase(state.run_id, "REPOSITORY_FINALIZATION")
         synchronize = getattr(self.repository, "synchronize_main", None)
         if callable(synchronize):
             synchronize(self.root)
@@ -2755,7 +2814,7 @@ Mandatory autonomous refactor and quality-control stage:
             "resulting `docs/engineering/runs/` handoff records to that same Finalization branch, "
             "push it, and only then return that PR number."
         )
-        finalization_span = start_phase(self.root, state.run_id, "FINALIZATION")
+        finalization_span = self._start_phase(state.run_id, "FINALIZATION")
         handoff_started = time.monotonic()
         set_handoff_deadline = getattr(self.agent, "set_handoff_deadline_callback", None)
         if callable(set_handoff_deadline):
@@ -2919,7 +2978,7 @@ Mandatory autonomous refactor and quality-control stage:
                 if self.lease_heartbeat is not None:
                     lease = self.lease_heartbeat.stop()
                     self.lease_heartbeat = None
-                release_lease(self.root, lease)
+                release_lease(self.root, lease, central_database=self.store.central_database)
             except Exception:
                 # A durable terminal checkpoint is authoritative even when
                 # post-terminal lease cleanup is unavailable.  Stale lease
@@ -2965,7 +3024,7 @@ Mandatory autonomous refactor and quality-control stage:
             if self.lease_heartbeat is not None:
                 self.active_lease = self.lease_heartbeat.stop()
                 self.lease_heartbeat = None
-            release_lease(self.root, self.active_lease)
+            release_lease(self.root, self.active_lease, central_database=self.store.central_database)
             self.active_lease = None
         write_live_status(self.root, state, state.next_action)
         return state
@@ -2994,7 +3053,7 @@ Mandatory autonomous refactor and quality-control stage:
         print("[REPOSITORY_CLEANUP] Repository cleanup in progress")
         self._managed_action(state, "RECONCILIATION")
         self._managed_action(state, "CLEANUP")
-        cleanup = start_phase(self.root, state.run_id, "REPOSITORY_CLEANUP")
+        cleanup = self._start_phase(state.run_id, "REPOSITORY_CLEANUP")
         try:
             result = self.finalization.cleanup(
                 root=self.root,
@@ -3056,6 +3115,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument(
+        "--central-database", type=Path,
+        help="installation-owned engineering.db selected by the lifecycle composition root",
+    )
+    parser.add_argument(
         "--transaction-kind",
         choices=("IMPLEMENTATION", "FINALIZATION", "RECONCILIATION"),
         default="IMPLEMENTATION",
@@ -3086,6 +3149,13 @@ def main(argv: list[str] | None = None) -> int:
         print(dashboard(report))
         return 0 if report["qualification"] == "PASS" else 1
     args = build_parser().parse_args(raw_args)
+    central_database = args.central_database.resolve() if args.central_database is not None else None
+    if central_database is None:
+        raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")
+    if central_database is not None and central_database.name != "engineering.db":
+        raise SystemExit("--central-database must name engineering.db")
+    if central_database is not None and not central_database.is_file():
+        raise SystemExit("--central-database does not exist")
     prompt_path = args.prompt.resolve()
     if not prompt_path.is_file():
         raise SystemExit(f"prompt does not exist: {prompt_path}")
@@ -3110,13 +3180,17 @@ def main(argv: list[str] | None = None) -> int:
         runtime = None
     runner = EngineeringRunner(
         root,
-        StateStore(root / ".engineering" / "engineering-runs"),
+        StateStore(
+            root / ".engineering" / "engineering-runs",
+            central_database=central_database,
+            emit_local_projection=False,
+        ),
         SubprocessRepositoryClient(),
         GhCliClient(),
         CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
         compatibility=compatibility,
     )
-    logger = component_logger(root, "execution-host")
+    logger = component_logger(root, "execution-host", central_database=central_database)
     lifecycle_context = {"application_version": "2.0.0", "target_component": "execution-host"}
     try:
         with shutdown_signal_logging(logger, lifecycle_context):
@@ -3130,7 +3204,10 @@ def main(argv: list[str] | None = None) -> int:
     except (RunnerError, StateError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    report_phase = start_phase(root, state.run_id, "REPORT_GENERATION") if state.terminal else None
+    report_phase = (
+        start_phase(root, state.run_id, "REPORT_GENERATION", central_database=central_database)
+        if state.terminal else None
+    )
     try:
         report_path = (
             generate_terminal_report(
@@ -3141,6 +3218,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner.reviewer_records,
                 getattr(runner.agent, "last_runtime_metadata", None),
                 getattr(runner.agent, "last_execution_metadata", None),
+                central_database=central_database,
             )
             if state.terminal
             else None
@@ -3152,9 +3230,11 @@ def main(argv: list[str] | None = None) -> int:
     if report_phase is not None:
         complete_phase(root, report_phase)
     if report_path:
-        evidence_phase = start_phase(root, state.run_id, "EVIDENCE_PERSISTENCE")
+        evidence_phase = start_phase(
+            root, state.run_id, "EVIDENCE_PERSISTENCE", central_database=central_database,
+        )
         try:
-            record_terminal_report(root, report_path)
+            record_terminal_report(root, report_path, central_database=central_database)
             analyze_terminal_report(root, state.run_id, report_path)
         except Exception:
             complete_phase(root, evidence_phase, outcome="FAILED")
@@ -3196,7 +3276,11 @@ def main(argv: list[str] | None = None) -> int:
     # A watcher owns the outer envelope until it archives and persists its
     # evidence.  Direct invocations own that final boundary themselves.
     if args.admitted_storage_schema is None and state.terminal:
-        complete_active_phase(root, state.run_id, "TOTAL_EXECUTION", outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED")
+        complete_active_phase(
+            root, state.run_id, "TOTAL_EXECUTION",
+            outcome="COMPLETE" if state.phase == "COMPLETE" else "FAILED",
+            central_database=central_database,
+        )
     return 0 if state.phase == "COMPLETE" else 1
 
 

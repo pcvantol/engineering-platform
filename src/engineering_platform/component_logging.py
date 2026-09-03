@@ -82,10 +82,11 @@ class RedactingJsonFormatter(logging.Formatter):
 class SQLiteLogHandler(logging.Handler):
     """Persist component events in canonical storage, with file fallback on failure."""
 
-    def __init__(self, root: Path, component: str) -> None:
+    def __init__(self, root: Path, component: str, *, central_database: Path | None = None) -> None:
         super().__init__()
         self.root = root.resolve()
         self.component = component
+        self.central_database = central_database.resolve() if central_database is not None else None
         self._fallback: SecureRotatingFileHandler | None = None
 
     def _fallback_handler(self) -> SecureRotatingFileHandler:
@@ -106,7 +107,10 @@ class SQLiteLogHandler(logging.Handler):
             payload = self.format(record)
             parsed = json.loads(payload)
             created_at = parsed.get("timestamp")
-            connection = open_storage(self.root)
+            connection = (
+                sqlite3.connect(self.central_database, isolation_level=None)
+                if self.central_database is not None else open_storage(self.root)
+            )
             try:
                 connection.execute(
                     "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
@@ -126,11 +130,14 @@ class SQLiteLogHandler(logging.Handler):
         super().close()
 
 
-def component_logger(root: Path, component: str, *, level: str | None = None) -> logging.Logger:
+def component_logger(
+    root: Path, component: str, *, level: str | None = None,
+    central_database: Path | None = None,
+) -> logging.Logger:
     """Return the single private SQLite logger for one EP component."""
     logger = logging.getLogger(f"djconnect.engineering.{component}")
     configured = level
-    if configured is None:
+    if configured is None and central_database is None:
         try:
             configured = str(dashboard_configuration(root)["log_level"])
         except (EngineeringStorageError, KeyError, TypeError, ValueError):
@@ -138,12 +145,16 @@ def component_logger(root: Path, component: str, *, level: str | None = None) ->
     logger.setLevel(configured_level(configured))
     logger.propagate = False
     for handler in tuple(logger.handlers):
-        if isinstance(handler, SQLiteLogHandler) and handler.root == root.resolve():
+        if (
+            isinstance(handler, SQLiteLogHandler)
+            and handler.root == root.resolve()
+            and handler.central_database == (central_database.resolve() if central_database is not None else None)
+        ):
             handler.setLevel(logger.level)
             return logger
         logger.removeHandler(handler)
         handler.close()
-    handler = SQLiteLogHandler(root, component)
+    handler = SQLiteLogHandler(root, component, central_database=central_database)
     handler.setLevel(logger.level)
     handler.setFormatter(RedactingJsonFormatter())
     logger.addHandler(handler)

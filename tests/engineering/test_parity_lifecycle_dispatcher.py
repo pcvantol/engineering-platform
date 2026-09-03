@@ -134,6 +134,19 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row, ("COMPLETE",))
 
+    def test_explicit_central_store_never_derives_authority_from_checkout(self) -> None:
+        root = self.roots["alpha"]
+        store = StateStore(
+            root / ".engineering" / "engineering-runs",
+            central_database=(self.data / server.SERVER_DATABASE_FILENAME).resolve(),
+            emit_local_projection=False,
+        )
+        state = TransactionState("central-checkpoint", "fixture", "central", "COMPLETE", terminal=True)
+        store.save(state)
+        self.assertEqual(store.load(state.run_id).phase, "COMPLETE")
+        self.assertEqual(store.run_ids(), (state.run_id,))
+        self.assertFalse((root / ".engineering").exists())
+
     def test_failed_run_blocks_later_project_submission_until_central_operator_resolution(self) -> None:
         first, later = self._submission("alpha"), self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
@@ -201,10 +214,17 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
              patch("engineering_platform.parity_lifecycle_dispatcher.generate_terminal_report") as report, \
              patch("engineering_platform.parity_lifecycle_dispatcher.record_terminal_report") as record, \
              patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report") as analyze:
-            report.return_value = self.roots["alpha"] / ".engineering" / "reports" / "terminal.md"
+            report.return_value = self.data / "artifacts" / "projects" / "alpha" / "runs" / "terminal.md"
+            report.return_value.parent.mkdir(parents=True, exist_ok=True)
+            report.return_value.write_text("terminal", encoding="utf-8")
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
-        record.assert_called_once_with(self.roots["alpha"].resolve(), report.return_value)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[0], self.roots["alpha"].resolve())
+        self.assertEqual(
+            record.call_args.kwargs["central_database"],
+            (self.data / server.SERVER_DATABASE_FILENAME).resolve(),
+        )
         analyze.assert_called_once_with(self.roots["alpha"].resolve(), receipt.run_id, report.return_value)
 
     def test_terminal_history_reconciliation_ignores_a_retained_row_without_a_local_checkpoint(self) -> None:

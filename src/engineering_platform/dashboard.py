@@ -2888,6 +2888,8 @@ def handler(
     root: Path,
     logger: logging.Logger | None = None,
     document_transform: Callable[[bytes], bytes] | None = None,
+    central_database: Path | None = None,
+    central_project_id: str | None = None,
 ):
     configuration = PlatformConfiguration.load(root)
     title = configuration.workspace.dashboard_title
@@ -3439,7 +3441,13 @@ def handler(
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
                     if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
                         raise ValueError
-                    outcome = execute_emergency_recovery(root, payload["run_id"])
+                    outcome = (
+                        execute_emergency_recovery(
+                            root, payload["run_id"], central_database=central_database,
+                            project_id=central_project_id,
+                        )
+                        if central_database is not None else execute_emergency_recovery(root, payload["run_id"])
+                    )
                     log_event(logger, logging.WARNING, "execution_emergency_rollback_completed", run_id=payload["run_id"])
                 except (EmergencyRecoveryError, EngineeringStorageError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     self._send(json.dumps({"error": str(error) or "De noodactie kon niet veilig worden uitgevoerd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)

@@ -36,6 +36,28 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertIn("[REDACTED]", record["diagnostic"])
             self.assertFalse((root / ".engineering" / "logs" / "inbox.log").exists())
 
+    def test_central_logger_never_creates_repository_storage(self) -> None:
+        """Installed lifecycle logging must retain the explicit CENTRAL binding."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "checkout"
+            root.mkdir()
+            data_root = Path(temporary) / "data"
+            initialize(data_root)
+            central = data_root / "engineering.db"
+            logger = component_logging.component_logger(
+                root, "execution-host", central_database=central,
+            )
+            component_logging.log_event(logger, logging.INFO, "central_lifecycle_event")
+            self.assertFalse((root / ".engineering" / "engineering.db").exists())
+            with sqlite3.connect(central) as connection:
+                self.assertEqual(
+                    "central_lifecycle_event",
+                    json.loads(connection.execute(
+                        "SELECT payload FROM engineering_component_logs WHERE component='execution-host'"
+                    ).fetchone()[0])["event"],
+                )
+
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
         from engineering_platform import providers
         with tempfile.TemporaryDirectory() as temporary, patch.object(

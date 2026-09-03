@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -46,11 +47,11 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _live(root: Path, run_id: str) -> dict[str, object]:
-    live = load_projection(root, "live_status") or {}
+def _live(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
+    live = load_projection(root, "live_status", central_database=central_database) or {}
     if live.get("run_id") != run_id:
         raise EmergencyRecoveryError("Deze uitvoering is niet de huidige uitvoering.")
-    if liveness(root, run_id).get("state") != "LIVE":
+    if liveness(root, run_id, central_database=central_database).get("state") != "LIVE":
         raise EmergencyRecoveryError("Deze uitvoering is niet meer actief; de noodactie is niet nodig.")
     if live.get("execution_mode") != "MANAGED":
         raise EmergencyRecoveryError("Noodherstel met rollback is alleen beschikbaar voor een beheerde uitvoering.")
@@ -70,8 +71,8 @@ def _runner(root: Path, run_id: str) -> tuple[int, int] | None:
     return pid, group
 
 
-def _host_pid(root: Path, run_id: str) -> int:
-    connection = open_storage(root)
+def _host_pid(root: Path, run_id: str, *, central_database: Path | None = None) -> int:
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT process_id FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE' ORDER BY created_at DESC LIMIT 1",
@@ -85,16 +86,38 @@ def _host_pid(root: Path, run_id: str) -> int:
     return pid
 
 
+def _require_central_project_ownership(database: Path, project_id: str | None, run_id: str) -> None:
+    """Reject a dashboard action whose run is not owned by its selected project."""
+    if not isinstance(project_id, str) or not project_id:
+        raise EmergencyRecoveryError("Er is geen geldig project geselecteerd voor deze noodactie.")
+    try:
+        connection = sqlite3.connect(database.resolve(), isolation_level=None)
+        try:
+            row = connection.execute(
+                "SELECT project_id FROM ep_execution_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error as error:
+        raise EmergencyRecoveryError("De centrale uitvoeringstoestand is niet beschikbaar.") from error
+    if row is None or row[0] != project_id:
+        raise EmergencyRecoveryError("Deze uitvoering behoort niet tot het geselecteerde project.")
+
+
 def _process_command(root: Path, pid: int) -> str:
     result = LocalProcessProvider().execute(root, ("ps", "-p", str(pid), "-o", "command="))
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _plan(root: Path, run_id: str) -> RecoveryPlan:
+def _plan(
+    root: Path, run_id: str, *, central_database: Path | None = None, project_id: str | None = None,
+) -> RecoveryPlan:
     if not RUN_ID_PATTERN.fullmatch(run_id):
         raise EmergencyRecoveryError("De opgegeven run-ID is ongeldig.")
-    live = _live(root, run_id)
-    state = StateStore(root / ".engineering" / "engineering-runs").load(run_id)
+    if central_database is not None:
+        _require_central_project_ownership(central_database, project_id, run_id)
+    live = _live(root, run_id, central_database=central_database)
+    state = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None).load(run_id)
     if state is None:
         raise EmergencyRecoveryError("De actieve uitvoering heeft geen canoniek checkpoint.")
     if any(
@@ -126,7 +149,7 @@ def _plan(root: Path, run_id: str) -> RecoveryPlan:
     if branch != "main" and (not BRANCH_PATTERN.fullmatch(branch) or branch in preexisting):
         raise EmergencyRecoveryError("De actieve branch is niet aantoonbaar door deze uitvoering aangemaakt.")
     runner = _runner(root, run_id)
-    host_pid = _host_pid(root, run_id)
+    host_pid = _host_pid(root, run_id, central_database=central_database)
     runner_pid, group = runner if runner is not None else (None, None)
     runner_command = _process_command(root, runner_pid) if runner_pid is not None else ""
     host_command = _process_command(root, host_pid)
@@ -137,12 +160,14 @@ def _plan(root: Path, run_id: str) -> RecoveryPlan:
     return RecoveryPlan(run_id, branch, baseline_branch, baseline_head, group, host_pid)
 
 
-def preview(root: Path, run_id: object) -> dict[str, object]:
+def preview(
+    root: Path, run_id: object, *, central_database: Path | None = None, project_id: str | None = None,
+) -> dict[str, object]:
     """Return a display-safe, non-mutating emergency recovery eligibility view."""
     if not isinstance(run_id, str):
         return {"available": False}
     try:
-        plan = _plan(root, run_id)
+        plan = _plan(root, run_id, central_database=central_database, project_id=project_id)
     except (EmergencyRecoveryError, EngineeringStorageError, OSError):
         return {"available": False}
     return {
@@ -175,8 +200,8 @@ def _stop(plan: RecoveryPlan, root: Path) -> None:
     raise EmergencyRecoveryError("De Execution Host reageert niet op de noodstop; er is niets teruggedraaid.")
 
 
-def _release_lease(root: Path, run_id: str) -> None:
-    connection = open_storage(root)
+def _release_lease(root: Path, run_id: str, *, central_database: Path | None = None) -> None:
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT lease_id,host_identity,host_instance_id,acquired_at,last_heartbeat_at,expires_at,lease_state FROM execution_run_leases WHERE run_id=? AND lease_state='ACTIVE' ORDER BY created_at DESC LIMIT 1",
@@ -186,14 +211,16 @@ def _release_lease(root: Path, run_id: str) -> None:
         connection.close()
     if not row:
         return
-    release(root, Lease(row[0], run_id, row[1], row[2], row[3], row[4], row[5], row[6]))
+    release(root, Lease(row[0], run_id, row[1], row[2], row[3], row[4], row[5], row[6]), central_database=central_database)
 
 
-def execute(root: Path, run_id: str) -> dict[str, object]:
+def execute(
+    root: Path, run_id: str, *, central_database: Path | None = None, project_id: str | None = None,
+) -> dict[str, object]:
     """Stop exactly one verified host, then restore its clean local baseline."""
-    plan = _plan(root, run_id)
+    plan = _plan(root, run_id, central_database=central_database, project_id=project_id)
     _stop(plan, root)
-    _release_lease(root, run_id)
+    _release_lease(root, run_id, central_database=central_database)
     _git(root, "restore", "--source", plan.baseline_head, "--staged", "--worktree", "--", ".")
     _git(root, "clean", "-fd", "--", ".")
     removed_branch: str | None = None
@@ -205,7 +232,7 @@ def execute(root: Path, run_id: str) -> dict[str, object]:
         raise EmergencyRecoveryError("De noodstop is uitgevoerd, maar de werkmap kon niet volledig worden teruggedraaid.")
     write_runner_process(root, run_id, None)
     try:
-        state = StateStore(root / ".engineering" / "engineering-runs").load(run_id)
+        state = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None).load(run_id)
     except (EngineeringStorageError, ValueError) as error:
         raise EmergencyRecoveryError("De annulering kon niet veilig als eindstatus worden vastgelegd.") from error
     if state is None:
@@ -216,22 +243,25 @@ def execute(root: Path, run_id: str) -> dict[str, object]:
         terminal_condition="operator_emergency_rollback",
         diagnostic="De operator heeft deze uitvoering via de noodstop geannuleerd en de lokale werkmap teruggedraaid.",
     )
-    StateStore(root / ".engineering" / "engineering-runs").save(cancelled)
-    complete_active_phase(root, run_id, "TOTAL_EXECUTION", outcome="FAILED")
+    StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None).save(cancelled)
+    complete_active_phase(root, run_id, "TOTAL_EXECUTION", outcome="FAILED", central_database=central_database)
     record_prompt_execution(
         root, run_id=run_id, terminal_state="FAILED", prompt_title=Path(state.prompt_path).stem,
         executed_at=cancelled_at, target_branch=plan.branch,
+        central_database=central_database,
     )
     record_execution_dismissal(
         root, run_id=run_id, terminal_state="FAILED", dismissed_at=cancelled_at,
         dismissed_by="dashboard_emergency_recovery",
+        central_database=central_database,
     )
     record_emergency_recovery(
         root, run_id=run_id, cancelled_at=cancelled_at, rolled_back=True,
         removed_branch=removed_branch,
+        central_database=central_database,
     )
     outcome = {"run_id": run_id, "stopped": True, "rolled_back": True, "removed_branch": removed_branch, "branch": plan.baseline_branch, "cancelled_at": cancelled_at}
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         store_projection(connection, f"emergency_recovery:{run_id}", outcome, classification="RECOVERY_EXPORT")
     finally:

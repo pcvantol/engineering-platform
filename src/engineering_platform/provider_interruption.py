@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 import logging
 from pathlib import Path
+import sqlite3
 
 from .agent_state import StateError, StateStore, TransactionState
 from .execution_lease import release_terminal_lease
@@ -22,7 +23,9 @@ TERMINAL_DIAGNOSTIC = (
 LOGGER = logging.getLogger(__name__)
 
 
-def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] | None:
+def _latest_interrupted_invocation(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> tuple[str, str] | None:
     """Return only durable, allow-listed provider interruption evidence.
 
     Some providers terminate after streaming an interrupted child command but
@@ -31,7 +34,7 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] |
     interrupted under the same provider boundary.
     """
     try:
-        connection = open_storage(root)
+        connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
         try:
             row = connection.execute(
                 "SELECT invocation_id,churn,usage_authority FROM provider_invocations WHERE run_id=? "
@@ -56,7 +59,7 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] |
     if row[2] != "UNAVAILABLE":
         return None
     try:
-        connection = open_storage(root)
+        connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
         try:
             interrupted_child = connection.execute(
                 "SELECT 1 FROM execution_phase_spans AS child "
@@ -74,7 +77,9 @@ def _latest_interrupted_invocation(root: Path, run_id: str) -> tuple[str, str] |
     return invocation_id, "interrupted_child_span_without_provider_result"
 
 
-def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+def terminalize_after_host_exit(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> TransactionState | None:
     """Close a non-terminal run only when its latest provider evidence proves interruption.
 
     This is intentionally a watcher-side recovery boundary: the detached
@@ -82,18 +87,18 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
     active provider work.  Generic stale leases remain recoverable and are not
     converted into failures here.
     """
-    recovery = load_recovery_state(root, run_id)
+    recovery = load_recovery_state(root, run_id, central_database=central_database)
     # Durable recovery state takes precedence over retrospective provider
     # evidence.  Only exhausted/unsafe recovery reaches the old terminalizer.
     if isinstance(recovery, dict) and recovery.get("state") in {
         "RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS", "RECOVERED",
     }:
         return None
-    evidence = _latest_interrupted_invocation(root, run_id)
+    evidence = _latest_interrupted_invocation(root, run_id, central_database=central_database)
     if evidence is None:
         return None
     invocation_id, classification = evidence
-    store = StateStore(root / ".engineering" / "engineering-runs")
+    store = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None)
     try:
         state = store.load(run_id)
     except StateError:
@@ -112,11 +117,11 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
         ),
     )
     store.save(terminal)
-    reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED")
+    reconcile_interrupted_phases(root, run_id, outcome="INTERRUPTED", central_database=central_database)
     # The checkpoint is durable before cleanup. A cleanup failure therefore
     # cannot overwrite the proven failure outcome.
     try:
-        release_terminal_lease(root, run_id)
+        release_terminal_lease(root, run_id, central_database=central_database)
     except Exception:
         # Lease cleanup is secondary evidence.  The durable checkpoint stays
         # authoritative and normal stale-lease reconciliation can record the
@@ -126,29 +131,32 @@ def terminalize_after_host_exit(root: Path, run_id: str) -> TransactionState | N
     return terminal
 
 
-def prepare_same_run_recovery_after_host_exit(root: Path, run_id: str) -> TransactionState | None:
+def prepare_same_run_recovery_after_host_exit(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> TransactionState | None:
     """Persist the sole watcher-side continuation before it launches a host.
 
     This intentionally accepts only the exact evidence already accepted by
     ``terminalize_after_host_exit``.  It never creates a submission, branch,
     or lease; the normal resumed host owns those operations.
     """
-    evidence = _latest_interrupted_invocation(root, run_id)
+    evidence = _latest_interrupted_invocation(root, run_id, central_database=central_database)
     if evidence is None:
         return None
     invocation_id, _classification = evidence
-    store = StateStore(root / ".engineering" / "engineering-runs")
+    store = StateStore(root / ".engineering" / "engineering-runs", central_database=central_database, emit_local_projection=central_database is None)
     try:
         state = store.load(run_id)
     except StateError:
         return None
-    if state.terminal or load_recovery_state(root, run_id) is not None:
+    if state.terminal or load_recovery_state(root, run_id, central_database=central_database) is not None:
         return None
     try:
         create_recovery_available(
             root, run_id=run_id, triggering_invocation_id=invocation_id,
             lifecycle_phase=state.phase, branch=state.branch,
             worktree_identity=str(root.resolve()), lease_id=None,
+            central_database=central_database,
         )
     except Exception:
         LOGGER.exception("Provider recovery evidence could not be persisted for %s", run_id)

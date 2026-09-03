@@ -1172,6 +1172,8 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 return
             historical = dashboard.handler(
                 root, document_transform=_console_document_transform(selected, projects, root, self.server.data_root),  # type: ignore[attr-defined]
+                central_database=self.server.data_root / SERVER_DATABASE_FILENAME,  # type: ignore[attr-defined]
+                central_project_id=selected,
             )
         except (OSError, ValueError, local_repository_binding.LocalRepositoryBindingError):
             self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
@@ -1390,7 +1392,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -1398,6 +1400,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-id")
     parser.add_argument("--repository-id")
     parser.add_argument("--path", type=Path)
+    parser.add_argument("--declaration", type=Path)
+    parser.add_argument("--consumer-id")
+    parser.add_argument("--submission-id")
     return parser
 
 
@@ -1406,7 +1411,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             result = {"instance_id": initialize(args.data_root, bind_host=args.bind_host, bind_port=args.bind_port).instance_id, "initialized": True}
-        elif args.command == "start": result = start(args.data_root)
+        elif args.command == "start":
+            initialize(args.data_root)
+            configuration = ServerConfiguration.load(args.data_root)
+            if (configuration.bind_host, configuration.bind_port) != (args.bind_host, args.bind_port):
+                _write_json(args.data_root / SERVER_CONFIGURATION_FILENAME, {
+                    "version": configuration.version, "bind_host": args.bind_host,
+                    "bind_port": args.bind_port,
+                    "managed_codex_cli_prefix": configuration.managed_codex_cli_prefix,
+                })
+            result = start(args.data_root)
         elif args.command == "serve": return serve(args.data_root)
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
@@ -1415,6 +1429,68 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = project_topology.topology(connection)
+        elif args.command == "submission-diagnose":
+            if not args.submission_id:
+                raise ServerConfigurationError("--submission-id is required for submission diagnostics.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,d.run_id,d.state,d.operator_resolution FROM ep_submissions s LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
+                if row is None:
+                    raise ServerConfigurationError("UNKNOWN_SUBMISSION")
+                project_id, repository_id, state, admission, run_id, dispatch_state, resolution = row
+                blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, run_id or "")).fetchone()
+            early = None
+            if run_id:
+                early_path = args.data_root / "artifacts" / "projects" / str(project_id) / "runs" / str(run_id) / "early-runner-failure.json"
+                if early_path.is_file():
+                    try:
+                        early = json.loads(early_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+        elif args.command == "register-topology":
+            if args.declaration is None:
+                raise ServerConfigurationError("--declaration is required for explicit topology registration.")
+            initialize(args.data_root)
+            declaration = args.declaration.read_text(encoding="utf-8")
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = project_topology.register_server_local_topology(connection, declaration=declaration)
+        elif args.command == "bootstrap-topology":
+            if not args.project_id or not args.repository_id:
+                raise ServerConfigurationError("--project-id and --repository-id are required for topology bootstrap.")
+            initialize(args.data_root)
+            declaration = {"schema_version": "1.0", "project": {"id": args.project_id, "authority_repository_id": args.repository_id}, "repository": {"id": args.repository_id, "role": "authority"}, "validation": {"kind": "none"}}
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = project_topology.register_server_local_topology(connection, declaration=declaration)
+        elif args.command == "issue-consumer-credential":
+            if not args.project_id or not args.consumer_id:
+                raise ServerConfigurationError("--project-id and --consumer-id are required for credential issuance.")
+            initialize(args.data_root)
+            from .submission_service import issue_consumer_credential
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command == "provision-declaration":
+            if not args.project_id or not args.repository_id or args.path is None:
+                raise ServerConfigurationError("--project-id, --repository-id and --path are required for declaration provisioning.")
+            initialize(args.data_root)
+            from .repository_attachment import config_path, load_repository_attachment, parse_repository_attachment
+            root = args.path.resolve(strict=True)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                row = connection.execute("SELECT attachment_contract FROM ep_repository_registrations WHERE project_id=? AND repository_id=?", (args.project_id, args.repository_id)).fetchone()
+            if row is None:
+                raise ServerConfigurationError("CENTRAL_REPOSITORY_NOT_REGISTERED")
+            declaration = json.loads(str(row[0]))
+            parse_repository_attachment(declaration)
+            target = config_path(root)
+            if target.exists():
+                existing = load_repository_attachment(root)
+                if (existing.project_id, existing.repository_id) != (args.project_id, args.repository_id):
+                    raise ServerConfigurationError("REPOSITORY_DECLARATION_CONFLICT")
+            else:
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                target.write_text(json.dumps(declaration, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                target.chmod(0o600)
+            result = {"project_id": args.project_id, "repository_id": args.repository_id, "path": str(target), "result": "PROVISIONED"}
         elif args.command in {"bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"}:
             if not args.project_id or not args.repository_id:
                 raise ServerConfigurationError("--project-id and --repository-id are required for local binding commands.")

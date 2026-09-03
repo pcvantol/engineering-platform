@@ -5,7 +5,6 @@ from __future__ import annotations
 # transaction and evidence inputs.
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 import re
 from typing import Callable, Mapping
@@ -160,10 +159,13 @@ def _format_terminal_report(state: TransactionState) -> str:
     return f"{state.phase}\n\nReason:\n{state.diagnostic or 'No safe diagnostic was available.'}\n\nNext action:\n{_next_action_message(state.next_action)}"
 
 
-def _persisted_producer_submission(root: Path, state: TransactionState, fallback_prompt: str) -> tuple[ProducerMetadata, dict[str, object] | None]:
+def _persisted_producer_submission(
+    root: Path, state: TransactionState, fallback_prompt: str, *,
+    central_database: Path | None = None,
+) -> tuple[ProducerMetadata, dict[str, object] | None]:
     """Use immutable Producer submission evidence before legacy prompt compatibility."""
     try:
-        submission = load_submission_for_run(root, state.run_id)
+        submission = load_submission_for_run(root, state.run_id, central_database=central_database)
     except EngineeringStorageError:
         submission = None
     if submission is None:
@@ -1149,12 +1151,12 @@ def generate_terminal_report(
     reviewer_records: tuple[dict[str, object], ...] = (),
     runtime_metadata: Mapping[str, str] | None = None,
     execution_metadata: Mapping[str, int] | None = None,
+    central_database: Path | None = None,
 ) -> Path:
-    """Write one immutable, local-only report for a terminal transaction."""
-    central = os.environ.get("EP_CENTRAL_OPERATIONAL_DATABASE")
+    """Write an immutable report beneath the explicitly bound authority."""
     reports = (
-        Path(central).resolve().parent / "artifacts" / "reports"
-        if central else root / ".engineering" / "reports"
+        central_database.resolve().parent / "artifacts" / "reports"
+        if central_database is not None else root / ".engineering" / "reports"
     )
     reports.mkdir(mode=0o700, parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
@@ -1172,7 +1174,9 @@ def generate_terminal_report(
         "Submitted runtime prompt retained at the supplied prompt path; "
         "non-authoritative input."
     )
-    producer, submission = _persisted_producer_submission(root, state, objective)
+    producer, submission = _persisted_producer_submission(
+        root, state, objective, central_database=central_database,
+    )
     raw_handoff = submission.get("forge_governance_handoff") if isinstance(submission, dict) else None
     handoff = ForgeGovernanceHandoff.from_snapshot(raw_handoff) if isinstance(raw_handoff, dict) else None
     manifest = manifest or EngineeringPlatformManifest.load(
@@ -1204,8 +1208,8 @@ def generate_terminal_report(
     activity_summary = persist_terminal_activity_summary(
         root, build_terminal_activity_summary(root, state, bundle)
     )
-    timing = timing_summary(root, state.run_id)
-    provider_usage = provider_usage_summary(root, state.run_id)
+    timing = timing_summary(root, state.run_id, central_database=central_database)
+    provider_usage = provider_usage_summary(root, state.run_id, central_database=central_database)
     churn = provider_usage.get("context_churn") if isinstance(provider_usage.get("context_churn"), dict) else {}
     provider_usage_lines = (
         "## Provider Usage",

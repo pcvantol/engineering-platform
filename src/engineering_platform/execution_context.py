@@ -25,7 +25,13 @@ def _prompt_field_values(objective: str, label: str) -> tuple[str, ...]:
     values: list[str] = []
     lines = objective.splitlines()
     for index, line in enumerate(lines):
-        if line.strip().casefold() != f"{label}:".casefold():
+        candidate = line.strip()
+        prefix = f"{label}:"
+        if not candidate.casefold().startswith(prefix.casefold()):
+            continue
+        inline = candidate[len(prefix):].strip()
+        if inline:
+            values.append(inline)
             continue
         for candidate in lines[index + 1 :]:
             value = candidate.strip()

@@ -82,6 +82,29 @@ def register_attachment(connection: sqlite3.Connection, *, agent_id: str, declar
     return {"project_id": attachment.project_id, "repository_id": attachment.repository_id, "availability": "AVAILABLE", "result": "REGISTERED"}
 
 
+def register_server_local_topology(connection: sqlite3.Connection, *, declaration: object) -> dict[str, str]:
+    """Register explicit logical Phase-P topology without an Agent attachment."""
+    try:
+        attachment = parse_repository_attachment(declaration)
+    except RepositoryAttachmentError as error:
+        _error("MALFORMED_REPOSITORY_DECLARATION")
+        raise AssertionError from error
+    surface = attachment.agent_read_surface()
+    canonical = json.dumps(surface, sort_keys=True, separators=(",", ":"))
+    now = _now()
+    existing = connection.execute("SELECT project_id,authority_repository_id,role,attachment_contract FROM ep_repository_registrations WHERE repository_id=?", (attachment.repository_id,)).fetchone()
+    if existing is not None and tuple(existing[:3]) != (attachment.project_id, attachment.authority_repository_id, attachment.repository_role):
+        _error("REPOSITORY_IDENTITY_CONFLICT")
+    if existing is not None and str(existing[3]) != canonical:
+        _error("REPOSITORY_DECLARATION_CONFLICT")
+    if attachment.repository_role == "authority" and attachment.repository_id != attachment.authority_repository_id:
+        _error("AUTHORITY_REPOSITORY_MISMATCH")
+    contract = json.dumps({"schema_version": surface["schema_version"], "authority_repository_id": attachment.authority_repository_id}, sort_keys=True, separators=(",", ":"))
+    connection.execute("INSERT INTO ep_project_registrations(project_id,attachment_contract,status,created_at,updated_at) VALUES(?,?, 'ACTIVE', ?, ?) ON CONFLICT(project_id) DO UPDATE SET updated_at=excluded.updated_at", (attachment.project_id, contract, now, now))
+    connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository_id) DO UPDATE SET updated_at=excluded.updated_at", (attachment.repository_id, attachment.project_id, attachment.authority_repository_id, attachment.repository_role, canonical, now, now))
+    return {"project_id": attachment.project_id, "repository_id": attachment.repository_id, "result": "REGISTERED"}
+
+
 def topology(connection: sqlite3.Connection) -> dict[str, object]:
     """Bounded, secret-free registration diagnostic."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()

@@ -14,6 +14,16 @@ FIXTURE = Path(__file__).parent / "fixtures" / "repository_attachment" / "python
 
 
 class ProjectTopologyTests(unittest.TestCase):
+    def test_server_local_topology_registers_without_an_agent_attachment(self) -> None:
+        declaration = json.loads(FIXTURE.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "engineering.db"
+            server.initialize(Path(temporary))
+            with sqlite3.connect(database) as connection:
+                result = project_topology.register_server_local_topology(connection, declaration=declaration)
+                self.assertEqual(result["result"], "REGISTERED")
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_agent_repository_attachments").fetchone()[0], 0)
+                self.assertEqual(project_topology.register_server_local_topology(connection, declaration=declaration), result)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "server"

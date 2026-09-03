@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import tempfile
 
 from .storage import (
@@ -371,8 +372,20 @@ class StateStore:
     operator inspection, but are never consulted for normal lifecycle reads.
     """
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        central_database: Path | None = None,
+        emit_local_projection: bool = True,
+    ) -> None:
         self.directory = directory
+        # A CENTRAL lifecycle is deliberately bound to a database by its
+        # composition root.  It must never rediscover that authority from the
+        # execution checkout.  The directory remains only a compatibility
+        # location for legacy JSON projections.
+        self.central_database = central_database.resolve() if central_database else None
+        self.emit_local_projection = emit_local_projection
 
     def path_for(self, run_id: str) -> Path:
         if not RUN_ID_PATTERN.fullmatch(run_id):
@@ -384,9 +397,39 @@ class StateStore:
         # StateStore is constructed with ``<root>/.engineering/engineering-runs``.
         return self.directory.parent.parent
 
+    def _open(self, *, create: bool) -> sqlite3.Connection:
+        if self.central_database is None:
+            return open_storage(self.root, create=create)
+        if not self.central_database.is_file():
+            raise StateError("CENTRAL lifecycle database is unavailable")
+        try:
+            connection = sqlite3.connect(
+                self.central_database if create else f"file:{self.central_database}?mode=rw",
+                uri=not create,
+                isolation_level=None,
+            )
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=10000")
+            return connection
+        except sqlite3.DatabaseError as error:
+            raise StateError("CENTRAL lifecycle database is unavailable") from error
+
+    def run_ids(self) -> tuple[str, ...]:
+        """Return canonical run identities without consulting JSON shadows."""
+        try:
+            connection = self._open(create=False)
+            try:
+                return tuple(str(row[0]) for row in connection.execute(
+                    "SELECT run_id FROM engineering_transactions ORDER BY updated_at,run_id"
+                ))
+            finally:
+                connection.close()
+        except (EngineeringStorageError, StateError) as error:
+            raise StateError("canonical engineering storage is unavailable") from error
+
     def load(self, run_id: str) -> TransactionState:
         try:
-            connection = open_storage(self.root, create=False)
+            connection = self._open(create=False)
             try:
                 row = connection.execute(
                     "SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)
@@ -406,7 +449,7 @@ class StateStore:
         path = self.path_for(state.run_id)
         canonical = json.dumps(state.to_dict(), separators=(",", ":"), sort_keys=True)
         try:
-            connection = open_storage(self.root)
+            connection = self._open(create=True)
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
@@ -429,7 +472,13 @@ class StateStore:
         # CENTRAL runs must not create a repository-local checkpoint shadow.
         # The database row above is the sole durable state and is sufficient
         # for restart, recovery and Console/history projections.
-        if os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT):
+        if (
+            self.central_database is not None
+            or not self.emit_local_projection
+            # Compatibility only for a preserved legacy runner injected by a
+            # caller that has not yet accepted an explicit store binding.
+            or os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT)
+        ):
             return path
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         encoded = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -455,19 +504,19 @@ class StateStore:
     def remove(self, run_id: str) -> None:
         path = self.path_for(run_id)
         try:
-            connection = open_storage(self.root, create=False)
+            connection = self._open(create=False)
             try:
                 connection.execute("DELETE FROM engineering_transactions WHERE run_id=?", (run_id,))
             finally:
                 connection.close()
         except EngineeringStorageError as error:
             raise StateError("canonical engineering storage is unavailable") from error
-        if not os.environ.get(CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT) and path.exists():
+        if self.emit_local_projection and self.central_database is None and path.exists():
             path.unlink()
 
     def _prune_completed_history(self) -> None:
         try:
-            connection = open_storage(self.root, create=False)
+            connection = self._open(create=False)
             try:
                 rows = connection.execute(
                     "SELECT run_id FROM engineering_transactions WHERE phase='COMPLETE' ORDER BY updated_at DESC, run_id DESC LIMIT -1 OFFSET 10"

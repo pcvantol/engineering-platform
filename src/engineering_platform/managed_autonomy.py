@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+from pathlib import Path
+import sqlite3
 from typing import Iterable
 
 from .storage import (
@@ -34,6 +36,20 @@ PR_CHECK_STATES = frozenset({"PASS", "FAIL", "WAITING", "UNAVAILABLE"})
 PR_ROLES = frozenset({"IMPLEMENTATION", "FINALIZATION"})
 
 
+def _connection(root: Path, central_database: Path | None) -> sqlite3.Connection:
+    """Open the explicitly supplied CENTRAL authority when one is composed.
+
+    ``root`` remains only the physical execution context for compatibility
+    callers.  The standalone runner always supplies ``central_database``.
+    """
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if database.name != "engineering.db":
+        raise EngineeringStorageError("CENTRAL_MANAGED_AUTONOMY_DATABASE_INVALID")
+    return sqlite3.connect(database, isolation_level=None)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -53,11 +69,12 @@ def append_action(
     actor: str = "execution_host",
     evidence_ref: str = "runtime",
     observed_at: str | None = None,
+    central_database: Path | None = None,
 ) -> None:
     """Persist identifier-only evidence; raw prompts and tool output are rejected by shape."""
     if authority not in AUTHORITIES:
         raise EngineeringStorageError("Managed autonomy action authority is invalid.")
-    connection = open_storage(root)
+    connection = _connection(Path(root), central_database)
     try:
         connection.execute(
             "INSERT INTO managed_autonomy_actions(run_id,action,authority,actor,evidence_ref,observed_at) VALUES(?,?,?,?,?,?)",
@@ -85,6 +102,7 @@ def record_gate(
     resolution_actor: str | None = None,
     requested_at: str | None = None,
     resolved_at: str | None = None,
+    central_database: Path | None = None,
 ) -> None:
     if (
         gate_type not in GATE_TYPES
@@ -95,7 +113,7 @@ def record_gate(
         )
     ):
         raise EngineeringStorageError("Managed governance gate is invalid.")
-    connection = open_storage(root)
+    connection = _connection(Path(root), central_database)
     try:
         connection.execute(
             "INSERT INTO managed_governance_gates(run_id,gate_type,gate_authority,status,requested_at,resolved_at,resolution_actor,related_pr,phase) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,gate_type) DO UPDATE SET status=excluded.status,resolved_at=excluded.resolved_at,resolution_actor=excluded.resolution_actor,related_pr=excluded.related_pr,phase=excluded.phase",
@@ -124,10 +142,11 @@ def append_validation_observation(
     required: bool,
     currentness: int = 0,
     observed_at: str | None = None,
+    central_database: Path | None = None,
 ) -> None:
     if state not in VALIDATION_STATES or currentness < 0:
         raise EngineeringStorageError("Managed validation observation is invalid.")
-    connection = open_storage(root)
+    connection = _connection(Path(root), central_database)
     try:
         connection.execute(
             "INSERT INTO managed_validation_observations(run_id,control,state,required,currentness,observed_at) VALUES(?,?,?,?,?,?)",
@@ -156,6 +175,7 @@ def append_pr_check_observation(
     evidence_ref: str,
     currentness: int = 0,
     observed_at: str | None = None,
+    central_database: Path | None = None,
 ) -> None:
     """Append a bounded GitHub required-check observation without changing lifecycle."""
     if (
@@ -168,7 +188,7 @@ def append_pr_check_observation(
         or (merge_commit is not None and (not isinstance(merge_commit, str) or len(merge_commit) != 40))
     ):
         raise EngineeringStorageError("Managed PR check observation is invalid.")
-    connection = open_storage(root)
+    connection = _connection(Path(root), central_database)
     try:
         connection.execute(
             "INSERT INTO managed_pr_check_observations(run_id,pr_number,pr_role,pr_state,merge_state,merge_commit,required_checks_state,evidence_ref,observed_at,currentness) VALUES(?,?,?,?,?,?,?,?,?,?)",

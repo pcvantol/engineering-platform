@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1316,7 +1317,11 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)]), 0)
+            central = Path(temporary) / "engineering.db"
+            central.touch()
+            with sqlite3.connect(central) as connection:
+                connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
+            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 0)
 
     @patch("engineering_platform.execution_host.EngineeringRunner")
     def test_main_reports_blocked_runner_and_writes_redacted_console_log(self, runner_type: object) -> None:
@@ -1324,7 +1329,16 @@ class ClientContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
-            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)]), 2)
+            central = Path(temporary) / "engineering.db"
+            central.touch()
+            self.assertEqual(__import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt), "--central-database", str(central)]), 2)
+
+    def test_main_rejects_unbound_operational_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.execution_host.Path.cwd", return_value=Path(temporary)):
+            prompt = Path(temporary) / "prompt.md"
+            prompt.write_text("# objective", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "CENTRAL_OPERATIONAL_DATABASE_REQUIRED"):
+                __import__("engineering_platform.execution_host", fromlist=["main"]).main([str(prompt)])
 
     @patch.object(SubprocessRepositoryClient, "inspect")
     @patch("engineering_platform.execution_host.subprocess.run")
@@ -1473,9 +1487,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
         ):
             prompt = Path(temporary) / "prompt.md"
             prompt.write_text("# objective", encoding="utf-8")
+            central = Path(temporary) / "engineering.db"
+            central.touch()
+            with sqlite3.connect(central) as connection:
+                connection.execute("CREATE TABLE execution_phase_spans(phase_id TEXT,run_id TEXT,phase_name TEXT,phase_category TEXT,parent_phase_id TEXT,attempt INTEGER,ordinal INTEGER,started_at TEXT,completed_at TEXT,duration_ms INTEGER,outcome TEXT,metadata TEXT)")
             self.assertEqual(
                 __import__("engineering_platform.execution_host", fromlist=["main"]).main(
-                    [str(prompt), "--admitted-storage-schema", "18"]
+                    [str(prompt), "--admitted-storage-schema", "18", "--central-database", str(central)]
                 ),
                 0,
             )
@@ -2593,6 +2611,14 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 "Execution Mode: Genesis\n\nTarget repository:\n\nrelative/project\n",
                 self.root,
             )
+
+    def test_genesis_context_accepts_inline_target_declaration(self) -> None:
+        context = resolve_execution_context(
+            "Execution Mode: Genesis\nTarget repository: /tmp/qualified-genesis\n",
+            self.root,
+        )
+        self.assertEqual(context.execution_mode, "GENESIS")
+        self.assertEqual(context.target_repository, Path("/tmp/qualified-genesis").resolve())
         with self.assertRaisesRegex(RunnerError, "cannot be the Engineering Platform host"):
             resolve_execution_context(
                 f"Execution Mode: Genesis\n\nTarget repository:\n\n{self.root}\n",
@@ -2881,6 +2907,29 @@ class LocalAgentRunnerTest(unittest.TestCase):
             CodexCliClient().invoke(self.root, "test")
 
         self.assertEqual(set(captured["properties"]), set(captured["required"]))
+
+    def test_cli_output_schema_never_creates_repository_local_state_directory(self) -> None:
+        """Provider protocol scratch belongs in temporary storage, not a checkout."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def invoke_with_schema(command: tuple[str, ...], **_: object) -> object:
+                schema_path = Path(command[command.index("--output-schema") + 1])
+                self.assertTrue(schema_path.is_file())
+                self.assertFalse(schema_path.is_relative_to(root))
+                return __import__("subprocess").CompletedProcess(
+                    command,
+                    0,
+                    '{"terminal_state":"COMPLETE","branch":null,"pull_request":null,'
+                    '"terminal_condition":"repository_reconciled","diagnostic":"",'
+                    '"repository_path":null,"commit_sha":null}\n',
+                    "",
+                )
+
+            with patch("engineering_platform.execution_host.subprocess.run", side_effect=invoke_with_schema):
+                CodexCliClient().invoke(root, "test")
+
+            self.assertFalse((root / ".engineering" / "engineering-runs").exists())
 
     def test_cli_adds_configured_sibling_project_root(self) -> None:
         local = self.root / ".engineering"

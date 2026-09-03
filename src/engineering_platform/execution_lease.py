@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 import socket
 from threading import Event, Thread
 import uuid
@@ -17,6 +18,19 @@ LEASE_VERSION = 1
 HEARTBEAT_INTERVAL_SECONDS = 15
 LEASE_TIMEOUT_SECONDS = 90
 TERMINAL_PHASES = frozenset({"COMPLETE", "BLOCKED", "FAILED"})
+
+
+def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open an explicitly supplied CENTRAL lease authority when available."""
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL lease database is unavailable.")
+    connection = sqlite3.connect(database, isolation_level=None)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
 
 
 class LeaseConflictError(EngineeringStorageError):
@@ -89,9 +103,10 @@ def _recovery_provider_lease_state(connection: object, run_id: str) -> str:
 class LeaseHeartbeat:
     """Bounded background heartbeat; lifecycle state remains runner-owned."""
 
-    def __init__(self, root: Path, lease: Lease, *, interval_seconds: int = HEARTBEAT_INTERVAL_SECONDS) -> None:
+    def __init__(self, root: Path, lease: Lease, *, central_database: Path | None = None, interval_seconds: int = HEARTBEAT_INTERVAL_SECONDS) -> None:
         self.root = root
         self.lease = lease
+        self.central_database = central_database
         self.interval_seconds = interval_seconds
         self._stop = Event()
         self._thread: Thread | None = None
@@ -106,7 +121,7 @@ class LeaseHeartbeat:
     def _run(self) -> None:
         while not self._stop.wait(self.interval_seconds):
             try:
-                self.lease = heartbeat(self.root, self.lease)
+                self.lease = heartbeat(self.root, self.lease, central_database=self.central_database)
             except Exception as error:  # The expiry boundary remains fail-closed.
                 self.error = error
                 return
@@ -118,12 +133,12 @@ class LeaseHeartbeat:
         return self.lease
 
 
-def acquire(root: Path, run_id: str, *, identity: str, instance_id: str, process_id: int | None = None, timeout_seconds: int = LEASE_TIMEOUT_SECONDS) -> Lease:
+def acquire(root: Path, run_id: str, *, identity: str, instance_id: str, process_id: int | None = None, timeout_seconds: int = LEASE_TIMEOUT_SECONDS, central_database: Path | None = None) -> Lease:
     if not 0 < HEARTBEAT_INTERVAL_SECONDS < timeout_seconds:
         raise EngineeringStorageError("Active-run lease policy is invalid.")
     now = _now()
     expiry = now + timedelta(seconds=timeout_seconds)
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -148,10 +163,10 @@ def acquire(root: Path, run_id: str, *, identity: str, instance_id: str, process
         connection.close()
 
 
-def heartbeat(root: Path, lease: Lease, *, timeout_seconds: int = LEASE_TIMEOUT_SECONDS) -> Lease:
+def heartbeat(root: Path, lease: Lease, *, timeout_seconds: int = LEASE_TIMEOUT_SECONDS, central_database: Path | None = None) -> Lease:
     now = _now()
     expiry = now + timedelta(seconds=timeout_seconds)
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         updated = connection.execute("UPDATE execution_run_leases SET last_heartbeat_at=?,expires_at=?,updated_at=? WHERE lease_id=? AND run_id=? AND host_instance_id=? AND lease_state='ACTIVE'", (now.isoformat(), expiry.isoformat(), now.isoformat(), lease.lease_id, lease.run_id, lease.host_instance_id)).rowcount
         if updated != 1:
@@ -161,8 +176,8 @@ def heartbeat(root: Path, lease: Lease, *, timeout_seconds: int = LEASE_TIMEOUT_
     return Lease(lease.lease_id, lease.run_id, lease.host_identity, lease.host_instance_id, lease.acquired_at, now.isoformat(), expiry.isoformat(), "ACTIVE")
 
 
-def release(root: Path, lease: Lease) -> None:
-    connection = open_storage(root)
+def release(root: Path, lease: Lease, *, central_database: Path | None = None) -> None:
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         changed = connection.execute("UPDATE execution_run_leases SET lease_state='RELEASED',updated_at=? WHERE lease_id=? AND host_instance_id=? AND lease_state='ACTIVE'", (_now().isoformat(), lease.lease_id, lease.host_instance_id)).rowcount
@@ -173,14 +188,14 @@ def release(root: Path, lease: Lease) -> None:
         connection.close()
 
 
-def release_terminal_lease(root: Path, run_id: str) -> bool:
+def release_terminal_lease(root: Path, run_id: str, *, central_database: Path | None = None) -> bool:
     """Release a departed host's lease only after its checkpoint is terminal.
 
     The watcher calls this after its foreground child has exited and after it
     has persisted the terminal transaction.  It is not a stale-lease shortcut
     and never decides lifecycle state itself.
     """
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -217,12 +232,12 @@ def release_terminal_lease(root: Path, run_id: str) -> bool:
         connection.close()
 
 
-def reconcile_stale(root: Path) -> list[dict[str, str]]:
+def reconcile_stale(root: Path, *, central_database: Path | None = None) -> list[dict[str, str]]:
     """Reconcile datastore ownership only; never fabricate a terminal lifecycle state."""
     now = _now().isoformat()
     outcomes: list[dict[str, str]] = []
     interrupted_runs: list[str] = []
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute("SELECT lease_id,run_id,host_instance_id,last_heartbeat_at FROM execution_run_leases WHERE lease_state='ACTIVE' AND expires_at<?", (now,)).fetchall()
@@ -306,16 +321,16 @@ def reconcile_stale(root: Path) -> list[dict[str, str]]:
     for run_id in interrupted_runs:
         # Completed timing evidence remains immutable.  This deliberately uses
         # the actual reconciliation boundary rather than an invented expiry.
-        reconcile_interrupted_phases(root, run_id)
+        reconcile_interrupted_phases(root, run_id, central_database=central_database)
     return outcomes
 
 
-def liveness(root: Path, run_id: object) -> dict[str, object]:
+def liveness(root: Path, run_id: object, *, central_database: Path | None = None) -> dict[str, object]:
     """Project canonical liveness without consulting status files or processes."""
     if not isinstance(run_id, str):
         return {"state": "UNAVAILABLE"}
     now = _now().isoformat()
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute("SELECT host_identity,host_instance_id,last_heartbeat_at,expires_at,lease_state FROM execution_run_leases WHERE run_id=? ORDER BY created_at DESC LIMIT 1", (run_id,)).fetchone()
         reconciliation = connection.execute(
@@ -335,9 +350,9 @@ def liveness(root: Path, run_id: object) -> dict[str, object]:
     return result
 
 
-def history(root: Path, run_id: str) -> dict[str, object]:
+def history(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
     """Return bounded canonical lease evidence for reports and history views."""
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT host_identity,host_instance_id,acquired_at,last_heartbeat_at,expires_at,lease_state "

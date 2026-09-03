@@ -1341,11 +1341,12 @@ def is_active_blocking_predecessor(root: Path, run_id: object, terminal_state: o
 
 
 def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
-                               dismissed_at: str, dismissed_by: str) -> dict[str, object]:
+                               dismissed_at: str, dismissed_by: str,
+                               central_database: Path | None = None) -> dict[str, object]:
     """Record one immutable dismissal after its terminal history row exists."""
     if terminal_state not in {"COMPLETE", "BLOCKED", "FAILED"}:
         raise EngineeringStorageError("Dismissal requires a terminal execution outcome.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_dismissals(run_id,terminal_state,handling_state,dismissed_at,dismissed_by) "
@@ -1363,7 +1364,8 @@ def record_execution_dismissal(root: Path, *, run_id: str, terminal_state: str,
 
 
 def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
-                              rolled_back: bool, removed_branch: str | None) -> None:
+                              rolled_back: bool, removed_branch: str | None,
+                              central_database: Path | None = None) -> None:
     """Append one immutable operator-authorized emergency recovery record."""
     if not re.fullmatch(r"inbox-[a-z0-9-]{6,64}", run_id):
         raise EngineeringStorageError("Emergency recovery requires a valid Inbox run.")
@@ -1371,7 +1373,7 @@ def record_emergency_recovery(root: Path, *, run_id: str, cancelled_at: str,
         raise EngineeringStorageError("Emergency recovery requires a timestamp.")
     if removed_branch is not None and (not isinstance(removed_branch, str) or not removed_branch.startswith("codex/")):
         raise EngineeringStorageError("Emergency recovery branch evidence is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_emergency_recoveries(run_id,cancelled_at,rolled_back,removed_branch,recorded_by) VALUES(?,?,?,?,?)",
@@ -1399,9 +1401,17 @@ def store_projection(connection: sqlite3.Connection, name: str, payload: dict[st
     )
 
 
-def load_projection(root: Path, name: str) -> dict[str, object] | None:
+def load_projection(
+    root: Path, name: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Load a canonical projection without consulting its compatibility file."""
-    connection = open_storage(root)
+    if central_database is None:
+        connection = open_storage(root)
+    else:
+        database = central_database.resolve()
+        if not database.is_file():
+            raise EngineeringStorageError("CENTRAL projection database is unavailable.")
+        connection = sqlite3.connect(database, isolation_level=None)
     try:
         row = connection.execute("SELECT payload FROM execution_projections WHERE projection_name=?", (name,)).fetchone()
     finally:
@@ -1530,9 +1540,9 @@ def record_admission_decision(
         connection.close()
 
 
-def load_admission_decision(root: Path, run_id: str) -> dict[str, object] | None:
+def load_admission_decision(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load one structured provider-free admission decision for rendering."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT submission_id,execution_mode,decision,failed_gate_ids,evidence,observed_at "
@@ -1605,9 +1615,9 @@ def load_forge_governance_handoff_snapshot(root: Path, run_id: str) -> dict[str,
     return snapshot
 
 
-def load_submission_for_run(root: Path, run_id: str) -> dict[str, object] | None:
+def load_submission_for_run(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Load immutable Producer provenance for one linked execution without prompt inspection."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT submission.submission_id,submission.producer_id,submission.producer_type,"
@@ -1691,6 +1701,7 @@ def record_validation_profile(
     required_validation_controls: tuple[str, ...], recorded_at: str,
     profile_reference: str | None = None, profile_selection_source: str | None = None,
     control_bindings: tuple[dict[str, object], ...] | None = None,
+    central_database: Path | None = None,
 ) -> None:
     """Persist the exact mandatory controls before their execution evidence."""
     if not run_id or not selected_validation_tier or not validation_profile_version or not recorded_at:
@@ -1718,7 +1729,7 @@ def record_validation_profile(
         "profile_selection_source": profile_selection_source or "registry",
         "control_bindings": list(control_bindings),
     }
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_profiles(run_id,selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at) VALUES(?,?,?,?,?)",
@@ -1731,12 +1742,12 @@ def record_validation_profile(
 def record_validation_control_result(
     root: Path, *, run_id: str, validation_id: str, category: str, control_identity: str,
     required_for_profile: bool, execution_status: str, result: str, evidence_ref: str,
-    observed_at: str, currentness: int,
+    observed_at: str, currentness: int, central_database: Path | None = None,
 ) -> None:
     """Append one machine-readable validation observation for its resolved profile."""
     if not all(isinstance(value, str) and value for value in (run_id, validation_id, category, control_identity, execution_status, result, evidence_ref, observed_at)) or currentness < 0:
         raise EngineeringStorageError("Validation control result is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_control_results("
@@ -1750,12 +1761,13 @@ def record_validation_control_result(
 def record_validation_command_invocation(
     root: Path, *, run_id: str, validation_id: str, command_id: str, category: str,
     control_identity: str, required_for_profile: bool, started_at: str, currentness: int,
+    central_database: Path | None = None,
 ) -> None:
     """Record authoritative command start before subprocess completion is known."""
     values = (run_id, validation_id, command_id, category, control_identity, started_at)
     if not all(isinstance(value, str) and value for value in values) or currentness < 0:
         raise EngineeringStorageError("Validation command invocation is invalid.")
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT OR IGNORE INTO execution_validation_command_invocations("
@@ -1769,7 +1781,7 @@ def record_validation_command_invocation(
 
 def record_validation_command_terminal(
     root: Path, *, run_id: str, command_id: str, completed_at: str, exit_code: int | None,
-    evidence_ref: str = "command_terminal",
+    evidence_ref: str = "command_terminal", central_database: Path | None = None,
 ) -> None:
     """Close a previously recorded command with its observed terminal outcome."""
     if not all(isinstance(value, str) and value for value in (run_id, command_id, completed_at, evidence_ref)):
@@ -1777,7 +1789,7 @@ def record_validation_command_terminal(
     if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
         raise EngineeringStorageError("Validation command exit code is invalid.")
     result = "PASS" if exit_code == 0 else "FAIL" if exit_code is not None else "UNAVAILABLE"
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         started = connection.execute(
             "SELECT started_at FROM execution_validation_command_invocations WHERE run_id=? AND command_id=?",
@@ -1798,9 +1810,9 @@ def record_validation_command_terminal(
         connection.close()
 
 
-def load_validation_context(root: Path, run_id: str) -> dict[str, object] | None:
+def load_validation_context(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object] | None:
     """Return the resolved profile and current control evidence without inference."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         profile = connection.execute(
             "SELECT selected_validation_tier,validation_profile_version,required_validation_controls,recorded_at "
@@ -1911,9 +1923,11 @@ def record_run_qualification_snapshot(root: Path, snapshot: dict[str, object]) -
     return stored
 
 
-def load_run_qualification_snapshot(root: Path, run_id: str) -> dict[str, object] | None:
+def load_run_qualification_snapshot(
+    root: Path, run_id: str, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Load a persisted snapshot without deriving or backfilling legacy runs."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT payload FROM execution_run_qualification_snapshots WHERE run_id=?", (run_id,)
@@ -1948,14 +1962,17 @@ def record_artifact(
     execution_id: str | None = None,
     producer_id: str | None = None,
     projection_status: str = "AVAILABLE",
+    central_database: Path | None = None,
+    artifact_root: Path | None = None,
 ) -> None:
     """Register immutable filesystem payload metadata in the canonical store."""
     try:
-        location = str(path.resolve().relative_to((root / ".engineering").resolve()))
+        base = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        location = str(path.resolve().relative_to(base))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError) as error:
         raise EngineeringStorageError("Artifact payload cannot be recorded safely.") from error
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         if run_id and not connection.execute("SELECT 1 FROM execution_runs WHERE run_id=?", (run_id,)).fetchone():
             run_id = None
@@ -1972,9 +1989,12 @@ def record_artifact(
         connection.close()
 
 
-def verify_artifact_integrity(root: Path, artifact_id: str) -> bool:
+def verify_artifact_integrity(
+    root: Path, artifact_id: str, *, central_database: Path | None = None,
+    artifact_root: Path | None = None,
+) -> bool:
     """Verify a registered payload without making the file itself authoritative."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT digest_algorithm,digest,storage_location FROM execution_artifact_records WHERE artifact_id=?", (artifact_id,)
@@ -1985,8 +2005,9 @@ def verify_artifact_integrity(root: Path, artifact_id: str) -> bool:
         if algorithm != "sha256" or not isinstance(location, str):
             return False
         try:
-            payload = ((root / ".engineering") / location).resolve()
-            payload.relative_to((root / ".engineering").resolve())
+            authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+            payload = (authority_root / location).resolve()
+            payload.relative_to(authority_root)
             actual = hashlib.sha256(payload.read_bytes()).hexdigest()
         except (OSError, ValueError):
             actual = ""
@@ -2310,9 +2331,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, profile_version: int,
                                 execution_mode: str, passed: bool, failed_requirements: tuple[str, ...],
-                                facts: dict[str, object], evaluated_at: str, diagnostic: str | None) -> None:
+                                facts: dict[str, object], evaluated_at: str, diagnostic: str | None,
+                                central_database: Path | None = None) -> None:
     """Store one deterministic readiness decision for a transaction."""
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         connection.execute(
             "INSERT INTO execution_readiness_evaluations(run_id,profile_id,profile_version,execution_mode,passed,failed_requirements,facts,evaluated_at,diagnostic) VALUES(?,?,?,?,?,?,?,?,?) "
@@ -2323,11 +2345,13 @@ def record_readiness_evaluation(root: Path, *, run_id: str, profile_id: str, pro
         connection.close()
 
 
-def load_readiness_evaluation(root: Path, run_id: object) -> dict[str, object] | None:
+def load_readiness_evaluation(
+    root: Path, run_id: object, *, central_database: Path | None = None,
+) -> dict[str, object] | None:
     """Read one canonical readiness projection for dashboard/report consumers."""
     if not isinstance(run_id, str):
         return None
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT profile_id,profile_version,execution_mode,passed,failed_requirements,evaluated_at,diagnostic FROM execution_readiness_evaluations WHERE run_id=?", (run_id,)

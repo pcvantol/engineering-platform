@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -184,6 +185,7 @@ def persist_validation_failure_diagnostic(
     root: Path, *, run_id: str, command_id: str, validation_id: str,
     control_identity: str, exit_code: int | None, stdout: str | None,
     stderr: str | None, capture_available: bool, captured_at: str | None = None,
+    central_database: Path | None = None, artifact_root: Path | None = None,
 ) -> str:
     """Persist bounded, redacted, supplementary output for any failed control."""
     # Extract stable unittest identifiers/counts before the generic redactor
@@ -214,7 +216,8 @@ def persist_validation_failure_diagnostic(
         "failing_test_identities": identities,
         "failure_count": counts.get("failures"), "error_count": counts.get("errors"),
     }
-    directory = root / ".engineering" / "artifacts" / "validation-failure-diagnostics"
+    directory = ((artifact_root / "validation-failure-diagnostics") if artifact_root else
+                 (root / ".engineering" / "artifacts" / "validation-failure-diagnostics"))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{artifact_id}.json"
     descriptor, temporary = tempfile.mkstemp(prefix=f".{artifact_id}.", suffix=".tmp", dir=directory)
@@ -234,6 +237,7 @@ def persist_validation_failure_diagnostic(
             artifact_type="VALIDATION_FAILURE_DIAGNOSTIC",
             content_type="application/json", created_at=created_at, run_id=run_id,
             execution_id=command_id,
+            central_database=central_database, artifact_root=artifact_root,
         )
     except EngineeringStorageError:
         path.unlink(missing_ok=True)
@@ -241,14 +245,19 @@ def persist_validation_failure_diagnostic(
     return f"artifact:{artifact_id}"
 
 
-def load_validation_failure_diagnostic(root: Path, artifact_reference: str) -> dict[str, object] | None:
+def load_validation_failure_diagnostic(
+    root: Path, artifact_reference: str, *, central_database: Path | None = None,
+    artifact_root: Path | None = None,
+) -> dict[str, object] | None:
     """Read a bound diagnostic only after its immutable artifact verifies."""
     if not artifact_reference.startswith("artifact:"):
         return None
     artifact_id = artifact_reference.removeprefix("artifact:")
-    if not verify_artifact_integrity(root, artifact_id):
+    if not verify_artifact_integrity(
+        root, artifact_id, central_database=central_database, artifact_root=artifact_root,
+    ):
         return None
-    connection = open_storage(root)
+    connection = open_storage(root) if central_database is None else sqlite3.connect(central_database.resolve(), isolation_level=None)
     try:
         row = connection.execute(
             "SELECT storage_location,artifact_type FROM execution_artifact_records WHERE artifact_id=?",
@@ -259,7 +268,10 @@ def load_validation_failure_diagnostic(root: Path, artifact_reference: str) -> d
     if not row or row[1] != "VALIDATION_FAILURE_DIAGNOSTIC":
         return None
     try:
-        payload = json.loads(((root / ".engineering") / row[0]).read_text(encoding="utf-8"))
+        authority_root = artifact_root.resolve() if artifact_root is not None else (root / ".engineering").resolve()
+        payload_path = (authority_root / str(row[0])).resolve()
+        payload_path.relative_to(authority_root)
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
@@ -447,8 +459,6 @@ class CodexCliClient:
         self.last_context_escalations = ()
         self.last_execution_seconds = None
         self.last_runtime_metadata = self._runtime_metadata()
-        state_directory = root / ".engineering" / "engineering-runs"
-        state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -502,7 +512,7 @@ class CodexCliClient:
             },
         }
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".json", dir=state_directory, delete=False
+            "w", encoding="utf-8", suffix=".json", delete=False
         ) as handle:
             json.dump(schema, handle)
             schema_path = Path(handle.name)

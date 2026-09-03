@@ -30,6 +30,7 @@ from .execution_executor import CodexCliClient
 from .execution_reporting import generate_terminal_report
 from .storage import (
     CENTRAL_OPERATIONAL_DATABASE_ENVIRONMENT,
+    record_artifact,
     record_run_qualification_context,
     record_submission,
 )
@@ -134,14 +135,18 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _default_runner(repository_root: Path) -> EngineeringRunner:
+def _default_runner(repository_root: Path, *, central_database: Path | None = None) -> EngineeringRunner:
     """Construct the installed historical runner without a watcher or Agent."""
     remote = GitProvider().execute(repository_root, "git", "remote", "get-url", "origin")
     match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote.stdout.strip())
     repository = match.group(1) if remote.returncode == 0 and match else None
     return EngineeringRunner(
         repository_root,
-        StateStore(repository_root / ".engineering" / "engineering-runs"),
+        StateStore(
+            repository_root / ".engineering" / "engineering-runs",
+            central_database=central_database,
+            emit_local_projection=False,
+        ),
         SubprocessRepositoryClient(),
         GhCliClient(repository=repository),
         CodexCliClient(CodexCliProvider()),
@@ -173,9 +178,11 @@ def _historical_admission_environment(repository_root: Path, data_root: Path):
 class ParityLifecycleDispatcher:
     """The one installed local writer allowed to claim a parity submission."""
 
-    def __init__(self, data_root: Path, *, runner_factory: RunnerFactory = _default_runner) -> None:
+    def __init__(self, data_root: Path, *, runner_factory: RunnerFactory | None = None) -> None:
         self.data_root = data_root.resolve()
-        self.runner_factory = runner_factory
+        self.runner_factory = runner_factory or (
+            lambda root: _default_runner(root, central_database=self.data_root / "engineering.db")
+        )
 
     def _prompt_path(self, context: ParityProjectContext, run_id: str) -> Path:
         # Prompts and mutable lifecycle evidence are installation-owned.  The
@@ -262,6 +269,15 @@ class ParityLifecycleDispatcher:
             execution_mode=candidate.execution_mode, results=(host, workspace, capability),
         )
         if decision != "PASS":
+            for result in (host, workspace, capability):
+                for check in getattr(result, "checks", ()):
+                    if getattr(check, "outcome", None) == "FAIL":
+                        raise ParityLifecycleDispatchError(
+                            "HISTORICAL_ADMISSION_BLOCKED|%s|%s|%s"
+                            % (type(result).__name__.removesuffix("Result"),
+                               getattr(check, "identifier", "unavailable"),
+                               redact_diagnostic(str(getattr(check, "reason", "Preflight check failed.")), limit=500))
+                        )
             raise ParityLifecycleDispatchError("HISTORICAL_ADMISSION_BLOCKED")
 
     def _set_state(self, submission_id: str, run_id: str, state: str) -> None:
@@ -279,12 +295,14 @@ class ParityLifecycleDispatcher:
             )
 
     @staticmethod
-    def _terminal_history_exists(repository_root: Path, run_id: str) -> bool:
-        return any(item.get("run_id") == run_id for item in prompt_history(repository_root))
+    def _terminal_history_exists(repository_root: Path, run_id: str, data_root: Path) -> bool:
+        return any(item.get("run_id") == run_id for item in prompt_history(
+            repository_root, central_database=data_root / "engineering.db"
+        ))
 
     @classmethod
     def _project_terminal_history(cls, repository_root: Path, state: TransactionState,
-                                  runner: object | None = None) -> None:
+                                  runner: object | None = None, data_root: Path | None = None) -> None:
         """Preserve the terminal report and full historical Console projection.
 
         CENTRAL composes the historical runner directly, bypassing its CLI
@@ -292,7 +310,9 @@ class ParityLifecycleDispatcher:
         that post-run boundary here keeps a completed CENTRAL run visible in
         its project-scoped Operations Console.
         """
-        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id):
+        if data_root is None:
+            raise ParityLifecycleDispatchError("CENTRAL_HISTORY_DATABASE_REQUIRED")
+        if not state.terminal or cls._terminal_history_exists(repository_root, state.run_id, data_root):
             return
         report = generate_terminal_report(
             repository_root, state,
@@ -301,8 +321,15 @@ class ParityLifecycleDispatcher:
             getattr(runner, "reviewer_records", ()),
             getattr(getattr(runner, "agent", None), "last_runtime_metadata", None),
             getattr(getattr(runner, "agent", None), "last_execution_metadata", None),
+            central_database=data_root / "engineering.db",
         )
-        record_terminal_report(repository_root, report)
+        record_terminal_report(repository_root, report, central_database=data_root / "engineering.db")
+        record_artifact(
+            repository_root, report, artifact_id=f"report:{state.run_id}",
+            artifact_type="TERMINAL_REPORT", content_type="text/markdown",
+            created_at=_utcnow(), run_id=state.run_id,
+            central_database=data_root / "engineering.db", artifact_root=data_root / "artifacts",
+        )
         analyze_terminal_report(repository_root, state.run_id, report)
 
     def reconcile_terminal_history(self) -> None:
@@ -320,29 +347,32 @@ class ParityLifecycleDispatcher:
             if context.local_repository_root is None:
                 continue
             try:
-                with _historical_admission_environment(
-                    context.local_repository_root, self.data_root
-                ):
-                    state = StateStore(
-                        context.local_repository_root / ".engineering" / "engineering-runs"
-                    ).load(run_id)
+                state = StateStore(
+                    context.local_repository_root / ".engineering" / "engineering-runs",
+                    central_database=self.data_root / "engineering.db",
+                    emit_local_projection=False,
+                ).load(run_id)
             except StateError:
                 # CENTRAL terminal history can outlive the local retained
                 # checkpoint. It is already durable history, not an active
                 # recovery candidate; never let such a row prevent Server
                 # startup or fresh project-scoped queue processing.
                 continue
-            self._project_terminal_history(context.local_repository_root, state)
+            self._project_terminal_history(context.local_repository_root, state, data_root=self.data_root)
 
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
-                                     run_id: str, error: RunnerError) -> None:
+                                     run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
         message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
+        component = code = None
+        if message.startswith("HISTORICAL_ADMISSION_BLOCKED|"):
+            _, component, code, message = message.split("|", 3)
         path = self.data_root / "artifacts" / "projects" / context.project_id / "runs" / run_id / "early-runner-failure.json"
         payload = {"submission_id": submission_id, "project_id": context.project_id,
                    "repository_id": context.repository_id, "run_id": run_id,
-                   "failure_stage": "RUNNER_INITIALIZATION", "error_type": type(error).__name__,
-                   "diagnostic_code": "RUNNER_EARLY_FAILURE", "message": message,
+                   "failure_stage": stage, "error_type": type(error).__name__,
+                   "diagnostic_code": "RUNNER_EARLY_FAILURE" if stage == "RUNNER_INITIALIZATION" else "PRECHECKPOINT_FAILURE", "message": message,
+                   "admission_component": component, "component_code": code,
                    "recorded_at": _utcnow()}
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)
@@ -365,7 +395,7 @@ class ParityLifecycleDispatcher:
                 # Report/history indexing is execution evidence too.  Keep it
                 # inside the explicit CENTRAL context; a terminal projection
                 # must never reopen the repository-local database.
-                self._project_terminal_history(repository_root, state, runner)
+                self._project_terminal_history(repository_root, state, runner, self.data_root)
             terminal = state.phase if state.phase in TERMINAL_STATES else "RUNNING"
             self._set_state(submission_id, run_id, terminal)
             return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, terminal, duplicate)
@@ -373,8 +403,9 @@ class ParityLifecycleDispatcher:
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)
             self._set_state(submission_id, run_id, "BLOCKED")
             raise
-        except Exception:
+        except Exception as error:
             # A nonterminal checkpoint is deliberately resumable with the same
             # run ID; an uncheckpointed admission failure is visible as BLOCKED.
+            self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error, stage="PRECHECKPOINT")
             self._set_state(submission_id, run_id, "BLOCKED")
             raise

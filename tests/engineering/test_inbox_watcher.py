@@ -138,6 +138,117 @@ class InboxWatcherTest(unittest.TestCase):
             "BLOCKED: working tree is not clean",
         )
 
+    def test_source_revision_fails_closed_for_git_failures_and_invalid_output(self) -> None:
+        with patch.object(
+            inbox_watcher.LocalProcessProvider,
+            "execute",
+            side_effect=(
+                subprocess.CompletedProcess(("git",), 1, "", "not a repository"),
+                subprocess.CompletedProcess(("git",), 0, "not-a-sha\n", ""),
+                subprocess.CompletedProcess(("git",), 0, "a" * 40 + "\n", ""),
+            ),
+        ):
+            self.assertIsNone(inbox_watcher._source_revision(self.repo))
+            self.assertIsNone(inbox_watcher._source_revision(self.repo))
+            self.assertEqual(inbox_watcher._source_revision(self.repo), "a" * 40)
+
+    def test_persisted_producer_prefers_central_submission_and_falls_back_for_legacy_prompt(self) -> None:
+        central_submission = {
+            "producer_id": "agent-delivery",
+            "producer_type": "EXTERNAL",
+            "producer_version": "1.0",
+            "correlation_id": "corr-123",
+            "mission_id": "mission-456",
+            "engineering_action_id": "action-789",
+            "contract_version": "1.0",
+        }
+        with patch(
+            "engineering_platform.inbox_watcher.load_submission_for_run",
+            return_value=central_submission,
+        ):
+            producer = inbox_watcher._persisted_producer_for_run(self.repo, "inbox-central", "# legacy")
+        self.assertEqual(producer.producer_id, "agent-delivery")
+        self.assertEqual(producer.producer_type, "EXTERNAL")
+        self.assertEqual(producer.producer_version, "1.0")
+        self.assertEqual(producer.correlation_id, "corr-123")
+        self.assertEqual(producer.mission_id, "mission-456")
+        self.assertEqual(producer.engineering_action_id, "action-789")
+        self.assertEqual(producer.execution_constraint_version, "1.0")
+
+        with patch(
+            "engineering_platform.inbox_watcher.load_submission_for_run",
+            side_effect=inbox_watcher.EngineeringStorageError("CENTRAL unavailable"),
+        ):
+            legacy = inbox_watcher._persisted_producer_for_run(self.repo, "inbox-legacy", "# legacy")
+        self.assertEqual(legacy.producer_id, "legacy")
+        self.assertEqual(legacy.producer_type, "HUMAN")
+
+    def test_configured_scan_interval_uses_central_value_and_safe_fallback(self) -> None:
+        with patch(
+            "engineering_platform.inbox_watcher.dashboard_configuration",
+            return_value={"inbox_scan_interval_seconds": "2.5"},
+        ):
+            self.assertEqual(inbox_watcher._configured_scan_interval(self.repo, 15), 2.5)
+        with patch(
+            "engineering_platform.inbox_watcher.dashboard_configuration",
+            side_effect=inbox_watcher.EngineeringStorageError("CENTRAL unavailable"),
+        ):
+            self.assertEqual(inbox_watcher._configured_scan_interval(self.repo, 1), 5)
+
+    def test_terminal_report_runtime_metadata_is_bounded_and_optional(self) -> None:
+        self.assertEqual(inbox_watcher._report_runtime_metadata(None), {})
+        self.assertEqual(inbox_watcher._report_runtime_metadata(self.repo / "missing-report.md"), {})
+
+        report = self.repo / "terminal-report.md"
+        report.write_text(
+            "\n".join(
+                (
+                    "- Runtime Provider: `codex`",
+                    "- AI Model: `gpt-5`",
+                    "- Reasoning Profile: `high`",
+                    "- Configuration Profile: `managed`",
+                    "- Ignored: `not-runtime-metadata`",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            inbox_watcher._report_runtime_metadata(report),
+            {
+                "runtime_provider": "codex",
+                "runtime_model": "gpt-5",
+                "reasoning_profile": "high",
+                "configuration_profile": "managed",
+            },
+        )
+
+    def test_telemetry_values_accept_only_run_bound_non_negative_evidence(self) -> None:
+        run_id = "inbox-telemetry"
+        runs = self.repo / ".engineering" / "engineering-runs"
+        status = self.repo / ".engineering" / "status"
+        runs.mkdir(parents=True)
+        status.mkdir(parents=True)
+        (runs / f"{run_id}.json").write_text(
+            json.dumps({"agent_execution_seconds": 12.5, "repository": "pcvantol/qualification"}),
+            encoding="utf-8",
+        )
+        (status / "codex_usage.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        seconds, usage, repository = inbox_watcher._telemetry_values(self.repo, run_id)
+
+        self.assertEqual(seconds, 12.5)
+        self.assertEqual(repository, "pcvantol/qualification")
+        self.assertEqual(usage, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+
     def test_status_reconciliation_only_queues_a_verified_reconciliation_request(self) -> None:
         run_id = "inbox-status-drift"
         StateStore(self.repo / ".engineering" / "engineering-runs").save(TransactionState(
@@ -266,6 +377,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNone(admission.source)
         self.assertEqual(json_status(self.repo)["watcher_state"], "WAITING_FOR_PREDECESSOR")
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_run_logs_lifecycle_identity_on_orderly_shutdown(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -296,6 +408,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(log_event.call_args_list[-1].args[2], "watcher_shutdown_completed")
         self.assertEqual(log_event.call_args_list[-1].kwargs["context"], lifecycle_context)
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_restarts_after_a_completed_cycle_when_source_revision_changes(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -325,6 +438,7 @@ class InboxWatcherTest(unittest.TestCase):
             [call.args[2] for call in log_event.call_args_list],
         )
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_defers_source_restart_while_execution_ownership_is_active(self) -> None:
         lifecycle_context = {
             "application_version": inbox_watcher.WATCHER_VERSION,
@@ -363,6 +477,7 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(json.loads(row[0])["state"], "restart_pending_after_active_execution")
 
+    @unittest.skip("checkout-bound watcher execution is formally retired")
     def test_watcher_projects_dashboard_migration_block_instead_of_stale_merge_wait(self) -> None:
         from engineering_platform.platform_bootstrap import WorkspaceMigrationBlockedError
 
@@ -1628,9 +1743,9 @@ class InboxWatcherTest(unittest.TestCase):
             (self.repo / ".gitignore").write_text(".engineering/\n", encoding="utf-8")
             self.assertEqual(
                 inbox_watcher.main(["install", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
-                0,
+                2,
             )
-            launchd.return_value.install.assert_called_once()
+            launchd.return_value.install.assert_not_called()
             self.assertEqual(
                 inbox_watcher.main(["status", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
                 0,
@@ -1644,6 +1759,12 @@ class InboxWatcherTest(unittest.TestCase):
                 inbox_watcher.main(["doctor", "--repo", str(self.repo), "--icloud-root", str(self.root)]),
                 1,
             )
+
+    def test_retired_operational_commands_fail_before_workspace_or_storage_access(self) -> None:
+        with patch("engineering_platform.inbox_watcher.provision_workspace") as provision:
+            for command in ("once", "run", "install"):
+                self.assertEqual(inbox_watcher.main([command, "--repo", str(self.repo)]), 2)
+        provision.assert_not_called()
 
     def test_blocked_predecessor_holds_later_inbox_prompts_without_claiming_them(self) -> None:
         (self.inbox / "next.md").write_text("# Later prompt", encoding="utf-8")

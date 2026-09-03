@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 from time import monotonic
 from typing import Mapping
 import uuid
@@ -29,6 +30,19 @@ PHASES = frozenset({
 })
 TERMINAL_OUTCOMES = frozenset({"COMPLETE", "FAILED", "INTERRUPTED", "STALE"})
 _MAX_METADATA_BYTES = 2048
+
+
+def _connection(root: Path, central_database: Path | None = None) -> sqlite3.Connection:
+    """Open timing storage from an explicit CENTRAL binding when supplied."""
+    if central_database is None:
+        return open_storage(root)
+    database = central_database.resolve()
+    if not database.is_file():
+        raise EngineeringStorageError("CENTRAL timing database is unavailable.")
+    connection = sqlite3.connect(database, isolation_level=None)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
 
 
 def _utc(value: datetime | None = None) -> str:
@@ -52,17 +66,18 @@ class ActivePhase:
     run_id: str
     phase_id: str
     started_monotonic: float | None
+    central_database: Path | None = None
 
 
 def start_phase(root: Path, run_id: str, phase_name: str, *, category: str | None = None,
                 parent_phase_id: str | None = None, attempt: int = 1,
                 metadata: Mapping[str, object] | None = None, started_at: datetime | None = None,
-                monotonic_clock: float | None = None) -> ActivePhase:
+                monotonic_clock: float | None = None, central_database: Path | None = None) -> ActivePhase:
     """Persist a real active phase boundary and return its monotonic handle."""
     if phase_name not in PHASES or not run_id or attempt < 1:
         raise EngineeringStorageError("Execution phase identity is invalid.")
     phase_id = f"phase-{uuid.uuid4()}"
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         ordinal = connection.execute(
             "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM execution_phase_spans WHERE run_id=?", (run_id,)
@@ -74,7 +89,7 @@ def start_phase(root: Path, run_id: str, phase_name: str, *, category: str | Non
         )
     finally:
         connection.close()
-    return ActivePhase(run_id, phase_id, monotonic() if monotonic_clock is None else monotonic_clock)
+    return ActivePhase(run_id, phase_id, monotonic() if monotonic_clock is None else monotonic_clock, central_database)
 
 
 def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE",
@@ -82,7 +97,7 @@ def complete_phase(root: Path, active: ActivePhase, *, outcome: str = "COMPLETE"
     """Close an active span with its directly measured monotonic duration."""
     if outcome not in TERMINAL_OUTCOMES:
         raise EngineeringStorageError("Execution phase outcome is invalid.")
-    connection = open_storage(root)
+    connection = _connection(root, active.central_database)
     try:
         if active.started_monotonic is None:
             # A phase can outlive the runner process.  Its terminal boundary
@@ -117,7 +132,10 @@ def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: ob
     monotonic value, so its completion is explicitly bounded by persisted UTC
     timestamps rather than pretending a monotonic clock survived restart.
     """
-    connection = open_storage(root)
+    central_database = kwargs.get("central_database")
+    if central_database is not None and not isinstance(central_database, Path):
+        raise EngineeringStorageError("CENTRAL timing database is invalid.")
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT phase_id FROM execution_phase_spans WHERE run_id=? AND phase_name=? AND outcome='ACTIVE' ORDER BY ordinal LIMIT 1",
@@ -126,7 +144,7 @@ def start_or_resume_phase(root: Path, run_id: str, phase_name: str, **kwargs: ob
     finally:
         connection.close()
     if row:
-        return ActivePhase(run_id, str(row[0]), None)
+        return ActivePhase(run_id, str(row[0]), None, central_database)
     return start_phase(root, run_id, phase_name, **kwargs)
 
 
@@ -167,11 +185,12 @@ def record_queue_wait_from_submission(root: Path, run_id: str, *, claimed_at: da
 
 
 def reconcile_interrupted_phases(root: Path, run_id: str, *, outcome: str = "STALE",
-                                 completed_at: datetime | None = None) -> int:
+                                 completed_at: datetime | None = None,
+                                 central_database: Path | None = None) -> int:
     """Close observable abandoned work at reconciliation, never backdating it."""
     if outcome not in {"STALE", "INTERRUPTED"}:
         raise EngineeringStorageError("Interrupted phase outcome is invalid.")
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         now = _utc(completed_at)
         # Monotonic state cannot survive a process restart, so a reconciled
@@ -184,7 +203,10 @@ def reconcile_interrupted_phases(root: Path, run_id: str, *, outcome: str = "STA
         connection.close()
 
 
-def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: str = "COMPLETE") -> bool:
+def complete_active_phase(
+    root: Path, run_id: str, phase_name: str, *, outcome: str = "COMPLETE",
+    central_database: Path | None = None,
+) -> bool:
     """Close the one active lifecycle envelope when its owner observes completion.
 
     Queue admission, the runner and the watcher are separate processes.  The
@@ -192,7 +214,7 @@ def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: 
     evidence persistence have completed.  This intentionally uses the stored
     UTC boundary rather than claiming a monotonic clock crosses processes.
     """
-    connection = open_storage(root)
+    connection = _connection(root, central_database)
     try:
         row = connection.execute(
             "SELECT phase_id FROM execution_phase_spans WHERE run_id=? AND phase_name=? AND outcome='ACTIVE' ORDER BY ordinal LIMIT 1",
@@ -202,12 +224,12 @@ def complete_active_phase(root: Path, run_id: str, phase_name: str, *, outcome: 
         connection.close()
     if row is None:
         return False
-    complete_phase(root, ActivePhase(run_id, str(row[0]), None), outcome=outcome)
+    complete_phase(root, ActivePhase(run_id, str(row[0]), None, central_database), outcome=outcome)
     return True
 
 
-def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
-    connection = open_storage(root)
+def phase_spans(root: Path, run_id: str, *, central_database: Path | None = None) -> list[dict[str, object]]:
+    connection = _connection(root, central_database)
     try:
         rows = connection.execute(
             "SELECT phase_id,phase_name,phase_category,parent_phase_id,attempt,ordinal,started_at,completed_at,duration_ms,outcome,metadata FROM execution_phase_spans WHERE run_id=? ORDER BY ordinal", (run_id,)
@@ -223,7 +245,7 @@ def phase_spans(root: Path, run_id: str) -> list[dict[str, object]]:
     return result
 
 
-def timing_summary(root: Path, run_id: str) -> dict[str, object]:
+def timing_summary(root: Path, run_id: str, *, central_database: Path | None = None) -> dict[str, object]:
     """Return the one canonical timing read model for a completed run.
 
     ``phase_aggregates`` and ``longest_individual_spans`` intentionally answer
@@ -233,13 +255,13 @@ def timing_summary(root: Path, run_id: str) -> dict[str, object]:
     envelope) and are ranked independently.  Consumers must use these fields
     rather than deriving their own bottleneck order.
     """
-    spans = phase_spans(root, run_id)
+    spans = phase_spans(root, run_id, central_database=central_database)
     historical_total: int | None = None
     if not spans:
         # Earlier runs already have a coarse immutable execution receipt.  It
         # remains useful total-duration evidence, but never becomes invented
         # phase detail.
-        connection = open_storage(root)
+        connection = _connection(root, central_database)
         try:
             row = connection.execute(
                 "SELECT total_execution_seconds FROM execution_runs WHERE run_id=?", (run_id,)
