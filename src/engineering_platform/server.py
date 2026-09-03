@@ -1439,7 +1439,15 @@ def main(argv: list[str] | None = None) -> int:
                     raise ServerConfigurationError("UNKNOWN_SUBMISSION")
                 project_id, repository_id, state, admission, run_id, dispatch_state, resolution = row
                 blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, run_id or "")).fetchone()
-            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+            early = None
+            if run_id:
+                early_path = args.data_root / "artifacts" / "projects" / str(project_id) / "runs" / str(run_id) / "early-runner-failure.json"
+                if early_path.is_file():
+                    try:
+                        early = json.loads(early_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")

@@ -352,14 +352,14 @@ class ParityLifecycleDispatcher:
             self._project_terminal_history(context.local_repository_root, state, data_root=self.data_root)
 
     def _record_early_runner_failure(self, *, submission_id: str, context: ParityProjectContext,
-                                     run_id: str, error: RunnerError) -> None:
+                                     run_id: str, error: Exception, stage: str = "RUNNER_INITIALIZATION") -> None:
         """Persist only the missing pre-checkpoint explanation, never a run state."""
         message = _LOCAL_PATH.sub("[LOCAL_PATH]", redact_diagnostic(str(error), limit=500))
         path = self.data_root / "artifacts" / "projects" / context.project_id / "runs" / run_id / "early-runner-failure.json"
         payload = {"submission_id": submission_id, "project_id": context.project_id,
                    "repository_id": context.repository_id, "run_id": run_id,
-                   "failure_stage": "RUNNER_INITIALIZATION", "error_type": type(error).__name__,
-                   "diagnostic_code": "RUNNER_EARLY_FAILURE", "message": message,
+                   "failure_stage": stage, "error_type": type(error).__name__,
+                   "diagnostic_code": "RUNNER_EARLY_FAILURE" if stage == "RUNNER_INITIALIZATION" else "PRECHECKPOINT_FAILURE", "message": message,
                    "recorded_at": _utcnow()}
         path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)
@@ -390,8 +390,9 @@ class ParityLifecycleDispatcher:
             self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error)
             self._set_state(submission_id, run_id, "BLOCKED")
             raise
-        except Exception:
+        except Exception as error:
             # A nonterminal checkpoint is deliberately resumable with the same
             # run ID; an uncheckpointed admission failure is visible as BLOCKED.
+            self._record_early_runner_failure(submission_id=submission_id, context=context, run_id=run_id, error=error, stage="PRECHECKPOINT")
             self._set_state(submission_id, run_id, "BLOCKED")
             raise
