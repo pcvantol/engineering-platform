@@ -17,7 +17,9 @@ physical execution binding only; it is not Console authority.
 | Active execution, history, lifecycle | CENTRAL_NATIVE (read projection) | Snapshot, prompt history and run detail resolve `(project_id, run_id)` from CENTRAL. |
 | Telemetry and timing detail | CENTRAL_NATIVE (read projection) | Daily telemetry and day detail join CENTRAL telemetry to canonical project/run lineage. |
 | Provider usage | HISTORICAL_DASHBOARD_DELEGATE | Slice C remainder. |
-| Evidence, downloads, prompt history and chat | HISTORICAL_DASHBOARD_DELEGATE | Slice D. |
+| Evidence report downloads | CENTRAL_NATIVE | Report index and artifact path are authorized by `(project_id, run_id)` in CENTRAL. |
+| Prompt chat history | CENTRAL_NATIVE (read projection) | Immutable transcript lookup is scoped by CENTRAL project/run lineage. |
+| Provider-backed chat mutation and report analysis | RETIRED/UNREACHABLE from migrated routes | No CENTRAL Server authority is invented for historical root-backed mutation. |
 | Configuration and component logs | HISTORICAL_DASHBOARD_DELEGATE | Slice E. |
 | Worktree, provider-login and update actions | HISTORICAL_DASHBOARD_DELEGATE | To retire or explicitly govern; not available at `<geen>`. |
 
@@ -50,3 +52,10 @@ The telemetry trend and day-detail route read `execution_runs` only through
 `ep_parity_lifecycle_dispatches.project_id`.  Thus a project cannot read,
 clear, or discover another project's telemetry through these read routes, and
 checkout deletion does not alter the projected history.
+
+## Slice D evidence rule
+
+The report-download and chat-history routes no longer inspect a checkout.
+They first prove the requested run belongs to the selected CENTRAL project,
+then resolve only CENTRAL-indexed artifact/transcript records.  The deletion
+canary covers both paths.

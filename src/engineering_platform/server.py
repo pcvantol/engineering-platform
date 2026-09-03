@@ -738,6 +738,42 @@ def _central_console_telemetry_detail(data_root: Path, project_id: str, executio
     }
 
 
+def _central_console_report(data_root: Path, project_id: str, run_id: str) -> bytes | None:
+    """Read one CENTRAL-indexed immutable report with project authorization."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            """SELECT h.report_path FROM prompt_execution_history AS h
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=h.run_id
+                 WHERE d.project_id=? AND h.run_id=?""",
+            (project_id, run_id),
+        ).fetchone()
+    if row is None or not isinstance(row[0], str) or not row[0].startswith("CENTRAL:"):
+        return None
+    candidate = (data_root / "artifacts" / row[0].removeprefix("CENTRAL:")).resolve()
+    try:
+        candidate.relative_to((data_root / "artifacts").resolve())
+        return candidate.read_bytes() if candidate.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _central_console_chat_history(data_root: Path, project_id: str, run_id: str) -> list[dict[str, object]] | None:
+    """Return a project-authorized CENTRAL transcript; no root fallback exists."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        belongs = connection.execute(
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND run_id=?",
+            (project_id, run_id),
+        ).fetchone()
+        if belongs is None:
+            return None
+        rows = connection.execute(
+            "SELECT role,content,model,created_at FROM execution_chat_messages WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    return [{"role": str(role), "content": str(content), "model": model, "created_at": str(created_at)}
+            for role, content, model, created_at in rows]
+
+
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
     """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
@@ -1323,6 +1359,29 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 self.wfile.write(encoded)
+                return
+            report_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/report", request.path)
+            if report_match:
+                content = _central_console_report(self.server.data_root, selected, report_match.group(1))  # type: ignore[attr-defined]
+                if content is None:
+                    self._send(404, {"error": "REPORT_NOT_FOUND"})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="engineering-report-{report_match.group(1)}.md"')
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            chat_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/chat", request.path)
+            if chat_match:
+                messages = _central_console_chat_history(self.server.data_root, selected, chat_match.group(1))  # type: ignore[attr-defined]
+                if messages is None:
+                    self._send(404, {"error": "RUN_NOT_FOUND"})
+                else:
+                    self._send(200, {"messages": messages, "source": "CENTRAL"})
                 return
             detail_match = re.fullmatch(r"/api/prompt-history/([a-z0-9][a-z0-9-]{0,63})/details", request.path)
             if detail_match:

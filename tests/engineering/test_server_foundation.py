@@ -418,6 +418,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ("dj-run", "2026-01-01", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", "2026-01-01T00:00:04+00:00", 1.0, 3.0, "COMPLETE", 2, 3, 5, "MANAGED", "djconnect", "djconnect", "test", 4.0),
             )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,report_path,updated_at) VALUES(?,?,?,?,?,?)",
+                ("dj-run", "COMPLETE", "CENTRAL report", "2026-01-01T00:00:04+00:00", "CENTRAL:reports/dj-run.md", "2026-01-01T00:00:04+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO execution_chat_messages(run_id,role,content,model,created_at) VALUES(?,?,?,?,?)",
+                ("dj-run", "assistant", "CENTRAL transcript", "test-model", "2026-01-01T00:00:04+00:00"),
+            )
+        artifact = self.root / "artifacts" / "reports" / "dj-run.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# CENTRAL report\n", encoding="utf-8")
         roots[0].rename(self.root.parent / "deleted-djconnect-checkout")
         with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot?project=djconnect") as response:
             snapshot = json.loads(response.read())
@@ -430,3 +441,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
             telemetry_detail = json.loads(response.read())
         self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/report?project=djconnect") as response:
+            self.assertEqual(response.read(), b"# CENTRAL report\n")
+        with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
+            self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
