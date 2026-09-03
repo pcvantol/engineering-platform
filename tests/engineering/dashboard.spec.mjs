@@ -6876,7 +6876,15 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows technical diagnosis only for active or attention-needing executions", async ({ page }) => {
+    // This is a renderer-state test.  Keep the fixture's initial stream and
+    // periodic snapshot from overwriting the deliberately injected statuses
+    // while the three presentation states below are asserted.
+    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({
+      json: { status: { watcher_state: "IDLE", queue_depth: 0 } },
+    }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.locator("#autoRefresh").uncheck();
     const diagnosis = page.locator("#technicalDetails");
     await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE", queue_depth: 0 }, {}));
     await expect(diagnosis).toBeHidden();
