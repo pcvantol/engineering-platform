@@ -103,12 +103,18 @@ async function openTitlebarOptions(page) {
   }
 }
 
-async function selectDashboardLocale(page, language) {
+async function selectDashboardLocale(page, language, { waitForInitialProjection = true } = {}) {
   const nativeSelect = page.locator("#dashboardLocale");
-  // Do not replace the page while its first snapshot is still hydrating.
-  // Under the ten-worker CI profile that otherwise races the initial locale
-  // read with a reload and can leave the splash state behind.
-  await waitForDashboardReady(page);
+  if (waitForInitialProjection) {
+    // Do not replace the page while its first snapshot is still hydrating.
+    // Under the ten-worker CI profile that otherwise races the initial locale
+    // read with a reload and can leave the splash state behind.
+    await waitForDashboardReady(page);
+  } else {
+    // Tests that deliberately stub the projection own all dynamic state.  They
+    // only require the locale handler to be installed, not a snapshot render.
+    await page.waitForFunction(() => typeof window.r === "function");
+  }
   if (await nativeSelect.inputValue() === language) return;
   const localeReload = page.waitForEvent(
     "framenavigated",
@@ -121,7 +127,8 @@ async function selectDashboardLocale(page, language) {
   await nativeSelect.selectOption(language, { force: true });
   await localeReload;
   await page.waitForLoadState("domcontentloaded");
-  await waitForDashboardReady(page);
+  if (waitForInitialProjection) await waitForDashboardReady(page);
+  else await page.waitForFunction(() => typeof window.r === "function");
 }
 
 async function waitForDashboardReady(page) {
@@ -5246,7 +5253,7 @@ test.describe("Engineering Status browser smoke", () => {
     ];
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     for (const [language, watcherStarted, staleLockRecovered] of expectations) {
-      await selectDashboardLocale(page, language);
+      await selectDashboardLocale(page, language, { waitForInitialProjection: false });
       await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
       await page.waitForFunction(() => componentLogsLoaded);
       await page.locator("#autoRefresh").uncheck();
@@ -6995,7 +7002,7 @@ test.describe("Engineering Status browser smoke", () => {
       reviewer_agents,
     }, {}), reviewerAgents);
     const selectLocale = async (language) => {
-      await selectDashboardLocale(page, language);
+      await selectDashboardLocale(page, language, { waitForInitialProjection: false });
       await page.locator("#autoRefresh").uncheck();
       await renderReviewers();
     };
