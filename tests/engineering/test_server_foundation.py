@@ -178,12 +178,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root, bind_port=port)
         server.start(self.root)
 
-        with patch("engineering_platform.server._console_root", side_effect=AssertionError("root must not be read")):
-            for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
-                with urlopen(f"http://127.0.0.1:{port}{path}") as response:
-                    self.assertEqual(response.status, 200, path)
-                    if path == "/api/platform-status":
-                        self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
+        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
+            with urlopen(f"http://127.0.0.1:{port}{path}") as response:
+                self.assertEqual(response.status, 200, path)
+                if path == "/api/platform-status":
+                    self.assertEqual(json.loads(response.read())["scope"], "PLATFORM")
         with urlopen(f"http://127.0.0.1:{port}/") as response:
             document = response.read().decode("utf-8")
         self.assertIn('data-project-id="none"', document)
@@ -248,27 +247,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(opened, {"opened_directory": str(self.root.resolve())})
         process.return_value.execute.assert_called_once_with(self.root.resolve(), ("open", str(self.root.resolve())))
 
-    def test_runtime_directory_opens_only_the_parent_of_a_server_reported_executable(self) -> None:
-        executable = self.root / "managed" / "bin" / "codex"
-        executable.parent.mkdir(parents=True)
-        executable.write_text("#!/bin/sh\n", encoding="utf-8")
-        executable.chmod(0o700)
-        with (
-            patch("engineering_platform.server.sys.platform", "darwin"),
-            patch("engineering_platform.server.LocalProcessProvider") as process,
-            patch("engineering_platform.server._bound_console_projects", return_value=[{"project_id": "alpha"}]),
-            patch("engineering_platform.server._console_root", return_value=self.root),
-            patch("engineering_platform.server.dashboard._provider_login_status", return_value={"codex": {"executable": str(executable)}}),
-        ):
-            process.return_value.execute.return_value = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
-            opened = server._open_runtime_directory(self.root, "codex")
-
-        self.assertEqual(opened, {"opened_directory": str(executable.parent.resolve())})
-        process.return_value.execute.assert_called_once_with(
-            executable.parent.resolve(), ("open", str(executable.parent.resolve())),
-        )
-        with self.assertRaises(ValueError):
-            server._open_runtime_directory(self.root, "/untrusted/path")
+    def test_runtime_directory_route_is_retired_in_the_central_console(self) -> None:
+        identity = server.initialize(self.root)
+        self.assertIsNotNone(identity.instance_id)
+        self.assertFalse(hasattr(server, "_open_runtime_directory"))
 
     def test_root_reuses_historical_console_with_request_scoped_project_selection(self) -> None:
         """Two requests retain distinct CENTRAL identities and local bindings."""
