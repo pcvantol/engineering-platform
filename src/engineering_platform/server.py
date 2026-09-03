@@ -544,36 +544,6 @@ def _operations_console_document() -> bytes:
     return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
 
 
-def _bound_console_projects(data_root: Path) -> list[dict[str, str]]:
-    """Return project identities with a validated schema-44 Console binding.
-
-    Local roots are resolved only at this Server boundary and are never sent to
-    the browser.  The historical dashboard remains root-based; CENTRAL decides
-    which root is permitted for each request.
-    """
-    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
-        rows = connection.execute("""SELECT p.project_id, r.repository_id
-            FROM ep_project_registrations p JOIN ep_repository_registrations r
-              ON r.project_id=p.project_id JOIN ep_local_repository_bindings b
-              ON b.project_id=p.project_id AND b.repository_id=r.repository_id
-            WHERE p.status='ACTIVE' AND b.state='BOUND'
-            ORDER BY p.project_id, CASE r.role WHEN 'authority' THEN 0 ELSE 1 END, r.repository_id""").fetchall()
-        projects: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for project_id, repository_id in rows:
-            if str(project_id) in seen:
-                continue
-            try:
-                local_repository_binding.resolve_execution_repository(
-                    connection, project_id=str(project_id), repository_id=str(repository_id), data_root=data_root,
-                )
-            except local_repository_binding.LocalRepositoryBindingError:
-                continue
-            seen.add(str(project_id))
-            projects.append({"project_id": str(project_id), "repository_id": str(repository_id)})
-    return projects
-
-
 def _console_projects(data_root: Path) -> list[dict[str, str]]:
     """List CENTRAL project identities without opening their checkouts.
 
