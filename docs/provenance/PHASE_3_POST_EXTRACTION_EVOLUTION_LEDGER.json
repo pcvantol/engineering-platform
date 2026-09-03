@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "model": "TWO_STAGE_PROVENANCE_EVOLUTION_DAG",
   "historical_extraction": {
     "source_repository": "pcvantol/djconnect",
@@ -20,6 +20,36 @@
       {"from":"baseline:dashboard","to":"current:dashboard","kind":"MODIFY","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"0a4c95d021c63921ca96c5617be24dac48fb7390","supporting_pr":22}
     ]
   },
+  "governed_phase_seals": [
+    {
+      "phase_id": "P-CENTRAL-CORE",
+      "completion_baseline": "a0694530ea54fac9a47e0898738105dfc719b935",
+      "completion_status": "COMPLETE",
+      "approval_reference": "P-CENTRAL-CORE: single operational authority completion (#29)",
+      "sealed_evolution_paths": [
+        "src/engineering_platform/dashboard.py",
+        "src/engineering_platform/execution_executor.py",
+        "src/engineering_platform/execution_host.py",
+        "src/engineering_platform/execution_reporting.py",
+        "src/engineering_platform/inbox_watcher.py",
+        "src/engineering_platform/prompt_history.py",
+        "src/engineering_platform/agent_state.py",
+        "src/engineering_platform/component_logging.py",
+        "src/engineering_platform/emergency_recovery.py",
+        "src/engineering_platform/execution_context.py",
+        "src/engineering_platform/execution_lease.py",
+        "src/engineering_platform/execution_timing.py",
+        "src/engineering_platform/managed_autonomy.py",
+        "src/engineering_platform/provider_interruption.py",
+        "src/engineering_platform/provider_recovery.py",
+        "src/engineering_platform/provider_usage.py",
+        "src/engineering_platform/storage.py",
+        "src/engineering_platform/telemetry.py",
+        "src/engineering_platform/validation_profile.py"
+      ],
+      "sealed_evolutions_sha256": "0efcb145ad2500f06977aa1adac71f71014afb2faffb5b64ce29b318cbffa289"
+    }
+  ],
   "evolutions": [
     {
       "historical_target_path": "src/engineering_platform/dashboard.py",
