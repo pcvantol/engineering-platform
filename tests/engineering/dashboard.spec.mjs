@@ -79,6 +79,14 @@ test.beforeAll(async () => {
   await waitForDashboard();
 });
 
+test.beforeEach(async ({ page }) => {
+  // The fixture's SSE endpoint detects a disconnected browser only on a later
+  // write.  Letting every short-lived page open a real stream therefore
+  // accumulates server threads across a shard and can starve later reloads.
+  // Individual stream behaviour tests install their own route after this hook.
+  await page.route("**/api/events", (route) => route.abort());
+});
+
 test.afterAll(async () => {
   if (dashboard && dashboard.exitCode === null && dashboard.signalCode === null) {
     const exited = new Promise((resolve) => dashboard.once("exit", resolve));
