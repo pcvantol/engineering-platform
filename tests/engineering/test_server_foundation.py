@@ -404,6 +404,20 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 "INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("ep-run", "engineering-platform", "COMPLETE", "2026-01-02T00:00:00+00:00", "2026-01-02T00:01:00+00:00"),
             )
+            connection.execute(
+                """INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at)
+                   VALUES(?,?,?,?,?,'HTTP','telemetry','digest','{}','QUEUED','ADMITTED',?)""",
+                ("dj-submission", "djconnect", "djconnect", "test", "HUMAN", "2026-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("dj-submission", "djconnect", "djconnect", "dj-run", "COMPLETE", "CENTRAL:prompt", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),
+            )
+            connection.execute(
+                """INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version,total_execution_seconds)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("dj-run", "2026-01-01", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", "2026-01-01T00:00:04+00:00", 1.0, 3.0, "COMPLETE", 2, 3, 5, "MANAGED", "djconnect", "djconnect", "test", 4.0),
+            )
         roots[0].rename(self.root.parent / "deleted-djconnect-checkout")
         with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot?project=djconnect") as response:
             snapshot = json.loads(response.read())
@@ -412,3 +426,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(snapshot["status"]["project_id"], "djconnect")
         self.assertEqual([run["run_id"] for run in snapshot["runs"]], ["dj-run"])
         self.assertEqual([run["run_id"] for run in history], ["dj-run"])
+        self.assertEqual(snapshot["telemetry"][0]["total_tokens"], 5)
+        with urlopen(f"http://127.0.0.1:{port}/api/telemetry/2026-01-01?project=djconnect") as response:
+            telemetry_detail = json.loads(response.read())
+        self.assertEqual(telemetry_detail["runs"][0]["run_id"], "dj-run")

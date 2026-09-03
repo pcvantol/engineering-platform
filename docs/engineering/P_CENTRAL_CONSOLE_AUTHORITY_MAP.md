@@ -15,7 +15,8 @@ physical execution binding only; it is not Console authority.
 | Provider capacity | SERVER_PLATFORM_NATIVE | Already scoped to the installed runtime/CENTRAL policy. |
 | Selected-project queue | CENTRAL_NATIVE | `/api/dashboard-snapshot` reads CENTRAL submissions by `project_id`. |
 | Active execution, history, lifecycle | CENTRAL_NATIVE (read projection) | Snapshot, prompt history and run detail resolve `(project_id, run_id)` from CENTRAL. |
-| Telemetry, usage and timing | HISTORICAL_DASHBOARD_DELEGATE | Slice C. |
+| Telemetry and timing detail | CENTRAL_NATIVE (read projection) | Daily telemetry and day detail join CENTRAL telemetry to canonical project/run lineage. |
+| Provider usage | HISTORICAL_DASHBOARD_DELEGATE | Slice C remainder. |
 | Evidence, downloads, prompt history and chat | HISTORICAL_DASHBOARD_DELEGATE | Slice D. |
 | Configuration and component logs | HISTORICAL_DASHBOARD_DELEGATE | Slice E. |
 | Worktree, provider-login and update actions | HISTORICAL_DASHBOARD_DELEGATE | To retire or explicitly govern; not available at `<geen>`. |
@@ -42,3 +43,10 @@ focused server test verifies that project A cannot read project B's history.
 The selected-project HTML document itself is still a historical delegate in
 this intermediate slice; that is the remaining Slice A/B delegate boundary,
 not authority for the migrated read routes.
+
+## Slice C telemetry rule
+
+The telemetry trend and day-detail route read `execution_runs` only through
+`ep_parity_lifecycle_dispatches.project_id`.  Thus a project cannot read,
+clear, or discover another project's telemetry through these read routes, and
+checkout deletion does not alter the projected history.

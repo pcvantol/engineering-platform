@@ -663,6 +663,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
         },
         "runs": records,
         "queue": queue,
+        "telemetry": _central_console_telemetry(data_root, project_id),
     }
 
 
@@ -670,6 +671,71 @@ def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -
     """Resolve a run by canonical project/run identity, never by checkout."""
     snapshot = _central_console_project_snapshot(data_root, project_id)
     return next((record for record in snapshot["runs"] if record["run_id"] == run_id), None)
+
+
+def _central_console_telemetry(data_root: Path, project_id: str) -> list[dict[str, object]]:
+    """Read bounded daily telemetry through CENTRAL's run/project lineage."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            """SELECT r.execution_date,COUNT(*),
+                      SUM(r.terminal_state='COMPLETE'),SUM(r.terminal_state='BLOCKED'),SUM(r.terminal_state='FAILED'),
+                      AVG(r.execution_seconds),AVG(r.total_execution_seconds),AVG(r.queue_wait_seconds),
+                      SUM(r.input_tokens),SUM(r.output_tokens),SUM(r.total_tokens)
+                 FROM execution_runs AS r
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 WHERE d.project_id=?
+                 GROUP BY r.execution_date ORDER BY r.execution_date DESC LIMIT 360""",
+            (project_id,),
+        ).fetchall()
+    keys = (
+        "date", "prompt_count", "complete_count", "blocked_count", "failed_count",
+        "average_execution_seconds", "average_total_execution_seconds", "average_queue_wait_seconds",
+        "input_tokens", "output_tokens", "total_tokens",
+    )
+    return [dict(zip(keys, row, strict=True)) | {
+        "average_provider_execution_seconds": None, "average_validation_seconds": None,
+    } for row in rows]
+
+
+def _central_console_telemetry_detail(data_root: Path, project_id: str, execution_date: str) -> dict[str, object] | None:
+    """Provide a project-isolated CENTRAL telemetry day without root fallback."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", execution_date):
+        return None
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        rows = connection.execute(
+            """SELECT r.run_id,r.execution_started_at,r.terminal_state,r.total_execution_seconds,
+                      r.queue_wait_seconds,r.runtime_provider,r.runtime_model,r.reasoning_profile,
+                      r.producer_type,r.repository
+                 FROM execution_runs AS r
+                 JOIN ep_parity_lifecycle_dispatches AS d ON d.run_id=r.run_id
+                 WHERE d.project_id=? AND r.execution_date=?
+                 ORDER BY r.execution_started_at DESC LIMIT 250""",
+            (project_id, execution_date),
+        ).fetchall()
+    if not rows:
+        return None
+    run_rows = [{
+        "run_id": str(row[0]), "started_at": row[1], "status": row[2],
+        "total_duration_ms": round(float(row[3]) * 1000) if isinstance(row[3], (float, int)) else None,
+        "queue_wait_ms": round(float(row[4]) * 1000) if isinstance(row[4], (float, int)) else None,
+        "provider_duration_ms": None, "validation_duration_ms": None, "external_wait_ms": None,
+        "largest_phase": None, "producer_type": row[8], "repository": row[9],
+        "provider": row[5], "model": row[6], "reasoning_profile": row[7],
+        "phase_telemetry": "NOT_RECORDED",
+    } for row in rows]
+    durations = [row["total_duration_ms"] for row in run_rows if isinstance(row["total_duration_ms"], int)]
+    waits = [row["queue_wait_ms"] for row in run_rows if isinstance(row["queue_wait_ms"], int)]
+    def aggregate(values: list[int]) -> dict[str, int] | None:
+        return {"average_ms": round(sum(values) / len(values)), "median_ms": sorted(values)[len(values) // 2], "total_ms": sum(values), "runs": len(values)} if values else None
+    return {
+        "date": execution_date, "timezone": "UTC", "runs": run_rows, "phases": [], "phase_telemetry_available": False,
+        "summary": {"executions": len(run_rows), "completed": sum(row["status"] == "COMPLETE" for row in run_rows),
+                    "blocked": sum(row["status"] == "BLOCKED" for row in run_rows), "failed": sum(row["status"] == "FAILED" for row in run_rows),
+                    "total_wall_time": aggregate(durations), "queue_wait": aggregate(waits),
+                    "active_processing_time": None, "provider_execution": None, "validation": None, "external_wait": None, "overhead": None,
+                    "report_generation": None, "evidence_persistence": None},
+        "bottlenecks": {"longest_average_phase": None, "largest_accumulated_phase": None, "top_time_consumers": [], "shares": {}},
+    }
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
@@ -1265,6 +1331,16 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self._send(404, {"error": "RUN_NOT_FOUND"})
                 else:
                     self._send(200, {"project_id": selected, "run": detail, "source": "CENTRAL"})
+                return
+            telemetry_match = re.fullmatch(r"/api/telemetry/([0-9]{4}-[0-9]{2}-[0-9]{2})", request.path)
+            if telemetry_match:
+                detail = _central_console_telemetry_detail(
+                    self.server.data_root, selected, telemetry_match.group(1),  # type: ignore[attr-defined]
+                )
+                if detail is None:
+                    self._send(404, {"error": "TELEMETRY_NOT_FOUND"})
+                else:
+                    self._send(200, detail)
                 return
             if request.path == "/api/events":
                 snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
