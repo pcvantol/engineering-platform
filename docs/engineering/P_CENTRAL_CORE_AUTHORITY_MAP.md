@@ -10,6 +10,13 @@ All active lifecycle and evidence paths have a classification below;
 `<data_root>/engineering.db`; a repository binding is physical execution
 context, not operational authority.
 
+The completion rescan found 29 product modules and 120 raw `open_storage(...)`
+references, plus 6 product modules and 14 raw `StateStore(...)` references.
+Those raw references are classified by exact path below; they are not active
+authority counts. The source guard rejects an unclassified new marker. Active
+standalone root-derived storage, local StateStore and secondary operational
+database counts are all **0**; `AMBIGUOUS = 0`.
+
 | Module / symbol | State or evidence | Current authority | Target authority | Cutover strategy | Completion proof |
 | --- | --- | --- | --- | --- | --- |
 | `server.py`: `initialize`, topology, submissions | installation, project/repository bindings, submissions, CENTRAL run envelope | CENTRAL_CANONICAL | CENTRAL_CANONICAL | extend the existing schema in the one database | fresh install has one SQLite database |
