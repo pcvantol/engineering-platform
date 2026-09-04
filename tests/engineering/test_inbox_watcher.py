@@ -22,7 +22,6 @@ from engineering_platform.capability_preflight import CapabilityCheck, Capabilit
 from engineering_platform.execution_timing import phase_spans, timing_summary
 from engineering_platform.execution_models import PullRequestEvidence
 from engineering_platform.storage import open_storage, store_projection
-from engineering_platform.workspace_inbox_api import build_human_envelope
 from engineering_platform.telemetry import wait_for_pending_telemetry
 
 
@@ -1367,48 +1366,6 @@ class InboxWatcherTest(unittest.TestCase):
         self.assertEqual(snapshot["last_executed_run"], run_id)
         self.assertEqual(snapshot["last_executed_phase"], "COMPLETE")
         self.assertFalse(old_log.exists())
-
-    def test_structured_human_envelope_preserves_the_persisted_action_intent_for_the_watcher(self) -> None:
-        envelope = build_human_envelope(
-            prompt="# Validate\n\nRun required controls.",
-            title="Required controls",
-            producer_identity="operator-peter",
-            action_intent="VALIDATION_ONLY",
-            validation_profile="DASHBOARD",
-            submission_id="human-watcher-001",
-        )
-        source = self.inbox / "structured-human.json"
-        source.write_text(json.dumps(envelope), encoding="utf-8")
-        self.assertEqual(inbox_watcher._prompt_title(source.read_text(encoding="utf-8"), source.name), "Required controls")
-        run_id = "inbox-structured-human"
-        report = self.repo / ".engineering" / "reports" / f"report_{run_id}.md"
-        report.parent.mkdir(parents=True)
-        report.write_text("- Terminal state: `COMPLETE`\nCOMPLETE — delivered\n", encoding="utf-8")
-        checkpoint = self.repo / ".engineering" / "engineering-runs" / f"{run_id}.json"
-        checkpoint.parent.mkdir(parents=True)
-        checkpoint.write_text(json.dumps({"phase": "COMPLETE"}), encoding="utf-8")
-
-        with patch("engineering_platform.inbox_watcher._allocate_run_id", return_value=run_id), patch(
-            "engineering_platform.inbox_watcher.subprocess.run", return_value=subprocess.CompletedProcess((), 0)
-        ):
-            self.assertEqual(inbox_watcher.once(self.repo, self.root, 0), 0)
-
-        wait_for_pending_telemetry()
-
-        with open_storage(self.repo) as connection:
-            row = connection.execute(
-                "SELECT producer_id,producer_type,contract_version,execution_context_snapshot,execution_run_id FROM execution_submissions WHERE submission_id=?",
-                ("human-watcher-001",),
-            ).fetchone()
-            run = connection.execute(
-                "SELECT producer_id,producer_type,execution_constraint_version FROM execution_runs WHERE run_id=?",
-                (run_id,),
-            ).fetchone()
-        self.assertEqual(row[:3], ("human:operator-peter", "HUMAN", "1.0"))
-        self.assertEqual(json.loads(row[3])["action_intent"], "VALIDATION_ONLY")
-        self.assertEqual(json.loads(row[3])["validation_profile"]["tier"], "DASHBOARD")
-        self.assertEqual(row[4], run_id)
-        self.assertEqual(run, ("human:operator-peter", "HUMAN", "1.0"))
 
     def test_queue_wait_uses_persisted_eligibility_and_ends_when_execution_is_claimed(self) -> None:
         prompt = self.inbox / "timed-job.md"

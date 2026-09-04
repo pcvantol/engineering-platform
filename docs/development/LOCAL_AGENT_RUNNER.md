@@ -119,37 +119,17 @@ demonstrated insufficient coverage, explicit architectural approval,
 implementation, qualification and evidence; routine work remains limited to
 maintenance, bug fixes, compatibility and qualification improvement.
 
-## iCloud Engineering Inbox
+## File Inbox
 
-The repository-owned local watcher accepts iPhone-submitted `.txt`, `.md` and
-filename-neutral files whose bounded UTF-8 content is Markdown. It validates a
-stable input file, selects the oldest eligible file by File Date Modified,
-serializes jobs and invokes only the repository-owned runner. Its v1 protocol
-is `src/engineering_platform/ENGINEERING_INBOX_PROTOCOL.md`; iCloud is transport
-only.
-After a prompt is claimed, its lifecycle archive, reports and status are stored
-only in `.engineering/`. The iCloud workspace contains only `Inbox/`.
-The default queue is strict and fail-closed: after a `BLOCKED` or `FAILED`
-Inbox run, later prompts remain in Inbox as `WAITING_FOR_PREDECESSOR`.
-Repair and explicitly resubmit the blocking prompt with
-`Retry-Of: <blocking-run-id>` as its own line; only that corrected retry can
-release the sequence.
-
-Before the explicit per-user install, verify readiness:
-
-```sh
-python3 -m engineering_platform.inbox_watcher doctor
-```
-
-Install the watcher only for the current local user:
-
-```sh
-python3 -m engineering_platform.inbox_watcher install
-```
-
-The installed LaunchAgent starts at login and remains limited to the configured
-local repository. `once`, `run`, `status`, `uninstall` and `doctor` remain the
-supported commands. Tests never install the LaunchAgent.
+The EP Server owns File Inbox. It accepts bounded structured JSON and explicit
+human `.txt`/`.md` intent files in the installation-owned incoming directory,
+then admits them through the same canonical CENTRAL service as HTTP and CLI.
+It never owns a local queue, runner, lifecycle state or repository inference.
+When the Server is stopped, incoming files remain durable and are processed
+only after the Server restarts. See
+[`HUMAN_INTENT_FILE_INBOX.md`](../engineering/HUMAN_INTENT_FILE_INBOX.md) and
+[`CANONICAL_SUBMISSION_INGRESS.md`](../engineering/CANONICAL_SUBMISSION_INGRESS.md)
+for the current contract.
 
 ### Component logging
 

@@ -185,7 +185,7 @@ def _default_check(
         "Workspace Provisioning": source_file("platform_bootstrap.py"),
         "Genesis Lifecycle": source_file("execution_host.py"),
         "Strict Inbox Sequencing": source_file("file_inbox.py"),
-        "Local Engineering Evidence Storage": bool(ep_source and (ep_source / "ENGINEERING_INBOX_PROTOCOL.md").is_file()),
+        "Local Engineering Evidence Storage": source_file("file_inbox.py") and source_file("submission_intake.py"),
         "Component Logging and Read-only Advice": source_file("component_logging.py") and source_file("codex_chat.py"),
     }
     return contracts.get(capability, source_file("execution_host.py"))

@@ -47,7 +47,6 @@ from .host_preflight import execute as execute_host_preflight
 from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerMetadata, ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
-from .human_text_ingress import ingest as ingest_human_text
 from .drift_diagnostics import summary as drift_summary
 from .dependabot_admission import (
     configured_repository as dependabot_repository,
@@ -1898,7 +1897,6 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     areas = local_folders(repo)
     with _lock(repo):
         _admit_dependabot_pull_requests(repo, root, logger)
-        ingest_human_text(repo, folders(root)["Inbox"], read_source=lambda source: stable_prompt(source, interval))
         # Terminal telemetry is a rebuildable projection.  Drain durable
         # intents before any new work so a vanished daemon/lease cannot make a
         # completed run disappear from the dashboard or daily trend.

@@ -10,7 +10,7 @@ This contract defines how any producer writes one bounded Engineering Platform
 engineering instruction. It is producer-neutral: a human, generic GPT/LLM,
 automation, Forge, or a future producer may use it.
 
-It is distinct from the technical [Engineering Inbox Protocol](../../tools/engineering/ENGINEERING_INBOX_PROTOCOL.md):
+It is distinct from the technical [canonical submission ingress contract](CANONICAL_SUBMISSION_INGRESS.md):
 
 ```text
 Human / GPT / Forge
@@ -87,7 +87,7 @@ product authority into Engineering Platform accidentally.
 ## Execution Modes
 
 Use only the current canonical modes defined by the
-[Engineering Inbox Protocol](../../tools/engineering/ENGINEERING_INBOX_PROTOCOL.md).
+[canonical submission ingress contract](CANONICAL_SUBMISSION_INGRESS.md).
 
 - **Managed** is normally used for repositories operating through the normal
   managed Engineering Platform workflow, including its configured workspace,
