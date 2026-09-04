@@ -32,6 +32,33 @@ change authority, select a checkout, or delegate that route.
 
 There are no platform-to-project fallback paths. Provider login repair/logout and execution-runtime repair resolve before project lookup; the retired runtime-directory action is unreachable rather than delegated.
 
+## Test and qualification coverage
+
+The matrix is not documentation-only. The following checks are the normal
+qualification contract for this ownership boundary.
+
+| Concern | Evidence | Required result |
+| --- | --- | --- |
+| Closed, unambiguous matrix | `tests/engineering/test_console_route_ownership.py` | Every representative route resolves to one declared owner. |
+| Source ordering and dependency guard | `tools/qualification/console_route_ownership_guard.py --source-root src` | `PLATFORM_ROUTE_PROJECT_DELEGATION=0`; `PLATFORM_ROUTE_CHECKOUT_DEPENDENCY=0`; `AMBIGUOUS_ROUTE_OWNERSHIP=0`; `COMPONENT_ROUTE_SCOPE_CONSISTENT=PASS`. |
+| No-project and selected-project integration contexts | `tests/engineering/test_server_foundation.py::ServerFoundationTest.test_root_reuses_historical_console_with_request_scoped_project_selection` | The Platform health, status, component-detail, logging, provider, execution-runtime and configuration routes retain `EP-Console-Route-Owner: PLATFORM` in both contexts and never fail for missing project scope. |
+| Project fail-closed boundary | The same integration test | Project history is `409` without project scope; Platform requests are never used as an implicit project fallback. |
+| Platform Components and status popout | `tests/engineering/dashboard.spec.mjs` (`shows live platform readiness in the titlebar health indicator`, `keeps platform health authoritative while an execution is active`, `renders canonical platform components in the platform card`, `opens canonical ingress details from the status popout`) | The eight canonical components remain the source for cards, popout and details; an active execution cannot hide an unhealthy Platform component. |
+| Browser qualification | `npm run test:engineering-dashboard` and the four `browser-dashboard` CI shards | Console interaction and presentation remain covered in the normal validation profile. |
+
+The browser specification uses one shared canonical eight-component fixture for
+these contracts. This keeps the card, popout and ingress-detail tests aligned
+with the installed Server inventory instead of reintroducing historical
+watcher or execution-host identities through test data.
+
+### Latest qualified evidence
+
+For PR #33 commit `304e519692b83ef7bf78f6a26953d7dab32dd6ef`, the ownership
+guard, focused status-popout browser coverage, all four CI browser shards,
+validation, UI localisation, CodeQL, Trusted Delivery and exact-SHA Owner
+Authorization passed. The required human status remains
+`P-TRANSPORT AWAITING_HUMAN_UI_REVIEW`.
+
 ## Canonical platform component inventory
 
 The installed Server owns one component inventory, used by Platform Components,
