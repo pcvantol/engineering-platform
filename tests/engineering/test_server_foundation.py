@@ -437,9 +437,15 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot") as response:
             snapshot = json.loads(response.read())
         self.assertEqual(snapshot["scope"], "PLATFORM")
+        self.assertRegex(snapshot["status"]["platform_version"], r"^\d+\.\d+\.\d+")
         self.assertEqual(snapshot["status"]["queue_depth"], 0)
         self.assertEqual(snapshot["runs"], [])
-        for path in ("/api/prompt-history", "/api/events"):
+        with urlopen(f"http://127.0.0.1:{port}/api/events", timeout=2) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            event = response.read().decode("utf-8")
+        self.assertIn('"scope":"PLATFORM"', event)
+        self.assertNotIn('"runs":[{', event)
+        for path in ("/api/prompt-history",):
             with self.assertRaises(HTTPError) as blocked:
                 urlopen(f"http://127.0.0.1:{port}{path}")
             self.assertEqual(blocked.exception.code, 409, path)

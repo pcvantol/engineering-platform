@@ -43,11 +43,13 @@ from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
+from .platform_version import EngineeringPlatformManifest
 from .providers import (
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
 )
+from .resources import package_path
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -802,12 +804,19 @@ def _no_project_console_snapshot() -> dict[str, object]:
     overlay while preserving the fail-closed boundary for all project routes.
     """
     queue = {"operator_handling": {}, "queue_depth": 0, "queue_items": []}
+    platform_version = EngineeringPlatformManifest.load(
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
+    ).platform_version
     return {
         "scope": "PLATFORM",
         "queue": queue,
         "runs": [],
         "telemetry": [],
-        "status": {"lifecycle_source": "CENTRAL", **queue},
+        "status": {
+            "lifecycle_source": "CENTRAL",
+            "platform_version": platform_version,
+            **queue,
+        },
     }
 
 
@@ -1382,6 +1391,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {"/api/dashboard-snapshot", "/api/status"}:
             self._send(200, _no_project_console_snapshot())
             return True
+        if request.path == "/api/events":
+            self._stream_no_project_console_events()
+            return True
         if request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
@@ -1488,6 +1500,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.flush()
                     stream_interval = interval
                 time.sleep(stream_interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _stream_no_project_console_events(self) -> None:
+        """Send a CENTRAL-only event that completes the shared Console shell."""
+        payload = json.dumps(
+            _no_project_console_snapshot(), separators=(",", ":")
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             return
 
