@@ -227,6 +227,38 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(json.loads(response.read()), {"previous": 3600, "interval_seconds": 86400})
         self.assertEqual(server.central_database.maintenance_configuration(self.root), {"interval_seconds": 86400})
 
+    def test_every_console_setting_persists_through_the_central_configuration_api(self) -> None:
+        """Every visible Console setting has one CENTRAL-owned save path."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        expected = {
+            "log_retention_days": 180,
+            "telemetry_retention_days": 180,
+            "log_level": "DEBUG",
+            "inbox_scan_interval_seconds": 15,
+            "open_pr_check_interval_seconds": 60,
+            "dashboard_stream_interval_seconds": 5,
+            "provider_readiness_refresh_seconds": 600,
+            "platform_health_refresh_seconds": 15,
+            "component_details_refresh_seconds": 60,
+        }
+        for key, value in expected.items():
+            with self.subTest(key=key):
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/configuration",
+                    data=json.dumps({"key": key, "value": value, "previous": None}).encode(),
+                    method="POST", headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    result = json.loads(response.read())
+                self.assertEqual(result["key"], key)
+                self.assertEqual(result["value"], value)
+        with urlopen(f"http://127.0.0.1:{port}/api/configuration") as response:
+            persisted = json.loads(response.read())
+        self.assertEqual({key: persisted[key] for key in expected}, expected)
+
     def test_download_attachment_headers_reject_request_control_characters(self) -> None:
         self.assertEqual(
             server._report_content_disposition("dj-run-01"),
