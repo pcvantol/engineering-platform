@@ -35,10 +35,3 @@ PLATFORM_COMPONENT_BY_ID = {component.id: component for component in PLATFORM_CO
 PLATFORM_COMPONENT_IDS = frozenset(PLATFORM_COMPONENT_BY_ID)
 # Route consumers import this value instead of duplicating a literal inventory.
 PLATFORM_COMPONENT_ROUTE_PATTERN = "(?:" + "|".join(component.id for component in PLATFORM_COMPONENTS) + ")"
-# These records predate the model. They remain readable, but never appear as
-# selectable identities or writer targets.
-LEGACY_COMPONENT_ALIASES = {
-    "dashboard": "operations_console",
-    "inbox": "file_inbox_ingress",
-    "execution-host": "lifecycle_worker",
-}

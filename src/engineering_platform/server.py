@@ -42,7 +42,6 @@ from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
 from .platform_components import (
-    LEGACY_COMPONENT_ALIASES,
     PLATFORM_COMPONENT_BY_ID,
     PLATFORM_COMPONENT_IDS,
     PLATFORM_COMPONENTS,
@@ -1047,19 +1046,14 @@ def _parse_central_log_query(values: dict[str, list[str]] | None) -> _CentralLog
 
 
 def _central_log_components(component: str) -> tuple[frozenset[str], tuple[str, ...]] | None:
-    """Resolve a canonical or historical component route without project context."""
+    """Resolve only canonical component identities without project context."""
     if component == "all":
         selected = PLATFORM_COMPONENT_IDS
     elif component in PLATFORM_COMPONENT_IDS:
         selected = frozenset({component})
-    elif component in LEGACY_COMPONENT_ALIASES:
-        selected = frozenset({LEGACY_COMPONENT_ALIASES[component]})
     else:
         return None
-    stored = tuple(
-        alias for alias, canonical in LEGACY_COMPONENT_ALIASES.items() if canonical in selected
-    ) + tuple(selected)
-    return selected, stored
+    return selected, tuple(selected)
 
 
 def _central_console_component_logs(
@@ -1120,8 +1114,7 @@ def _central_console_component_logs(
         except (TypeError, ValueError, json.JSONDecodeError):
             decoded = {"event": "malformed_central_log"}
         record = decoded if isinstance(decoded, dict) else {}
-        canonical = LEGACY_COMPONENT_ALIASES.get(str(stored_component), str(stored_component))
-        entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": canonical})
+        entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": str(stored_component)})
     return {
         "scope": "PLATFORM", "component": component, "entries": entries,
         "page": filters.page, "page_size": filters.page_size, "total": total,
@@ -1137,9 +1130,7 @@ def _clear_central_console_component_logs(data_root: Path, component: str) -> di
         selected = frozenset({component})
     else:
         return None
-    stored = tuple(
-        alias for alias, canonical in LEGACY_COMPONENT_ALIASES.items() if canonical in selected
-    ) + tuple(selected)
+    stored = tuple(selected)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         cursor = connection.execute(
             "DELETE FROM engineering_component_logs WHERE component IN (" + ",".join("?" for _ in stored) + ")",

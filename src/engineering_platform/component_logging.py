@@ -18,7 +18,7 @@ from .agent_state import redact_diagnostic
 from .dashboard_configuration import get as dashboard_configuration
 from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
-from .platform_components import LEGACY_COMPONENT_ALIASES, PLATFORM_COMPONENT_IDS
+from .platform_components import PLATFORM_COMPONENT_IDS
 
 LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
 SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
@@ -89,11 +89,7 @@ class SQLiteLogHandler(logging.Handler):
     def __init__(self, root: Path, component: str, *, central_database: Path | None = None) -> None:
         super().__init__()
         self.root = root.resolve()
-        self.component = (
-            LEGACY_COMPONENT_ALIASES.get(component, component)
-            if central_database is not None
-            else component
-        )
+        self.component = component
         self.central_database = central_database.resolve() if central_database is not None else None
         self._fallback: SecureRotatingFileHandler | None = None
 
@@ -160,8 +156,7 @@ def component_logger(
     the shared Platform Component model. The local fallback remains solely for
     early bootstrap or unsupported historical tools.
     """
-    canonical_component = LEGACY_COMPONENT_ALIASES.get(component, component)
-    if central_database is None and canonical_component in PLATFORM_COMPONENT_IDS:
+    if central_database is None and component in PLATFORM_COMPONENT_IDS:
         configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
         if configured_root:
             candidate = Path(configured_root).resolve() / "engineering.db"
@@ -181,10 +176,7 @@ def component_logger(
             isinstance(handler, SQLiteLogHandler)
             and handler.root == root.resolve()
             and handler.central_database == (central_database.resolve() if central_database is not None else None)
-            and handler.component == (
-                LEGACY_COMPONENT_ALIASES.get(component, component)
-                if central_database is not None else component
-            )
+            and handler.component == component
         ):
             handler.setLevel(logger.level)
             return logger

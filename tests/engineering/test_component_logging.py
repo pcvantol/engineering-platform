@@ -46,7 +46,7 @@ class ComponentLoggingTest(unittest.TestCase):
             initialize(data_root)
             central = data_root / "engineering.db"
             logger = component_logging.component_logger(
-                root, "execution-host", central_database=central,
+                root, "lifecycle_worker", central_database=central,
             )
             component_logging.log_event(logger, logging.INFO, "central_lifecycle_event")
             self.assertFalse((root / ".engineering" / "engineering.db").exists())
@@ -67,7 +67,7 @@ class ComponentLoggingTest(unittest.TestCase):
             data_root = Path(temporary) / "data"
             initialize(data_root)
             with patch.dict("os.environ", {"EP_SERVER_DATA_ROOT": str(data_root)}):
-                logger = component_logging.component_logger(checkout, "dashboard")
+                logger = component_logging.component_logger(checkout, "operations_console")
                 component_logging.log_event(logger, logging.INFO, "normal_console_event")
             self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
             with sqlite3.connect(data_root / "engineering.db") as connection:
