@@ -2047,7 +2047,6 @@ test.describe("Engineering Status browser smoke", () => {
           // Log tables replace this template accessibility name with their
           // component-specific localized name at runtime.
           "history.table_label",
-          "logs.inbox_watcher",
           "logs.status_dashboard",
           // The indicator's accessible name is deliberately enriched at runtime
           // with the resolved status, e.g. "Prompt status: complete".
