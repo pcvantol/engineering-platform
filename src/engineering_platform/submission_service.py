@@ -20,7 +20,7 @@ from typing import Any, Mapping
 MAX_PROMPT_BYTES = 65536
 MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
-VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "LEGACY_FILE"})
+VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "DEPENDABOT", "LEGACY_FILE"})
 VALID_EXECUTION_MODES = frozenset({"MANAGED", "GENESIS"})
 
 # This is the complete B8D lifecycle.  The final value deliberately says what

@@ -74,6 +74,26 @@ def resolve(
     return ExternalProducerBinding(str(binding_id), str(project_id), str(repository_id), int(version))
 
 
+def active_external_identities(
+    connection: sqlite3.Connection,
+    *,
+    producer_type: str,
+    external_resource_type: str,
+) -> tuple[str, ...]:
+    """Return only active observation targets for a bounded Server producer."""
+    _validate_binding_kind(producer_type, external_resource_type)
+    return tuple(
+        str(row[0])
+        for row in connection.execute(
+            """SELECT external_resource_identity
+               FROM ep_external_producer_bindings
+               WHERE producer_type=? AND external_resource_type=? AND status='ACTIVE'
+               ORDER BY external_resource_identity""",
+            (producer_type, external_resource_type),
+        )
+    )
+
+
 def register(
     connection: sqlite3.Connection,
     *,
