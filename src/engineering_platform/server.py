@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import sqlite3
 # The lifecycle starts this module with a fixed argv; no shell is used.
@@ -920,6 +921,19 @@ def _central_console_configuration(data_root: Path) -> dict[str, object]:
     }
 
 
+def _central_provider_readiness(data_root: Path) -> dict[str, dict[str, object]]:
+    """Installation-scoped provider discovery without checkout authority."""
+    codex = managed_codex_runtime.inspect(data_root)
+    codex_path = str(codex.get("path") or "")
+    github_path = shutil.which("gh") or ""
+    def ready_to_login(path: str, version: object = "") -> dict[str, object]:
+        return {"state": "AUTH_REQUIRED" if path else "UNAVAILABLE", "executable": path, "version": str(version or ""), "scope": "PLATFORM"}
+    return {
+        "codex": ready_to_login(codex_path if codex.get("state") == "READY" else "", codex.get("version")),
+        "github": ready_to_login(github_path),
+    }
+
+
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
     """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
@@ -1322,12 +1336,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, dashboard._github_rate_limit_status())
             return True
         if request.path == "/api/provider-login-status":
-            # Provider identity is installation scoped.  Do not ask the
-            # retained helper to inspect a selected checkout in `<geen>`.
-            self._send(200, {"providers": {
-                "codex": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
-                "github": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
-            }})
+            self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
             return True
         if request.path in {"/api/process-metrics", "/api/usage"}:
             self._send(200, {"scope": "PLATFORM", "available": False})
@@ -1444,6 +1453,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(405, {"error": "METHOD_NOT_ALLOWED"})
             else:
                 self._send(200, _provider_capacity_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return
+        if request.path == "/api/provider-login-status" and method == "do_GET":
+            self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
             return
         if request.path == "/api/provider-capacity/configuration":
             if method == "do_GET":
