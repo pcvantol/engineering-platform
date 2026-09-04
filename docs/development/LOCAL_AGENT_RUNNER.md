@@ -247,24 +247,21 @@ browser confirmation. Status storage and private remote access remain
 diagnostic-only. No arbitrary executable, label or command is accepted from
 the browser.
 
-Before the explicit per-user dashboard install, verify readiness:
+Before enabling private relay access, verify Server readiness:
 
 ```sh
-./src/engineering_platform/dj-engineering-dashboard doctor
+engineering-platform-server health --data-root "/secure/ep-server"
 ```
 
-Then install it for the current local user:
+Then install the optional Server-owned relay for the current local user:
 
 ```sh
-./src/engineering_platform/dj-engineering-dashboard install
+engineering-platform-server relay-install --data-root "/secure/ep-server"
 ```
 
-The dashboard LaunchAgent starts from the neutral filesystem root and receives
-the selected repository only through its explicit module path and `--repo`
-argument. It also uses Python safe-path mode (`-P`), so Python does not derive
-imports from the LaunchAgent working directory. This avoids relying on an
-interactive shell or a protected working directory while preserving the
-repository-owned execution boundary.
+The relay is compiled from the installed package into the Server data root and
+forwards only to the loopback Server Console. It never receives a repository
+path or derives imports from a working directory.
 
 Tailscale may provide private reachability, but this repository never enables
 Funnel, public binding, ACL changes, port forwarding or remote command

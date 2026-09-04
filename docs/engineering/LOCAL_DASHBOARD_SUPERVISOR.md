@@ -1,18 +1,16 @@
-# Local Dashboard Supervisor
+# Historical Dashboard Supervisor
 
-The repository-owned Engineering Dashboard is the supported macOS service for
-the private status page. Its per-user LaunchAgent starts the dashboard on
-loopback only. A separate repository-owned relay binds port `8765` only on the
-workstation's explicit Tailscale IPv4 address and forwards it to that loopback
-listener. Neither component uses a wildcard, LAN or public listener.
+This document is retained as historical migration evidence for the former
+checkout-owned Dashboard service. The supported runtime is the EP Server
+Console plus its optional Server-owned Dashboard Relay; neither uses a project
+checkout as runtime authority.
 
-`dashboard_supervisor.swift` is compiled locally as the relay during the
-canonical dashboard installation. Use the repository-owned dashboard commands
-instead:
+`dashboard_supervisor.swift` remains the package-owned relay source. Install
+it through the Server instead:
 
 ```sh
-./tools/engineering/dj-engineering-dashboard doctor
-./tools/engineering/dj-engineering-dashboard install
+engineering-platform-server health --data-root "/secure/ep-server"
+engineering-platform-server relay-install --data-root "/secure/ep-server"
 ```
 
 The dashboard never creates public listeners, Funnel configuration, ACLs,
