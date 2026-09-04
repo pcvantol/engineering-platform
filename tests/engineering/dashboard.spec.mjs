@@ -7740,6 +7740,18 @@ test.describe("Engineering Status browser smoke", () => {
     expect(gap).toBeGreaterThanOrEqual(10);
   });
 
+  test("keeps vertical spacing before the dismiss action without restart support", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "lifecycle_worker",
+      healthy: true,
+      detail: "running",
+      launchd: {},
+      restart_supported: false,
+    }));
+    await expect(page.locator("#componentModalDismiss")).toHaveCSS("margin-top", "18px");
+  });
+
   test("keeps the confirmation cancel action dark in dark mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
