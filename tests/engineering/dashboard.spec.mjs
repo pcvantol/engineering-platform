@@ -7723,6 +7723,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(restart).toHaveCSS("color", "rgb(24, 35, 15)");
   });
 
+  test("keeps a touch-safe gap between component restart and dismiss actions", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "dashboard_relay",
+      healthy: true,
+      detail: "running",
+      launchd: {},
+      restart_supported: true,
+    }));
+    const gap = await page.locator("#componentModal").evaluate((modal) => {
+      const restart = modal.querySelector("#componentModalRestart").getBoundingClientRect();
+      const dismiss = modal.querySelector("#componentModalDismiss").getBoundingClientRect();
+      return dismiss.left - restart.right;
+    });
+    expect(gap).toBeGreaterThanOrEqual(10);
+  });
+
   test("keeps the confirmation cancel action dark in dark mode", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
