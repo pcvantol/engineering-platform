@@ -3521,11 +3521,11 @@ function renderLogsForSnapshot(snapshot) {
 enableLiveComponentLogs();
 function healthComponentLabel(component) {
   return {
-    ep_server: "EP Server",
-    platform_database: "Platform database",
-    lifecycle_worker: "Lifecycle Worker",
-    operations_console: "Operations Console",
-    dashboard_relay: "Dashboard Relay",
+    ep_server: t("component.ep_server"),
+    platform_database: t("component.platform_database"),
+    lifecycle_worker: t("component.lifecycle_worker"),
+    operations_console: t("component.operations_console"),
+    dashboard_relay: t("component.dashboard_relay"),
     http_ingress: t("transport.http"),
     cli_ingress: t("transport.cli"),
     file_inbox_ingress: t("transport.file"),
