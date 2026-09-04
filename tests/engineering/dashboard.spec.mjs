@@ -17,6 +17,22 @@ let dashboardRoot;
 let installationRoot;
 let dashboardUrl;
 
+function canonicalPlatformComponents(overrides = {}) {
+  const components = {
+    ep_server: { healthy: true },
+    platform_database: { healthy: true },
+    lifecycle_worker: { healthy: true },
+    operations_console: { healthy: true },
+    dashboard_relay: { healthy: true },
+    http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
+    cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
+    file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
+  };
+  return Object.fromEntries(
+    Object.entries(components).map(([key, component]) => [key, { ...component, ...overrides[key] }]),
+  );
+}
+
 async function startDashboard(root, environment) {
   return new Promise((resolve, reject) => {
     const process = spawn(
@@ -10304,24 +10320,15 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows live platform readiness in the titlebar health indicator", async ({ page }) => {
-    await page.route("**/health", (route) => route.fulfill({ json: { components: {
-      dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
-      http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
-      cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
-      file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
-    } } }));
+    const components = canonicalPlatformComponents();
+    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => {
-      renderPlatformHealth({ components: {
-        dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
-        http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
-        cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
-        file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
-      } });
+    await page.evaluate((components) => {
+      renderPlatformHealth({ components });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
-    });
+    }, components);
     const indicator = page.getByTestId("dashboard-health-indicator");
     await expect(indicator).toHaveAttribute("data-health-state", "ready");
     await expect(page.locator("#dashboardHealthTooltip")).toBeHidden();
@@ -10335,8 +10342,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Uitvoering");
     await expect(page.locator("#dashboardHealthTooltip")).not.toContainText("Werkruimte gereed");
     const componentRows = page.locator("#dashboardHealthChecks .dashboard-health__check--component");
-    await expect(componentRows).toHaveCount(4);
-    await expect(componentRows.locator("[data-testid='dashboard-health-component-link-icon']")).toHaveCount(4);
+    await expect(componentRows).toHaveCount(8);
+    await expect(componentRows.locator("[data-testid='dashboard-health-component-link-icon']")).toHaveCount(8);
 
     await page.evaluate(() => r({ runs: [{ state: "RUNNING" }], queue_depth: 0 }, {}));
     await expect(page.locator("#dashboardHealthChecks")).toContainText("1 uitvoering actief");
@@ -10351,32 +10358,17 @@ test.describe("Engineering Status browser smoke", () => {
     // Platform health is independent of the selected project and of the
     // execution queue.  An active execution must never mask a failed platform
     // component or reintroduce the legacy watcher hand-off interpretation.
-    await page.route("**/health", (route) => route.fulfill({ json: { components: {
-      ep_server: { healthy: true },
-      platform_database: { healthy: true },
-      lifecycle_worker: { healthy: true },
-      operations_console: { healthy: true },
-      dashboard_relay: { healthy: true },
+    const components = canonicalPlatformComponents({
       http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
-      cli_ingress: { healthy: true },
-      file_inbox_ingress: { healthy: true },
-    } } }));
+    });
+    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => {
-      renderPlatformHealth({ components: {
-        ep_server: { healthy: true },
-        platform_database: { healthy: true },
-        lifecycle_worker: { healthy: true },
-        operations_console: { healthy: true },
-        dashboard_relay: { healthy: true },
-        http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
-        cli_ingress: { healthy: true },
-        file_inbox_ingress: { healthy: true },
-      } });
+    await page.evaluate((components) => {
+      renderPlatformHealth({ components });
       r({ runs: [{ state: "RUNNING" }], workspace_state: "ACTIVE", queue_depth: 0 }, {});
-    });
+    }, components);
     const indicator = page.getByTestId("dashboard-health-indicator");
     await expect(indicator).toHaveAttribute("data-health-state", "error");
     await indicator.click();
@@ -10388,30 +10380,17 @@ test.describe("Engineering Status browser smoke", () => {
   test("renders canonical platform components in the platform card", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
-    await page.evaluate(() => {
-      renderPlatformHealth({ components: {
-        ep_server: { healthy: true },
-        platform_database: { healthy: true },
-        lifecycle_worker: { healthy: true },
-        operations_console: { healthy: true },
-        dashboard_relay: { healthy: true },
-        http_ingress: { healthy: true },
-        cli_ingress: { healthy: true },
-        file_inbox_ingress: { healthy: true },
-      } });
-    });
+    await page.evaluate((components) => renderPlatformHealth({ components }), canonicalPlatformComponents());
     const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
     await expect(card).toHaveAttribute("data-health", "true");
     await expect(card).not.toContainText("Inbox-watcher");
   });
 
   test("opens canonical ingress details from the status popout", async ({ page }) => {
-    await page.route("**/health", (route) => route.fulfill({ json: { components: {
-      ep_server: { healthy: true }, platform_database: { healthy: true }, lifecycle_worker: { healthy: true },
-      operations_console: { healthy: true }, dashboard_relay: { healthy: true },
+    const components = canonicalPlatformComponents({
       http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
-      cli_ingress: { healthy: true }, file_inbox_ingress: { healthy: true },
-    } } }));
+    });
+    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
       component: "http_ingress", healthy: false, state: "HTTP_INGRESS_DOWN",
       detail: "CENTRAL_LISTENER_UNAVAILABLE",
@@ -10419,15 +10398,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate(() => {
-      renderPlatformHealth({ components: {
-        ep_server: { healthy: true }, platform_database: { healthy: true }, lifecycle_worker: { healthy: true },
-        operations_console: { healthy: true }, dashboard_relay: { healthy: true },
-        http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
-        cli_ingress: { healthy: true }, file_inbox_ingress: { healthy: true },
-      } });
+    await page.evaluate((components) => {
+      renderPlatformHealth({ components });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
-    });
+    }, components);
     await page.getByTestId("dashboard-health-indicator").click();
     const ingress = page.locator("#dashboardHealthChecks li").filter({ hasText: "HTTP/API-ingang" });
     await expect(ingress).toHaveAttribute("data-health", "bad");
