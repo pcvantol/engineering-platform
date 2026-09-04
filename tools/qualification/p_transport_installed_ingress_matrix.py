@@ -213,6 +213,33 @@ def main(argv: list[str] | None = None) -> int:
                     evidence["HTTP_NEGATIVE_CANARIES"] = {"pass": True}
             finally:
                 process.terminate(); process.wait(timeout=5)
+        # Canary A: with Server fully stopped there is no claimant; the
+        # physical envelope remains in incoming until normal Server startup.
+        project, repository = "durability-down", "durability-repo"
+        command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
+        checkout = root / "durability-checkout"; checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+        command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        credential = str(command(server, "issue-consumer-credential", "--data-root", str(data_root), "--project-id", project, "--consumer-id", "durability") ["credential"])
+        envelope = {"project_id": project, "submission": payload(repository, "MANAGED", "durability-down")}
+        incoming = data_root / "file-inbox" / "incoming"; incoming.mkdir(parents=True, exist_ok=True)
+        source = incoming / "server-down.json"; source.write_text(json.dumps(envelope, sort_keys=True), encoding="utf-8")
+        if not source.exists() or central_counts(data_root, project) != (0, 0):
+            raise RuntimeError("SERVER_DOWN_BEFORE_CLAIM_DURABILITY_FAILED")
+        environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=environment)  # nosec B603
+        try:
+            digest = __import__("hashlib").sha256(json.dumps(envelope, sort_keys=True).encode()).hexdigest()
+            receipt_path = data_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
+            wait_for_file(receipt_path)
+            receipt = json.loads(receipt_path.read_text())
+            diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
+            if central_counts(data_root, project) != (1, 1):
+                raise RuntimeError("SERVER_DOWN_BEFORE_CLAIM_COUNTS_FAILED")
+            evidence["SERVER_DOWN_BEFORE_CLAIM_DURABILITY"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"]}
+        finally:
+            process.terminate(); process.wait(timeout=5)
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
     return 0
 
