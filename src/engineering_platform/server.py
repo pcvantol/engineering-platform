@@ -1755,7 +1755,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
-            stream_interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+            # Event delivery is a platform concern even when its snapshot has
+            # a selected-project projection.  It must therefore use the same
+            # CENTRAL-owned interval as the no-project Console, rather than a
+            # repository/root-local Dashboard preference.
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
             self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
             previous: bytes | None = None
             for iteration in range(300):
@@ -1770,7 +1778,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 elif iteration and iteration % 15 == 0:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
-                interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+                interval = int(
+                    central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                        "dashboard_stream_interval_seconds"
+                    ]
+                )
                 if interval != stream_interval:
                     self.wfile.write(f"retry: {interval * 1000}\n\n".encode())
                     self.wfile.flush()

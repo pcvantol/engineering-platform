@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import subprocess
@@ -63,6 +64,12 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_project_console_event_stream_uses_central_not_root_local_configuration(self) -> None:
+        """A selected project cannot change the platform event-stream policy."""
+        source = inspect.getsource(server._HealthHandler._stream_console_events)
+        self.assertIn("central_database.console_interval_configuration", source)
+        self.assertNotIn("dashboard.dashboard_configuration", source)
 
     def test_server_component_projection_is_exactly_the_canonical_model(self) -> None:
         """Cards, details and logs cannot gain an independent component identity."""
