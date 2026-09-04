@@ -1181,7 +1181,7 @@ def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> byte
     document = re.sub(br'<label for="configurationInboxScanInterval">.*?</label>', b"", document, count=1)
     document = re.sub(br'<dialog class="dashboard-modal-shell.*?id="configurationInboxModal".*?</dialog>', b"", document, count=1)
     location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve())).encode("utf-8")
-    readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label">File Inbox ingress</span><span>' + location + b'</span></p>'
+    readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label" data-i18n="transport.file"></span><span>' + location + b'</span></p>'
     return document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
         b'<p class="category-description" data-i18n="description.configuration"></p>' + readonly,
