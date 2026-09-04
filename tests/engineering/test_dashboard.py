@@ -246,10 +246,32 @@ class DashboardStatusTest(unittest.TestCase):
         dashboard._start_provider_login(Path("/workspace"), "CODEX")
         dashboard._start_provider_login(Path("/workspace"), "GITHUB")
         self.assertEqual(process.return_value.execute.call_count, 3)
-        apple_script = process.return_value.execute.call_args.args[1][2]
-        self.assertIn('tell application "Terminal"', apple_script)
-        self.assertIn("activate", apple_script)
-        self.assertIn("gh auth login --hostname github.com --web", apple_script)
+        scripts = [call.args[1][2] for call in process.return_value.execute.call_args_list]
+        self.assertTrue(all('tell application "Terminal"' in script for script in scripts))
+        self.assertTrue(all("activate" in script for script in scripts))
+        self.assertIn("codex login --device-auth", scripts[0])
+        self.assertIn("codex login --device-auth", scripts[1])
+        self.assertIn("gh auth login --hostname github.com --web", scripts[2])
+
+    @patch("engineering_platform.dashboard.LocalProcessProvider")
+    @patch("engineering_platform.dashboard.CodexCliProvider")
+    @patch("engineering_platform.dashboard.sys.platform", "darwin")
+    def test_provider_login_dispatch_failure_does_not_block_a_later_retry(
+        self, codex: MagicMock, process: MagicMock,
+    ) -> None:
+        completed = __import__("subprocess").CompletedProcess
+        codex.return_value.status.return_value.qualified = True
+        codex.return_value._executable = "/usr/local/bin/codex"
+        process.return_value.execute.side_effect = (
+            completed(("osascript",), 1, "", "Terminal unavailable"),
+            completed(("osascript",), 0, "", ""),
+        )
+
+        with self.assertRaisesRegex(ValueError, "window could not be opened"):
+            dashboard._start_provider_login(Path("/workspace"), "CODEX")
+        dashboard._start_provider_login(Path("/workspace"), "CODEX")
+
+        self.assertEqual(process.return_value.execute.call_count, 2)
 
     @patch("engineering_platform.dashboard.LocalProcessProvider")
     @patch("engineering_platform.dashboard.sys.platform", "darwin")

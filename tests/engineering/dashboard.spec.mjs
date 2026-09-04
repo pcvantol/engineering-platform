@@ -160,6 +160,16 @@ async function waitForDashboardReady(page) {
   }
 }
 
+async function openPlatformAttention(page) {
+  const attention = page.locator("#platformAttentionBanner");
+  await expect(attention).toBeVisible();
+  if (!(await attention.getAttribute("open"))) {
+    await attention.locator("summary").click();
+  }
+  await expect(attention).toHaveAttribute("open", "");
+  return attention;
+}
+
 async function openDashboardPicker(picker) {
   // The dashboard owns a fixed, nested scroll region. Dispatch a pointer-like
   // click directly so picker behaviour tests do not depend on the headless
@@ -564,6 +574,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await openPlatformAttention(page);
     const banner = page.locator("#codexProviderReadinessBanner");
     await expect(banner).toBeVisible();
     await expect(banner).toHaveClass(/dashboard-status-banner--provider-unavailable/);
@@ -595,6 +606,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await openPlatformAttention(page);
     const banner = page.locator("#codexProviderReadinessBanner");
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(DASHBOARD_MESSAGES.nl["notification.provider_readiness.auth_required"].replace("{provider}", "Codex"));
@@ -647,29 +659,45 @@ test.describe("Engineering Status browser smoke", () => {
     expect(checks).toBeGreaterThanOrEqual(2);
   });
 
-  test("shows each unavailable provider separately and serializes interactive repair", async ({ page }) => {
+  test("shows each unavailable provider separately and permits a retry after an interactive handoff", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    let repairs = 0;
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
         codex: { provider: "CODEX", state: "AUTH_REQUIRED" },
         github: { provider: "GITHUB", state: "UNAVAILABLE" },
       },
     } }));
-    await page.route("**/api/provider-login/repair", (route) => route.fulfill({ status: 202, json: { started: true } }));
+    await page.route("**/api/provider-login/repair", async (route) => {
+      repairs += 1;
+      await route.fulfill({ status: 202, json: { started: true } });
+    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
-    const attention = page.locator("#platformAttentionBanner");
-    await expect(attention).toBeVisible();
-    await attention.locator("summary").click();
-    await expect(attention).toHaveAttribute("open", "");
+    const attention = await openPlatformAttention(page);
     // A readiness recheck must preserve the operator's expanded group.
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(attention).toHaveAttribute("open", "");
     await expect(page.locator("#githubProviderReadinessBanner")).toHaveCSS("align-items", "flex-start");
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await expect(page.locator("#githubProviderReadinessBanner")).toBeVisible();
+    const githubGeometry = await page.locator("#githubProviderReadinessBanner").evaluate((row) => {
+      const button = row.querySelector("#githubProviderReadinessAction");
+      const rowBox = row.getBoundingClientRect();
+      const buttonBox = button?.getBoundingClientRect();
+      return buttonBox ? Math.abs(
+        (buttonBox.top + buttonBox.bottom) - (rowBox.top + rowBox.bottom),
+      ) : Number.POSITIVE_INFINITY;
+    });
+    // The action remains centred even when the diagnostic wraps to multiple lines.
+    expect(githubGeometry).toBeLessThanOrEqual(1);
     await page.locator("#codexProviderReadinessAction").click();
     await page.locator("#confirmationModalConfirm").click();
     await expect(page.locator("#githubProviderReadinessAction")).toBeDisabled();
+    await expect(page.locator("#codexProviderReadinessAction")).toBeEnabled({ timeout: 3_000 });
+    await page.locator("#codexProviderReadinessAction").click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => repairs).toBe(2);
   });
 
   test("disables the Inbox location action while the project queue has items", async ({ page }) => {
