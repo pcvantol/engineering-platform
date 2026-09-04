@@ -64,6 +64,21 @@ commit hash as a substitute. The required human status remains
 
 ## Canonical platform component inventory
 
+`engineering_platform.platform_components.PLATFORM_COMPONENTS` is the sole
+Server-native component model. It supplies stable identity, product name key,
+kind, health group, restart capability, log identity and detail metadata to
+the Server status projection. The Console receives that model with
+`/api/platform-status`; its cards, status popout and log-component picker do
+not carry a second component inventory. Historical log aliases are read-only
+migration mappings and never selectable component identities.
+
+The rendered CENTRAL Console structurally removes the retired local
+Inbox-watcher location picker, folder chooser and Inbox scan configuration.
+`POST /api/configuration/inbox-location` and `/browse` are explicitly retired
+(`410`), while the Server-settings Open PR polling control remains. Component
+logs render one CENTRAL Platform table; a second watcher/dashboard log card is
+not emitted in either no-project or selected-project Console documents.
+
 The installed Server owns one component inventory, used by Platform Components,
 the status popout and every component detail modal. It contains `ep_server`
 (DAEMON), `platform_database` (STORAGE), `lifecycle_worker`

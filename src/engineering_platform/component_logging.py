@@ -17,27 +17,16 @@ from .agent_state import redact_diagnostic
 from .dashboard_configuration import get as dashboard_configuration
 from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
+from .platform_components import LEGACY_COMPONENT_ALIASES, PLATFORM_COMPONENT_IDS
 
 LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
+SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
 DEFAULT_LOG_LEVEL = "INFO"
 MAX_LOG_BYTES = 1_000_000
 BACKUP_COUNT = 3
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
-PLATFORM_LOG_COMPONENTS = frozenset(
-    {
-        "ep_server", "platform_database", "lifecycle_worker",
-        "operations_console", "dashboard_relay", "http_ingress",
-        "cli_ingress", "file_inbox_ingress",
-    }
-)
-# Records using these names predate the canonical Platform Components model.
-# They remain readable so historical diagnostics are never lost.
-LEGACY_COMPONENT_ALIASES = {
-    "dashboard": "operations_console",
-    "inbox": "file_inbox_ingress",
-    "execution-host": "lifecycle_worker",
-}
+PLATFORM_LOG_COMPONENTS = PLATFORM_COMPONENT_IDS
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LOG_LEVELS_AT_OR_ABOVE = {
     "INFO": ("INFO", "WARNING", "ERROR"),
@@ -152,7 +141,20 @@ def component_logger(
     root: Path, component: str, *, level: str | None = None,
     central_database: Path | None = None,
 ) -> logging.Logger:
-    """Return the single private SQLite logger for one EP component."""
+    """Return the canonical CENTRAL logger for supported Platform components.
+
+    Installed runtime writers do not select a repository-local sink: the
+    Server publishes its data root and the component identity resolves through
+    the shared Platform Component model. The local fallback remains solely for
+    early bootstrap or unsupported historical tools.
+    """
+    canonical_component = LEGACY_COMPONENT_ALIASES.get(component, component)
+    if central_database is None and canonical_component in PLATFORM_COMPONENT_IDS:
+        configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
+        if configured_root:
+            candidate = Path(configured_root).resolve() / "engineering.db"
+            if candidate.is_file():
+                central_database = candidate
     logger = logging.getLogger(f"djconnect.engineering.{component}")
     configured = level
     if configured is None and central_database is None:

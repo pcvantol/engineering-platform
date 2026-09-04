@@ -41,6 +41,12 @@ from . import submission_service
 from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
+from .platform_components import (
+    LEGACY_COMPONENT_ALIASES,
+    PLATFORM_COMPONENT_BY_ID,
+    PLATFORM_COMPONENT_IDS,
+    PLATFORM_COMPONENTS,
+)
 from .component_logging import (
     LOG_LEVELS_AT_OR_ABOVE,
     MAX_COMPONENT_LOG_PAGE_SIZE,
@@ -74,19 +80,6 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 49
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
-PLATFORM_COMPONENT_DEFINITIONS: dict[str, dict[str, str]] = {
-    "ep_server": {"kind": "DAEMON", "active": "EP_SERVER_ACTIVE", "inactive": "EP_SERVER_UNAVAILABLE", "detail": "EP_SERVER_ENDPOINT"},
-    "platform_database": {"kind": "STORAGE", "active": "PLATFORM_DATABASE_HEALTHY", "inactive": "PLATFORM_DATABASE_UNAVAILABLE", "detail": "PLATFORM_DATABASE_STORAGE"},
-    "lifecycle_worker": {"kind": "IN_PROCESS_COMPONENT", "active": "LIFECYCLE_WORKER_ACTIVE", "inactive": "LIFECYCLE_WORKER_UNAVAILABLE", "detail": "LIFECYCLE_WORKER_SERVER_HOSTED"},
-    "operations_console": {"kind": "UI_SERVICE", "active": "OPERATIONS_CONSOLE_AVAILABLE", "inactive": "OPERATIONS_CONSOLE_UNAVAILABLE", "detail": "OPERATIONS_CONSOLE_SERVER_NATIVE"},
-    "dashboard_relay": {"kind": "UI_SERVICE", "active": "DASHBOARD_RELAY_ACTIVE", "inactive": "DASHBOARD_RELAY_UNAVAILABLE", "detail": "DASHBOARD_RELAY_SERVER_NATIVE"},
-}
-PLATFORM_COMPONENT_IDS = frozenset((*PLATFORM_COMPONENT_DEFINITIONS, "http_ingress", "cli_ingress", "file_inbox_ingress"))
-_CENTRAL_LOG_COMPONENT_ALIASES = {
-    "dashboard": "operations_console",
-    "inbox": "file_inbox_ingress",
-    "execution-host": "lifecycle_worker",
-}
 _CENTRAL_LOG_SORT_COLUMNS = {
     "line": "id",
     "timestamp": "created_at",
@@ -709,13 +702,22 @@ def status(data_root: Path) -> dict[str, object]:
     components = _transport_components(data_root, server_running=running)
     # One Server-native inventory feeds Components, the titlebar popout and
     # detail modals. It deliberately contains no watcher/check-out model.
-    for component_id, definition in PLATFORM_COMPONENT_DEFINITIONS.items():
-        healthy = True if component_id == "platform_database" else running
-        components[component_id] = {
-            "kind": definition["kind"], "healthy": healthy,
-            "status_code": definition["active"] if healthy else definition["inactive"],
-            "detail_code": definition["detail"],
-            **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if component_id == "platform_database" else {}),
+    for definition in PLATFORM_COMPONENTS:
+        if definition.id in components:
+            components[definition.id].update({
+                "kind": definition.kind, "name_key": definition.name_key,
+                "group": definition.group, "critical": definition.critical, "restart_supported": definition.restart_supported,
+                "log_component": definition.id,
+            })
+            continue
+        healthy = True if definition.id == "platform_database" else running
+        components[definition.id] = {
+            "kind": definition.kind, "name_key": definition.name_key,
+            "group": definition.group, "critical": definition.critical, "restart_supported": definition.restart_supported,
+            "log_component": definition.id, "healthy": healthy,
+            "status_code": definition.active_status if healthy else definition.inactive_status,
+            "detail_code": definition.detail_code,
+            **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if definition.id == "platform_database" else {}),
         }
     return {
         "service": "engineering-platform-server",
@@ -732,6 +734,11 @@ def status(data_root: Path) -> dict[str, object]:
         },
         "bind": {"host": config.bind_host, "port": config.bind_port},
         "components": components,
+        "component_model": [
+            {"id": item.id, "name_key": item.name_key, "kind": item.kind, "group": item.group,
+             "critical": item.critical, "restart_supported": item.restart_supported, "log_component": item.id}
+            for item in PLATFORM_COMPONENTS
+        ],
     }
 
 
@@ -1042,12 +1049,12 @@ def _central_log_components(component: str) -> tuple[frozenset[str], tuple[str, 
         selected = PLATFORM_COMPONENT_IDS
     elif component in PLATFORM_COMPONENT_IDS:
         selected = frozenset({component})
-    elif component in _CENTRAL_LOG_COMPONENT_ALIASES:
-        selected = frozenset({_CENTRAL_LOG_COMPONENT_ALIASES[component]})
+    elif component in LEGACY_COMPONENT_ALIASES:
+        selected = frozenset({LEGACY_COMPONENT_ALIASES[component]})
     else:
         return None
     stored = tuple(
-        alias for alias, canonical in _CENTRAL_LOG_COMPONENT_ALIASES.items() if canonical in selected
+        alias for alias, canonical in LEGACY_COMPONENT_ALIASES.items() if canonical in selected
     ) + tuple(selected)
     return selected, stored
 
@@ -1110,7 +1117,7 @@ def _central_console_component_logs(
         except (TypeError, ValueError, json.JSONDecodeError):
             decoded = {"event": "malformed_central_log"}
         record = decoded if isinstance(decoded, dict) else {}
-        canonical = _CENTRAL_LOG_COMPONENT_ALIASES.get(str(stored_component), str(stored_component))
+        canonical = LEGACY_COMPONENT_ALIASES.get(str(stored_component), str(stored_component))
         entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": canonical})
     return {
         "scope": "PLATFORM", "component": component, "entries": entries,
@@ -1128,7 +1135,7 @@ def _clear_central_console_component_logs(data_root: Path, component: str) -> di
     else:
         return None
     stored = tuple(
-        alias for alias, canonical in _CENTRAL_LOG_COMPONENT_ALIASES.items() if canonical in selected
+        alias for alias, canonical in LEGACY_COMPONENT_ALIASES.items() if canonical in selected
     ) + tuple(selected)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         cursor = connection.execute(
@@ -1348,6 +1355,18 @@ def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> byte
     )
 
 
+def _centralize_component_log_surface(document: bytes) -> bytes:
+    """Compile the historical two-card markup into one CENTRAL log table."""
+    replacement = b'''<details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="logTimePreset"><span data-i18n="filter.time_period"></span><select id="logTimePreset"><option value="" data-i18n="filter.all_time"></option><option value="today" data-i18n="filter.today"></option><option value="yesterday" data-i18n="filter.yesterday"></option><option value="day" data-i18n="filter.specific_day"></option><option value="range" data-i18n="filter.custom_range"></option></select></label><label for="logSpecificDate" id="logSpecificDateControl" hidden><span data-i18n="filter.specific_day"></span><input id="logSpecificDate" type="date"></label><label for="logDateFrom" id="logDateFromControl" hidden><span data-i18n="filter.from"></span><input id="logDateFrom" type="datetime-local"></label><label for="logDateTo" id="logDateToControl" hidden><span data-i18n="filter.to"></span><input id="logDateTo" type="datetime-local"></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="section.platform_components"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="platform" data-testid="download-platform-log" type="button">&#x21e9;</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="platform" data-testid="clear-platform-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">&#x232b;</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="section.platform_components"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="platformComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="platformLogPagination" data-i18n-aria-label="section.platform_components"></nav></div></div></details>'''
+    return re.sub(
+        br'<details class="technical-details" id="componentLogs">.*?</details>',
+        replacement,
+        document,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+
 def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
     """Make CENTRAL's selected project the sole visible workspace identity."""
     replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"
@@ -1420,6 +1439,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
         )
         scoped = _centralize_workspace_identity(scoped, project_id)
         scoped = _retire_legacy_inbox_configuration(scoped, data_root)
+        scoped = _centralize_component_log_surface(scoped)
         central_section = _central_database_section(data_root).encode("utf-8")
         # The repository binding is not project identity: that remains wholly
         # CENTRAL-owned above.  It is, however, useful operational evidence
@@ -1470,6 +1490,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         1,
     )
     document = _retire_legacy_inbox_configuration(document, data_root)
+    document = _centralize_component_log_surface(document)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
     document = document.replace(
@@ -1805,6 +1826,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # coverage without granting a selected project any authority.
         self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
         if method == "do_GET" and self._send_console_asset(request):
+            return
+        if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
+            self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
             return
         log_match = re.fullmatch(r"/api/logs/(all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path)
         if log_match and method == "do_GET":

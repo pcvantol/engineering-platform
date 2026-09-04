@@ -369,14 +369,14 @@ function watcherDelegatedToActiveHost(component, status = latestStatus) {
 }
 function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
   const current = status && typeof status === "object" ? status : {}, components = platformHealth?.components || {};
-  const critical = ["ep_server", "platform_database", "lifecycle_worker", "http_ingress", "cli_ingress"];
+  const model = Array.isArray(platformHealth?.component_model) ? platformHealth.component_model : [];
+  const critical = new Set(model.filter((component) => component.critical).map((component) => component.id));
   const unhealthy = Object.entries(components).filter(([, value]) => value?.healthy !== true);
-  const state = !Object.keys(components).length ? "unknown" : unhealthy.some(([key]) => critical.includes(key)) ? "error" : unhealthy.length ? "blocked" : "ready";
-  const componentGroups = [["platform", ["ep_server", "platform_database", "lifecycle_worker"]], ["access", ["operations_console", "dashboard_relay"]], ["ingress", ["http_ingress", "cli_ingress", "file_inbox_ingress"]]];
-  const checks = componentGroups.flatMap(([section, ids]) => ids.filter((key) => components[key]).map((key) => {
-    const component = components[key];
-    return [healthComponentLabel(key), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {}, { component: key, transport: true, section: t("dashboard.health.section." + section) }];
-  }));
+  const state = !Object.keys(components).length ? "unknown" : unhealthy.some(([key]) => critical.has(key)) ? "error" : unhealthy.length ? "blocked" : "ready";
+  const checks = model.filter(({ id }) => components[id]).map(({ id, group }) => {
+    const component = components[id];
+    return [healthComponentLabel(id), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {}, { component: id, transport: true, section: t("dashboard.health.section." + group) }];
+  });
   const queueDepth = Math.max(0, Number(current.queue_depth) || 0), active = Array.isArray(current.runs) ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length : Number(Boolean(current.active_run));
   checks.push(["execution", active ? "active" : "none_active", "good", { count: active }, { section: t("dashboard.health.section.execution") }]);
   checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }, { section: t("dashboard.health.section.execution") }]);
@@ -3551,16 +3551,8 @@ function renderLogsForSnapshot(snapshot) {
 }
 enableLiveComponentLogs();
 function healthComponentLabel(component) {
-  return {
-    ep_server: t("component.ep_server"),
-    platform_database: t("component.platform_database"),
-    lifecycle_worker: t("component.lifecycle_worker"),
-    operations_console: t("component.operations_console"),
-    dashboard_relay: t("component.dashboard_relay"),
-    http_ingress: t("transport.http"),
-    cli_ingress: t("transport.cli"),
-    file_inbox_ingress: t("transport.file"),
-  }[component] || component;
+  const definition = latestPlatformHealth?.components?.[component];
+  return definition?.name_key ? t(definition.name_key) : component;
 }
 const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
   HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
@@ -3811,6 +3803,7 @@ function renderPlatformHealth(payload) {
   const container = $("platformHealthComponents");
   if (!container) return;
   latestPlatformHealth = payload && typeof payload === "object" ? payload : null;
+  populateLogComponentFilter(latestPlatformHealth?.component_model);
   renderDashboardHealth(latestStatus, latestPlatformHealth);
   const components =
     payload && typeof payload.components === "object"
@@ -4817,9 +4810,9 @@ function renderLogPagination(component, total, pageCount) {
 function renderComponentLogs() {
   localizeLogControls();
   updateLogValueFilters();
-  for (const component of ["platform", "dashboard"]) {
+  for (const component of ["platform"]) {
     const rows = filteredComponentLogEntries(component),
-      body = $(component + "ComponentLog") || (component === "platform" ? $("inboxComponentLog") : null),
+      body = $("platformComponentLog"),
       total = componentLogServerPaged ? componentLogTotals[component] : rows.length,
       pageCount = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE)),
       visible = visibleComponentLogEntries(component);
@@ -4874,11 +4867,18 @@ for (const [id, label] of [["logComponentFilter", "EP-component"], ["logEventFil
   if (id === "logEventFilter") select.multiple = true;
   if (id === "logComponentFilter") {
     select.append(new Option("Alle EP-componenten", ""));
-    ["ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress"].forEach((component) => select.append(new Option(healthComponentLabel(component), component)));
   }
   select.setAttribute("aria-label", label);
   control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
   select.addEventListener("change", () => refreshComponentLogsForFilters());
+}
+function populateLogComponentFilter(model = latestPlatformHealth?.component_model) {
+  const select = $("logComponentFilter");
+  if (!select || !Array.isArray(model)) return;
+  const selected = select.value;
+  select.replaceChildren(new Option("Alle EP-componenten", ""));
+  model.forEach((component) => select.append(new Option(t(component.name_key), component.id)));
+  select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
 }
 function refreshComponentLogsForFilters() {
   independentLogPageStates.platform = independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;

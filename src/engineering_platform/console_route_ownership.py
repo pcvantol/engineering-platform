@@ -61,6 +61,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("POST",), r"/v1/projects/[A-Za-z0-9._-]+/submissions", TRANSPORT_INTERNAL, "transport", "Authenticated submission ingress"),
     ConsoleRoute(("POST",), r"/v1/agent/(?:pair|register|heartbeat|attachment)", TRANSPORT_INTERNAL, "transport", "Agent transport control"),
     ConsoleRoute(("POST",), r"/api/runtime-directory/open", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout runtime action"),
+    ConsoleRoute(("POST",), r"/api/configuration/inbox-location(?:/browse)?", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired local Inbox-watcher configuration"),
 )
 
 

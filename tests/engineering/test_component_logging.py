@@ -58,6 +58,25 @@ class ComponentLoggingTest(unittest.TestCase):
                     ).fetchone()[0])["event"],
                 )
 
+    def test_supported_writer_uses_server_central_sink_without_caller_selection(self) -> None:
+        """A normal supported component writer cannot fall back to its checkout."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+            data_root = Path(temporary) / "data"
+            initialize(data_root)
+            with patch.dict("os.environ", {"EP_SERVER_DATA_ROOT": str(data_root)}):
+                logger = component_logging.component_logger(checkout, "dashboard")
+                component_logging.log_event(logger, logging.INFO, "normal_console_event")
+            self.assertFalse((checkout / ".engineering" / "engineering.db").exists())
+            with sqlite3.connect(data_root / "engineering.db") as connection:
+                component, payload = connection.execute(
+                    "SELECT component,payload FROM engineering_component_logs"
+                ).fetchone()
+            self.assertEqual(component, "operations_console")
+            self.assertEqual(json.loads(payload)["event"], "normal_console_event")
+
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
         from engineering_platform import providers
         with tempfile.TemporaryDirectory() as temporary, patch.object(

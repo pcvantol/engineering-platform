@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server
+from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -37,6 +39,30 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
+
+    def test_server_component_projection_is_exactly_the_canonical_model(self) -> None:
+        """Cards, details and logs cannot gain an independent component identity."""
+        server.initialize(self.root)
+        projection = server.status(self.root)
+        model = projection["component_model"]
+        self.assertEqual({item["id"] for item in model}, PLATFORM_COMPONENT_IDS)
+        self.assertEqual(set(projection["components"]), PLATFORM_COMPONENT_IDS)
+        self.assertTrue(all(item["id"] == item["log_component"] for item in model))
+        self.assertTrue(all({"name_key", "kind", "group", "restart_supported"} <= item.keys() for item in model))
+
+    def test_console_document_has_one_central_log_table_and_no_legacy_inbox_configuration(self) -> None:
+        """Historical dashboard markup cannot re-enable retired Console controls."""
+        server.initialize(self.root)
+        document = server._no_project_console_document([], self.root)
+        component_logs = re.search(
+            br'<details class="technical-details" id="componentLogs">(.*?)</details>', document, re.DOTALL,
+        )
+        self.assertIsNotNone(component_logs)
+        self.assertEqual(component_logs.group(1).count(b'<table class="log-table"'), 1)  # type: ignore[union-attr]
+        self.assertIn(b'platformComponentLog', component_logs.group(1))  # type: ignore[union-attr]
+        self.assertNotIn(b'dashboardComponentLog', document)
+        self.assertNotIn(b'configurationInboxOpen', document)
+        self.assertNotIn(b'configurationInboxModal', document)
 
     def test_server_surfaces_missing_managed_runtime_without_degrading_central(self) -> None:
         identity = server.initialize(self.root)
@@ -678,7 +704,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
             self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
-        with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect") as response:
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect&page_size=200") as response:
             logs = json.loads(response.read())
         self.assertEqual(logs["scope"], "PLATFORM")
         central_record = next(entry for entry in logs["entries"] if entry["event"] == "central_console_test")
