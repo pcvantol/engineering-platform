@@ -26,6 +26,7 @@ PRODUCER_VERSION = "2.0"
 _SHA = re.compile(r"^[0-9a-f]{7,64}$")
 _BOT_LOGINS = frozenset({"dependabot[bot]", "app/dependabot"})
 HEARTBEAT_FILENAME = "dependabot-producer-heartbeat.json"
+QUALIFICATION_FIXTURE_ENVIRONMENT = "EP_DEPENDABOT_QUALIFICATION_FIXTURE"
 
 
 class DependabotProducerError(ValueError):
@@ -43,6 +44,35 @@ class DependabotPullRequest:
     url: str
     head_branch: str
     head_sha: str
+
+
+class _QualificationFixtureProvider:
+    """Test-only GitHub boundary replacement for the installed-wheel gate."""
+
+    def __init__(self, fixture: Path) -> None:
+        try:
+            payload = json.loads(fixture.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise DependabotProducerError("QUALIFICATION_FIXTURE_INVALID") from error
+        if not isinstance(payload, dict) or not all(isinstance(key, str) and isinstance(value, list) for key, value in payload.items()):
+            raise DependabotProducerError("QUALIFICATION_FIXTURE_INVALID")
+        self.payload = payload
+
+    def github(self, _operation: str, endpoint: str) -> str:
+        match = re.fullmatch(r"repos/([^/]+/[^/]+)/pulls\?state=open&per_page=100", endpoint)
+        if match is None:
+            raise RuntimeError("qualification endpoint rejected")
+        return json.dumps(self.payload.get(match.group(1).casefold(), []))
+
+
+def _qualification_provider() -> GitHubProvider | None:
+    """Permit an installed real producer test to fake only GitHub's response."""
+    fixture = os.environ.get(QUALIFICATION_FIXTURE_ENVIRONMENT)
+    if fixture is None:
+        return None
+    if os.environ.get("EP_QUALIFICATION_INITIALIZE_ONLY") != "1":
+        raise DependabotProducerError("QUALIFICATION_FIXTURE_FORBIDDEN")
+    return _QualificationFixtureProvider(Path(fixture))  # type: ignore[return-value]
 
 
 def discover_open_pull_requests(
@@ -216,7 +246,7 @@ class DependabotService:
         event: Any | None = None,
     ) -> None:
         self.data_root = data_root
-        self.provider = provider
+        self.provider = provider or _qualification_provider()
         self.interval_seconds = interval_seconds
         self.event = event
         self._stop = threading.Event()

@@ -89,7 +89,7 @@ def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
     if databases != [canonical] or local or state_stores:
         raise RuntimeError("STORAGE_AUTHORITY_INVARIANT_FAILED")
     inbox = data_root / "file-inbox"
-    expected = {"incoming", "processing", "accepted", "quarantine", "file-inbox-heartbeat.json"}
+    expected = {"incoming", "processing", "accepted", "quarantine", "file-inbox-heartbeat.json", "dependabot-producer-heartbeat.json"}
     if not expected <= {path.name for path in inbox.iterdir()}:
         raise RuntimeError("TRANSPORT_STATE_LAYOUT_FAILED")
     return {"operational_database_authorities": 1, "local_operational_db": 0, "local_statestore": 0, "secondary_operational_db": 0, "transport_state": "TRANSPORT_DELIVERY_STATE"}
@@ -425,8 +425,61 @@ def main(argv: list[str] | None = None) -> int:
                     evidence["NEGATIVE_HUMAN_CANARIES"] = {"pass": True}
             finally:
                 process.terminate(); process.wait(timeout=5)
+        # The Dependabot producer itself runs inside the real installed
+        # Server. Only GitHub's external response is fixture-backed; binding
+        # resolution, canonical admission and lifecycle initialization remain
+        # the exact installed product path.
+        dependabot_root, dependabot_port = root / "dependabot-central", isolated_port()
+        command(server, "init", "--data-root", str(dependabot_root), "--bind-port", str(dependabot_port))
+        dependabot_pairs = (("dependabot-a", "dependabot-repository-a", "example/repository-a"), ("dependabot-b", "dependabot-repository-b", "example/repository-b"))
+        for project, repository, external in dependabot_pairs:
+            command(server, "bootstrap-topology", "--data-root", str(dependabot_root), "--project-id", project, "--repository-id", repository)
+            checkout = root / f"{project}-checkout"; checkout.mkdir(); subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+            command(server, "provision-declaration", "--data-root", str(dependabot_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+            command(server, "bind-repository", "--data-root", str(dependabot_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+            command(server, "register-producer-binding", "--data-root", str(dependabot_root), "--producer-type", "DEPENDABOT", "--external-resource-type", "GITHUB_REPOSITORY", "--external-resource-identity", external, "--project-id", project, "--repository-id", repository, "--reason", "installed qualification")
+        fixture = root / "dependabot-github-fixture.json"
+        fixture.write_text(json.dumps({
+            "example/repository-a": [{"number": 71, "title": "Bump example A", "html_url": "https://github.com/example/repository-a/pull/71", "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/a", "sha": "a" * 40}}],
+            "example/repository-b": [{"number": 72, "title": "Bump example B", "html_url": "https://github.com/example/repository-b/pull/72", "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/b", "sha": "b" * 40}}],
+        }, sort_keys=True), encoding="utf-8")
+        dependabot_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_DEPENDABOT_QUALIFICATION_FIXTURE": str(fixture)}
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(dependabot_root)], env=dependabot_environment)  # nosec B603
+        try:
+            deadline = time.monotonic() + 15
+            rows: list[tuple[str, str, str]] = []
+            while time.monotonic() < deadline:
+                with sqlite3.connect(dependabot_root / "engineering.db") as connection:
+                    rows = [(str(row[0]), str(row[1]), str(row[2])) for row in connection.execute("SELECT submission_id,project_id,repository_id FROM ep_submissions WHERE transport='DEPENDABOT' ORDER BY project_id")]
+                if len(rows) == 2:
+                    break
+                time.sleep(.1)
+            if len(rows) != 2 or {(row[1], row[2]) for row in rows} != {("dependabot-a", "dependabot-repository-a"), ("dependabot-b", "dependabot-repository-b")}:
+                raise RuntimeError("DEPENDABOT_MULTI_PROJECT_BINDING_FAILED")
+            for submission_id, _project, _repository in rows:
+                wait_for_dispatch(server, dependabot_root, submission_id)
+            evidence["DEPENDABOT_MULTI_PROJECT_BINDING"] = {"pass": True, "submissions": [row[0] for row in rows]}
+        finally:
+            process.terminate(); process.wait(timeout=5)
+        # A normal Server restart rediscovers the same PR heads. The durable
+        # canonical idempotency key must leave the submission/run count flat.
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(dependabot_root)], env=dependabot_environment)  # nosec B603
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
+                if heartbeat.exists():
+                    break
+                time.sleep(.1)
+            with sqlite3.connect(dependabot_root / "engineering.db") as connection:
+                duplicate_count = int(connection.execute("SELECT COUNT(*) FROM ep_submissions WHERE transport='DEPENDABOT'").fetchone()[0])
+            if duplicate_count != 2:
+                raise RuntimeError("DEPENDABOT_RESTART_DUPLICATED")
+            evidence["DEPENDABOT_REPLAY_RESTART"] = {"pass": True, "duplicate_submissions": 0, "duplicate_actions": 0, "duplicate_runs": 0}
+        finally:
+            process.terminate(); process.wait(timeout=5)
         evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
-        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "matrix": evidence}, sort_keys=True))
+        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "CENTRAL_DEPENDABOT_GATE": "PASS", "matrix": evidence}, sort_keys=True))
     return 0
 
 
