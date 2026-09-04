@@ -8,9 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import re
 import sqlite3
+import threading
 from typing import Any
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import external_producer_binding
 from . import submission_service
@@ -21,6 +25,7 @@ PRODUCER_ID = "github-dependabot"
 PRODUCER_VERSION = "2.0"
 _SHA = re.compile(r"^[0-9a-f]{7,64}$")
 _BOT_LOGINS = frozenset({"dependabot[bot]", "app/dependabot"})
+HEARTBEAT_FILENAME = "dependabot-producer-heartbeat.json"
 
 
 class DependabotProducerError(ValueError):
@@ -184,3 +189,109 @@ def discover_and_admit(
         external_resource_identity=repository,
     )
     return tuple(admit(connection, external_repository=repository, pull_request=item) for item in discover_open_pull_requests(repository, provider))
+
+
+def heartbeat_path(data_root: Path) -> Path:
+    """Return the Server-owned observation record; it is never work authority."""
+    return data_root / HEARTBEAT_FILENAME
+
+
+def read_heartbeat(data_root: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(heartbeat_path(data_root).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+class DependabotService:
+    """A Server child that observes only currently active CENTRAL bindings."""
+
+    def __init__(
+        self,
+        data_root: Path,
+        *,
+        provider: GitHubProvider | None = None,
+        interval_seconds: float = 300.0,
+        event: Any | None = None,
+    ) -> None:
+        self.data_root = data_root
+        self.provider = provider
+        self.interval_seconds = interval_seconds
+        self.event = event
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._recent_error: str | None = None
+        self._last_discovery: str | None = None
+        self._last_submission: str | None = None
+
+    def _emit(self, name: str, context: dict[str, object]) -> None:
+        if self.event is not None:
+            self.event(name, context)
+
+    def _write_heartbeat(self, *, ready: bool) -> None:
+        payload = {
+            "state": "READY" if ready else "DEGRADED",
+            "readiness": "DISCOVERY_CAPABLE" if ready else "DISCOVERY_UNAVAILABLE",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "last_discovery": self._last_discovery,
+            "last_submission": self._last_submission,
+            "recent_error": self._recent_error,
+        }
+        target = heartbeat_path(self.data_root)
+        temporary = target.with_suffix(".partial")
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.chmod(0o600)
+        os.replace(temporary, target)
+
+    def tick(self) -> int:
+        """Discover all active bindings without retaining a local cursor/store."""
+        database = self.data_root / "engineering.db"
+        with sqlite3.connect(database) as connection:
+            identities = external_producer_binding.active_external_identities(
+                connection,
+                producer_type=external_producer_binding.DEPENDABOT,
+                external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
+            )
+        admitted = 0
+        for identity in identities:
+            pull_requests = discover_open_pull_requests(identity, self.provider)
+            with sqlite3.connect(database) as connection:
+                for pull_request in pull_requests:
+                    result = admit(
+                        connection,
+                        external_repository=identity,
+                        pull_request=pull_request,
+                    )
+                    if not result.duplicate:
+                        admitted += 1
+                        self._last_submission = result.submission_id
+                        self._emit("dependabot_submission_admitted", {
+                            "submission_id": result.submission_id,
+                            "external_resource_identity": identity,
+                            "project_id": result.project_id,
+                            "repository_id": result.repository_id,
+                        })
+        self._last_discovery = datetime.now(timezone.utc).isoformat()
+        return admitted
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.tick()
+                self._recent_error = None
+                self._write_heartbeat(ready=True)
+            except (DependabotProducerError, external_producer_binding.ProducerBindingError, OSError, sqlite3.Error) as error:
+                self._recent_error = str(error)[:160]
+                self._emit("dependabot_discovery_degraded", {"diagnostic": self._recent_error})
+                self._write_heartbeat(ready=False)
+            self._stop.wait(self.interval_seconds)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="engineering-platform-dependabot", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_seconds + 1)

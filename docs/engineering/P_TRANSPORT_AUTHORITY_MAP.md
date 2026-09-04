@@ -7,6 +7,7 @@
 | HTTP `POST /v1/projects/{project}/submissions` | THIN_TRANSPORT | `request_from_mapping` → `submission_service.submit` in the Server CENTRAL database | no retry, queue, lifecycle worker, or execution call |
 | `engineering-platform submit` | THIN_TRANSPORT | parses local prompt/constraints → authenticated HTTP endpoint → same service | no SQLite import or direct CENTRAL-table access |
 | Server-owned File Inbox | SERVER_INTERNAL_THIN_TRANSPORT | structured `.json` directly, or Human Intent `.md`/`.txt` through `submission-intake-v1` → bounded in-process `FILE_INBOX` principal → `request_from_mapping` → `submission_service.submit` | only external caller authentication is bypassed; project/repository, mode/Genesis, idempotency, admission and lifecycle validation remain mandatory; no credential, HTTP endpoint, database, StateStore, lifecycle, queue, execution, CWD or repository inference |
+| Server-owned Dependabot producer | SERVER_INTERNAL_THIN_TRANSPORT | verified GitHub Dependabot PR → CENTRAL `ExternalProducerBinding` resolution → bounded `DEPENDABOT` principal → `submission_service.submit` | only external caller authentication is bypassed; the binding is identity context, not authorization; no local mapping, Git remote/CWD/default inference, credential, HTTP endpoint, database, queue or execution authority |
 | `inbox_watcher.py` `once`, `run`, `install` | HISTORICAL_ONLY | fail closed with `WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED` before operational access | retained implementation is unreachable from installed supported ingress |
 | `submission_service.submit_legacy_file` | HISTORICAL_ONLY | direct test/provenance helper only | no script or supported runtime route reaches it |
 
@@ -132,6 +133,48 @@ FILE_INBOX_USES_CANONICAL_ADMISSION = TRUE
 FILE_INBOX_BYPASSES_ADMISSION_VALIDATION = FALSE
 FILE_INBOX_MULTI_PROJECT_AUTHORITY = PASS
 CROSS_PROJECT_FILE_INBOX_SUBMISSION = 0
+```
+
+### External Producer Binding / Dependabot security decision
+
+`ExternalProducerBinding` is a CENTRAL-owned registry with the unique external
+key `(producer_type, external_resource_type, normalized_external_resource_identity)`.
+It resolves only to an existing active project and a repository canonically
+registered to that project. The initial bounded producer is `DEPENDABOT` with
+the normalized GitHub `owner/repository` identity. The identity is normalized
+for case, HTTPS/SSH form, `.git` and trailing slash; it is never read from a
+checkout or Git remote.
+
+Bindings are managed solely through the Server's local installation-owner
+administration commands (`register-producer-binding`, `list-producer-bindings`
+and `deactivate-producer-binding`). The actor is derived from ownership of the
+private Server data root; it is not supplied by a browser, a project consumer
+or an arbitrary CLI argument. Registration and deactivation record immutable
+CENTRAL audit evidence. The registry contains no consumer token, producer
+credential or project-token map.
+
+The Server-owned Dependabot child observes only active bindings, validates
+GitHub Dependabot PR metadata, resolves a binding and invokes the same
+`submission_service.submit` call as the other ingress paths. It therefore
+bypasses only irrelevant external caller authentication. Project/repository
+validation, mode/Genesis validation, idempotency, admission, provenance and
+lifecycle initialization remain canonical. Its heartbeat is observation state,
+not a discovery cursor, queue, Action or run authority.
+
+```text
+FILE_INBOX_EXTERNAL_CREDENTIAL = NONE
+FILE_INBOX_PROJECT_TOKEN_STORE = NONE
+FILE_INBOX_INTERNAL_HTTP_BYPASS = NONE
+FILE_INBOX_USES_CANONICAL_ADMISSION = TRUE
+FILE_INBOX_BYPASSES_ADMISSION_VALIDATION = FALSE
+
+EXTERNAL_PRODUCER_BINDING_MODEL = DEFINED
+INTERNAL_PRODUCER_IDENTITY_MODEL = DEFINED
+PRODUCER_BINDING_OPERATIONAL_AUTHORITIES = 1
+LOCAL_PRODUCER_BINDING_AUTHORITY = 0
+PRODUCER_BINDING_BYPASSES_ADMISSION = FALSE
+INTERNAL_PRODUCER_USES_CANONICAL_ADMISSION = TRUE
+INTERNAL_PRODUCER_DIRECT_DB_ADMISSION = FALSE
 ```
 
 ```text

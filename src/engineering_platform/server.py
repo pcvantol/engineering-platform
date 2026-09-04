@@ -34,6 +34,7 @@ from . import central_database
 from . import console_route_ownership
 from . import dashboard
 from . import dashboard_translation
+from . import dependabot_producer
 from . import external_producer_binding
 from . import file_inbox
 from . import local_repository_binding
@@ -735,6 +736,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     http_status_code = "HTTP_INGRESS_HEALTHY" if server_running else "HTTP_INGRESS_DOWN"
     cli_status_code = "CLI_INGRESS_AVAILABLE" if server_running else "CLI_INGRESS_DEGRADED"
     file_last = latest.get("FILE_INBOX")
+    dependabot_last = latest.get("DEPENDABOT")
     heartbeat = file_inbox.read_heartbeat(data_root / FILE_INBOX_DIRECTORY)
     heartbeat_at = str(heartbeat.get("updated_at", "")) if heartbeat else ""
     try:
@@ -753,6 +755,19 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
         "FILE_INGRESS_STOPPED" if not server_running or not heartbeat_fresh
         else "FILE_INGRESS_NOT_READY" if not submission_ready
         else "FILE_INGRESS_DEGRADED" if file_attention_needed else "FILE_INGRESS_RUNNING"
+    )
+    dependabot_heartbeat = dependabot_producer.read_heartbeat(data_root)
+    dependabot_updated = str(dependabot_heartbeat.get("updated_at", "")) if dependabot_heartbeat else ""
+    try:
+        dependabot_fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(dependabot_updated)).total_seconds() <= 310
+    except ValueError:
+        dependabot_fresh = False
+    dependabot_ready = bool(
+        server_running
+        and dependabot_fresh
+        and dependabot_heartbeat
+        and dependabot_heartbeat.get("state") == "READY"
+        and dependabot_heartbeat.get("readiness") == "DISCOVERY_CAPABLE"
     )
     return {
         "http_ingress": {
@@ -776,6 +791,14 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
             "quarantine_count": quarantine_count,
             # Never transport a raw exception into a presentation projection.
             "reason_code": "FILE_INBOX_DIAGNOSTIC" if recent_error else None,
+        },
+        "dependabot_producer": {
+            "healthy": dependabot_ready,
+            "status_code": "DEPENDABOT_READY" if dependabot_ready else "DEPENDABOT_DEGRADED",
+            "detail_code": "DEPENDABOT_HEARTBEAT" if dependabot_fresh else "DEPENDABOT_HEARTBEAT_MISSING",
+            "heartbeat": dependabot_updated or None,
+            "last_successful_submission": dependabot_last,
+            "reason_code": "DEPENDABOT_DIAGNOSTIC" if dependabot_heartbeat and dependabot_heartbeat.get("recent_error") else None,
         },
     }
 
@@ -2492,6 +2515,19 @@ def serve(data_root: Path) -> int:
             data_root, envelope, receipt_id, received_at,
         ),
     )
+    dependabot_service = dependabot_producer.DependabotService(
+        data_root,
+        event=lambda event, context: log_event(
+            component_logger(
+                data_root,
+                "dependabot_producer",
+                central_database=data_root / SERVER_DATABASE_FILENAME,
+            ),
+            logging.INFO if event == "dependabot_submission_admitted" else logging.WARNING,
+            event,
+            context=context,
+        ),
+    )
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
@@ -2502,6 +2538,7 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGINT, stop)
     worker.start()
     inbox_service.start()
+    dependabot_service.start()
     # A fresh installation must have operational evidence before its first
     # submission.  These are genuine Server lifecycle events, persisted in
     # the same CENTRAL store that backs the Console's combined log table.
@@ -2518,6 +2555,7 @@ def serve(data_root: Path) -> int:
     try:
         server.serve_forever()
     finally:
+        dependabot_service.stop()
         inbox_service.stop()
         worker.stop()
         server.server_close()

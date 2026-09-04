@@ -125,3 +125,23 @@ class DependabotProducerTests(unittest.TestCase):
             "pcvantol/repository-a", _Provider([accepted, forged, human]),
         )
         self.assertEqual([item.number for item in discovered], [7])
+
+    def test_server_owned_service_observes_active_bindings_without_a_local_queue(self) -> None:
+        payload = [{
+            "number": 23,
+            "title": "Bump example",
+            "html_url": "https://github.com/pcvantol/repository-a/pull/23",
+            "user": {"login": "dependabot[bot]"},
+            "head": {"ref": "dependabot/pip/example", "sha": "c" * 40},
+        }]
+        service = dependabot_producer.DependabotService(self.root, provider=_Provider(payload))
+        self.assertEqual(service.tick(), 1)
+        heartbeat = dependabot_producer.read_heartbeat(self.root)
+        # ``tick`` is intentionally usable before the thread is started; the
+        # child loop owns heartbeat projection in normal Server composition.
+        self.assertIsNone(heartbeat)
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(
+                connection.execute("SELECT project_id,repository_id,transport FROM ep_submissions").fetchone(),
+                ("project-a", "repository-a", "DEPENDABOT"),
+            )

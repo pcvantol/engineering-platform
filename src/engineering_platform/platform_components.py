@@ -37,6 +37,7 @@ PLATFORM_COMPONENTS = (
     PlatformComponent("http_ingress", "transport.http", "TRANSPORT", "ingress", "HTTP_INGRESS_HEALTHY", "HTTP_INGRESS_DOWN", "CENTRAL_LISTENER_ENDPOINT", "http_ingress_available", False, True),
     PlatformComponent("cli_ingress", "transport.cli", "TRANSPORT", "ingress", "CLI_INGRESS_AVAILABLE", "CLI_INGRESS_DEGRADED", "CANONICAL_SUBMISSION_COMPATIBILITY", "cli_ingress_available", False, True),
     PlatformComponent("file_inbox_ingress", "transport.file", "TRANSPORT", "ingress", "FILE_INGRESS_RUNNING", "FILE_INGRESS_STOPPED", "FILE_INBOX_HEARTBEAT", "file_inbox_service_started"),
+    PlatformComponent("dependabot_producer", "component.dependabot_producer", "TRANSPORT", "ingress", "DEPENDABOT_READY", "DEPENDABOT_DEGRADED", "DEPENDABOT_HEARTBEAT", "dependabot_producer_started"),
 )
 PLATFORM_COMPONENT_BY_ID = {component.id: component for component in PLATFORM_COMPONENTS}
 PLATFORM_COMPONENT_IDS = frozenset(PLATFORM_COMPONENT_BY_ID)
