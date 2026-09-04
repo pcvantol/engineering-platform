@@ -70,11 +70,10 @@ The extraction sequence is deliberately incremental and provenance-preserving:
 Increment 1 — **Local Consumer API Contract Foundation** — are complete.
 Phase 1 / Increment 2 (**Local API Transport + Authentication Runtime**) is
 implemented and post-merge qualified as a loopback-only, minimal read-only v1
-service with EP-owned verifier metadata; schema 39 is active. Increment 3
-(**Consumer Registration + OS Credential Integration**) is architecture
-authorized by ADR-0022 only: it requires schema 40 for registration authority,
-may later add production credential lifecycle and macOS Keychain consumer
-storage, and does not authorize consumer cutover or Engineering mutation.
+service with EP-owned verifier metadata; schema 39 is active. Phase 1 /
+Increment 3 (**Consumer Registration + OS Credential Integration**) is
+complete and qualified: schema 40 is active, while consumer cutover and
+Engineering mutation remain separately governed work.
 
 1. **Boundary and consumer contract — architecture complete.** ADR-0019 and the EP consumer
    contract establish one installation-owned store, the canonical
@@ -137,6 +136,26 @@ concrete registration and ownership boundary is specified in the
 [EP consumer contract](ENGINEERING_PLATFORM_CONSUMER_CONTRACT.md). The
 phase-level delivery, safety gates and architect review questions are in the
 [EP extraction and migration plan](ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md).
+
+## Cross-product producer capabilities
+
+This is the canonical EP allocation for external consumers. It names EP-owned
+capabilities and gates; it does not allocate Forge or Workspace work. A
+consumer may use a frozen contract for fixtures, but may claim an integration
+only after the stated EP qualification gate passes.
+
+| Node ID | Type and canonical EP allocation | Provides | Depends on | Qualification gate and lifecycle |
+| --- | --- | --- | --- | --- |
+| `EP::LOCAL_CONSUMER_API_V1` | IMPLEMENTATION_INCREMENT — Phase 1 / Increments 1–3 | Versioned scoped consumer envelope, exact `(consumer_id, project_id)` registration authority and credential lifecycle. | EP Phase 1 local runtime foundation. | **Complete / qualified:** Phase 1 closure, schema 40 active and bounded registration/credential evidence. This is a registration base, not consumer cutover. |
+| `EP::STANDALONE_EP_VERIFIED` | QUALIFICATION_GATE — Phase 3 B8C → B8D → B9 | Qualified installed EP Server/Agent execution authority. | Installed artifacts, two-project isolation, canonical submission ingress and first governed execution. | Retained B8C/B8D/B9 qualification bundle. **Planned / unavailable.** |
+| `EP::PROJECT_ATTACHMENT_AND_ADMISSION_V1` | IMPLEMENTATION_INCREMENT — Phase 4 / Increment 1 | Idempotent canonical project registration refresh, repository/Agent attachment, scoped consumer cutover and an admission-ready project. | `EP::LOCAL_CONSUMER_API_V1`; `EP::STANDALONE_EP_VERIFIED`. | Clean-install, fresh-registration, idempotency, project-routing/isolation and first-governed-execution evidence. **Planned / unavailable.** |
+| `EP::ENGINEERING_CONTRACT_FOUNDATION_V1` | IMPLEMENTATION_INCREMENT — Phase 4 / Increment 2 | Capability classification; Effective DoR; pre-dispatch readiness; Effective DoD; proof requirements; Human Gates; live/historical Action projection; completion enforcement; `ActionQualityOutcome`; packaged baseline contracts; immutable Action contract snapshots. | `EP::LOCAL_CONSUMER_API_V1`; `EP::STANDALONE_EP_VERIFIED`. | `EP::ENGINEERING_CONTRACT_FOUNDATION_V1_QUALIFIED`: installed-artifact contract tests, negative admission/gate tests, recovery/evidence-projection tests and retained qualification receipt. **Planned / unavailable.** |
+
+Phase 4 / Increment 1 and Increment 2 are capability-named producer
+allocations. They are not authorization to begin implementation, consumer
+cutover or Engineering mutation without their separately approved EP work and
+qualification. Forge consumes the Increment-2 capability through its L0
+milestone; Workspace consumes Increment 1 through its onboarding capability.
 
 ## Policy
 
