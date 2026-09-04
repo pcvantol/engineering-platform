@@ -342,6 +342,27 @@ def main(argv: list[str] | None = None) -> int:
                 digest = __import__("hashlib").sha256(body.encode()).hexdigest(); receipt_path = data_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
                 wait_for_file(receipt_path); receipt = json.loads(receipt_path.read_text()); diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
                 evidence[f"FILE_HUMAN_{human_mode}"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "normalization": "submission-intake-v1"}
+                if human_mode == "MANAGED":
+                    source.write_text(body, encoding="utf-8")
+                    deadline = time.monotonic() + 15
+                    while source.exists() and time.monotonic() < deadline: time.sleep(.1)
+                    if source.exists() or central_counts(data_root, project) != (1, 1): raise RuntimeError("HUMAN_FILE_REPLAY_DUPLICATED")
+                    evidence["HUMAN_FILE_REPLAY"] = {"pass": True, "duplicate_actions": 0, "duplicate_runs": 0}
+                    quarantine = data_root / "file-inbox" / "quarantine"
+                    physical = lambda: [path for path in quarantine.glob("*.json") if not path.name.endswith(".receipt.json")]
+                    before_quarantine = len(physical())
+                    invalid_human = {
+                        "human-missing-project.md": "---\nrepository: x\nmode: MANAGED\n---\nintent",
+                        "human-unknown-project.md": "---\nproject: unknown\nrepository: x\nmode: MANAGED\n---\nintent",
+                        "human-invalid-mode.md": f"---\nproject: {project}\nrepository: {repository}\nmode: INVALID\n---\nintent",
+                        "human-genesis-target.md": f"---\nproject: {project}\nrepository: {repository}\nmode: GENESIS\n---\nintent",
+                        "human-empty.md": f"---\nproject: {project}\nrepository: {repository}\nmode: MANAGED\n---\n",
+                    }
+                    for name, content in invalid_human.items(): (data_root / "file-inbox" / "incoming" / name).write_text(content, encoding="utf-8")
+                    deadline = time.monotonic() + 15
+                    while len(physical()) < before_quarantine + len(invalid_human) and time.monotonic() < deadline: time.sleep(.1)
+                    if len(physical()) != before_quarantine + len(invalid_human) or central_counts(data_root, project) != (1, 1): raise RuntimeError("HUMAN_INTENT_FAIL_CLOSED")
+                    evidence["NEGATIVE_HUMAN_CANARIES"] = {"pass": True}
             finally:
                 process.terminate(); process.wait(timeout=5)
         evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
