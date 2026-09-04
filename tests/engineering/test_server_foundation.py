@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server
 from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+from engineering_platform.providers import ProviderStatus
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -378,6 +379,29 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(components["cli_ingress"]["status_code"], "CLI_INGRESS_DEGRADED")
         self.assertEqual(components["file_inbox_ingress"]["status_code"], "FILE_INGRESS_STOPPED")
         self.assertNotIn("credential", repr(components).lower())
+
+    def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
+            "engineering_platform.server._alive", return_value=True
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", True, "LaunchAgent process is active"
+            )
+            component = server.status(self.root)["components"]["dashboard_relay"]
+        self.assertTrue(component["healthy"])
+        self.assertEqual(component["status_code"], "DASHBOARD_RELAY_ACTIVE")
+        self.assertEqual(component["lifecycle_state"], "RUNNING")
+
+        with patch("engineering_platform.server._runtime", return_value={"pid": 73}), patch(
+            "engineering_platform.server._alive", return_value=True
+        ), patch("engineering_platform.server.LaunchdProvider") as launchd:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", False, "LaunchAgent is not loaded"
+            )
+            component = server.status(self.root)["components"]["dashboard_relay"]
+        self.assertFalse(component["healthy"])
+        self.assertEqual(component["status_code"], "DASHBOARD_RELAY_UNAVAILABLE")
 
     def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
         server.initialize(self.root)

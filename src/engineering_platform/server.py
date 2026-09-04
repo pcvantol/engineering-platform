@@ -58,6 +58,7 @@ from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import EngineeringPlatformManifest
 from .providers import (
+    LaunchdProvider,
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
@@ -686,6 +687,32 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     }
 
 
+def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
+    """Project the Relay only when its real lifecycle owner is live.
+
+    The relay is an optional access adapter, but it is still a logical
+    Platform Component.  A running EP Server cannot stand in for a missing or
+    repeatedly exiting LaunchAgent.
+    """
+    definition = PLATFORM_COMPONENT_BY_ID["dashboard_relay"]
+    label = definition.lifecycle_label
+    try:
+        runtime = LaunchdProvider().runtime_status(label) if label else None
+        relay_running = bool(runtime and runtime.qualified)
+        detail = runtime.detail if runtime is not None else "lifecycle owner unavailable"
+    except OSError:
+        relay_running, detail = False, "lifecycle owner unavailable"
+    healthy = server_running and relay_running
+    return {
+        "healthy": healthy,
+        "status_code": definition.active_status if healthy else definition.inactive_status,
+        "detail_code": definition.detail_code,
+        "lifecycle_label": label,
+        "lifecycle_state": "RUNNING" if relay_running else "STOPPED",
+        "recent_error": None if healthy else detail,
+    }
+
+
 def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, object] | None:
     """Expose one secret-free detail view from the same platform projection."""
     component = status(data_root)["components"].get(component_id)  # type: ignore[index]
@@ -700,6 +727,7 @@ def status(data_root: Path) -> dict[str, object]:
     runtime = _runtime(data_root)
     running = bool(runtime and _alive(runtime.get("pid")))
     components = _transport_components(data_root, server_running=running)
+    components["dashboard_relay"] = _dashboard_relay_component(server_running=running)
     # One Server-native inventory feeds Components, the titlebar popout and
     # detail modals. It deliberately contains no watcher/check-out model.
     for definition in PLATFORM_COMPONENTS:
@@ -736,7 +764,8 @@ def status(data_root: Path) -> dict[str, object]:
         "components": components,
         "component_model": [
             {"id": item.id, "name_key": item.name_key, "kind": item.kind, "group": item.group,
-             "critical": item.critical, "restart_supported": item.restart_supported, "log_component": item.id}
+             "critical": item.critical, "restart_supported": item.restart_supported,
+             "lifecycle_label": item.lifecycle_label, "log_component": item.id}
             for item in PLATFORM_COMPONENTS
         ],
     }

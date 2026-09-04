@@ -19,6 +19,7 @@ class PlatformComponent:
     startup_event: str
     restart_supported: bool = False
     critical: bool = False
+    lifecycle_label: str | None = None
 
 
 PLATFORM_COMPONENTS = (
@@ -26,7 +27,12 @@ PLATFORM_COMPONENTS = (
     PlatformComponent("platform_database", "component.platform_database", "STORAGE", "platform", "PLATFORM_DATABASE_HEALTHY", "PLATFORM_DATABASE_UNAVAILABLE", "PLATFORM_DATABASE_STORAGE", "central_log_store_ready", False, True),
     PlatformComponent("lifecycle_worker", "component.lifecycle_worker", "IN_PROCESS_COMPONENT", "platform", "LIFECYCLE_WORKER_ACTIVE", "LIFECYCLE_WORKER_UNAVAILABLE", "LIFECYCLE_WORKER_SERVER_HOSTED", "lifecycle_worker_started", False, True),
     PlatformComponent("operations_console", "component.operations_console", "UI_SERVICE", "access", "OPERATIONS_CONSOLE_AVAILABLE", "OPERATIONS_CONSOLE_UNAVAILABLE", "OPERATIONS_CONSOLE_SERVER_NATIVE", "operations_console_available"),
-    PlatformComponent("dashboard_relay", "component.dashboard_relay", "UI_SERVICE", "access", "DASHBOARD_RELAY_ACTIVE", "DASHBOARD_RELAY_UNAVAILABLE", "DASHBOARD_RELAY_SERVER_NATIVE", "dashboard_relay_available"),
+    PlatformComponent(
+        "dashboard_relay", "component.dashboard_relay", "UI_SERVICE", "access",
+        "DASHBOARD_RELAY_ACTIVE", "DASHBOARD_RELAY_UNAVAILABLE",
+        "DASHBOARD_RELAY_SERVER_NATIVE", "dashboard_relay_available",
+        lifecycle_label="com.djconnect.engineering-dashboard-relay",
+    ),
     PlatformComponent("http_ingress", "transport.http", "TRANSPORT", "ingress", "HTTP_INGRESS_HEALTHY", "HTTP_INGRESS_DOWN", "CENTRAL_LISTENER_ENDPOINT", "http_ingress_available", False, True),
     PlatformComponent("cli_ingress", "transport.cli", "TRANSPORT", "ingress", "CLI_INGRESS_AVAILABLE", "CLI_INGRESS_DEGRADED", "CANONICAL_SUBMISSION_COMPATIBILITY", "cli_ingress_available", False, True),
     PlatformComponent("file_inbox_ingress", "transport.file", "TRANSPORT", "ingress", "FILE_INGRESS_RUNNING", "FILE_INGRESS_STOPPED", "FILE_INBOX_HEARTBEAT", "file_inbox_service_started"),

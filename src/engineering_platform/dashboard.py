@@ -72,11 +72,12 @@ from .dashboard_configuration import (
     get as dashboard_configuration,
     update as update_dashboard_configuration,
 )
+from .platform_components import PLATFORM_COMPONENT_BY_ID
 from . import dashboard_state
 from . import managed_codex_runtime
 
 LABEL = "com.djconnect.engineering-dashboard"
-RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
+RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
 DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
