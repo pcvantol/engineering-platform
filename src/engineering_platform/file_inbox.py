@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 MAX_FILE_BYTES = 131072
 MAX_REASON_LENGTH = 160
 HEARTBEAT_FILENAME = "file-inbox-heartbeat.json"
+QUALIFICATION_FAULT_ENVIRONMENT = "EP_FILE_INBOX_QUALIFICATION_FAULT"
 
 
 class FileInboxError(ValueError):
@@ -121,8 +122,14 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
     for claimed in sorted(folders["processing"].glob("*.json")):
         try:
             envelope, _raw, digest = _read_envelope(claimed)
+            # Installed qualification only: terminate the real Server process
+            # at a named transport boundary.  Normal runtime never sets this.
+            if os.environ.get(QUALIFICATION_FAULT_ENVIRONMENT) == "AFTER_CLAIM_BEFORE_SUBMIT":
+                os._exit(86)  # nosec B605 -- deliberate crash-canary boundary
             receipt_id, received_at = f"file:{digest}", _utcnow()
             receipt = _submit(server, credential, envelope, receipt_id=receipt_id, received_at=received_at)
+            if os.environ.get(QUALIFICATION_FAULT_ENVIRONMENT) == "AFTER_CENTRAL_ACCEPT_BEFORE_ARCHIVE":
+                os._exit(87)  # nosec B605 -- deliberate crash-canary boundary
             _write_receipt(_receipt_path(folders["accepted"], digest), {
                 "transport": "FILE_INBOX", "receipt_id": receipt_id, "received_at": received_at,
                 "submission_id": receipt["submission_id"], "duplicate": bool(receipt.get("duplicate")),
