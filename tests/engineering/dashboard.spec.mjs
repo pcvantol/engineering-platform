@@ -4414,7 +4414,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("formats File Inbox heartbeat detail through the selected dashboard locale", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
-      component: "file_inbox_ingress", state: "RUNNING", healthy: true,
+      component: "file_inbox_ingress", kind: "TRANSPORT", state: "FILE_INGRESS_RUNNING", healthy: true,
       detail: "File Inbox adapter heartbeat", heartbeat: "2026-09-04T06:41:05.681639+00:00",
       watched_location: "/private/tmp/file-inbox", delivery_retry: "NONE", quarantine_count: 0,
       launchd: {},
@@ -9664,7 +9664,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(queue.locator(".category-description")).toHaveText("Nieuwe opdrachten wachten op uitvoering in volgorde van aanmaakdatum.");
     await dispatchDashboardPointerClick(queue.locator("summary"));
     await expect(page.locator("#queueSummary")).toHaveText("0 uitvoeringen in de wachtrij.");
-    await expect(page.locator("#queueList")).toContainText("Geen Inbox-uitvoeringen wachten op uitvoering.");
+    await expect(page.locator("#queueList")).toContainText("Geen opdrachten wachten op uitvoering.");
 
     await page.evaluate(() => queueItems([
       { filename: "later.md", title: "Later uitvoeren", modified_at: "2026-08-02T10:02:00Z" },
@@ -10329,7 +10329,7 @@ test.describe("Engineering Status browser smoke", () => {
       components, component_model: canonicalPlatformComponentModel(),
     } }));
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
-      component: "http_ingress", healthy: false, state: "HTTP_INGRESS_DOWN",
+      component: "http_ingress", kind: "TRANSPORT", healthy: false, state: "HTTP_INGRESS_DOWN",
       detail: "CENTRAL_LISTENER_UNAVAILABLE",
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
