@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                     constraints.write_text(json.dumps(item["constraints"]), encoding="utf-8")
                     receipt = command(cli, "submit", "--server", base, "--project", project, "--repository", repository, "--producer-id", "installed-canary", "--producer-type", "HUMAN", "--producer-version", "1", "--prompt-file", str(prompt), "--constraints-file", str(constraints), "--idempotency-key", str(item["idempotency_key"]), environment=environment)
                     if ordinal == 3:
+                        wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
                         invalid = root / "invalid-constraints.json"
                         invalid.write_text("[]", encoding="utf-8")
                         invalid_prompt = root / "invalid-mode.md"
@@ -140,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
                                     arguments.extend((flag, value))
                             completed = subprocess.run(arguments, env=environment, capture_output=True, text=True)  # nosec B603
                             if completed.returncode == 0 or central_counts(data_root, project) != before:
-                                raise RuntimeError(f"negative CLI canary failed closed check: {name}")
+                                raise RuntimeError(f"negative CLI canary failed closed check: {name}; exit={completed.returncode}; output={completed.stdout.strip()}")
                         evidence["CLI_NEGATIVE_CANARIES"] = {"pass": True}
                 else:
                     incoming = data_root / "file-inbox" / "incoming"
@@ -168,6 +169,27 @@ def main(argv: list[str] | None = None) -> int:
                     if source.exists() or before != (1, 1) or after != (1, 1):
                         raise RuntimeError("FILE_INBOX_REPLAY_DUPLICATED_OR_UNDELIVERED")
                     evidence[f"{transport}_{mode}"]["replay"] = "PASS"
+                    if ordinal == 5:
+                        quarantine = data_root / "file-inbox" / "quarantine"
+                        physical_quarantine = lambda: [path for path in quarantine.glob("*.json") if not path.name.endswith(".receipt.json")]
+                        before_quarantine = len(physical_quarantine()) if quarantine.exists() else 0
+                        negative_files = {
+                            "malformed.json": "{",
+                            "unknown-project.json": json.dumps({"project_id": "unknown-project", "submission": item}),
+                            "unknown-repository.json": json.dumps({"project_id": project, "submission": {**item, "repository_id": "unknown-repository", "idempotency_key": "negative-file-repo"}}),
+                            "invalid-mode.json": json.dumps({"project_id": project, "submission": {**item, "prompt": "Execution Mode: INVALID", "idempotency_key": "negative-file-mode"}}),
+                            "invalid-genesis.json": json.dumps({"project_id": project, "submission": {**payload(repository, "GENESIS", "negative-file-genesis"), "prompt": "Execution Mode: Genesis\nTarget repository: relative"}}),
+                        }
+                        for name, content in negative_files.items():
+                            (incoming / name).write_text(content, encoding="utf-8")
+                        deadline = time.monotonic() + 15
+                        while len(physical_quarantine()) < before_quarantine + len(negative_files) and time.monotonic() < deadline:
+                            time.sleep(.1)
+                        quarantined = len(physical_quarantine())
+                        counts = central_counts(data_root, project)
+                        if quarantined != before_quarantine + len(negative_files) or counts != (1, 1):
+                            raise RuntimeError(f"negative File Inbox canary failed closed check: quarantined={quarantined}; expected={before_quarantine + len(negative_files)}; counts={counts}")
+                        evidence["FILE_INBOX_NEGATIVE_CANARIES"] = {"pass": True}
                 if ordinal == 1:
                     # Public-boundary negative canaries: every rejected
                     # request must leave CENTRAL's submission/run counts flat.
