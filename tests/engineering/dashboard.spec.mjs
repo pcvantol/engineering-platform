@@ -654,6 +654,7 @@ test.describe("Engineering Status browser smoke", () => {
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await openPlatformAttention(page);
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await expect(page.locator("#codexProviderReadinessAction")).toBeHidden();
   });
@@ -673,6 +674,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await openPlatformAttention(page);
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.locator("#codexProviderReadinessBanner")).toBeHidden();
@@ -5687,6 +5689,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/log/**", (route) => route.abort());
     await page.route("**/health", (route) => route.fulfill({ json: { components: {
       dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+      http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
+      cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
+      file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
     } } }));
     // This visual reference is for the running-execution surface. Keep the
     // machine-specific provider checks out of the fixture; their banners have
@@ -10294,6 +10299,9 @@ test.describe("Engineering Status browser smoke", () => {
   test("shows live platform readiness in the titlebar health indicator", async ({ page }) => {
     await page.route("**/health", (route) => route.fulfill({ json: { components: {
       dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+      http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
+      cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
+      file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
     } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
@@ -10301,6 +10309,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.evaluate(() => {
       renderPlatformHealth({ components: {
         dashboard: { healthy: true }, inbox_watcher: { healthy: true }, dashboard_relay: { healthy: true },
+        http_ingress: { healthy: true, status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT" },
+        cli_ingress: { healthy: true, status_code: "CLI_INGRESS_AVAILABLE", detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY" },
+        file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
       } });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
     });
@@ -10309,8 +10320,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardHealthTooltip")).toBeHidden();
     await indicator.click();
     await expect(indicator).toHaveAttribute("aria-expanded", "true");
-    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Inbox-watcher");
-    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Dashboard-relay");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("HTTP/API-ingang");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Bestandsinbox-ingang");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Geen uitvoering actief");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Werkruimte gereed");
     const componentRows = page.locator("#dashboardHealthChecks .dashboard-health__check--component");

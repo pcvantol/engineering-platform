@@ -5135,7 +5135,11 @@ document.addEventListener("touchend", endPullRefresh, { passive: true });
 document.addEventListener("touchcancel", endPullRefresh, { passive: true });
 function hideDashboardSplash() {
   const splash = $("dashboardSplash");
-  if (!splash || document.body.classList.contains("dashboard-ready")) return;
+  // A ready Console has completed its independent provider-readiness probe as
+  // well as its snapshot/configuration hydration. This avoids briefly hiding
+  // actionable provider attention while a slower local probe is still in
+  // flight.
+  if (!splash || !dashboardConfigurationLoaded || document.body.classList.contains("dashboard-ready")) return;
   document.body.classList.add("dashboard-ready");
   splash.setAttribute("aria-hidden", "true");
   setTimeout(() => {
@@ -6674,7 +6678,7 @@ async function saveDashboardConfiguration(control) {
 }
 async function initializeDashboardConfiguration() {
   localizeConfigurationOptions();
-  void refreshProviderLoginStatus();
+  const initialProviderReadiness = refreshProviderLoginStatus();
   setDashboardConfigurationControlsDisabled(true);
   try {
     const response = await fetch("/api/configuration", { cache: "no-store" });
@@ -6705,8 +6709,10 @@ async function initializeDashboardConfiguration() {
     $("configurationStatus").textContent = t("configuration.load_failed");
     $("configurationStatus").classList.remove("configuration-status--saved");
   } finally {
+    await initialProviderReadiness;
     dashboardConfigurationLoaded = true;
     setDashboardConfigurationControlsDisabled(false);
+    hideDashboardSplash();
   }
 }
 ensureProviderReadinessConfigurationControl();
