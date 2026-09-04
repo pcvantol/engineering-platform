@@ -107,9 +107,50 @@ class DependabotProducerTests(unittest.TestCase):
                 dependabot_producer.admit(
                     connection,
                     external_repository="pcvantol/unbound",
-                    pull_request=self._pull(19),
+                    pull_request=dependabot_producer.DependabotPullRequest(
+                        19, "Bump", "https://github.com/pcvantol/unbound/pull/19", "dependabot/pip/a", "a" * 40,
+                    ),
                 )
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 1)
+
+    def test_inactive_binding_project_and_forged_source_fail_before_admission(self) -> None:
+        with sqlite3.connect(self.database) as connection:
+            binding = external_producer_binding.resolve(
+                connection,
+                producer_type=external_producer_binding.DEPENDABOT,
+                external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
+                external_resource_identity="pcvantol/repository-a",
+            )
+            external_producer_binding.deactivate(
+                connection,
+                data_root=self.root,
+                binding_id=binding.binding_id,
+                reason="negative canary",
+            )
+            with self.assertRaisesRegex(external_producer_binding.ProducerBindingError, "BINDING_NOT_FOUND"):
+                dependabot_producer.admit(
+                    connection,
+                    external_repository="pcvantol/repository-a",
+                    pull_request=self._pull(31),
+                )
+            connection.execute("UPDATE ep_project_registrations SET status='DISABLED' WHERE project_id='project-b'")
+            with self.assertRaisesRegex(external_producer_binding.ProducerBindingError, "PROJECT_INACTIVE"):
+                dependabot_producer.admit(
+                    connection,
+                    external_repository="pcvantol/repository-b",
+                    pull_request=dependabot_producer.DependabotPullRequest(
+                        32, "Bump", "https://github.com/pcvantol/repository-b/pull/32", "dependabot/pip/b", "b" * 40,
+                    ),
+                )
+            with self.assertRaisesRegex(dependabot_producer.DependabotProducerError, "INVALID_SOURCE_METADATA"):
+                dependabot_producer.admit(
+                    connection,
+                    external_repository="pcvantol/repository-a",
+                    pull_request=dependabot_producer.DependabotPullRequest(
+                        33, "Bump", "https://example.invalid/pull/33", "dependabot/pip/a", "a" * 40,
+                    ),
+                )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
 
     def test_discovery_requires_actual_dependabot_source_and_canonical_pull_url(self) -> None:
         accepted = {

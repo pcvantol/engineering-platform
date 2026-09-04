@@ -168,13 +168,13 @@ def admit(
     and lifecycle validation.
     """
     repository = external_producer_binding.normalize_github_repository(external_repository)
+    pull_request = _validate_pull_request(repository, pull_request)
     binding = external_producer_binding.resolve(
         connection,
         producer_type=external_producer_binding.DEPENDABOT,
         external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
         external_resource_identity=repository,
     )
-    pull_request = _validate_pull_request(repository, pull_request)
     key = f"dependabot:{repository}:{pull_request.number}:{pull_request.head_sha}"
     request = submission_service.SubmissionRequest(
         project_id=binding.project_id,
