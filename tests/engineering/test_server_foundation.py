@@ -232,7 +232,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(projection["installation_id"], identity.instance_id)
         self.assertEqual(projection["schema_version"], server.SERVER_STORE_SCHEMA_VERSION)
         self.assertEqual(projection["projects"], [])
-        self.assertIn(b"/v1/operations/projects", server._operations_console_document())
+
+    def test_topology_diagnostic_is_data_not_a_second_console(self) -> None:
+        """The installed Console owns UI; diagnostics expose only topology data."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        identity = server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        with urlopen(f"http://127.0.0.1:{port}/diagnostics/topology") as response:
+            self.assertEqual(response.headers.get_content_type(), "application/json")
+            projection = json.loads(response.read())
+        self.assertEqual(projection["installation_id"], identity.instance_id)
+        self.assertNotIn("html", projection)
 
     def test_no_project_console_never_resolves_a_checkout_for_shell_assets_or_platform_data(self) -> None:
         """`<geen>` is a real CENTRAL/platform projection, not first-root fallback."""

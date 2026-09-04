@@ -2208,12 +2208,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
         if request.path == "/diagnostics/topology":
-            body = _operations_console_document()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except ServerConfigurationError:
+                self._send(503, {"error": "TOPOLOGY_DIAGNOSTIC_UNAVAILABLE"})
             return
         if self.path == "/v1/operations/projects":
             try:
