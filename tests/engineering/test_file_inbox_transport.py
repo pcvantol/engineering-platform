@@ -4,6 +4,7 @@ import json
 import socket
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -64,3 +65,22 @@ class FileInboxTransportTest(unittest.TestCase):
         self.assertEqual(len(list((self.inbox / "quarantine").glob("*.json"))), 4)
         with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
+
+    def test_installed_service_heartbeat_marks_the_platform_ingress_running(self) -> None:
+        """Liveness comes from the real adapter service, never a UI fixture."""
+        installation_inbox = self.root / server.FILE_INBOX_DIRECTORY
+        service = file_inbox.FileInboxService(
+            installation_inbox, server=f"http://127.0.0.1:{self.port}", credential=self.credential,
+            interval_seconds=0.02,
+        )
+        service.start()
+        try:
+            for _ in range(50):
+                component = server.status(self.root)["components"]["file_inbox_ingress"]
+                if component["status_code"] == "FILE_INGRESS_RUNNING":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(component["status_code"], "FILE_INGRESS_RUNNING")
+            self.assertTrue(component["healthy"])
+        finally:
+            service.stop()
