@@ -986,7 +986,14 @@ def _inbox_watcher_health(root: Path) -> dict[str, str | bool]:
 
 
 def _platform_health(root: Path) -> dict[str, object]:
-    """Provide a read-only readiness projection for every local EP component."""
+    """Provide readiness for the Dashboard access path only.
+
+    The canonical EP component projection belongs to the installed Server.
+    This endpoint deliberately reports only the two processes that make the
+    Tailnet Dashboard reachable.  In particular, it must not infer File
+    Inbox health from the retired Inbox-watcher LaunchAgent: File Inbox is a
+    Server-owned ingress and is projected by the Server component model.
+    """
     components: dict[str, dict[str, object]] = {
         "dashboard": {
             "healthy": True,
@@ -994,11 +1001,6 @@ def _platform_health(root: Path) -> dict[str, object]:
             "detail": "HTTP-dashboard reageert",
             "version": DASHBOARD_VERSION,
             "uptime_seconds": max(0, round(time.monotonic() - DASHBOARD_STARTED_AT)),
-        },
-        "inbox_watcher": {
-            **_inbox_watcher_health(root),
-            "version": WATCHER_VERSION,
-            "uptime_seconds": _component_uptime_seconds("inbox_watcher"),
         },
         "dashboard_relay": {
             **_launch_agent_health(RELAY_LABEL),

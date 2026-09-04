@@ -2948,9 +2948,9 @@ class DashboardStatusTest(unittest.TestCase):
                 )
             self.assertEqual(_component_log_versions(root)["inbox"], "sqlite:1:1")
 
-    @patch("engineering_platform.dashboard._component_uptime_seconds", side_effect=(3661, 122))
+    @patch("engineering_platform.dashboard._component_uptime_seconds", side_effect=(122,))
     @patch("engineering_platform.dashboard._launch_agent_health")
-    def test_platform_health_reports_each_visible_component(
+    def test_platform_health_reports_only_the_dashboard_access_path(
         self, launch_agent_health: object, component_uptime: object
     ) -> None:
         launch_agent_health.return_value = {
@@ -2966,13 +2966,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertTrue(health["healthy"])
         self.assertEqual(set(health["components"]), {
             "dashboard",
-            "inbox_watcher",
             "dashboard_relay",
         })
         self.assertIsInstance(health["components"]["dashboard"]["uptime_seconds"], int)
-        self.assertEqual(health["components"]["inbox_watcher"]["uptime_seconds"], 3661)
         self.assertEqual(health["components"]["dashboard_relay"]["uptime_seconds"], 122)
-        component_uptime.assert_called()
+        component_uptime.assert_called_once_with("dashboard_relay")
 
     @patch("engineering_platform.dashboard._component_processes")
     def test_component_uptime_uses_the_longest_owned_process_lifetime(self, processes: object) -> None:
