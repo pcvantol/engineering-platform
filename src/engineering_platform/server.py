@@ -974,6 +974,25 @@ def _central_provider_repair(data_root: Path, payload: object) -> None:
         dashboard._install_provider(data_root, provider)  # type: ignore[attr-defined]
 
 
+def _central_provider_logout(data_root: Path, payload: object) -> None:
+    """Remove one verified host-wide provider session through CENTRAL.
+
+    The Console never owns provider credentials.  It can only request this
+    narrowly validated host operation while the provider is known ready, so a
+    stale or fabricated UI request cannot be delegated to a checkout-bound
+    legacy handler.
+    """
+    if not isinstance(payload, dict) or set(payload) != {"provider"}:
+        raise ValueError("Invalid provider logout request.")
+    provider = str(payload["provider"])
+    if provider not in {"CODEX", "GITHUB"}:
+        raise ValueError("Invalid provider logout request.")
+    readiness = _central_provider_readiness(data_root)
+    if str(readiness[provider.lower()]["state"]) != "READY":
+        raise ValueError("Provider is not ready for logout.")
+    dashboard._logout_provider(data_root, provider)  # type: ignore[attr-defined]
+
+
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
     """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
@@ -1538,6 +1557,23 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(409, {"error": "PROVIDER_REPAIR_UNAVAILABLE"})
                 return
             self._send(202, {"started": True, "scope": "PLATFORM"})
+            return
+        if request.path == "/api/provider-login/logout" and method == "do_POST":
+            # Logout is the companion host-wide action to login.  Do not let
+            # the installed no-project Console fall through to the retired
+            # checkout handler, which rejects it before the CLI can run.
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                _central_provider_logout(self.server.data_root, payload)  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "PROVIDER_LOGOUT_UNAVAILABLE"})
+                return
+            self._send(200, {"logged_out": True, "scope": "PLATFORM"})
             return
         if request.path == "/api/provider-capacity/configuration":
             if method == "do_GET":

@@ -204,6 +204,21 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         start_login.assert_called_once_with(self.root, "CODEX")
         self.assertEqual(readiness()["codex"]["state"], "AUTH_REQUIRED")
 
+    @patch("engineering_platform.server.dashboard._logout_provider")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_provider_logout_is_central_and_never_requires_a_project(
+        self, readiness: object, logout: object,
+    ) -> None:
+        """A host-wide sign-out must work from the installed ``<geen>`` Console."""
+        readiness.return_value = {
+            "codex": {"state": "READY", "scope": "PLATFORM"},
+            "github": {"state": "READY", "scope": "PLATFORM"},
+        }
+        server._central_provider_logout(self.root, {"provider": "GITHUB"})
+        logout.assert_called_once_with(self.root, "GITHUB")
+        with self.assertRaises(ValueError):
+            server._central_provider_logout(self.root, {"provider": "INVALID"})
+
     @patch("engineering_platform.server.provider_readiness.runtime_details")
     @patch("engineering_platform.server.provider_readiness.host_status")
     def test_central_provider_readiness_uses_host_authentication_not_repository_access(

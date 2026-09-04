@@ -528,6 +528,27 @@ test.describe("Engineering Status browser smoke", () => {
     expect(geometry.nameLeft - geometry.dotRight).toBeLessThanOrEqual(12);
   });
 
+  test("sends a confirmed provider sign-out to the CENTRAL logout route", async ({ page }) => {
+    let signOuts = 0;
+    await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
+      providers: {
+        codex: { provider: "CODEX", state: "READY" },
+        github: { provider: "GITHUB", state: "READY" },
+      },
+    } }));
+    await page.route("**/api/provider-login/logout", async (route) => {
+      signOuts += 1;
+      expect(JSON.parse(route.request().postData() || "{}")).toEqual({ provider: "CODEX" });
+      await route.fulfill({ status: 200, json: { logged_out: true, scope: "PLATFORM" } });
+    });
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
+    await page.locator('[data-provider="CODEX"] [data-provider-logout]').click();
+    await page.locator("#confirmationModalConfirm").click();
+    await expect.poll(() => signOuts).toBe(1);
+  });
+
   test("offers the confirmed compact install action beside an unavailable provider", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     let repairs = 0;
