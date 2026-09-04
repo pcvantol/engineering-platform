@@ -13,6 +13,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -137,6 +138,10 @@ def _validate_execution_mode(request: SubmissionRequest) -> None:
     }
     if declarations and (not declarations <= VALID_EXECUTION_MODES or len(declarations) != 1):
         raise SubmissionError("INVALID_EXECUTION_MODE")
+    if declarations == {"GENESIS"}:
+        targets = [line.split(":", 1)[1].strip() for line in request.prompt.splitlines() if line.strip().lower().startswith("target repository:")]
+        if len(set(targets)) != 1 or not targets[0] or not Path(targets[0]).is_absolute():
+            raise SubmissionError("INVALID_GENESIS_TARGET")
 
 
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:

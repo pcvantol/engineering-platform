@@ -46,10 +46,11 @@ def wait_for_dispatch(server: Path, data_root: Path, submission_id: str) -> dict
 
 
 def payload(repository: str, mode: str, key: str) -> dict[str, object]:
+    target = "\nTarget repository: /tmp/ep-installed-genesis-target" if mode == "GENESIS" else ""
     return {
         "repository_id": repository,
         "producer": {"id": "installed-canary", "type": "HUMAN", "version": "1"},
-        "prompt": f"Execution Mode: {mode.title()}\n\nInstalled ingress qualification only.",
+        "prompt": f"Execution Mode: {mode.title()}{target}\n\nInstalled ingress qualification only.",
         "idempotency_key": key,
         "constraints": {"mode": mode, "qualification": "P_TRANSPORT_INGRESS_MATRIX"},
     }
@@ -175,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                         ("unknown_project", json.dumps(item).encode(), "unknown-project"),
                         ("unknown_repository", json.dumps({**item, "repository_id": "unknown-repository"}).encode(), project),
                         ("invalid_mode", json.dumps({**item, "constraints": {"mode": "INVALID"}}).encode(), project),
-                        ("invalid_genesis", json.dumps({**item, "constraints": {"mode": "GENESIS", "target": ""}}).encode(), project),
+                        ("invalid_genesis", json.dumps({**payload(repository, "GENESIS", "invalid-genesis"), "prompt": "Execution Mode: Genesis\nTarget repository: relative"}).encode(), project),
                     )
                     for name, body, target_project in negatives:
                         before = central_counts(data_root, project)
