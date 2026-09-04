@@ -6171,6 +6171,19 @@ function providerDisplayName(provider) {
 function providerReadinessState(providers, provider) {
   return String(providers?.[provider]?.state || "CHECK_FAILED");
 }
+function syncPlatformAttentionBanner() {
+  const panel = $("platformAttentionBanner"), title = $("platformAttentionTitle"), summary = $("platformAttentionSummary");
+  if (!panel || !title || !summary) return;
+  const items = [
+    $("codexProviderReadinessBanner"), $("githubProviderReadinessBanner"), $("executionRuntimeBanner"),
+  ].filter((item) => item && !item.hidden);
+  panel.hidden = items.length === 0;
+  if (!items.length) return;
+  const labels = items.map((item) => item.querySelector("strong")?.textContent?.trim()).filter(Boolean);
+  title.textContent = labels.join(" · ");
+  summary.textContent = String(items.length);
+  panel.open = false;
+}
 function renderProviderLoginStatus(block, providers) {
   renderProviderReadinessBanner(providers);
   block.querySelectorAll("[data-provider]").forEach((row) => {
@@ -6223,6 +6236,7 @@ function renderExecutionRuntimeStatus(runtime) {
     bannerRepair.disabled = providerInteractiveRepairInProgress;
     bannerRepair.textContent = t("configuration.execution_runtime_repair");
   }
+  syncPlatformAttentionBanner();
   syncStickyHeaderOffset();
 }
 async function refreshProviderLoginStatus() {
@@ -6279,6 +6293,7 @@ function renderProviderReadinessBanner(providers) {
     button.disabled = providerInteractiveRepairInProgress;
     button.textContent = action ? t(`notification.provider_readiness.${action}`, { provider }) : "";
   });
+  syncPlatformAttentionBanner();
   syncStickyHeaderOffset();
 }
 document.addEventListener("click", async (event) => {
