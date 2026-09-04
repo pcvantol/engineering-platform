@@ -80,6 +80,26 @@ browser specification.
 
 ## Installed source canaries
 
+### Installed 3×2 ingress qualification
+
+`tools/qualification/p_transport_installed_ingress_matrix.py` is the permanent
+installed integration gate (`npm run test:p-transport-ingress-matrix`).  It
+builds the candidate wheel, installs it into a temporary virtual environment,
+and uses only public boundaries: HTTP, the installed CLI executable and a
+physical File Inbox input file.  For each MANAGED and GENESIS submission it
+records the canonical submission identifier and the lifecycle run identifier.
+The worker reaches `RUNNING` before the qualification-only provider stop;
+provider, checkout and PR side effects are intentionally outside this ingress
+gate.  CI executes the target in Engineering Platform validation.
+
+```text
+P_TRANSPORT_INGRESS_MATRIX = PASS
+SAME_CANONICAL_SUBMISSION_SERVICE = PASS
+SAME_CENTRAL_ADMISSION_MODEL = PASS
+SAME_LIFECYCLE_INITIALIZATION_MODEL = PASS
+DIRECT_RUNNER_BYPASS = 0
+```
+
 ```text
 FILE_INGRESS_LOCAL_DB = 0
 CLI_INGRESS_LOCAL_DB = 0

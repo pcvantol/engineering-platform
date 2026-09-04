@@ -383,6 +383,12 @@ class ParityLifecycleDispatcher:
             raise ParityLifecycleDispatchError("LOCAL_BINDING_UNBOUND")
         repository_root = context.local_repository_root
         self._set_state(submission_id, run_id, "RUNNING")
+        # The installed ingress qualification deliberately stops only after
+        # CENTRAL has allocated and persisted the canonical dispatch/run. It
+        # exercises the real worker and dispatcher, while avoiding provider,
+        # checkout and PR side effects for six transport canaries.
+        if os.environ.get("EP_QUALIFICATION_INITIALIZE_ONLY") == "1":
+            return DispatchReceipt(submission_id, context.project_id, context.repository_id, run_id, "RUNNING", duplicate)
         try:
             with _historical_admission_environment(repository_root, self.data_root):
                 if not duplicate:
