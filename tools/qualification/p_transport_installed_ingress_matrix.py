@@ -95,7 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         root = Path(temporary)
         wheelhouse, venv, data_root = root / "wheelhouse", root / "venv", root / "central"
         wheelhouse.mkdir()
-        subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)], check=True, capture_output=True, text=True)  # nosec B603
+        # Build the candidate exactly as an installer would.  The qualification
+        # runner must not assume that its own interpreter happens to carry the
+        # project build backend; build isolation is part of the wheel contract.
+        subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)], check=True, capture_output=True, text=True)  # nosec B603
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)  # nosec B603
         pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "--no-index", "--find-links", str(wheelhouse), "engineering-platform"], check=True, capture_output=True, text=True)  # nosec B603
