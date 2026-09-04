@@ -5281,21 +5281,22 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#inboxComponentLog")).not.toContainText("older-entry");
   });
 
-  test("queries the complete retained component log before applying filters", async ({ page }) => {
-    const inboxQueries = [];
+  test("sends every component-log filter and sort to CENTRAL before server pagination", async ({ page }) => {
+    const centralQueries = [];
     await page.route("**/api/logs/**", async (route) => {
       const url = new URL(route.request().url()), component = url.pathname.split("/").at(-1);
-      if (component === "inbox") inboxQueries.push(url.searchParams);
+      centralQueries.push({ component, query: url.searchParams });
       const historical = url.searchParams.has("start");
       await route.fulfill({ json: {
-        entries: component === "inbox" ? [{
+        entries: [{
           line: historical ? 17 : 999,
           timestamp: historical ? "2026-08-26T09:00:00.000Z" : "2026-08-27T09:00:00.000Z",
           level: historical ? "WARNING" : "INFO",
           event: historical ? "historical_warning" : "newest_record",
           diagnostic: historical ? "needle from yesterday" : "newest record",
-        }] : [],
-        total: component === "inbox" ? 121 : 0,
+          component: component === "all" ? "operations_console" : component,
+        }],
+        total: 121,
         events: ["historical_warning", "newest_record"],
       } });
     });
@@ -5303,18 +5304,25 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.waitForFunction(() => componentLogsLoaded);
 
+    await page.locator("#logComponentFilter").selectOption("operations_console");
     await page.locator("#logTimePreset").selectOption("yesterday");
     await expect(page.locator("#inboxComponentLog")).toContainText("needle from yesterday");
     await page.locator("#logFilter").fill("needle");
     await page.locator("#logLevelFilter").selectOption("WARNING");
     await page.locator("#logEventFilter").selectOption("historical_warning");
-    await expect.poll(() => inboxQueries.some((query) =>
-      query.get("format") === "json"
+    await page.locator("#componentLogs th[data-sort-key='event']").first().click();
+    await expect.poll(() => centralQueries.some(({ component, query }) =>
+      component === "operations_console"
+      && query.get("format") === "json"
+      && query.get("page") === "1"
+      && query.get("page_size") === "50"
       && query.has("start")
       && query.has("end")
       && query.get("search") === "needle"
       && query.get("level") === "WARNING"
-      && query.getAll("event").includes("historical_warning"),
+      && query.getAll("event").includes("historical_warning")
+      && query.get("sort") === "event"
+      && query.get("direction") === "asc",
     )).toBe(true);
   });
 

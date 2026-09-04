@@ -226,6 +226,11 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson&search=needle") as response:
             exported = [json.loads(line) for line in response.read().decode().splitlines()]
         self.assertEqual({entry["event"] for entry in exported}, {"alpha", "beta"})
+        for invalid in ("page=0", "page_size=201", "level=TRACE", "sort=component", "direction=sideways"):
+            with self.assertRaises(HTTPError) as error:
+                urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{invalid}")
+            self.assertEqual(error.exception.code, 400)
+            self.assertEqual(json.loads(error.exception.read())["error"], "LOG_QUERY_INVALID")
 
     @patch("engineering_platform.server.dashboard._start_provider_login")
     @patch("engineering_platform.server._central_provider_readiness")
