@@ -754,6 +754,13 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
+def _console_platform_version() -> str:
+    """Read the installed platform version once for CENTRAL Console snapshots."""
+    return EngineeringPlatformManifest.load(
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
+    ).platform_version
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the Slice-B project status/history projection from CENTRAL only."""
     queue = _console_queue_projection(data_root, project_id)
@@ -783,6 +790,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
         "scope": "PROJECT",
         "status": {
             "project_id": project_id,
+            "platform_version": _console_platform_version(),
             "queue_depth": queue["queue_depth"],
             "queue_items": queue["queue_items"],
             "active_run": active["run_id"] if active else None,
@@ -804,9 +812,6 @@ def _no_project_console_snapshot() -> dict[str, object]:
     overlay while preserving the fail-closed boundary for all project routes.
     """
     queue = {"operator_handling": {}, "queue_depth": 0, "queue_items": []}
-    platform_version = EngineeringPlatformManifest.load(
-        package_path("ENGINEERING_PLATFORM_VERSION.json")
-    ).platform_version
     return {
         "scope": "PLATFORM",
         "queue": queue,
@@ -814,7 +819,7 @@ def _no_project_console_snapshot() -> dict[str, object]:
         "telemetry": [],
         "status": {
             "lifecycle_source": "CENTRAL",
-            "platform_version": platform_version,
+            "platform_version": _console_platform_version(),
             **queue,
         },
     }
@@ -1532,6 +1537,36 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _stream_project_console_events(self, project_id: str) -> None:
+        """Keep the selected project's CENTRAL-only dashboard stream alive."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
+            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
+            previous: bytes | None = None
+            for iteration in range(300):
+                payload = json.dumps(
+                    _central_console_project_snapshot(self.server.data_root, project_id),  # type: ignore[attr-defined]
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if payload != previous:
+                    self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
+                    self.wfile.flush()
+                    previous = payload
+                elif iteration and iteration % 15 == 0:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                time.sleep(stream_interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _delegate_dashboard(self, method: str) -> None:
         """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
@@ -1746,13 +1781,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self._send(200, detail)
                 return
             if request.path == "/api/events":
-                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
-                encoded = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(b"event: dashboard\ndata: " + encoded + b"\n\n")
+                self._stream_project_console_events(selected)
                 return
         if method == "do_POST" and isinstance(selected, str) and selected in project_ids and (
             request.path == "/api/configuration" or request.path.startswith("/api/logs/")

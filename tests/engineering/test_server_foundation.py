@@ -475,6 +475,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{port}/api/events?project={identifier}", timeout=2) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                event = "".join(response.readline().decode("utf-8") for _ in range(4))
+                self.assertIn('"platform_version":"2.0.0"', event)
         # Browser module and stylesheet requests precede the document's
         # project-aware fetch wrapper, so neutral package assets must remain
         # available without a scope header.
