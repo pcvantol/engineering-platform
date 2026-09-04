@@ -2590,9 +2590,9 @@ class DashboardStatusTest(unittest.TestCase):
             {"pid": 10, "memory_kib": 100, "uptime_seconds": 20},
             {"pid": 11, "memory_kib": 100, "uptime_seconds": 90},
         ]
-        self.assertEqual(_component_uptime_seconds("inbox_watcher"), 90)
+        self.assertEqual(_component_uptime_seconds("dashboard_relay"), 90)
         processes.return_value = []
-        self.assertIsNone(_component_uptime_seconds("inbox_watcher"))
+        self.assertIsNone(_component_uptime_seconds("dashboard_relay"))
 
     def test_dashboard_binds_only_loopback_and_delegates_tailnet_ingress_to_relay(self) -> None:
         self.assertEqual(binding_addresses(), (LOOPBACK_ADDRESS,))
