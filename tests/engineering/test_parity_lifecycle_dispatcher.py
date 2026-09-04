@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -77,6 +80,23 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_dispatcher_import_does_not_load_retired_inbox_watcher_runtime(self) -> None:
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        environment = os.environ | {"PYTHONPATH": str(source_root)}
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, sys; import engineering_platform.parity_lifecycle_dispatcher; "
+                "print(json.dumps('engineering_platform.inbox_watcher' in sys.modules))",
+            ],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            env=environment,
+        )
+        self.assertEqual(json.loads(completed.stdout), False)
+
     def _submission(self, project: str, prompt: str = "Validate only.") -> str:
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             return submission_service.submit(connection, submission_service.SubmissionRequest(
@@ -86,9 +106,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_claims_one_submission_once_and_preserves_central_run_linkage(self) -> None:
         submission = self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             first = dispatcher.dispatch(submission)
             second = dispatcher.dispatch(submission)
         self.assertEqual(first.run_id, second.run_id)
@@ -109,9 +129,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_context_never_crosses_project_binding(self) -> None:
         alpha, beta = self._submission("alpha"), self._submission("beta")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             alpha_receipt = dispatcher.dispatch(alpha)
             beta_receipt = dispatcher.dispatch(beta)
         self.assertNotEqual(alpha_receipt.run_id, beta_receipt.run_id)
@@ -121,9 +141,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_dispatcher_checkpoint_is_central_without_a_local_projection(self) -> None:
         submission = self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=_CheckpointingRunner)
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
         root = self.roots["alpha"]
         self.assertFalse((root / ".engineering" / "engineering.db").exists())
@@ -150,9 +170,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_failed_run_blocks_later_project_submission_until_central_operator_resolution(self) -> None:
         first, later = self._submission("alpha"), self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(first)
             self.assertEqual(receipt.state, "FAILED")
             with self.assertRaisesRegex(ParityLifecycleDispatchError, "PROJECT_RUN_ALREADY_ACTIVE"):
@@ -167,9 +187,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_project_scoped_operator_action_rejects_a_foreign_run(self) -> None:
         submission = self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
         with self.assertRaisesRegex(ParityLifecycleDispatchError, "PROJECT_RUN_NOT_AWAITING_OPERATOR"):
             dismiss_operator_gate(self.data, project_id="beta", run_id=receipt.run_id)
@@ -177,9 +197,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_retry_resolves_failed_gate_and_prioritizes_its_central_successor(self) -> None:
         first, later = self._submission("alpha"), self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _FailingRunner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(first)
         retry = retry_operator_gate(self.data, project_id="alpha", run_id=receipt.run_id)
         with self.assertRaisesRegex(ParityLifecycleDispatchError, "PROJECT_RUN_ALREADY_ACTIVE"):
@@ -193,9 +213,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_genesis_mode_is_forwarded_to_the_preserved_host_input(self) -> None:
         submission = self._submission("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()):
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()):
             receipt = dispatcher.dispatch(submission)
         self.assertEqual(receipt.state, "COMPLETE")
         self.assertIn("Execution Mode: Genesis", _Runner.calls[0][0].read_text(encoding="utf-8"))
@@ -208,9 +228,9 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
     def test_terminal_dispatch_projects_the_preserved_console_history(self) -> None:
         submission = self._submission("alpha")
         dispatcher = ParityLifecycleDispatcher(self.data, runner_factory=lambda root: _Runner())
-        with patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_host_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
-             patch("engineering_platform.parity_lifecycle_dispatcher.inbox_watcher.execute_capability_preflight", return_value=_PassingPreflight()), \
+        with patch("engineering_platform.parity_lifecycle_dispatcher.execute_host_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_workspace_preflight", return_value=_PassingPreflight()), \
+             patch("engineering_platform.parity_lifecycle_dispatcher.execute_capability_preflight", return_value=_PassingPreflight()), \
              patch("engineering_platform.parity_lifecycle_dispatcher.generate_terminal_report") as report, \
              patch("engineering_platform.parity_lifecycle_dispatcher.record_terminal_report") as record, \
              patch("engineering_platform.parity_lifecycle_dispatcher.analyze_terminal_report") as analyze:
