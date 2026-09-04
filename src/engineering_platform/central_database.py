@@ -18,6 +18,8 @@ CODEX_CAPACITY_RESERVE_KEY = "ep.codex_capacity_reserve_percent"
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_OPTIONS = frozenset({60, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60})
 CODEX_CAPACITY_RESERVE_OPTIONS = frozenset({0, 5, 10, 15, 20, 25, 50, 75})
+CONSOLE_INTERVAL_OPTIONS = frozenset({5, 15, 30, 60})
+CONSOLE_INTERVAL_KEYS = frozenset({"platform_health_refresh_seconds", "component_details_refresh_seconds"})
 
 
 def path(data_root: Path) -> Path:
@@ -114,6 +116,28 @@ def update_capacity_configuration(data_root: Path, reserve_percent: object) -> d
             (CODEX_CAPACITY_RESERVE_KEY, json.dumps(reserve_percent)),
         )
     return {"previous": previous, "codex_capacity_reserve_percent": reserve_percent}
+
+
+def console_interval_configuration(data_root: Path) -> dict[str, int]:
+    result = {key: 15 for key in CONSOLE_INTERVAL_KEYS}
+    try:
+        with sqlite3.connect(f"file:{path(data_root)}?mode=ro", uri=True) as connection:
+            for key, value in connection.execute("SELECT key,value FROM engineering_metadata WHERE key IN (?,?)", tuple("console." + key for key in CONSOLE_INTERVAL_KEYS)):
+                name = str(key).removeprefix("console.")
+                parsed = int(json.loads(value))
+                if name in result and parsed in CONSOLE_INTERVAL_OPTIONS: result[name] = parsed
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return result
+
+
+def update_console_interval_configuration(data_root: Path, key: object, value: object) -> dict[str, int]:
+    if not isinstance(key, str) or key not in CONSOLE_INTERVAL_KEYS or not isinstance(value, int) or isinstance(value, bool) or value not in CONSOLE_INTERVAL_OPTIONS:
+        raise ValueError("CONSOLE_CONFIGURATION_INVALID")
+    previous = console_interval_configuration(data_root)[key]
+    with sqlite3.connect(path(data_root)) as connection:
+        connection.execute("INSERT INTO engineering_metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("console." + key, json.dumps(value)))
+    return {"key": key, "previous": previous, "value": value}
 
 
 def record_provider_capacity(

@@ -916,6 +916,7 @@ def _central_console_configuration(data_root: Path) -> dict[str, object]:
         "scope": "PLATFORM",
         **central_database.maintenance_configuration(data_root),
         **central_database.capacity_configuration(data_root),
+        **central_database.console_interval_configuration(data_root),
     }
 
 
@@ -1460,6 +1461,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(200, central_database.update_capacity_configuration(self.server.data_root, reserve))  # type: ignore[attr-defined]
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
+            return
+        if request.path == "/api/configuration" and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                result = central_database.update_console_interval_configuration(
+                    self.server.data_root, payload.get("key") if isinstance(payload, dict) else None,
+                    payload.get("value") if isinstance(payload, dict) else None,
+                )  # type: ignore[attr-defined]
+                self._send(200, result)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "CONSOLE_CONFIGURATION_INVALID"})
             return
         if method == "do_POST" and request.path == "/api/runtime-directory/open":
             # This action historically resolved the first bound checkout.
