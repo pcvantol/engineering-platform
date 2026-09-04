@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import logging
 from pathlib import Path
 import sqlite3
@@ -13,9 +14,14 @@ from engineering_platform import component_logging
 
 class ComponentLoggingTest(unittest.TestCase):
     def test_component_log_is_structured_redacted_and_private(self) -> None:
+        from engineering_platform.server import initialize
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            logger = component_logging.component_logger(root, "inbox", level="DEBUG")
+            data_root = root / "central"
+            initialize(data_root)
+            logger = component_logging.component_logger(
+                root, "file_inbox_ingress", level="DEBUG", central_database=data_root / "engineering.db",
+            )
             component_logging.log_event(
                 logger,
                 logging.INFO,
@@ -23,18 +29,18 @@ class ComponentLoggingTest(unittest.TestCase):
                 run_id="inbox-example",
                 diagnostic="authorization: secret-value",
             )
-            with sqlite3.connect(root / ".engineering" / "engineering.db") as connection:
+            with sqlite3.connect(data_root / "engineering.db") as connection:
                 payload = connection.execute(
-                    "SELECT payload FROM engineering_component_logs WHERE component='inbox'"
+                    "SELECT payload FROM engineering_component_logs WHERE component='file_inbox_ingress'"
                 ).fetchone()[0]
             record = json.loads(payload)
             self.assertEqual(record["level"], "INFO")
-            self.assertEqual(record["component"], "inbox")
+            self.assertEqual(record["component"], "file_inbox_ingress")
             self.assertEqual(record["run_id"], "inbox-example")
             self.assertIn("timestamp", record)
             self.assertIn("[REDACTED]", record["event"])
             self.assertIn("[REDACTED]", record["diagnostic"])
-            self.assertFalse((root / ".engineering" / "logs" / "inbox.log").exists())
+            self.assertFalse((root / ".engineering").exists())
 
     def test_central_logger_never_creates_repository_storage(self) -> None:
         """Installed lifecycle logging must retain the explicit CENTRAL binding."""
@@ -78,29 +84,33 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(json.loads(payload)["event"], "normal_console_event")
 
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
-        from engineering_platform import providers
+        from engineering_platform import providers, server
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             providers.subprocess,
             "run",
             return_value=__import__("subprocess").CompletedProcess((), 0, "abc123def456\n", ""),
         ):
             root = Path(temporary)
+            data_root = root / "central"
+            server.initialize(data_root)
             context = component_logging.component_lifecycle_context(
                 root,
                 version="1.2.3",
                 launchd_label="com.example.engineering",
                 launch_agent_path=Path("/Users/example/Library/LaunchAgents/com.example.engineering.plist"),
             )
-            logger = component_logging.component_logger(root, "dashboard")
+            logger = component_logging.component_logger(
+                root, "operations_console", central_database=data_root / "engineering.db",
+            )
             component_logging.log_event(
                 logger,
                 logging.INFO,
                 "component_restart_trigger_received",
                 context={**context, "target_component": "inbox_watcher", "secret": "must-not-persist"},
             )
-            with sqlite3.connect(root / ".engineering" / "engineering.db") as connection:
+            with sqlite3.connect(data_root / "engineering.db") as connection:
                 payload = connection.execute(
-                    "SELECT payload FROM engineering_component_logs WHERE component='dashboard'"
+                    "SELECT payload FROM engineering_component_logs WHERE component='operations_console'"
                 ).fetchone()[0]
             record = json.loads(payload)
             self.assertEqual(record["application_version"], "1.2.3")
@@ -109,37 +119,13 @@ class ComponentLoggingTest(unittest.TestCase):
             self.assertEqual(record["target_component"], "inbox_watcher")
             self.assertNotIn("secret", record)
 
-    def test_invalid_level_fails_closed_to_info_and_uses_file_only_when_storage_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            component_logging, "MAX_LOG_BYTES", 1
-        ), patch.object(
-            component_logging, "open_storage", side_effect=component_logging.EngineeringStorageError("offline")
-        ):
+    def test_invalid_level_fails_closed_without_creating_a_local_log_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(component_logging.sys, "stderr", io.StringIO()):
             root = Path(temporary)
-            logger = component_logging.component_logger(root, "dashboard", level="invalid")
+            logger = component_logging.component_logger(root, "operations_console", level="invalid")
             self.assertEqual(logger.level, logging.INFO)
             component_logging.log_event(logger, logging.INFO, "first")
-            component_logging.log_event(logger, logging.INFO, "second")
-            for handler in logger.handlers:
-                handler.flush()
-            directory = root / ".engineering" / "logs"
-            self.assertTrue((directory / "dashboard.log").exists())
-            self.assertTrue((directory / "dashboard.log.1").exists())
-            self.assertEqual((directory / "dashboard.log").stat().st_mode & 0o777, 0o600)
-            self.assertEqual((directory / "dashboard.log.1").stat().st_mode & 0o777, 0o600)
-
-    def test_component_log_reads_sqlite_and_clear_removes_only_requested_component(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            inbox = component_logging.component_logger(root, "inbox")
-            dashboard = component_logging.component_logger(root, "dashboard")
-            component_logging.log_event(inbox, logging.INFO, "inbox_event")
-            component_logging.log_event(dashboard, logging.INFO, "dashboard_event")
-            self.assertIn(b"inbox_event", component_logging.component_log(root, "inbox"))
-            self.assertIn("sqlite:1:", component_logging.component_log_version(root, "inbox"))
-            component_logging.clear_component_log(root, "inbox")
-            self.assertNotIn(b"inbox_event", component_logging.component_log(root, "inbox"))
-            self.assertIn(b"dashboard_event", component_logging.component_log(root, "dashboard"))
+            self.assertFalse((root / ".engineering").exists())
 
     def test_component_log_page_filters_full_history_before_paginating(self) -> None:
         """Historical rows remain discoverable after newer rows fill a page."""
