@@ -34,6 +34,7 @@ from . import central_database
 from . import console_route_ownership
 from . import dashboard
 from . import dashboard_translation
+from . import external_producer_binding
 from . import file_inbox
 from . import local_repository_binding
 from . import project_topology
@@ -76,7 +77,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 49
+SERVER_STORE_SCHEMA_VERSION = 50
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 _CENTRAL_LOG_SORT_COLUMNS = {
@@ -139,6 +140,8 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submission_events",
         "ep_submission_prompt_history",
         "ep_parity_lifecycle_dispatches",
+        "ep_external_producer_bindings",
+        "ep_external_producer_binding_audit",
         "engineering_transactions",
         "execution_lifecycle_events",
     }
@@ -156,6 +159,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
         "ep_parity_lifecycle_dispatches_run_lookup",
+        "ep_external_producer_bindings_active_key",
     }
 )
 
@@ -494,6 +498,27 @@ def _migrate_schema_49(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=49")
 
 
+def _migrate_schema_50(connection: sqlite3.Connection) -> None:
+    """Add CENTRAL-owned external producer bindings and immutable audit evidence."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema49")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,50 FROM ep_installations_schema49")
+    connection.execute("DROP TABLE ep_installations_schema49")
+    connection.execute("""CREATE TABLE ep_external_producer_bindings (
+        binding_id TEXT PRIMARY KEY, producer_type TEXT NOT NULL, external_resource_type TEXT NOT NULL,
+        external_resource_identity TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id), status TEXT NOT NULL,
+        version INTEGER NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+        provenance TEXT NOT NULL)""")
+    connection.execute("CREATE UNIQUE INDEX ep_external_producer_bindings_active_key ON ep_external_producer_bindings(producer_type,external_resource_type,external_resource_identity) WHERE status='ACTIVE'")
+    connection.execute("""CREATE TABLE ep_external_producer_binding_audit (
+        audit_id INTEGER PRIMARY KEY, binding_id TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL,
+        reason TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)""")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(50)")
+    connection.execute("UPDATE engineering_metadata SET value='50' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=50")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -558,14 +583,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -584,6 +609,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                             if current_schema in {42, 43, 44, 45, 46, 47}:
                                 _migrate_schema_48(connection)
                             _migrate_schema_49(connection)
+                            _migrate_schema_50(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -601,6 +627,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_47(connection)
         _migrate_schema_48(connection)
         _migrate_schema_49(connection)
+        _migrate_schema_50(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -2500,7 +2527,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -2511,6 +2538,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--consumer-id")
     parser.add_argument("--submission-id")
+    parser.add_argument("--producer-type")
+    parser.add_argument("--external-resource-type")
+    parser.add_argument("--external-resource-identity")
+    parser.add_argument("--binding-id")
+    parser.add_argument("--reason")
     return parser
 
 
@@ -2577,6 +2609,33 @@ def main(argv: list[str] | None = None) -> int:
             from .submission_service import issue_consumer_credential
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command == "register-producer-binding":
+            if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
+                raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                binding = external_producer_binding.register(
+                    connection,
+                    data_root=args.data_root,
+                    producer_type=args.producer_type,
+                    external_resource_type=args.external_resource_type,
+                    external_resource_identity=args.external_resource_identity,
+                    project_id=args.project_id,
+                    repository_id=args.repository_id,
+                    reason=args.reason,
+                )
+            result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "REGISTERED"}
+        elif args.command == "list-producer-bindings":
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = {"bindings": external_producer_binding.list_bindings(connection, data_root=args.data_root)}
+        elif args.command == "deactivate-producer-binding":
+            if not args.binding_id or not args.reason:
+                raise ServerConfigurationError("--binding-id and --reason are required for producer binding deactivation.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                binding = external_producer_binding.deactivate(connection, data_root=args.data_root, binding_id=args.binding_id, reason=args.reason)
+            result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "DEACTIVATED"}
         elif args.command == "provision-declaration":
             if not args.project_id or not args.repository_id or args.path is None:
                 raise ServerConfigurationError("--project-id, --repository-id and --path are required for declaration provisioning.")
@@ -2624,7 +2683,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
-    except (OSError, RuntimeError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError) as error:
+    except (OSError, RuntimeError, PermissionError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError, external_producer_binding.ProducerBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
