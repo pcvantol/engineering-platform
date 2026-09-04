@@ -51,12 +51,14 @@ these contracts. This keeps the card, popout and ingress-detail tests aligned
 with the installed Server inventory instead of reintroducing historical
 watcher or execution-host identities through test data.
 
-### Latest qualified evidence
+### Candidate qualification evidence
 
-For PR #33 commit `304e519692b83ef7bf78f6a26953d7dab32dd6ef`, the ownership
+Qualification is candidate-SHA-specific: every PR update reruns the ownership
 guard, focused status-popout browser coverage, all four CI browser shards,
 validation, UI localisation, CodeQL, Trusted Delivery and exact-SHA Owner
-Authorization passed. The required human status remains
+Authorization. The current candidate's required checks are the authoritative
+evidence; this architecture document intentionally does not preserve a stale
+commit hash as a substitute. The required human status remains
 `P-TRANSPORT AWAITING_HUMAN_UI_REVIEW`.
 
 ## Canonical platform component inventory
