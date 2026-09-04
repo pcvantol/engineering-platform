@@ -8704,4 +8704,8 @@ if (NO_PROJECT_SELECTED) {
   window.setInterval(() => {
     if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
   }, 60_000);
-} else startDashboardUpdates();
+}
+// The Server supplies a minimal CENTRAL-only status document for `<geen>`.
+// Hydrate that same shared shell so footer facts are factual rather than
+// permanently displaying loading placeholders; it contains no project state.
+startDashboardUpdates();

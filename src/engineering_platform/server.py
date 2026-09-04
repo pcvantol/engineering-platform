@@ -1505,16 +1505,30 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_no_project_console_events(self) -> None:
         """Send a CENTRAL-only event that completes the shared Console shell."""
-        payload = json.dumps(
-            _no_project_console_snapshot(), separators=(",", ":")
-        ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
-            self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
-            self.wfile.flush()
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
+            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
+            previous: bytes | None = None
+            for iteration in range(300):
+                payload = json.dumps(
+                    _no_project_console_snapshot(), separators=(",", ":")
+                ).encode("utf-8")
+                if payload != previous:
+                    self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
+                    self.wfile.flush()
+                    previous = payload
+                elif iteration and iteration % 15 == 0:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                time.sleep(stream_interval)
         except (BrokenPipeError, ConnectionResetError):
             return
 

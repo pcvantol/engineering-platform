@@ -442,7 +442,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(snapshot["runs"], [])
         with urlopen(f"http://127.0.0.1:{port}/api/events", timeout=2) as response:
             self.assertEqual(response.headers.get_content_type(), "text/event-stream")
-            event = response.read().decode("utf-8")
+            event = "".join(response.readline().decode("utf-8") for _ in range(4))
         self.assertIn('"scope":"PLATFORM"', event)
         self.assertNotIn('"runs":[{', event)
         for path in ("/api/prompt-history",):
