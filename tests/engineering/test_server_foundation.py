@@ -442,6 +442,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(snapshot["runs"], [])
         with urlopen(f"http://127.0.0.1:{port}/api/events", timeout=2) as response:
             self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
             event = "".join(response.readline().decode("utf-8") for _ in range(4))
         self.assertIn('"scope":"PLATFORM"', event)
         self.assertNotIn('"runs":[{', event)
@@ -467,7 +468,39 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             headers={"X-Engineering-Platform-Project": "djconnect"},
         )) as response:
             self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
             self.assertIn(json.loads(response.read())["state"], {"READY", "UNAVAILABLE"})
+        # The browser's two context modes must retain the same authority for
+        # every Platform route.  Status payload presentation can differ, but
+        # the health path must never become a project/check-out delegate.
+        for path in (
+            "/health", "/api/platform-status", "/api/dashboard-snapshot",
+            "/api/status", "/api/provider-login-status",
+            "/api/execution-runtime-status", "/api/logs/inbox",
+            "/api/components/file_inbox_ingress/details", "/api/configuration",
+        ):
+            for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+                try:
+                    with urlopen(Request(f"http://127.0.0.1:{port}{path}", headers=headers)) as response:
+                        self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+                except HTTPError as error:
+                    self.assertNotEqual(error.code, 409, path)
+                    self.assertEqual(error.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+        # Actions are just as host-wide as their status cards. Invalid bodies
+        # make these probes non-mutating while still exercising dispatch.
+        for path, body in (
+            ("/api/provider-login/repair", b"{}"),
+            ("/api/execution-runtime/repair", b"{}"),
+            ("/api/configuration", b"{}"),
+        ):
+            for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+                request_headers = {"Content-Type": "application/json", **headers}
+                try:
+                    with urlopen(Request(f"http://127.0.0.1:{port}{path}", data=body, method="POST", headers=request_headers)) as response:
+                        self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+                except HTTPError as error:
+                    self.assertNotEqual(error.code, 404, path)
+                    self.assertEqual(error.headers["EP-Console-Route-Owner"], "PLATFORM", path)
         # EventSource supplies the CENTRAL scope as a query value because it
         # cannot set the dashboard fetch header. Both bound projects must
         # reach the preserved live route, not leak scope into a 404 path.
@@ -475,6 +508,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{port}/api/events?project={identifier}", timeout=2) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                self.assertEqual(response.headers["EP-Console-Route-Owner"], "PLATFORM")
                 event = "".join(response.readline().decode("utf-8") for _ in range(4))
                 self.assertIn('"platform_version":"2.0.0"', event)
         # Browser module and stylesheet requests precede the document's

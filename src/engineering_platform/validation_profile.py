@@ -14,9 +14,9 @@ RUNTIME_PREFIXES = ("src/engineering_platform/", "tests/engineering/", ".github/
 VALIDATION_PROFILE_VERSION = "1.0"
 REQUIRED_CONTROLS = {
     "DOCUMENTATION": ("git_diff_check", "documentation_contract"),
-    "DASHBOARD": ("git_diff_check", "engineering_python", "ui_localization", "dashboard_browser"),
-    "RUNTIME_UI": ("git_diff_check", "engineering_python", "ui_localization", "dashboard_browser"),
-    "RUNTIME": ("git_diff_check", "engineering_python", "dashboard_browser"),
+    "DASHBOARD": ("git_diff_check", "engineering_python", "console_route_ownership", "ui_localization", "dashboard_browser"),
+    "RUNTIME_UI": ("git_diff_check", "engineering_python", "console_route_ownership", "ui_localization", "dashboard_browser"),
+    "RUNTIME": ("git_diff_check", "engineering_python", "console_route_ownership", "dashboard_browser"),
     "FULL": ("git_diff_check", "repository_suite"),
     # A governed P-CENTRAL-CORE change retains the full Python/core suite but
     # deliberately does not claim the deferred Operations Console browser
@@ -69,6 +69,10 @@ CONTROL_LAUNCHERS = {
     "ui_localization": ValidationControlLauncher(
         "ui_localization", "browser", "npm run test:ui-localization",
         ("npm", "run", "test:ui-localization"),
+    ),
+    "console_route_ownership": ValidationControlLauncher(
+        "console_route_ownership", "python", "Console route ownership guard",
+        _python_command("tools/qualification/console_route_ownership_guard.py", "--source-root", "src"),
     ),
     "repository_suite": ValidationControlLauncher(
         "repository_suite", "repository", "python3 -m unittest discover",

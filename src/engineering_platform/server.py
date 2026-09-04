@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from . import agent_trust
 from . import central_database
+from . import console_route_ownership
 from . import dashboard
 from . import dashboard_translation
 from . import file_inbox
@@ -1362,6 +1363,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         if instance_id:
             self.send_header("EP-Server-Instance", instance_id)
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -1442,6 +1446,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
         self.wfile.write(snapshot)
 
@@ -1517,6 +1524,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("EP-Console-Route-Owner", "PLATFORM")
         self.end_headers()
         try:
             stream_interval = int(
@@ -1546,6 +1554,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("EP-Console-Route-Owner", "PLATFORM")
         self.end_headers()
         try:
             stream_interval = int(
@@ -1574,6 +1583,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _delegate_dashboard(self, method: str) -> None:
         """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
+        # Resolve ownership once, before any project identity is read.  The
+        # header makes the runtime contract observable to browser/integration
+        # coverage without granting a selected project any authority.
+        self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
         if method == "do_GET" and self._send_console_asset(request):
             return
         # Platform health is deliberately independent of the browser's
