@@ -179,10 +179,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root, bind_port=port)
         server.start(self.root)
 
-        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration"):
+        for path in ("/", "/assets/dashboard.css", "/assets/dashboard.js", "/api/platform-status", "/api/configuration", "/api/logs/all"):
             with urlopen(f"http://127.0.0.1:{port}{path}") as response:
                 self.assertEqual(response.status, 200, path)
-                if path == "/api/platform-status":
+                if path in {"/api/platform-status", "/api/logs/all"}:
                     projection = json.loads(response.read())
                     self.assertEqual(projection["scope"], "PLATFORM")
         with urlopen(f"http://127.0.0.1:{port}/") as response:
@@ -425,6 +425,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "/api/configuration",
             "/api/provider-login-status",
             "/api/execution-runtime-status",
+            "/api/logs/all",
             "/api/logs/inbox",
             "/api/logs/dashboard",
         ):
@@ -610,7 +611,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             )
             connection.execute(
                 "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                ("dashboard", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
+                ("operations_console", '{"event":"central_console_test","level":"INFO"}', "2026-01-01T00:00:04+00:00"),
             )
         artifact = self.root / "artifacts" / "reports" / "dj-run.md"
         artifact.parent.mkdir(parents=True)
@@ -635,7 +636,8 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(response.read(), b"# CENTRAL report\n")
         with urlopen(f"http://127.0.0.1:{port}/api/prompt-history/dj-run/chat?project=djconnect") as response:
             self.assertEqual(json.loads(response.read())["messages"][0]["content"], "CENTRAL transcript")
-        with urlopen(f"http://127.0.0.1:{port}/api/logs/dashboard?project=djconnect") as response:
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect") as response:
             logs = json.loads(response.read())
         self.assertEqual(logs["scope"], "PLATFORM")
         self.assertEqual(logs["entries"][0]["event"], "central_console_test")
+        self.assertEqual(logs["entries"][0]["component"], "operations_console")

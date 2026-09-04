@@ -1012,7 +1012,7 @@ function renderMarkdownDocument(target, value) {
   renderMarkdownAnswer(target, value);
 }
 let componentLogsLoaded = false,
-  componentLogEntries = { inbox: [], dashboard: [] };
+  componentLogEntries = { platform: [], inbox: [], dashboard: [] };
 function isUnhelpfulHttpServerDebugLog(entry) {
   return (
     String(entry?.level || "").toUpperCase() === "DEBUG" &&
@@ -3066,7 +3066,7 @@ function localizeLogControls() {
     const option = document.querySelector(`#logLevelFilter option[value="${value}"]`);
     if (option) option.textContent = t(key);
   });
-  const cardTitles = ["logs.inbox_watcher", "logs.status_dashboard"];
+  const cardTitles = ["section.platform_components"];
   document.querySelectorAll("#componentLogs .log-card-header strong").forEach((title, index) => {
     if (cardTitles[index]) title.textContent = t(cardTitles[index]);
   });
@@ -3444,15 +3444,16 @@ chatMessage = (role, text, createdAt) => {
 renderChatHistory();
 $("chatSend").querySelector("span").textContent = "↑";
 const LOG_PAGE_SIZE = 50,
-  independentLogPageStates = { inbox: 1, dashboard: 1 },
+  independentLogPageStates = { platform: 1, inbox: 1, dashboard: 1 },
   independentLogSortStates = {
+    platform: { key: "timestamp", direction: "desc" },
     inbox: { key: "timestamp", direction: "desc" },
     dashboard: { key: "timestamp", direction: "desc" },
   },
-  componentLogTotals = { inbox: 0, dashboard: 0 },
-  componentLogAvailableEvents = { inbox: [], dashboard: [] },
-  selectedComponentLogRows = { inbox: new Set(), dashboard: new Set() },
-  componentLogSelectionAnchor = { inbox: null, dashboard: null };
+  componentLogTotals = { platform: 0, inbox: 0, dashboard: 0 },
+  componentLogAvailableEvents = { platform: [], inbox: [], dashboard: [] },
+  selectedComponentLogRows = { platform: new Set(), inbox: new Set(), dashboard: new Set() },
+  componentLogSelectionAnchor = { platform: null, inbox: null, dashboard: null };
 let componentLogVersion = "",
   componentLogServerPaged = false,
   componentLogRequestId = 0;
@@ -3474,7 +3475,7 @@ function componentLogRequestUrl(component) {
   if (search) query.set("search", search);
   if (level) query.set("level", level);
   [...($("logEventFilter")?.selectedOptions || [])].forEach((option) => query.append("event", option.value));
-  return "/api/logs/" + encodeURIComponent(component) + "?" + query;
+  return "/api/logs/all?" + query;
 }
 function normalizedComponentLogEntries(records) {
   return structuredLogEntries((Array.isArray(records) ? records : []).map((record) => JSON.stringify(record)).join("\n"))
@@ -3485,32 +3486,48 @@ function refreshComponentLogs(versions = {}, force = false) {
   if (!force && componentLogsLoaded && version === componentLogVersion) return Promise.resolve();
   componentLogVersion = version;
   const requestId = ++componentLogRequestId;
-  return Promise.all([
-    fetch(componentLogRequestUrl("inbox")).then((response) => response.ok ? response.json() : Promise.reject(Error("inbox logs unavailable"))),
-    fetch(componentLogRequestUrl("dashboard")).then((response) => response.ok ? response.json() : Promise.reject(Error("dashboard logs unavailable"))),
-  ])
-    .then(([inbox, dashboard]) => {
+  return fetch(componentLogRequestUrl("platform"))
+    .then((response) => response.ok ? response.json() : Promise.reject(Error("platform logs unavailable")))
+    .then((platform) => {
       if (requestId !== componentLogRequestId) return;
-      componentLogEntries.inbox = normalizedComponentLogEntries(inbox.entries);
-      componentLogEntries.dashboard = normalizedComponentLogEntries(dashboard.entries);
-      componentLogTotals.inbox = Number(inbox.total) || 0;
-      componentLogTotals.dashboard = Number(dashboard.total) || 0;
-      componentLogAvailableEvents.inbox = Array.isArray(inbox.events) ? inbox.events : [];
-      componentLogAvailableEvents.dashboard = Array.isArray(dashboard.events) ? dashboard.events : [];
+      componentLogEntries.platform = normalizedComponentLogEntries(platform.entries);
+      componentLogTotals.platform = Number(platform.total) || 0;
+      componentLogAvailableEvents.platform = Array.isArray(platform.events) ? platform.events : [];
       componentLogServerPaged = true;
       componentLogsLoaded = true;
       $("componentLogControls").hidden = false;
       renderComponentLogs();
     })
-    .catch(() => {
+    .catch(async () => {
       if (requestId !== componentLogRequestId) return;
+      // The installed Server exposes the aggregate endpoint.  This short-lived
+      // compatibility read keeps an already-open older dashboard shell usable
+      // while its assets refresh after an upgrade.
+      try {
+        const [inbox, dashboard] = await Promise.all(["inbox", "dashboard"].map((component) =>
+          fetch(componentLogRequestUrl(component).replace("/api/logs/all", "/api/logs/" + component))
+            .then((response) => response.ok ? response.json() : Promise.reject(Error("legacy logs unavailable"))),
+        ));
+        if (requestId !== componentLogRequestId) return;
+        componentLogEntries.inbox = normalizedComponentLogEntries(inbox.entries);
+        componentLogEntries.dashboard = normalizedComponentLogEntries(dashboard.entries);
+        componentLogEntries.platform = componentLogEntries.inbox;
+        componentLogTotals.inbox = Number(inbox.total) || 0;
+        componentLogTotals.dashboard = Number(dashboard.total) || 0;
+        componentLogTotals.platform = componentLogTotals.inbox;
+        componentLogAvailableEvents.inbox = Array.isArray(inbox.events) ? inbox.events : [];
+        componentLogAvailableEvents.dashboard = Array.isArray(dashboard.events) ? dashboard.events : [];
+        componentLogAvailableEvents.platform = componentLogAvailableEvents.inbox;
+        componentLogServerPaged = true;
+        componentLogsLoaded = true;
+        $("componentLogControls").hidden = false;
+        renderComponentLogs();
+        return;
+      } catch {}
       componentLogServerPaged = false;
       componentLogsLoaded = true;
-      componentLogEntries.inbox = structuredLogEntries(JSON.stringify({
-        level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable"),
-      }));
-      componentLogEntries.dashboard = structuredLogEntries(JSON.stringify({
-        level: "ERROR", event: "dashboard_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
+      componentLogEntries.platform = structuredLogEntries(JSON.stringify({
+        level: "ERROR", event: "platform_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
       }));
       $("componentLogControls").hidden = false;
       renderComponentLogs();
@@ -4550,8 +4567,15 @@ function renderDashboardTelemetry(snapshot) {
   executionTelemetry(snapshot.telemetry);
 }
 updateFavicon();
+// Platform logs are one CENTRAL projection.  The former watcher/dashboard
+// split was only a historical storage detail, not a separate authority.
+document.querySelector("#dashboardComponentLog")?.closest(".card")?.setAttribute("hidden", "");
+document.querySelectorAll(".component-log-download").forEach((button) => {
+  button.dataset.component = "platform";
+});
+document.querySelectorAll(".clear-component-log").forEach((button) => button.remove());
 function logComponentForTable(table) {
-  return table.querySelector("#inboxComponentLog") ? "inbox" : "dashboard";
+  return table.querySelector("#dashboardComponentLog") ? "dashboard" : "platform";
 }
 function updateIndependentLogSortHeaders() {
   document.querySelectorAll(".log-table").forEach((table) => {
@@ -4639,6 +4663,7 @@ function clearComponentLogSelection(component) {
   componentLogSelectionAnchor[component] = null;
 }
 function clearAllComponentLogSelections() {
+  clearComponentLogSelection("platform");
   clearComponentLogSelection("inbox");
   clearComponentLogSelection("dashboard");
 }
@@ -4676,7 +4701,7 @@ document.querySelectorAll(".log-table tbody").forEach((body) => {
 });
 document.addEventListener("copy", (event) => {
   if (window.getSelection()?.toString()) return;
-  const entries = ["inbox", "dashboard"].flatMap((component) => selectedComponentLogEntries(component));
+  const entries = selectedComponentLogEntries("platform");
   if (!entries.length || !event.clipboardData) return;
   event.clipboardData.setData("text/plain", componentLogText(entries));
   event.preventDefault();
@@ -4692,7 +4717,12 @@ function filteredComponentLogEntries(component) {
       ),
     ),
     state = independentLogSortStates[component];
-  return componentLogEntries[component]
+  const selectedComponent = $("logComponentFilter")?.value || "";
+  const sourceEntries = component === "platform" && !componentLogEntries.platform.length
+    ? componentLogEntries.inbox
+    : componentLogEntries[component];
+  return sourceEntries
+    .filter((entry) => !selectedComponent || entry.component === selectedComponent)
     .filter((entry) => logMeetsMinimumLevel(entry, level))
     .filter((entry) => !events.size || events.has(String(entry.event || "")))
     .filter(entryMatchesLogTimeRange)
@@ -4727,8 +4757,8 @@ function visibleComponentLogEntries(component) {
 }
 function updateLogValueFilters() {
   const entries = componentLogServerPaged
-    ? [...componentLogAvailableEvents.inbox, ...componentLogAvailableEvents.dashboard].map((event) => ({ event }))
-    : [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
+    ? componentLogAvailableEvents.platform.map((event) => ({ event }))
+    : componentLogEntries.platform;
   for (const [id, key] of [["logEventFilter", "event"]]) {
     const select = $(id);
     if (!select) continue;
@@ -4740,7 +4770,7 @@ function updateLogValueFilters() {
   }
 }
 function renderLogPagination(component, total, pageCount) {
-  const navigation = $(component + "LogPagination");
+  const navigation = $(component + "LogPagination") || $("inboxLogPagination");
   navigation.replaceChildren();
   const summary = document.createElement("span"),
     previous = document.createElement("button"),
@@ -4776,9 +4806,9 @@ function renderLogPagination(component, total, pageCount) {
 function renderComponentLogs() {
   localizeLogControls();
   updateLogValueFilters();
-  for (const component of ["inbox", "dashboard"]) {
+  for (const component of ["platform", "dashboard"]) {
     const rows = filteredComponentLogEntries(component),
-      body = $(component + "ComponentLog"),
+      body = $(component + "ComponentLog") || (component === "platform" ? $("inboxComponentLog") : null),
       total = componentLogServerPaged ? componentLogTotals[component] : rows.length,
       pageCount = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE)),
       visible = visibleComponentLogEntries(component);
@@ -4790,7 +4820,8 @@ function renderComponentLogs() {
         row = document.createElement("tr");
       cell.className = "log-empty";
       cell.colSpan = 6;
-      cell.textContent = componentLogEntries[component].length
+      cell.textContent = (component === "platform" && !componentLogEntries.platform.length
+        ? componentLogEntries.inbox : componentLogEntries[component]).length
         ? t("logs.empty")
         : t("logs.not_available");
       row.append(cell);
@@ -4826,14 +4857,20 @@ function renderComponentLogs() {
   }
   updateIndependentLogSortHeaders();
 }
-for (const [id, label] of [["logEventFilter", t("table.event")]]) {
+for (const [id, label] of [["logComponentFilter", "EP-component"], ["logEventFilter", t("table.event")]]) {
   const control = document.createElement("label"), select = document.createElement("select");
-  select.id = id; select.multiple = true; select.setAttribute("aria-label", label);
+  select.id = id;
+  if (id === "logEventFilter") select.multiple = true;
+  if (id === "logComponentFilter") {
+    select.append(new Option("Alle EP-componenten", ""));
+    ["ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress"].forEach((component) => select.append(new Option(healthComponentLabel(component), component)));
+  }
+  select.setAttribute("aria-label", label);
   control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
   select.addEventListener("change", () => refreshComponentLogsForFilters());
 }
 function refreshComponentLogsForFilters() {
-  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+  independentLogPageStates.platform = independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
   clearAllComponentLogSelections();
   if (componentLogServerPaged) void refreshComponentLogs({}, true);
   else renderComponentLogs();
@@ -4852,6 +4889,7 @@ resetLogFiltersButton.addEventListener("click", () => {
   $("logSpecificDate").value = "";
   $("logDateFrom").value = "";
   $("logDateTo").value = "";
+  $("logComponentFilter").value = "";
   syncDashboardSelectPicker($("logLevelFilter"));
   syncDashboardSelectPicker($("logTimePreset"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
@@ -4921,10 +4959,10 @@ document
     ),
   );
 function downloadComponentLog(component) {
-  const names = { inbox: "inbox-watcher", dashboard: "statusdashboard" },
+  const names = { platform: "engineering-platform" },
     name = names[component];
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
-  return fetch("/api/logs/" + encodeURIComponent(component), {
+  return fetch("/api/logs/" + (component === "platform" ? "all" : encodeURIComponent(component)), {
     cache: "no-store",
   })
     .then((response) =>
@@ -6908,7 +6946,7 @@ document.addEventListener("keydown", (event) => {
     clearAllSectionsIntentFromManualToggle(event);
 });
 
-for (const component of ["inbox", "dashboard"]) {
+for (const component of ["platform", "inbox", "dashboard"]) {
   const saved = dashboardClientState.logSorts?.[component];
   if (
     saved &&

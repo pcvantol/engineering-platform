@@ -14,7 +14,7 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
         self.assertTrue(all(route.owner in {PLATFORM, PROJECT, HISTORICAL_UNREACHABLE, "TRANSPORT_INTERNAL"} and route.component for route in ROUTE_OWNERSHIP_MATRIX))
 
     def test_platform_routes_keep_owner_when_project_is_selected(self) -> None:
-        for method, path in (("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/inbox"), ("GET", "/api/configuration")):
+        for method, path in (("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/all"), ("GET", "/api/configuration")):
             self.assertEqual(route_owner(method, path).owner, PLATFORM, path)
 
     def test_qualification_guard_passes_for_installed_console_source(self) -> None:

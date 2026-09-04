@@ -54,7 +54,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 self.assertEqual(
                     "central_lifecycle_event",
                     json.loads(connection.execute(
-                        "SELECT payload FROM engineering_component_logs WHERE component='execution-host'"
+                        "SELECT payload FROM engineering_component_logs WHERE component='lifecycle_worker'"
                     ).fetchone()[0])["event"],
                 )
 

@@ -24,6 +24,20 @@ MAX_LOG_BYTES = 1_000_000
 BACKUP_COUNT = 3
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
+PLATFORM_LOG_COMPONENTS = frozenset(
+    {
+        "ep_server", "platform_database", "lifecycle_worker",
+        "operations_console", "dashboard_relay", "http_ingress",
+        "cli_ingress", "file_inbox_ingress",
+    }
+)
+# Records using these names predate the canonical Platform Components model.
+# They remain readable so historical diagnostics are never lost.
+LEGACY_COMPONENT_ALIASES = {
+    "dashboard": "operations_console",
+    "inbox": "file_inbox_ingress",
+    "execution-host": "lifecycle_worker",
+}
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LOG_LEVELS_AT_OR_ABOVE = {
     "INFO": ("INFO", "WARNING", "ERROR"),
@@ -85,7 +99,11 @@ class SQLiteLogHandler(logging.Handler):
     def __init__(self, root: Path, component: str, *, central_database: Path | None = None) -> None:
         super().__init__()
         self.root = root.resolve()
-        self.component = component
+        self.component = (
+            LEGACY_COMPONENT_ALIASES.get(component, component)
+            if central_database is not None
+            else component
+        )
         self.central_database = central_database.resolve() if central_database is not None else None
         self._fallback: SecureRotatingFileHandler | None = None
 
@@ -149,6 +167,10 @@ def component_logger(
             isinstance(handler, SQLiteLogHandler)
             and handler.root == root.resolve()
             and handler.central_database == (central_database.resolve() if central_database is not None else None)
+            and handler.component == (
+                LEGACY_COMPONENT_ALIASES.get(component, component)
+                if central_database is not None else component
+            )
         ):
             handler.setLevel(logger.level)
             return logger

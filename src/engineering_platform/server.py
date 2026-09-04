@@ -964,20 +964,41 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
 
 def _central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
     """Read Server-owned component logs only from CENTRAL's log index."""
-    if component not in {"dashboard", "inbox"}:
+    canonical_components = frozenset({
+        "ep_server", "platform_database", "lifecycle_worker", "operations_console",
+        "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress",
+    })
+    legacy_aliases = {
+        "dashboard": "operations_console", "inbox": "file_inbox_ingress",
+        "execution-host": "lifecycle_worker",
+    }
+    if component == "all":
+        selected = canonical_components
+    elif component in canonical_components:
+        selected = frozenset({component})
+    elif component in legacy_aliases:
+        selected = frozenset({legacy_aliases[component]})
+    else:
         return None
+    stored_components = tuple(
+        stored for stored, canonical in legacy_aliases.items() if canonical in selected
+    ) + tuple(selected)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         rows = connection.execute(
-            "SELECT id,payload,created_at FROM engineering_component_logs WHERE component=? ORDER BY id DESC LIMIT 200",
-            (component,),
+            "SELECT id,component,payload,created_at FROM engineering_component_logs WHERE component IN ("
+            + ",".join("?" for _ in stored_components)
+            + ") ORDER BY id DESC LIMIT 5000",
+            stored_components,
         ).fetchall()
     entries: list[dict[str, object]] = []
-    for identifier, payload, created_at in reversed(rows):
+    for identifier, stored_component, payload, created_at in reversed(rows):
         try:
             decoded = json.loads(str(payload))
         except (TypeError, ValueError, json.JSONDecodeError):
             decoded = {"event": "malformed_central_log"}
-        entries.append({"line": int(identifier), "timestamp": str(created_at), **(decoded if isinstance(decoded, dict) else {})})
+        record = decoded if isinstance(decoded, dict) else {}
+        canonical = legacy_aliases.get(str(stored_component), str(stored_component))
+        entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": canonical})
     return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
 
 
@@ -1476,7 +1497,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {"/api/process-metrics", "/api/usage"}:
             self._send(200, {"scope": "PLATFORM", "available": False})
             return True
-        if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+        if re.fullmatch(r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path):
             component = request.path.rsplit("/", 1)[-1]
             self._send(200, _central_console_component_logs(self.server.data_root, component) or {"error": "LOG_COMPONENT_UNKNOWN"})  # type: ignore[attr-defined]
             return True
@@ -1779,7 +1800,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/configuration":
                 self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
                 return
-            if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+            if re.fullmatch(r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path):
                 component = request.path.rsplit("/", 1)[-1]
                 payload = _central_console_component_logs(self.server.data_root, component)  # type: ignore[attr-defined]
                 if payload is None:

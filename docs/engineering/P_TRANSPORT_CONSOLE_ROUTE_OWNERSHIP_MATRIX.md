@@ -11,7 +11,7 @@ change authority, select a checkout, or delegate that route.
 | Owner | Routes | Component / intent |
 | --- | --- | --- |
 | PLATFORM | `GET /`, Console assets/icons, `/health`, `/api/platform-status`, `/api/dashboard-snapshot`, `/api/status`, `/api/events` | Console shell and Platform Components projection (selected project is presentation-only) |
-| PLATFORM | `GET /api/components/{ep_server,platform_database,lifecycle_worker,operations_console,dashboard_relay,http_ingress,cli_ingress,file_inbox_ingress}/details`, `GET /api/logs/{dashboard,inbox}`, `/api/{process-metrics,usage}` | Platform Components, status popout, logging and File Inbox projection |
+| PLATFORM | `GET /api/components/{ep_server,platform_database,lifecycle_worker,operations_console,dashboard_relay,http_ingress,cli_ingress,file_inbox_ingress}/details`, `GET /api/logs/all`, `GET /api/logs/{component}`, `/api/{process-metrics,usage}` | Platform Components, status popout, one CENTRAL log projection (filterable by EP-component), and File Inbox projection |
 | PLATFORM | `GET /api/provider-login-status`; `POST /api/provider-login/{repair,logout}` | Provider status and login actions |
 | PLATFORM | `GET /api/execution-runtime-status`; `POST /api/execution-runtime/repair` | Execution runtime status and repair |
 | PLATFORM | `GET /api/provider-capacity`, `/api/github-rate-limit`; `GET/POST /api/provider-capacity/configuration` | Provider capacity/readiness diagnostics and settings |
