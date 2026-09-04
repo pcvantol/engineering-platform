@@ -240,6 +240,36 @@ def main(argv: list[str] | None = None) -> int:
             evidence["SERVER_DOWN_BEFORE_CLAIM_DURABILITY"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"]}
         finally:
             process.terminate(); process.wait(timeout=5)
+        # Canary B: deterministic crash after atomic claim, before HTTP submit.
+        project, repository = "durability-claim", "durability-claim-repo"
+        command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
+        checkout = root / "claim-checkout"; checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+        command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        credential = str(command(server, "issue-consumer-credential", "--data-root", str(data_root), "--project-id", project, "--consumer-id", "durability-claim") ["credential"])
+        body = json.dumps({"project_id": project, "submission": payload(repository, "MANAGED", "durability-claim")}, sort_keys=True)
+        incoming = data_root / "file-inbox" / "incoming"; source = incoming / "crash-after-claim.json"; source.write_text(body, encoding="utf-8")
+        crash_environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_FILE_INBOX_QUALIFICATION_FAULT": "AFTER_CLAIM_BEFORE_SUBMIT"}
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=crash_environment)  # nosec B603
+        try:
+            deadline = time.monotonic() + 15
+            processing = data_root / "file-inbox" / "processing" / source.name
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.1)
+            if process.returncode != 86 or not processing.exists() or central_counts(data_root, project) != (0, 0):
+                raise RuntimeError("CRASH_AFTER_CLAIM_BOUNDARY_FAILED")
+        finally:
+            if process.poll() is None: process.terminate(); process.wait(timeout=5)
+        environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=environment)  # nosec B603
+        try:
+            digest = __import__("hashlib").sha256(body.encode()).hexdigest(); receipt_path = data_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
+            wait_for_file(receipt_path); receipt = json.loads(receipt_path.read_text()); diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
+            if central_counts(data_root, project) != (1, 1): raise RuntimeError("CRASH_AFTER_CLAIM_RECOVERY_COUNTS_FAILED")
+            evidence["CRASH_AFTER_CLAIM_RECOVERY"] = {"pass": True, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"]}
+        finally:
+            process.terminate(); process.wait(timeout=5)
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
     return 0
 
