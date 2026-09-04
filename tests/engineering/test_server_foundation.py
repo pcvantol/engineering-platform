@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import io
 import os
 import re
 import subprocess
@@ -12,6 +13,7 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -416,6 +418,17 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         for component in ("ep_server", "file_inbox_ingress", "unknown_component"):
             with self.subTest(component=component), self.assertRaisesRegex(ValueError, "COMPONENT_RESTART_NOT_SUPPORTED"):
                 server._restart_platform_component(self.root, component)
+
+    def test_server_cli_installs_relay_through_server_owned_lifecycle(self) -> None:
+        with patch("engineering_platform.server.server_relay.install", return_value={
+            "component": "dashboard_relay", "binary": "/installation/runtime/engineering-dashboard-relay",
+            "launch_agent": "/Library/LaunchAgents/com.djconnect.engineering-dashboard-relay.plist",
+        }) as install, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(server.main(["relay-install", "--data-root", str(self.root)]), 0)
+        install.assert_called_once_with(self.root)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["result"], "INSTALLED")
+        self.assertEqual(result["component"], "dashboard_relay")
 
     def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
         server.initialize(self.root)
