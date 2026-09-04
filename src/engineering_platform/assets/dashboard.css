@@ -1273,3 +1273,4 @@ html[data-theme="light"] #componentLogControls :is(input[type="date"],input[type
 /* Bubble scrolling is owned by the prompt-history modal's definite message
    area. Do not add a later global bubble scroller: it would force short
    messages to reserve scrollbar chrome and defeat the 2/3 area limit. */
+@media (max-width:620px){.dashboard-status-banner{position:static}}
