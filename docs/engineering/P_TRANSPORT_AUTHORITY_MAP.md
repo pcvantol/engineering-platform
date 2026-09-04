@@ -47,6 +47,13 @@ intentionally no elapsed-time "login active" lock. The operator can cancel or
 close Terminal and immediately retry the same provider or select the other
 provider.
 
+The platform projection verifies only host authentication. In particular, it
+does not attempt a GitHub repository API call while no project identity has
+been selected. Repository authorization is a project-admission concern and is
+verified later against the bound canonical repository. This prevents a valid
+host login from being misreported as a login failure merely because CENTRAL has
+no checkout authority.
+
 When several platform concerns need attention, the Console groups their rows
 inside a native expandable disclosure. Refreshing readiness preserves an
 operator-expanded group; only a newly appearing group begins collapsed. Row

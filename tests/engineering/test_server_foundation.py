@@ -204,6 +204,29 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         start_login.assert_called_once_with(self.root, "CODEX")
         self.assertEqual(readiness()["codex"]["state"], "AUTH_REQUIRED")
 
+    @patch("engineering_platform.server.provider_readiness.runtime_details")
+    @patch("engineering_platform.server.provider_readiness.host_status")
+    def test_central_provider_readiness_uses_host_authentication_not_repository_access(
+        self, host_status: object, runtime_details: object,
+    ) -> None:
+        host_status.return_value = {
+            "codex": {"provider": "CODEX", "state": "READY"},
+            "github": {"provider": "GITHUB", "state": "READY"},
+        }
+        runtime_details.return_value = {
+            "codex": {"executable": "/managed/codex", "version": "1"},
+            "github": {"executable": "/managed/gh", "version": "2"},
+        }
+
+        readiness = server._central_provider_readiness(self.root)
+
+        self.assertEqual(readiness["codex"], {
+            "provider": "CODEX", "state": "READY", "executable": "/managed/codex", "version": "1", "scope": "PLATFORM",
+        })
+        self.assertEqual(readiness["github"]["state"], "READY")
+        host_status.assert_called_once_with(self.root)
+        runtime_details.assert_called_once_with(self.root)
+
     def test_transport_components_are_platform_scoped_and_secret_free(self) -> None:
         server.initialize(self.root)
         components = server.status(self.root)["components"]

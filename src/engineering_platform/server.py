@@ -38,6 +38,7 @@ from . import project_topology
 from . import submission_service
 from . import storage
 from . import managed_codex_runtime
+from . import provider_readiness
 from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
@@ -929,15 +930,12 @@ def _central_console_configuration(data_root: Path) -> dict[str, object]:
 
 
 def _central_provider_readiness(data_root: Path) -> dict[str, dict[str, object]]:
-    """Installation-scoped provider discovery without checkout authority."""
-    codex = managed_codex_runtime.inspect(data_root)
-    codex_path = str(codex.get("path") or "")
-    github_path = shutil.which("gh") or ""
-    def ready_to_login(path: str, version: object = "") -> dict[str, object]:
-        return {"state": "AUTH_REQUIRED" if path else "UNAVAILABLE", "executable": path, "version": str(version or ""), "scope": "PLATFORM"}
+    """Project-independent, token-free authentication readiness for CENTRAL."""
+    statuses = provider_readiness.host_status(data_root)
+    runtime = provider_readiness.runtime_details(data_root)
     return {
-        "codex": ready_to_login(codex_path if codex.get("state") == "READY" else "", codex.get("version")),
-        "github": ready_to_login(github_path),
+        provider: {**value, **runtime.get(provider, {}), "scope": "PLATFORM"}
+        for provider, value in statuses.items()
     }
 
 
