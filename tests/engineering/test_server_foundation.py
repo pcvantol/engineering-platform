@@ -372,12 +372,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_transport_components_are_platform_scoped_and_secret_free(self) -> None:
         server.initialize(self.root)
         components = server.status(self.root)["components"]
-        self.assertEqual(set(components), {"ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress"})
+        self.assertEqual(set(components), {"ep_server", "platform_database", "lifecycle_worker", "operations_console", "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress", "dependabot_producer"})
         self.assertEqual(components["ep_server"]["status_code"], "EP_SERVER_UNAVAILABLE")
         self.assertEqual(components["platform_database"]["status_code"], "PLATFORM_DATABASE_HEALTHY")
         self.assertEqual(components["http_ingress"]["status_code"], "HTTP_INGRESS_DOWN")
         self.assertEqual(components["cli_ingress"]["status_code"], "CLI_INGRESS_DEGRADED")
         self.assertEqual(components["file_inbox_ingress"]["status_code"], "FILE_INGRESS_STOPPED")
+        self.assertEqual(components["dependabot_producer"]["status_code"], "DEPENDABOT_DEGRADED")
         self.assertNotIn("credential", repr(components).lower())
 
     def test_dashboard_relay_requires_the_real_launch_agent_and_server(self) -> None:
