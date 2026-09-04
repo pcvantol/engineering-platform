@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 
 CASES = (
@@ -141,6 +142,27 @@ def main(argv: list[str] | None = None) -> int:
                     if source.exists() or before != (1, 1) or after != (1, 1):
                         raise RuntimeError("FILE_INBOX_REPLAY_DUPLICATED_OR_UNDELIVERED")
                     evidence[f"{transport}_{mode}"]["replay"] = "PASS"
+                if ordinal == 1:
+                    # Public-boundary negative canaries: every rejected
+                    # request must leave CENTRAL's submission/run counts flat.
+                    negatives = (
+                        ("malformed", b"{", project),
+                        ("unknown_project", json.dumps(item).encode(), "unknown-project"),
+                        ("unknown_repository", json.dumps({**item, "repository_id": "unknown-repository"}).encode(), project),
+                        ("invalid_mode", json.dumps({**item, "constraints": {"mode": "INVALID"}}).encode(), project),
+                        ("invalid_genesis", json.dumps({**item, "constraints": {"mode": "GENESIS", "target": ""}}).encode(), project),
+                    )
+                    for name, body, target_project in negatives:
+                        before = central_counts(data_root, project)
+                        request = Request(base + f"/v1/projects/{target_project}/submissions", data=body, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {credential}"})
+                        try:
+                            urlopen(request)  # nosec B310
+                            raise RuntimeError(f"negative HTTP canary accepted: {name}")
+                        except HTTPError:
+                            pass
+                        if central_counts(data_root, project) != before:
+                            raise RuntimeError(f"negative HTTP canary persisted state: {name}")
+                    evidence["HTTP_NEGATIVE_CANARIES"] = {"pass": True}
             finally:
                 process.terminate(); process.wait(timeout=5)
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
