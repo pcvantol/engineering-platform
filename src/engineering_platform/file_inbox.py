@@ -16,6 +16,7 @@ from pathlib import Path
 import signal
 import threading
 import time
+import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -23,6 +24,7 @@ from urllib.request import Request, urlopen
 MAX_FILE_BYTES = 131072
 MAX_REASON_LENGTH = 160
 HEARTBEAT_FILENAME = "file-inbox-heartbeat.json"
+OWNER_FILENAME = ".file-inbox-owner.json"
 
 
 class FileInboxError(ValueError):
@@ -171,6 +173,15 @@ class FileInboxService:
         self._thread: threading.Thread | None = None
         self._counts = {"accepted": 0, "quarantined": 0, "retryable": 0}
         self._recent_error: str | None = None
+        self._owner_path = root / OWNER_FILENAME
+
+    def _claim_owner(self) -> None:
+        try:
+            descriptor = os.open(self._owner_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as error:
+            raise FileInboxError("FILE_INBOX_ROOT_ALREADY_OWNED") from error
+        with os.fdopen(descriptor, "w", encoding="utf-8") as owner:
+            json.dump({"pid": os.getpid(), "started_at": _utcnow()}, owner, sort_keys=True)
 
     def _write_heartbeat(self) -> None:
         folders = _layout(self.root)
@@ -198,6 +209,7 @@ class FileInboxService:
 
     def start(self) -> None:
         _layout(self.root)
+        self._claim_owner()
         self._thread = threading.Thread(target=self._run, name="engineering-platform-file-inbox", daemon=True)
         self._thread.start()
 
@@ -205,6 +217,7 @@ class FileInboxService:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=self.interval_seconds + 1)
+        self._owner_path.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,7 +238,11 @@ def main(argv: list[str] | None = None) -> int:
             stopped.set()
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        service.start()
+        try:
+            service.start()
+        except FileInboxError as error:
+            print(json.dumps({"error": _reason(error)}, sort_keys=True), file=sys.stderr)
+            return 2
         try:
             while not stopped.wait(.2):
                 pass

@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -52,6 +52,22 @@ def payload(repository: str, mode: str, key: str) -> dict[str, object]:
         "idempotency_key": key,
         "constraints": {"mode": mode, "qualification": "P_TRANSPORT_INGRESS_MATRIX"},
     }
+
+
+def central_counts(data_root: Path, project_id: str) -> tuple[int, int]:
+    """Read-only evidence: submissions and their initial lifecycle dispatches."""
+    with sqlite3.connect(f"file:{data_root / 'engineering.db'}?mode=ro", uri=True) as connection:
+        submissions = int(connection.execute("SELECT COUNT(*) FROM ep_submissions WHERE project_id=?", (project_id,)).fetchone()[0])
+        runs = int(connection.execute("SELECT COUNT(*) FROM ep_parity_lifecycle_dispatches WHERE project_id=?", (project_id,)).fetchone()[0])
+    return submissions, runs
+
+
+def wait_for_file(path: Path, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(.1)
+    if not path.exists():
+        raise RuntimeError(f"timed out waiting for {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,7 +130,53 @@ def main(argv: list[str] | None = None) -> int:
                 evidence[f"{transport}_{mode}"] = {"submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "dispatch_state": diagnosis["dispatch_state"], "pass": True}
             finally:
                 process.terminate(); process.wait(timeout=5)
-        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
+        # The separate installed service proves replay and delivery retry without
+        # using a Python adapter call or a database mutation.
+        project, repository = "file-resilience", "file-resilience-repo"
+        command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
+        checkout = root / "file-resilience-checkout"; checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+        command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        credential = str(command(server, "issue-consumer-credential", "--data-root", str(data_root), "--project-id", project, "--consumer-id", "file-resilience") ["credential"])
+        environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
+        external_environment = {**environment, "EP_FILE_INBOX_COMPOSITION_MODE": "EXTERNAL"}
+        server_process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=external_environment)  # nosec B603
+        inbox_process = subprocess.Popen([str(venv / "bin" / "engineering-platform-file-inbox"), "--serve", "--interval-seconds", "0.1", "--root", str(data_root / "file-inbox"), "--server", base], env=environment)  # nosec B603
+        try:
+            for _ in range(100):
+                try:
+                    with urlopen(base + "/readyz", timeout=.25): break  # nosec B310
+                except OSError: time.sleep(.1)
+            incoming, accepted = data_root / "file-inbox" / "incoming", data_root / "file-inbox" / "accepted"
+            body = json.dumps({"project_id": project, "submission": payload(repository, "MANAGED", "file-replay")}, sort_keys=True)
+            source = incoming / "replay.json"; source.write_text(body, encoding="utf-8")
+            import hashlib
+            digest = hashlib.sha256(body.encode()).hexdigest(); receipt_path = accepted / f"{digest}.receipt.json"
+            wait_for_file(receipt_path); receipt = json.loads(receipt_path.read_text())
+            diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
+            first_counts = central_counts(data_root, project)
+            inbox_process.terminate(); inbox_process.wait(timeout=5)
+            # Reappearance after an adapter restart must be idempotent in CENTRAL.
+            source.write_text(body, encoding="utf-8")
+            inbox_process = subprocess.Popen([str(venv / "bin" / "engineering-platform-file-inbox"), "--serve", "--interval-seconds", "0.1", "--root", str(data_root / "file-inbox"), "--server", base], env=environment)  # nosec B603
+            time.sleep(.6); replay_counts = central_counts(data_root, project)
+            # Keep service alive while Server is unavailable; the next physical file stays retryable.
+            server_process.terminate(); server_process.wait(timeout=5)
+            retry_body = json.dumps({"project_id": project, "submission": payload(repository, "GENESIS", "file-retry")}, sort_keys=True)
+            retry_source = incoming / "retry.json"; retry_source.write_text(retry_body, encoding="utf-8")
+            wait_for_file(data_root / "file-inbox" / "file-inbox-heartbeat.json")
+            time.sleep(.5); down_counts = central_counts(data_root, project)
+            server_process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=external_environment)  # nosec B603
+            retry_digest = hashlib.sha256(retry_body.encode()).hexdigest(); retry_receipt_path = accepted / f"{retry_digest}.receipt.json"
+            wait_for_file(retry_receipt_path); retry_receipt = json.loads(retry_receipt_path.read_text())
+            retry_diagnosis = wait_for_dispatch(server, data_root, str(retry_receipt["submission_id"]))
+            final_counts = central_counts(data_root, project)
+            resilience = {"FILE_INBOX_REPLAY": "PASS" if first_counts == replay_counts == (1, 1) else "FAIL", "FILE_INBOX_SERVER_DOWN_RETRY": "PASS" if down_counts == (1, 1) and final_counts == (2, 2) else "FAIL", "replay_counts": first_counts, "retry_down_counts": down_counts, "retry_final_counts": final_counts, "replay_submission_id": receipt["submission_id"], "replay_run_id": diagnosis["run_id"], "retry_submission_id": retry_receipt["submission_id"], "retry_run_id": retry_diagnosis["run_id"]}
+        finally:
+            inbox_process.terminate(); inbox_process.wait(timeout=5)
+            server_process.terminate(); server_process.wait(timeout=5)
+        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS" if all(value == "PASS" for key, value in resilience.items() if key.startswith("FILE_")) else "FAIL", "matrix": evidence, "resilience": resilience}, sort_keys=True))
     return 0
 
 
