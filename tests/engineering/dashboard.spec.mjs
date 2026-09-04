@@ -6832,6 +6832,44 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("localizes every canonical ingress card in every supported locale", async ({ page }) => {
+    test.setTimeout(60_000);
+    const projection = {
+      scope: "PLATFORM",
+      components: {
+        http_ingress: { state: "HEALTHY", healthy: true, detail: "CENTRAL listener endpoint", version: "1" },
+        cli_ingress: { state: "AVAILABLE", healthy: true, detail: "Canonical submission compatibility", version: "1" },
+        file_inbox_ingress: {
+          state: "DEGRADED", healthy: false, detail: "File Inbox adapter heartbeat unavailable",
+          watched_location: "/private/tmp/qualification/file-inbox", delivery_retry: "PENDING",
+          quarantine_count: 1, recent_error: "CENTRAL_UNAVAILABLE",
+        },
+      },
+    };
+    await page.route("**/health", (route) => route.fulfill({
+      contentType: "application/json", body: JSON.stringify(projection),
+    }));
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await waitForDashboardReady(page);
+      await selectDashboardLocale(page, language);
+      for (const [component, state] of [
+        ["http_ingress", "HEALTHY"], ["cli_ingress", "AVAILABLE"], ["file_inbox_ingress", "DEGRADED"],
+      ]) {
+        const label = DASHBOARD_MESSAGES[language][`transport.${component === "http_ingress" ? "http" : component === "cli_ingress" ? "cli" : "file"}`];
+        const card = page.locator(".platform-health__component").filter({ hasText: label });
+        await expect(card).toHaveCount(1);
+        await expect(card).toContainText(DASHBOARD_MESSAGES[language][`transport.state.${state}`]);
+      }
+      const fileCard = page.locator(".platform-health__component").filter({
+        hasText: DASHBOARD_MESSAGES[language]["transport.file"],
+      });
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.delivery_retry"]);
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.quarantine"]);
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.recent_error"]);
+    }
+  });
+
   test("shows the managed Codex CLI provenance in host preflight", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {

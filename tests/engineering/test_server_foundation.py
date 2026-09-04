@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import socket
 import sqlite3
@@ -11,7 +12,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engineering_platform import local_repository_binding, project_topology, providers, server
+from engineering_platform import file_inbox, local_repository_binding, project_topology, providers, server
 
 
 class StandaloneServerFoundationTest(unittest.TestCase):
@@ -197,6 +198,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(components["cli_ingress"]["state"], "DEGRADED")
         self.assertEqual(components["file_inbox_ingress"]["state"], "STOPPED")
         self.assertNotIn("credential", repr(components).lower())
+
+    def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
+        server.initialize(self.root)
+        inbox = self.root / server.FILE_INBOX_DIRECTORY
+        inbox.mkdir(parents=True)
+        (inbox / file_inbox.HEARTBEAT_FILENAME).write_text(json.dumps({
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "watched_location": str(inbox), "delivery_retry": "NONE",
+            "quarantine_count": 1, "recent_error": "MALFORMED_FILE",
+        }), encoding="utf-8")
+        with patch("engineering_platform.server._runtime", return_value={"pid": 1}), patch(
+            "engineering_platform.server._alive", return_value=True,
+        ):
+            component = server.status(self.root)["components"]["file_inbox_ingress"]
+        self.assertEqual(component["state"], "DEGRADED")
+        self.assertEqual(component["quarantine_count"], 1)
+        self.assertEqual(component["recent_error"], "MALFORMED_FILE")
 
     def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
         historical = (

@@ -623,7 +623,14 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
         heartbeat_fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat_at)).total_seconds() <= 10
     except ValueError:
         heartbeat_fresh = False
-    file_state = "RUNNING" if server_running and heartbeat_fresh else "STOPPED"
+    delivery_retry = str(heartbeat.get("delivery_retry", "NONE")) if heartbeat else "NONE"
+    quarantine_count = int(heartbeat.get("quarantine_count", 0)) if heartbeat and isinstance(heartbeat.get("quarantine_count", 0), int) else 0
+    recent_error = heartbeat.get("recent_error") if heartbeat else None
+    # A live watcher with pending delivery, a bounded adapter diagnostic, or
+    # quarantined ingress is operational but needs attention.  It is not a
+    # CENTRAL execution/run failure and cannot affect queue authority.
+    file_attention_needed = delivery_retry != "NONE" or bool(recent_error) or quarantine_count > 0
+    file_state = "STOPPED" if not server_running or not heartbeat_fresh else "DEGRADED" if file_attention_needed else "RUNNING"
     return {
         "http_ingress": {
             "healthy": server_running, "state": http_state,
@@ -642,9 +649,9 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
             "watched_location": heartbeat.get("watched_location") if heartbeat else str(data_root / FILE_INBOX_DIRECTORY),
             "heartbeat": heartbeat_at or None,
             "last_successful_submission": file_last,
-            "delivery_retry": heartbeat.get("delivery_retry", "NONE") if heartbeat else "NONE",
-            "quarantine_count": heartbeat.get("quarantine_count", 0) if heartbeat else 0,
-            "recent_error": heartbeat.get("recent_error") if heartbeat else None,
+            "delivery_retry": delivery_retry,
+            "quarantine_count": quarantine_count,
+            "recent_error": recent_error,
         },
     }
 
