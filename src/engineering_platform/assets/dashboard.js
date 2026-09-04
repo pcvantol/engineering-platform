@@ -3625,9 +3625,10 @@ function showComponentModal(payload) {
   );
   componentDetailField(fields, t("component.version"), payload.version);
   if (["http_ingress", "cli_ingress", "file_inbox_ingress"].includes(payload.component)) {
-    componentDetailField(fields, t("transport.last_submission"), payload.last_successful_submission);
+    const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
+    componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
     componentDetailField(fields, t("transport.location"), payload.watched_location);
-    componentDetailField(fields, t("transport.heartbeat"), payload.heartbeat);
+    componentDetailField(fields, t("transport.heartbeat"), transportTimestamp(payload.heartbeat));
     componentDetailField(fields, t("transport.delivery_retry"), payload.delivery_retry ? t("transport.retry." + payload.delivery_retry, {}, String(payload.delivery_retry)) : null);
     componentDetailField(fields, t("transport.quarantine"), payload.quarantine_count);
     componentDetailField(fields, t("transport.recent_error"), payload.recent_error);

@@ -4458,6 +4458,19 @@ test.describe("Engineering Status browser smoke", () => {
     ]);
   });
 
+  test("formats File Inbox heartbeat detail through the selected dashboard locale", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => showComponentModal({
+      component: "file_inbox_ingress", state: "RUNNING", healthy: true,
+      detail: "File Inbox adapter heartbeat", heartbeat: "2026-09-04T06:41:05.681639+00:00",
+      watched_location: "/private/tmp/file-inbox", delivery_retry: "NONE", quarantine_count: 0,
+      launchd: {},
+    }));
+    await expect(page.locator("#componentModalContent")).toContainText(
+      "Heartbeatvrijdag 4 september 2026 om 08:41:05",
+    );
+  });
+
   test("puts preflight diagnostic clauses on separate lines", async ({ page }) => {
     await page.route("**/api/events", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.abort());
