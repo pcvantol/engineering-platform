@@ -13,12 +13,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 MAX_FILE_BYTES = 131072
 MAX_REASON_LENGTH = 160
+HEARTBEAT_FILENAME = "file-inbox-heartbeat.json"
 
 
 class FileInboxError(ValueError):
@@ -137,6 +140,70 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
         except URLError:
             counts["retryable"] += 1
     return counts
+
+
+def heartbeat_path(root: Path) -> Path:
+    """Return the installation-owned liveness record for this adapter.
+
+    This is deliberately a small, secret-free transport observation.  It is
+    neither a queue nor a lifecycle store; CENTRAL remains the sole authority
+    for accepted submissions and dispatch state.
+    """
+    return root / HEARTBEAT_FILENAME
+
+
+def read_heartbeat(root: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(heartbeat_path(root).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+class FileInboxService:
+    """Installed Server-composed File Inbox adapter with a bounded heartbeat."""
+
+    def __init__(self, root: Path, *, server: str, credential: str | None, interval_seconds: float = 2.0) -> None:
+        self.root, self.server, self.credential = root, server, credential
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._counts = {"accepted": 0, "quarantined": 0, "retryable": 0}
+        self._recent_error: str | None = None
+
+    def _write_heartbeat(self) -> None:
+        folders = _layout(self.root)
+        payload = {
+            "state": "RUNNING",
+            "updated_at": _utcnow(),
+            "watched_location": str(self.root),
+            "delivery_retry": "PENDING" if self._counts["retryable"] else "NONE",
+            "quarantine_count": len(list(folders["quarantine"].glob("*.json"))),
+            "recent_error": self._recent_error,
+        }
+        _write_receipt(heartbeat_path(self.root), payload)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                if self.credential:
+                    self._counts = process_once(self.root, server=self.server, credential=self.credential)
+                    self._recent_error = None
+                self._write_heartbeat()
+            except (OSError, ValueError, URLError) as error:
+                self._recent_error = _reason(error)
+                self._write_heartbeat()
+            self._stop.wait(self.interval_seconds)
+
+    def start(self) -> None:
+        _layout(self.root)
+        self._thread = threading.Thread(target=self._run, name="engineering-platform-file-inbox", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_seconds + 1)
 
 
 def main(argv: list[str] | None = None) -> int:

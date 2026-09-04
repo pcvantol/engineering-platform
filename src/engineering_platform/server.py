@@ -31,6 +31,7 @@ from . import agent_trust
 from . import central_database
 from . import dashboard
 from . import dashboard_translation
+from . import file_inbox
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
@@ -59,6 +60,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # database path.
 SERVER_STORE_SCHEMA_VERSION = 49
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
+FILE_INBOX_DIRECTORY = "file-inbox"
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -614,7 +616,13 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     http_state = "HEALTHY" if server_running else "DOWN"
     cli_state = "AVAILABLE" if server_running else "DEGRADED"
     file_last = latest.get("FILE_INBOX")
-    file_state = "RUNNING" if file_last else "STOPPED"
+    heartbeat = file_inbox.read_heartbeat(data_root / FILE_INBOX_DIRECTORY)
+    heartbeat_at = str(heartbeat.get("updated_at", "")) if heartbeat else ""
+    try:
+        heartbeat_fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat_at)).total_seconds() <= 10
+    except ValueError:
+        heartbeat_fresh = False
+    file_state = "RUNNING" if server_running and heartbeat_fresh else "STOPPED"
     return {
         "http_ingress": {
             "healthy": server_running, "state": http_state,
@@ -629,11 +637,23 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
         },
         "file_inbox_ingress": {
             "healthy": file_state == "RUNNING", "state": file_state,
-            "detail": "Awaiting file transport heartbeat" if not file_last else "Last file submission accepted",
-            "watched_location": "Configured File Inbox", "last_successful_submission": file_last,
-            "delivery_retry": "NONE", "quarantine_count": 0, "recent_error": None,
+            "detail": "File Inbox adapter heartbeat" if file_state == "RUNNING" else "File Inbox adapter heartbeat unavailable",
+            "watched_location": heartbeat.get("watched_location") if heartbeat else str(data_root / FILE_INBOX_DIRECTORY),
+            "heartbeat": heartbeat_at or None,
+            "last_successful_submission": file_last,
+            "delivery_retry": heartbeat.get("delivery_retry", "NONE") if heartbeat else "NONE",
+            "quarantine_count": heartbeat.get("quarantine_count", 0) if heartbeat else 0,
+            "recent_error": heartbeat.get("recent_error") if heartbeat else None,
         },
     }
+
+
+def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, object] | None:
+    """Expose one secret-free detail view from the same platform projection."""
+    component = status(data_root)["components"].get(component_id)  # type: ignore[index]
+    if not isinstance(component, dict):
+        return None
+    return {"component": component_id, "machine": "CENTRAL", "restart_supported": False, **component}
 
 
 def status(data_root: Path) -> dict[str, object]:
@@ -1411,6 +1431,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
             return
+        component_match = re.fullmatch(r"/api/components/(http_ingress|cli_ingress|file_inbox_ingress)/details", request.path)
+        if method == "do_GET" and component_match:
+            detail = _platform_component_detail(self.server.data_root, component_match.group(1))  # type: ignore[attr-defined]
+            self._send(200, detail) if detail is not None else self._send(404, {"error": "COMPONENT_UNKNOWN"})
+            return
         if self._central_database_configuration(method):
             return
         if request.path == "/api/provider-capacity":
@@ -1734,6 +1759,14 @@ def serve(data_root: Path) -> int:
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
     worker = LifecycleWorker(data_root)
+    # The File Inbox is an installed Server child, not a Dashboard or
+    # checkout-owned watcher.  Its heartbeat is the source for its platform
+    # component health; a prior successful file is never treated as liveness.
+    inbox_service = file_inbox.FileInboxService(
+        data_root / FILE_INBOX_DIRECTORY,
+        server=f"http://{config.bind_host}:{config.bind_port}",
+        credential=os.environ.get("EP_CONSUMER_TOKEN"),
+    )
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
@@ -1743,9 +1776,11 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     worker.start()
+    inbox_service.start()
     try:
         server.serve_forever()
     finally:
+        inbox_service.stop()
         worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)

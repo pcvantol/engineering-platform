@@ -3549,10 +3549,14 @@ function healthComponentLabel(component) {
     dashboard: t("logs.status_dashboard"),
     inbox_watcher: t("component.execution_host"),
     dashboard_relay: t("component.dashboard_relay"),
-    http_ingress: "HTTP/API ingress",
-    cli_ingress: "CLI ingress",
-    file_inbox_ingress: "File Inbox ingress",
+    http_ingress: t("transport.http"),
+    cli_ingress: t("transport.cli"),
+    file_inbox_ingress: t("transport.file"),
   }[component] || component;
+}
+function transportState(value) { return t("transport.state." + String(value), {}, String(value)); }
+function transportDetail(value) {
+  return t({"CENTRAL listener endpoint":"transport.detail.listener","Canonical submission compatibility":"transport.detail.compatibility","File Inbox adapter heartbeat":"transport.detail.heartbeat","File Inbox adapter heartbeat unavailable":"transport.detail.heartbeat_unavailable"}[String(value)] || "", {}, String(value));
 }
 let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;
 let componentDetailsRefreshIntervalMs = 5e3;
@@ -3616,11 +3620,19 @@ function showComponentModal(payload) {
   componentDetailField(
     fields,
     t("component.status"),
-    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : ["http_ingress", "cli_ingress", "file_inbox_ingress"].includes(payload.component) ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
-      (payload.detail || payload.state || t("ui.no_component_explanation")),
+      (transportDetail(payload.detail || payload.state || t("ui.no_component_explanation"))),
   );
   componentDetailField(fields, t("component.version"), payload.version);
+  if (["http_ingress", "cli_ingress", "file_inbox_ingress"].includes(payload.component)) {
+    componentDetailField(fields, t("transport.last_submission"), payload.last_successful_submission);
+    componentDetailField(fields, t("transport.location"), payload.watched_location);
+    componentDetailField(fields, t("transport.heartbeat"), payload.heartbeat);
+    componentDetailField(fields, t("transport.delivery_retry"), payload.delivery_retry ? t("transport.retry." + payload.delivery_retry, {}, String(payload.delivery_retry)) : null);
+    componentDetailField(fields, t("transport.quarantine"), payload.quarantine_count);
+    componentDetailField(fields, t("transport.recent_error"), payload.recent_error);
+  }
   componentDetailField(
     fields,
     t("component.uptime"),
@@ -3782,7 +3794,7 @@ function renderPlatformHealth(payload) {
       delegatedToActiveHost = watcherDelegatedToActiveHost({ component: key, healthy: componentHealthy }),
       version =
         typeof component?.version === "string"
-          ? " · Versie " + component.version
+          ? " · " + t("component.version") + " " + component.version
           : "",
       uptime = formatComponentUptime(component?.uptime_seconds);
     item.className = "platform-health__component";
@@ -3807,16 +3819,16 @@ function renderPlatformHealth(payload) {
     }
     detail.className = "platform-health__component-detail";
     const transportFacts = [
-      component?.last_successful_submission ? "Last submission " + component.last_successful_submission : "",
-      component?.watched_location ? "Location " + component.watched_location : "",
-      component?.delivery_retry ? "Delivery retry " + component.delivery_retry : "",
-      Number.isFinite(Number(component?.quarantine_count)) ? "Quarantine " + component.quarantine_count : "",
-      component?.recent_error ? "Diagnostic " + component.recent_error : "",
+      component?.last_successful_submission ? t("transport.last_submission") + " " + component.last_successful_submission : "",
+      component?.watched_location ? t("transport.location") + " " + component.watched_location : "",
+      component?.delivery_retry ? t("transport.delivery_retry") + " " + t("transport.retry." + component.delivery_retry, {}, String(component.delivery_retry)) : "",
+      Number.isFinite(Number(component?.quarantine_count)) ? t("transport.quarantine") + " " + component.quarantine_count : "",
+      component?.recent_error ? t("transport.recent_error") + " " + component.recent_error : "",
     ].filter(Boolean).join(" · ");
     detail.textContent =
-      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : String(component?.state || (componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")))) +
+      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : transportState(component?.state || (componentHealthy ? "HEALTHY" : "DOWN"))) +
       " · " +
-      String(component?.detail || component?.state || t("ui.no_component_explanation")) +
+      transportDetail(component?.detail || component?.state || t("ui.no_component_explanation")) +
       version +
       (uptime ? " · " + t("component.uptime") + " " + uptime : "") +
       (transportFacts ? " · " + transportFacts : "");
