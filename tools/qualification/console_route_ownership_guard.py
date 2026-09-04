@@ -9,7 +9,9 @@ from engineering_platform.console_route_ownership import OWNERS, PLATFORM, ROUTE
 _REPRESENTATIVE_PATHS = (
     ("GET", "/"), ("GET", "/assets/dashboard.js"), ("GET", "/health"),
     ("GET", "/api/platform-status"), ("GET", "/api/dashboard-snapshot"), ("GET", "/api/events"),
-    ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/inbox"),
+    ("GET", "/api/components/ep_server/details"), ("GET", "/api/components/platform_database/details"),
+    ("GET", "/api/components/lifecycle_worker/details"), ("GET", "/api/components/operations_console/details"),
+    ("GET", "/api/components/dashboard_relay/details"), ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/inbox"),
     ("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"),
     ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"),
     ("GET", "/api/configuration"), ("POST", "/api/configuration"),

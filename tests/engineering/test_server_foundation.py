@@ -479,7 +479,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "/health", "/api/platform-status", "/api/dashboard-snapshot",
             "/api/status", "/api/provider-login-status",
             "/api/execution-runtime-status", "/api/logs/inbox",
-            "/api/components/file_inbox_ingress/details", "/api/configuration",
+            "/api/components/ep_server/details", "/api/components/platform_database/details",
+            "/api/components/lifecycle_worker/details", "/api/components/operations_console/details",
+            "/api/components/dashboard_relay/details", "/api/components/file_inbox_ingress/details", "/api/configuration",
         ):
             for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
                 try:
