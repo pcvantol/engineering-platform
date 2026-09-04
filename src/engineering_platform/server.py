@@ -1481,6 +1481,25 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/provider-login-status" and method == "do_GET":
             self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
             return
+        if request.path == "/api/execution-runtime-status" and method == "do_GET":
+            # Validation is an installation capability, independent of the
+            # selected project.  Keep it out of the legacy checkout delegate.
+            self._send(200, dashboard._execution_runtime_status())
+            return
+        if request.path == "/api/execution-runtime/repair" and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                runtime = dashboard._execution_runtime_status()
+                if runtime["state"] != "READY":
+                    raise ValueError
+            except (ValueError, OSError):
+                self._send(409, {"error": "EXECUTION_RUNTIME_UNAVAILABLE"})
+                return
+            self._send(200, {"rechecked": True, "runtime": runtime, "scope": "PLATFORM"})
+            return
         if request.path == "/api/provider-login/repair" and method == "do_POST":
             # Provider installation and interactive sign-in are host-wide
             # operations.  They must never fall through to the historical

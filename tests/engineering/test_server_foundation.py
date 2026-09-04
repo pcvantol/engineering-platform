@@ -411,6 +411,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             first = response.read().decode("utf-8")
         with urlopen(f"http://127.0.0.1:{port}/?project=engineering-platform") as response:
             second = response.read().decode("utf-8")
+        # Platform runtime readiness must retain its CENTRAL source when the
+        # browser selects a project and adds its request-scoped header.
+        with urlopen(Request(
+            f"http://127.0.0.1:{port}/api/execution-runtime-status",
+            headers={"X-Engineering-Platform-Project": "djconnect"},
+        )) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn(json.loads(response.read())["state"], {"READY", "UNAVAILABLE"})
         # EventSource supplies the CENTRAL scope as a query value because it
         # cannot set the dashboard fetch header. Both bound projects must
         # reach the preserved live route, not leak scope into a 404 path.
