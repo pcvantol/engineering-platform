@@ -359,26 +359,25 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
     components = platformHealth?.components && typeof platformHealth.components === "object"
       ? platformHealth.components
       : null,
-    dashboardHealthy = components?.dashboard?.healthy === true,
-    watcherHealthy = components?.inbox_watcher?.healthy === true,
-    relayHealthy = components?.dashboard_relay?.healthy === true,
+    httpHealthy = components?.http_ingress?.healthy === true,
+    cliHealthy = components?.cli_ingress?.healthy === true,
+    fileHealthy = components?.file_inbox_ingress?.healthy === true,
     queueDepth = Math.max(0, Number(current?.queue_depth) || 0),
     watcherState = String(current?.watcher_state || ""),
     workspaceState = String(current?.workspace_state || ""),
     phase = String(current?.current_phase || "").toUpperCase(),
     watcherStateUpper = watcherState.toUpperCase(),
     active = isActiveRun(current || {}),
-    watcherDelegatedToActiveHost = active && components && !watcherHealthy,
     workspaceActive = active && workspaceState === "ACTIVE",
     blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
     failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
-      (components && (!dashboardHealthy || !relayHealthy || (!watcherHealthy && !watcherDelegatedToActiveHost)));
+      (components && (!httpHealthy || !cliHealthy || !fileHealthy));
   let state = "unknown";
   if (failed) state = "error";
   else if (blocked || queueDepth > 0) state = "blocked";
   else if (active) state = "active";
-  else if (dashboardHealthy && watcherHealthy && relayHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
-  const componentCheck = (name, componentKey, healthy, delegatedToActiveHost = false) => {
+  else if (httpHealthy && cliHealthy && fileHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
+  const componentCheck = (name, componentKey, healthy) => {
     const component = components?.[componentKey];
     const unavailable = components ? "not_running" : "unknown";
     const reasonCode = !healthy && components && typeof component?.reason_code === "string"
@@ -389,16 +388,16 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
       : "";
     return [
       name,
-      delegatedToActiveHost ? "execution_host_active" : healthy ? "running" : unavailable,
-      delegatedToActiveHost ? "warning" : healthy ? "good" : components ? "bad" : "unknown",
+      String(component?.state || unavailable),
+      healthy ? "good" : components ? "bad" : "unknown",
       {},
-      { component: components ? componentKey : null, reason: delegatedToActiveHost ? "" : reason },
+      { component: components ? componentKey : null, reason, transport: true },
     ];
   };
   const checks = [
-    componentCheck("dashboard", "dashboard", dashboardHealthy),
-    componentCheck("watcher", "inbox_watcher", watcherHealthy, watcherDelegatedToActiveHost),
-    componentCheck("relay", "dashboard_relay", relayHealthy),
+    componentCheck(t("transport.http"), "http_ingress", httpHealthy),
+    componentCheck(t("transport.cli"), "cli_ingress", cliHealthy),
+    componentCheck(t("transport.file"), "file_inbox_ingress", fileHealthy),
     ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
     ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
     ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
@@ -419,8 +418,8 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
     const item = document.createElement("li"), label = document.createElement("span"), result = document.createElement("span");
     item.dataset.health = tone;
     item.className = "dashboard-health__check";
-    label.textContent = t("dashboard.health." + name);
-    result.textContent = t("dashboard.health." + value, values, translate(value));
+    label.textContent = metadata.transport ? name : t("dashboard.health." + name);
+    result.textContent = metadata.transport ? transportState(value) : t("dashboard.health." + value, values, translate(value));
     result.className = "dashboard-health__value";
     item.append(label, result);
     if (metadata.reason) {
