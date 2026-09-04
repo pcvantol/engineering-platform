@@ -785,6 +785,57 @@ packaged path is proven.
 
 ## Sequencing and safety gates
 
+### Migration-to-V1 dependency authority
+
+This section is the canonical EP dependency authority from the current
+Phase-3/Phase-P frontier through the two Phase-4 producer capabilities.  The
+Phase-P roadmap supplies the implementation descriptions and the migration-gap
+register supplies completion evidence; neither may introduce a conflicting
+ordering.  Each node below is EP-owned.  These are EP-internal build and
+qualification edges, not Forge or Workspace work allocations.
+
+`EP::STANDALONE_EP_VERIFIED` is recorded by its B9 activation qualification.
+It is not a shorthand that permits an unspecified migration prerequisite.
+
+| Node ID | Depends on | Provides / qualification | Current status | V1 classification |
+| --- | --- | --- | --- | --- |
+| `EP::PHASE3_STANDALONE_PACKAGE_AND_INSTALL_QUALIFICATION_V1` | Phase-0/1 completed boundary and the clean-slate Phase-2 decision | History-preserving extraction; clean package/import; schema-41 clean store; Server and minimum Agent installation/service qualification; B8C/B8D evidence | AUTHORIZED / incomplete | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::P_TRANSPORT_V1` | Retained P-CENTRAL-CORE and P-CENTRAL-CONSOLE repairs | File, CLI and HTTP normalize into CENTRAL; watcher owns no lifecycle truth | ACTIVE GAP | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::P_QUEUE_V1` | `EP::P_TRANSPORT_V1` | Project-scoped FIFO, lease/recovery/finalization and isolation evidence | QUALIFICATION REMAINS | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::P_NEUTRAL_V1` | `EP::P_QUEUE_V1` | No active DJConnect runtime identity, local authority or obsolete entrypoint | ACTIVE GAP | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::P_INSTALLER_V1` | `EP::PHASE3_STANDALONE_PACKAGE_AND_INSTALL_QUALIFICATION_V1`; `EP::P_NEUTRAL_V1` | Idempotent verified installation, service, repair and clean activation path | PLANNED / incomplete | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::P_RELEASE_V1` | `EP::PHASE3_STANDALONE_PACKAGE_AND_INSTALL_QUALIFICATION_V1`; `EP::P_INSTALLER_V1` | Pinned signed release, provenance, compatibility and rollback evidence | ACTIVE GAP | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::PHASE_P_REAUDIT_V1` | `EP::P_TRANSPORT_V1`; `EP::P_QUEUE_V1`; `EP::P_NEUTRAL_V1`; `EP::P_RELEASE_V1` | Zero active migration gaps or explicit approved retirement | PLANNED / incomplete | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1` | `EP::PHASE_P_REAUDIT_V1`; `EP::P_INSTALLER_V1` | Installed Managed, Genesis and armed-retry Golden evidence | BLOCKED_BY `EP::PHASE_P_REAUDIT_V1` | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::PHASE_S_EXECUTION_PROTOCOL_FOUNDATION_V1` | `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1` | Minimum CENTRAL-to-Project-Agent execution protocol and parity evidence needed for one governed execution | BLOCKED_BY `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1` | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::B8E_ZERO_LOSS_PASS` | `EP::PHASE_P_REAUDIT_V1`; `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1`; `EP::PHASE_S_EXECUTION_PROTOCOL_FOUNDATION_V1` | Audited zero-loss disposition and installed-runtime evidence for each claimed live capability | `B8E_REPAIR_PLAN_REQUIRED` | REQUIRED_BEFORE_STANDALONE_VERIFIED |
+| `EP::STANDALONE_EP_VERIFIED` | `EP::PHASE3_STANDALONE_PACKAGE_AND_INSTALL_QUALIFICATION_V1`; `EP::P_TRANSPORT_V1`; `EP::P_QUEUE_V1`; `EP::P_NEUTRAL_V1`; `EP::P_INSTALLER_V1`; `EP::P_RELEASE_V1`; `EP::PHASE_P_REAUDIT_V1`; `EP::PD_INSTALLED_PRODUCT_GOLDENS_V1`; `EP::PHASE_S_EXECUTION_PROTOCOL_FOUNDATION_V1`; `EP::B8E_ZERO_LOSS_PASS` | B9: installed EP Server, newly registered Project Agent, first attached project and first governed execution; then clean CENTRAL activation | PLANNED / unavailable | V1 producer gate |
+| `EP::SOURCE_RETIREMENT_DJCONNECT_V1` | `EP::STANDALONE_EP_VERIFIED` | Retire obsolete DJConnect EP source/entrypoints while preserving historical evidence | POST-STANDALONE | REQUIRED_AFTER_STANDALONE_VERIFIED / NOT_V1_BLOCKING |
+| `EP::PHASE_S_REAL_PROJECT_DOGFOODING_V1` | `EP::STANDALONE_EP_VERIFIED`; `EP::PHASE_S_EXECUTION_PROTOCOL_FOUNDATION_V1` | Real-project Agent configuration, multi-project dogfooding and advanced Agent qualification | POST-STANDALONE | POST_V1 / NOT_V1_BLOCKING |
+
+The minimum Phase-S foundation is intentionally narrower than the later
+real-project Agent programme.  It supplies the protocol necessary to qualify
+the first governed execution; it does not require the broader dogfooding
+programme to complete before B9.
+
+The resulting mandatory order is:
+
+```text
+Phase-3 package/install + Phase-P prerequisites
+  -> Phase-P re-audit and P-D Goldens
+  -> minimum Phase-S execution protocol + B8E zero-loss pass
+  -> B9 / EP::STANDALONE_EP_VERIFIED
+  -> EP Phase-4 producer capabilities
+  -> source retirement and broader Phase-S dogfooding
+```
+
+`CUTOVER-DJCONNECT` is therefore not a pre-B9 runtime-authority transition.
+The runtime-authority cutover is the B9 recording and clean CENTRAL activation.
+The former compound label is renamed here as
+`EP::SOURCE_RETIREMENT_DJCONNECT_V1`: a post-standalone source/entrypoint
+retirement activity.  It must never precede the standalone capability that
+replaces it.
+
 ### B8E zero-loss gate (pre-B9)
 
 Before B9, the capability-level audit in
@@ -797,8 +848,11 @@ LaunchAgent alone is not semantic retirement.
 The recovery order is mandatory: **Phase P — extracted standalone functional
 parity** restores the installed extracted product before any redesign or
 distributed decomposition. Only after `FULL_EXTRACTED_EP_CORE_VERIFIED` may
-**Phase S — architectural seam decomposition** introduce the front ingress and
-CENTRAL-to-Project-Agent physical-execution seams, each with parity evidence.
+the minimum **Phase-S execution-protocol foundation** introduce the front
+ingress and CENTRAL-to-Project-Agent physical-execution seams needed for B9,
+each with parity evidence. Broader real-project Agent dogfooding is
+post-standalone work as defined by the migration-to-V1 dependency authority
+above.
 
 ```text
 B8C_PASS + B8D_PASS + B8E_ZERO_LOSS_PASS + execution protocol ready -> B9
