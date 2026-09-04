@@ -116,6 +116,31 @@ def main(argv: list[str] | None = None) -> int:
                     prompt.write_text(str(item["prompt"]), encoding="utf-8")
                     constraints.write_text(json.dumps(item["constraints"]), encoding="utf-8")
                     receipt = command(cli, "submit", "--server", base, "--project", project, "--repository", repository, "--producer-id", "installed-canary", "--producer-type", "HUMAN", "--producer-version", "1", "--prompt-file", str(prompt), "--constraints-file", str(constraints), "--idempotency-key", str(item["idempotency_key"]), environment=environment)
+                    if ordinal == 3:
+                        invalid = root / "invalid-constraints.json"
+                        invalid.write_text("[]", encoding="utf-8")
+                        invalid_prompt = root / "invalid-mode.md"
+                        invalid_prompt.write_text("Execution Mode: INVALID\n", encoding="utf-8")
+                        cases = (
+                            ("missing_prompt", ["--prompt-file", str(root / "missing.md")]),
+                            ("unknown_project", ["--project", "unknown-project"]),
+                            ("unknown_repository", ["--repository", "unknown-repository"]),
+                            ("invalid_constraints", ["--constraints-file", str(invalid)]),
+                            ("invalid_mode", ["--prompt-file", str(invalid_prompt)]),
+                        )
+                        base_args = [str(cli), "submit", "--server", base, "--project", project, "--repository", repository, "--producer-id", "installed-canary", "--producer-type", "HUMAN", "--prompt-file", str(prompt)]
+                        for name, replacement in cases:
+                            before = central_counts(data_root, project)
+                            arguments = list(base_args)
+                            for flag, value in zip(replacement[::2], replacement[1::2]):
+                                if flag in arguments:
+                                    arguments[arguments.index(flag) + 1] = value
+                                else:
+                                    arguments.extend((flag, value))
+                            completed = subprocess.run(arguments, env=environment, capture_output=True, text=True)  # nosec B603
+                            if completed.returncode == 0 or central_counts(data_root, project) != before:
+                                raise RuntimeError(f"negative CLI canary failed closed check: {name}")
+                        evidence["CLI_NEGATIVE_CANARIES"] = {"pass": True}
                 else:
                     incoming = data_root / "file-inbox" / "incoming"
                     incoming.mkdir(parents=True, exist_ok=True)

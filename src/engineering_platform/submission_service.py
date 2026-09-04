@@ -20,6 +20,7 @@ MAX_PROMPT_BYTES = 65536
 MAX_FIELD_LENGTH = 128
 MAX_CONSTRAINT_BYTES = 8192
 VALID_TRANSPORTS = frozenset({"HTTP", "CLI", "FILE_INBOX", "LEGACY_FILE"})
+VALID_EXECUTION_MODES = frozenset({"MANAGED", "GENESIS"})
 
 # This is the complete B8D lifecycle.  The final value deliberately says what
 # CENTRAL has *not* done: admission makes a submission eligible for a later
@@ -127,6 +128,17 @@ def _transport(value: object) -> str:
     return value
 
 
+def _validate_execution_mode(request: SubmissionRequest) -> None:
+    """Reject invalid mode declarations before CENTRAL writes admission state."""
+    declarations = {
+        line.split(":", 1)[1].strip().upper()
+        for line in request.prompt.splitlines()
+        if line.strip().lower().startswith("execution mode:")
+    }
+    if declarations and (not declarations <= VALID_EXECUTION_MODES or len(declarations) != 1):
+        raise SubmissionError("INVALID_EXECUTION_MODE")
+
+
 def request_from_mapping(project_id: str, payload: object, *, transport: str) -> SubmissionRequest:
     if not isinstance(payload, Mapping):
         raise SubmissionError("MALFORMED_REQUEST")
@@ -220,6 +232,7 @@ def lifecycle(connection: sqlite3.Connection, submission_id: str) -> dict[str, s
 def submit(connection: sqlite3.Connection, request: SubmissionRequest) -> SubmissionResult:
     """Persist and admit one request; no provider or Agent is selected here."""
     _transport(request.transport)
+    _validate_execution_mode(request)
     project = connection.execute("SELECT status FROM ep_project_registrations WHERE project_id=?", (request.project_id,)).fetchone()
     if project is None:
         raise SubmissionError("UNKNOWN_PROJECT", 404)
