@@ -951,6 +951,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(stylesheet).toContain("text-decoration:underline");
     expect(stylesheet).toContain(".configuration-central-database{border:");
     expect(stylesheet).not.toContain(".configuration-central-database{background:");
+    expect(stylesheet).toContain(".configuration-central-database__header .dashboard-action{justify-self:start;width:32px}");
   });
 
   test("analyses every worktree before showing a safe removal action", async ({ page }) => {

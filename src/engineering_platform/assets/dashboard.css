@@ -746,7 +746,9 @@ html[data-theme="light"] .report-view-modal__content,html[data-theme="light"] .r
      visually overlapping—the label column. */
   .configuration-controls label{grid-template-columns:minmax(0,1fr)}
   .configuration-central-database__header,.configuration-central-database__maintenance{grid-template-columns:minmax(0,1fr)}
-  .configuration-central-database__header .dashboard-action,.configuration-central-database__maintenance select,.configuration-central-database__maintenance .dashboard-select-picker{justify-self:start;width:min(100%,14rem)}
+  /* The database backup is a glyph action, not a full-width form control. */
+  .configuration-central-database__header .dashboard-action{justify-self:start;width:32px}
+  .configuration-central-database__maintenance select,.configuration-central-database__maintenance .dashboard-select-picker{justify-self:start;width:min(100%,14rem)}
   .workspace-database-maintenance-field{grid-template-columns:minmax(0,1fr)}
   .configuration-inbox-field{grid-template-columns:minmax(0,1fr)}
   .configuration-inbox-open{grid-column:1;grid-row:auto;justify-self:stretch;width:100%}
