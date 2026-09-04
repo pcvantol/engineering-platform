@@ -6228,17 +6228,23 @@ function renderExecutionRuntimeStatus(runtime) {
 async function refreshProviderLoginStatus() {
   const block = providerLoginStatusBlock();
   if (!block) return;
-  try {
-    const [response, runtimeResponse] = await Promise.all([
+  const [providerResult, runtimeResult] = await Promise.allSettled([
       fetch("/api/provider-login-status", { cache: "no-store" }),
       fetch("/api/execution-runtime-status", { cache: "no-store" }),
     ]);
-    const [payload, runtime] = await Promise.all([response.json(), runtimeResponse.json()]);
+  try {
+    if (providerResult.status !== "fulfilled") throw Error();
+    const response = providerResult.value, payload = await response.json();
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
     renderProviderLoginStatus(block, payload.providers);
-    renderExecutionRuntimeStatus(runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
   } catch {
     renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+  }
+  try {
+    if (runtimeResult.status !== "fulfilled") throw Error();
+    const response = runtimeResult.value, runtime = await response.json();
+    renderExecutionRuntimeStatus(response.ok ? runtime : { state: "CHECK_FAILED" });
+  } catch {
     renderExecutionRuntimeStatus({ state: "CHECK_FAILED" });
   }
 }
