@@ -226,7 +226,7 @@ test.beforeEach(async ({ page }, testInfo) => {
     if (waitsForConfiguration) {
       await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     }
-    if (![
+    if (waitsForConfiguration && ![
       "puts every mobile title-bar setting in a labelled expandable panel",
       "matches the iPhone portrait dashboard visual reference",
       "only starts pull-to-refresh from the scroll region's top edge",
