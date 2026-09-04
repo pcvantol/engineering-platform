@@ -620,7 +620,13 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('id="configuration"', no_project)
         self.assertNotIn('id="configurationInboxOpen"', no_project)
         self.assertNotIn('id="configurationInboxModal"', no_project)
-        self.assertNotIn('configurationInboxScanInterval', no_project)
+        self.assertIn('id="configurationServerSettings"', no_project)
+        self.assertIn('configurationInboxScanInterval', no_project)
+        self.assertIn('configurationOpenPrInterval', no_project)
+        self.assertLess(
+            no_project.index('id="configurationServerSettings"'),
+            no_project.index('configurationOpenPrInterval'),
+        )
         self.assertIn('configuration-file-inbox-readonly', no_project)
         self.assertIn('id="centralDatabaseHeading"', no_project)
         self.assertIn('/api/central-database/download', no_project)

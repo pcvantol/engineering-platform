@@ -73,11 +73,13 @@ not carry a second component inventory. Historical log aliases are read-only
 migration mappings and never selectable component identities.
 
 The rendered CENTRAL Console structurally removes the retired local
-Inbox-watcher location picker, folder chooser and Inbox scan configuration.
+Inbox-watcher location picker, folder chooser and watcher-restart path.
 `POST /api/configuration/inbox-location` and `/browse` are explicitly retired
-(`410`), while the Server-settings Open PR polling control remains. Component
-logs render one CENTRAL Platform table; a second watcher/dashboard log card is
-not emitted in either no-project or selected-project Console documents.
+(`410`). The canonical File Inbox scan interval and Open PR polling control
+are both placed under **Server settings** inside Configuration; neither is a
+project, checkout or selected-project setting. Component logs render one
+CENTRAL Platform table; a second watcher/dashboard log card is not emitted in
+either no-project or selected-project Console documents.
 
 The installed Server owns one component inventory, used by Platform Components,
 the status popout and every component detail modal. It contains `ep_server`

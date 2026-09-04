@@ -1335,15 +1335,12 @@ _WORKSPACE_ID_FIELD = re.compile(
 
 
 def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
-    """Remove checkout/watcher Inbox controls from the installed Console.
+    """Add the canonical File Inbox projection to the installed Console.
 
-    File Inbox is an installation-owned transport.  The retained dashboard
-    template may contain historical controls, but they are not a supported
-    CENTRAL Console surface and must not be reachable by a selected project.
+    The dashboard template contains no local-root chooser, folder picker or
+    watcher restart path.  The retained File Inbox scan interval is a Server
+    setting, alongside Open PR polling; it is not project or checkout state.
     """
-    document = re.sub(br'<div class="field configuration-field">.*?id="configurationInboxOpen".*?</div>', b"", document, count=1)
-    document = re.sub(br'<label for="configurationInboxScanInterval">.*?</label>', b"", document, count=1)
-    document = re.sub(br'<dialog class="dashboard-modal-shell.*?id="configurationInboxModal".*?</dialog>', b"", document, count=1)
     location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve())).encode("utf-8")
     readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label" data-i18n="transport.file"></span><span>' + location + b'</span></p>'
     document = document.replace(b'data-i18n="section.host_components"', b'data-i18n="section.platform_components"')

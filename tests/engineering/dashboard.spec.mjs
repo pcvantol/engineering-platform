@@ -319,6 +319,22 @@ test.describe("Engineering Status browser smoke", () => {
     })).toBe(true);
   });
 
+  test("keeps File Inbox and open-PR polling in Server settings without legacy Inbox controls", async ({ page }) => {
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    const configuration = page.locator("#configuration");
+    await configuration.evaluate((element) => { element.open = true; });
+    const serverSettings = configuration.locator("#configurationServerSettings");
+    await expect(serverSettings).toContainText("Serverinstellingen");
+    await expect(serverSettings.locator("#configurationInboxScanInterval")).toBeVisible();
+    await expect(serverSettings.locator("#configurationOpenPrInterval")).toBeVisible();
+    await expect(page.locator("#queueItems #configurationOpenPrInterval")).toHaveCount(0);
+    for (const selector of [
+      "#configurationInboxOpen",
+      "#configurationInboxModal",
+      "#configurationInboxBrowse",
+    ]) await expect(page.locator(selector)).toHaveCount(0);
+  });
+
   test("persists the bounded serverpush interval from Configuration", async ({ page }) => {
     const writes = [];
     await page.route("**/api/configuration", async (route) => {

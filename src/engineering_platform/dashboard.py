@@ -29,7 +29,7 @@ from .platform_bootstrap import provision_runtime_workspace as provision_workspa
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
 from .inbox_watcher import LABEL as WATCHER_LABEL
-from .inbox_watcher import WATCHER_READY_PROJECTION, WATCHER_VERSION
+from .inbox_watcher import WATCHER_VERSION
 from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
 from . import inbox_watcher
 from .component_logging import (
@@ -75,10 +75,7 @@ from .resources import package_path
 from .dashboard_configuration import (
     DashboardConfigurationConflict,
     get as dashboard_configuration,
-    inbox_root,
-    restore_inbox_root,
     update as update_dashboard_configuration,
-    update_inbox_root,
 )
 from . import dashboard_state
 from .workspace_preflight import execute as execute_workspace_preflight
@@ -1129,23 +1126,6 @@ def _restart_component(component: str) -> None:
         raise OSError("De herstart is niet gelukt.") from error
 
 
-def _choose_local_directory(root: Path) -> str | None:
-    """Open the host's native directory picker after an explicit dashboard action."""
-    if sys.platform != "darwin":
-        raise RuntimeError("Een lokale mapkiezer is alleen op deze machine beschikbaar.")
-    result = LocalProcessProvider().execute(
-        root, ("osascript", "-e", "POSIX path of (choose folder)")
-    )
-    if result.returncode:
-        if "-128" in (result.stderr or ""):
-            return None
-        raise RuntimeError("De lokale mapkiezer kon niet worden geopend.")
-    location = result.stdout.strip()
-    if not location or not Path(location).is_dir():
-        raise RuntimeError("De gekozen lokale map is niet beschikbaar.")
-    return location
-
-
 def _restart_component_after_response(component: str, logger: logging.Logger) -> None:
     """Restart after the acknowledgement and retain only a bounded failure event."""
     try:
@@ -1246,56 +1226,6 @@ def _activate_engineering_platform_worktree(root: Path, worktree_path: str, bran
         log_event(logger, logging.ERROR, "workspace_switch_failed", diagnostic=str(error))
         return
     log_event(logger, logging.INFO, "workspace_switch_completed", diagnostic=f"branch={branch}")
-
-
-class InboxLocationChangeError(RuntimeError):
-    """Raised when a new Inbox route cannot be confirmed by a fresh watcher."""
-
-
-def _restart_and_verify_inbox_watcher(
-    root: Path, expected_inbox: Path, *, timeout_seconds: float = 8.0,
-) -> None:
-    """Restart the watcher and require a fresh ready record for ``expected_inbox``."""
-    requested_at = datetime.now(timezone.utc)
-    _restart_component("inbox_watcher")
-    deadline = time.monotonic() + timeout_seconds
-    expected = str(expected_inbox.resolve())
-    while time.monotonic() < deadline:
-        try:
-            ready = load_projection(root, WATCHER_READY_PROJECTION) or {}
-            started_at, pid = ready.get("started_at"), ready.get("pid")
-            started = (
-                datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                if isinstance(started_at, str) else None
-            )
-            if (
-                ready.get("inbox_path") == expected
-                and isinstance(pid, int)
-                and started is not None
-                and started >= requested_at
-            ):
-                os.kill(pid, 0)
-                return
-        except (EngineeringStorageError, OSError, ValueError):
-            pass
-        time.sleep(0.1)
-    raise OSError("Inbox watcher restart did not confirm the configured Inbox route.")
-
-
-def _change_inbox_location(root: Path, value: object, active_inbox: Path) -> dict[str, object]:
-    """Commit an Inbox route only after its replacement watcher confirms it."""
-    previous = inbox_root(root)
-    event = update_inbox_root(root, value)
-    try:
-        _restart_and_verify_inbox_watcher(root, Path(str(event["value"])) / "Inbox")
-    except OSError as error:
-        try:
-            restore_inbox_root(root, previous)
-            _restart_and_verify_inbox_watcher(root, active_inbox)
-        except OSError as rollback_error:
-            raise InboxLocationChangeError("watcher_restart_and_rollback_failed") from rollback_error
-        raise InboxLocationChangeError("watcher_restart_failed_rolled_back") from error
-    return {**event, "watcher_verified": True}
 
 
 def _restore_managed_main_branch(root: Path) -> dict[str, str]:
@@ -2809,8 +2739,7 @@ def _dashboard_html(
 <div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
 </div></details>
 <details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-cleanup" id="workspaceBranchCleanup" type="button" $BRANCH_CLEANUP_HIDDEN data-i18n="workspace.branch_cleanup_scan_action"></button><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
-<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><div class="field configuration-field"><span class="label"><span data-i18n="configuration.inbox_location"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.inbox_location_help" data-i18n-aria-label="configuration.inbox_location_help">i</span></span><button id="configurationInboxOpen" class="configuration-inbox-open" type="button" data-i18n="configuration.inbox_location_open"></button></div><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section><section class="configuration-timeout-policy" aria-labelledby="configurationTimeoutPolicyTitle"><h2 id="configurationTimeoutPolicyTitle" data-i18n="configuration.timeout_policy"></h2><p data-i18n="configuration.timeout_policy_description"></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.specialist_review"></span><span data-i18n="configuration.minutes_5"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.implementation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.local_repository_validation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.autonomous_quality_control"></span><span data-i18n="configuration.minutes_10"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.repair"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.finalization"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.end_reconciliation"></span><span data-i18n="configuration.minutes_10"></span></p></section></details>
-<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence configuration-inbox-modal" id="configurationInboxModal" aria-labelledby="configurationInboxModalTitle"><section class="dashboard-modal-shell__panel"><header class="dashboard-modal-shell__header"><h2 id="configurationInboxModalTitle" data-i18n="configuration.inbox_location"></h2><button class="dashboard-modal-shell__close" id="configurationInboxModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p data-i18n="configuration.inbox_location_modal_description"></p><div class="configuration-inbox-modal__field"><label for="configurationInboxRoot" data-i18n="configuration.inbox_location_input"></label><input id="configurationInboxRoot" type="text" autocomplete="off"><button class="dashboard-modal-shell__action configuration-inbox-modal__browse" id="configurationInboxBrowse" type="button" data-i18n="configuration.inbox_location_browse"></button></div><pre id="configurationInbox" hidden>$CONFIGURATION_INBOX</pre><p class="configuration-inbox-modal__hint" data-i18n="configuration.inbox_location_requirement"></p><p id="configurationInboxStatus" role="status" aria-live="polite"></p><div class="dashboard-modal-shell__actions"><button class="dashboard-modal-shell__action" id="configurationInboxModalCloseAction" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="configurationInboxSave" type="button" data-i18n="configuration.inbox_location_save"></button></div></section></dialog>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><section class="configuration-server-settings" id="configurationServerSettings" aria-labelledby="configurationServerSettingsTitle"><h2 id="configurationServerSettingsTitle" data-i18n="configuration.server_settings"></h2><div class="configuration-controls"><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label></div></section><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section><section class="configuration-timeout-policy" aria-labelledby="configurationTimeoutPolicyTitle"><h2 id="configurationTimeoutPolicyTitle" data-i18n="configuration.timeout_policy"></h2><p data-i18n="configuration.timeout_policy_description"></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.specialist_review"></span><span data-i18n="configuration.minutes_5"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.implementation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.local_repository_validation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.autonomous_quality_control"></span><span data-i18n="configuration.minutes_10"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.repair"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.finalization"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.end_reconciliation"></span><span data-i18n="configuration.minutes_10"></span></p></section></details>
 </main></div>
 <footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
 <script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
@@ -3541,58 +3470,6 @@ def handler(
                     self._send(b'{"error":"Ongeldige dashboardinstelling."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
-                return
-            if request_path == "/api/configuration/inbox-location":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 4_096:
-                        raise ValueError
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"inbox_root"}:
-                        raise ValueError
-                    if _execution_active(root):
-                        raise RuntimeError("Wijzig de Inbox-locatie pas wanneer geen uitvoering actief is.")
-                    active_inbox = PlatformConfiguration.load(root).resolver(root).resolve_runtime_prompt_transport().inbox
-                    if _inbox_has_items(active_inbox):
-                        self._send(
-                            b'{"error_code":"inbox_not_empty"}',
-                            "application/json; charset=utf-8",
-                            409,
-                        )
-                        return
-                    event = _change_inbox_location(root, payload["inbox_root"], active_inbox)
-                    log_event(
-                        logger, logging.INFO, "dashboard_configuration_changed",
-                        diagnostic=f"key={event['key']}; previous={event['previous']}; value={event['value']}",
-                    )
-                except InboxLocationChangeError as error:
-                    log_event(logger, logging.ERROR, "inbox_location_change_rolled_back", diagnostic=str(error))
-                    self._send(
-                        json.dumps({"error_code": "inbox_watcher_restart_failed"}).encode(),
-                        "application/json; charset=utf-8", 503,
-                    )
-                    return
-                except RuntimeError as error:
-                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"Inbox-locatie kon niet veilig worden gewijzigd."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps(event).encode(), "application/json; charset=utf-8")
-                return
-            if request_path == "/api/configuration/inbox-location/browse":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    location = _choose_local_directory(root)
-                except RuntimeError as error:
-                    self._send(json.dumps({"error": str(error)}).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (OSError, ValueError):
-                    self._send(b'{"error":"De lokale mapkiezer kon niet worden geopend."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps({"cancelled": location is None, "value": location or ""}).encode(), "application/json; charset=utf-8")
                 return
             if request_path.startswith("/api/logs/"):
                 component = request_path.rsplit("/", 1)[-1]

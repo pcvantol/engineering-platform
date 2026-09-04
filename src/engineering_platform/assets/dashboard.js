@@ -861,7 +861,6 @@ function queueItems(x, queueDepth) {
       Number.isInteger(queueDepth) && queueDepth >= 0
         ? queueDepth
         : items.length;
-  syncInboxLocationChangeAvailability(depth);
   $("queueSummary").textContent =
     depth === 0
       ? t("queue.summary_zero")
@@ -6033,26 +6032,6 @@ function enhanceDashboardSelectPicker(select) {
   });
   refresh();
 }
-function syncInboxLocationChangeAvailability(queueDepth) {
-  const button = $("configurationInboxOpen");
-  if (!button) return;
-  const field = button.closest(".configuration-field");
-  let notice = $("configurationInboxUnavailable");
-  if (!notice && field) {
-    notice = document.createElement("p");
-    notice.id = "configurationInboxUnavailable";
-    notice.className = "configuration-inbox-unavailable";
-    notice.setAttribute("role", "status");
-    button.after(notice);
-  }
-  const inboxIsEmpty = Number.isInteger(queueDepth) && queueDepth === 0;
-  button.disabled = !inboxIsEmpty;
-  if (notice) {
-    notice.hidden = inboxIsEmpty;
-    notice.textContent = inboxIsEmpty ? "" : t("configuration.inbox_location_queue_not_empty");
-    button.setAttribute("aria-describedby", notice.id);
-  }
-}
 function enhanceDashboardSelectPickers() {
   document.querySelectorAll("select:not([multiple]):not(#dashboardLocale)").forEach(enhanceDashboardSelectPicker);
 }
@@ -6073,7 +6052,6 @@ function addConfigurationControlInfo() {
     ["configurationLogRetention", "configuration.log_retention_help"],
     ["configurationTelemetryRetention", "configuration.telemetry_retention_help"],
     ["configurationLogLevel", "configuration.log_level_help"],
-    ["configurationInboxScanInterval", "configuration.inbox_scan_interval_help"],
     ["configurationOpenPrInterval", "configuration.open_pr_interval_help"],
     ["configurationDashboardStreamInterval", "configuration.dashboard_stream_interval_help"],
     ["configurationProviderReadinessInterval", "configuration.provider_readiness_interval_help"],
@@ -6097,29 +6075,6 @@ function addConfigurationControlInfo() {
     info.title = help;
     info.setAttribute("aria-label", help);
   }
-}
-function renderConfigurationInboxLocation() {
-  const button = $("configurationInboxOpen"), location = $("configurationInbox")?.textContent.trim();
-  const field = button?.closest(".configuration-field"), label = field?.querySelector(".label");
-  if (!field || !label) return;
-  field.classList.add("configuration-inbox-field");
-  let value = $("configurationInboxLocation");
-  if (!value) {
-    value = document.createElement("button");
-    value.id = "configurationInboxLocation";
-    value.className = "configuration-inbox-location local-folder-link";
-    value.type = "button";
-    label.after(value);
-  }
-  value.textContent = location || "—";
-  const path = localFolderPath(location);
-  value.disabled = !path;
-  if (path) {
-    const labelText = t("workspace.open_local_folder", { path });
-    value.title = labelText;
-    value.setAttribute("aria-label", labelText);
-    value.onclick = () => void openLocalFolder(path);
-  } else value.onclick = null;
 }
 function providerLoginStatusBlock() {
   const configuration = $("configuration");
@@ -6433,12 +6388,6 @@ document.addEventListener("click", async (event) => {
 });
 const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
   {
-    containerClass: "queue-project-settings",
-    fieldIds: ["configurationInboxScanInterval", "configurationOpenPrInterval"],
-    parentId: "queueItems",
-    statusId: "queueProjectSettingsStatus",
-  },
-  {
     containerClass: "log-settings",
     fieldIds: ["configurationLogRetention", "configurationLogLevel"],
     parentId: "componentLogs",
@@ -6470,13 +6419,6 @@ function moveConfigurationControls({ beforeId, containerClass, fieldIds, parentI
     const label = $(id)?.closest("label");
     if (label) controls.insertBefore(label, status);
   });
-}
-function moveProjectScopedConfiguration() {
-  const queue = $("queueItems");
-  const inboxField = $("configurationInboxOpen")?.closest(".configuration-field");
-  if (!queue || !inboxField) return;
-  queue.append(inboxField);
-  moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
 }
 function groupHostComponentConfiguration() {
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
@@ -6545,15 +6487,13 @@ function localizeConfigurationOptions() {
   const providerReadinessLabel = $("configurationProviderReadinessInterval")?.closest("label")?.querySelector(":scope > span");
   if (providerReadinessLabel) providerReadinessLabel.textContent = t("configuration.provider_readiness_interval");
   groupHostComponentConfiguration();
-  moveProjectScopedConfiguration();
-  CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
+  CONFIGURATION_CONTROL_SCOPES.forEach(moveConfigurationControls);
   // Every original control has now been placed in its scoped section. Remove
   // the empty source grid: its vertical margins otherwise remain between the
   // dashboard settings and fixed platform settings cards.
   const residualControls = $("configuration")?.querySelector(":scope > .configuration-controls");
   if (residualControls && !residualControls.childElementCount) residualControls.remove();
   addConfigurationControlInfo();
-  renderConfigurationInboxLocation();
   providerLoginStatusBlock();
   document.querySelectorAll("#configurationLogRetention option, #configurationTelemetryRetention option").forEach((option) => {
     option.textContent = t("configuration.days", { days: option.value });
@@ -6756,85 +6696,6 @@ ensureProviderReadinessConfigurationControl();
 ensureCodexCapacityReserveConfigurationControl();
 Object.keys(configurationFields).forEach((id) => {
   $(id)?.addEventListener("change", (event) => void saveDashboardConfiguration(event.currentTarget));
-});
-$("configurationInboxOpen")?.addEventListener("click", () => {
-  const modal = $("configurationInboxModal");
-  const inbox = $("configurationInbox").textContent.trim();
-  $("configurationInboxRoot").value = inbox.endsWith("/Inbox") ? inbox.slice(0, -"/Inbox".length) : inbox;
-  $("configurationInboxStatus").textContent = "";
-  if (!modal.open) modal.showModal();
-  resetDashboardModalInitialFocus(modal);
-});
-syncInboxLocationChangeAvailability();
-$("configurationInboxModalClose")?.addEventListener("click", () => $("configurationInboxModal").close());
-$("configurationInboxModalCloseAction")?.addEventListener("click", () => $("configurationInboxModal").close());
-$("configurationInboxModal")?.addEventListener("click", (event) => {
-  if (event.target === event.currentTarget) event.currentTarget.close();
-});
-$("configurationInboxBrowse")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  $("configurationInboxStatus").textContent = "";
-  try {
-    const response = await fetch("/api/configuration/inbox-location/browse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const payload = await response.json();
-    if (!response.ok) throw Error(payload.error || t("configuration.inbox_location_failed"));
-    if (!payload.cancelled && typeof payload.value === "string")
-      $("configurationInboxRoot").value = payload.value;
-  } catch (error) {
-    $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
-  } finally {
-    button.disabled = false;
-  }
-});
-$("configurationInboxSave")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  const root = $("configurationInboxRoot").value.trim();
-  const confirmed = await confirmDashboardAction(
-    t("configuration.inbox_location"),
-    t("configuration.inbox_location_confirm", { path: root }),
-    t("configuration.inbox_location_save"),
-  );
-  if (!confirmed) return;
-  button.disabled = true;
-  const browse = $("configurationInboxBrowse"), close = $("configurationInboxModalCloseAction");
-  browse.disabled = true;
-  close.disabled = true;
-  $("configurationInboxRoot").readOnly = true;
-  $("configurationInboxStatus").classList.remove("configuration-status--saved");
-  $("configurationInboxStatus").textContent = t("configuration.inbox_location_restarting");
-  try {
-    const response = await fetch("/api/configuration/inbox-location", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inbox_root: root }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw Error(
-      payload.error_code === "inbox_not_empty"
-        ? t("configuration.inbox_location_queue_not_empty")
-        : payload.error_code === "inbox_watcher_restart_failed"
-          ? t("configuration.inbox_location_restart_failed")
-        : payload.error || t("configuration.inbox_location_failed"),
-    );
-    $("configurationInbox").textContent = `${payload.value}/Inbox`;
-    renderConfigurationInboxLocation();
-    $("configurationInboxStatus").textContent = t("configuration.inbox_location_saved");
-    $("configurationInboxStatus").classList.add("configuration-status--saved");
-    setTimeout(() => $("configurationInboxModal").close(), 700);
-  } catch (error) {
-    $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
-    $("configurationInboxStatus").classList.remove("configuration-status--saved");
-  } finally {
-    button.disabled = false;
-    browse.disabled = false;
-    close.disabled = false;
-    $("configurationInboxRoot").readOnly = false;
-  }
 });
 enhanceDashboardSelectPickers();
 initializeDashboardConfiguration();

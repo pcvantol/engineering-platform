@@ -3684,6 +3684,12 @@ Object.assign(DASHBOARD_MESSAGES.de, {"configuration.dashboard_settings":"Dashbo
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.dashboard_settings":"Paramètres du tableau de bord"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.dashboard_settings":"Ajustes del panel"});
 
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.server_settings":"Server settings"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.server_settings":"Serverinstellingen"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.server_settings":"Servereinstellungen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.server_settings":"Paramètres du serveur"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.server_settings":"Configuración del servidor"});
+
 Object.assign(DASHBOARD_MESSAGES.en, {"configuration.codex_capacity_reserve":"Codex capacity reserve for new work","configuration.codex_capacity_reserve_help":"EP does not claim new Inbox work below this remaining Codex capacity. An execution that is already running may finish.","configuration.capacity_reserve_none":"No reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.codex_capacity_reserve":"Codex-capaciteitsreserve voor nieuw werk","configuration.codex_capacity_reserve_help":"EP claimt geen nieuw Inbox-werk onder deze resterende Codex-capaciteit. Een al lopende uitvoering mag afronden.","configuration.capacity_reserve_none":"Geen reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.codex_capacity_reserve":"Codex-Kapazitätsreserve für neue Arbeit","configuration.codex_capacity_reserve_help":"EP übernimmt keine neue Inbox-Arbeit unter dieser verbleibenden Codex-Kapazität. Eine bereits laufende Ausführung darf beendet werden.","configuration.capacity_reserve_none":"Keine Reserve (0%)","configuration.capacity_reserve_percent":"{percent}% Reserve"});
