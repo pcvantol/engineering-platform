@@ -6752,10 +6752,10 @@ test.describe("Engineering Status browser smoke", () => {
     expect(surfaces.every((surface) => surface.backdropFilter === "none")).toBe(true);
   });
 
-  test("uses the execution host title for the core local component", async ({ page }) => {
+  test("uses the canonical Server title for a core platform component", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => showComponentModal({
-      component: "inbox_watcher",
+      component: "ep_server",
       healthy: true,
       detail: "connected",
       git_commit: "host-only-commit",
@@ -6764,7 +6764,7 @@ test.describe("Engineering Status browser smoke", () => {
     }));
 
     const modal = page.locator("#componentModal");
-    await expect(modal).toContainText("Engineering Execution Host");
+    await expect(modal).toContainText("EP-server");
   });
 
   test("renders the safe current Codex activity from the live status projection", async ({ page }) => {
