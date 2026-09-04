@@ -4861,12 +4861,12 @@ function renderComponentLogs() {
   }
   updateIndependentLogSortHeaders();
 }
-for (const [id, label] of [["logComponentFilter", "EP-component"], ["logEventFilter", t("table.event")]]) {
+for (const [id, label] of [["logComponentFilter", t("filter.ep_component")], ["logEventFilter", t("table.event")]]) {
   const control = document.createElement("label"), select = document.createElement("select");
   select.id = id;
   if (id === "logEventFilter") select.multiple = true;
   if (id === "logComponentFilter") {
-    select.append(new Option("Alle EP-componenten", ""));
+    select.append(new Option(t("filter.all_ep_components"), ""));
   }
   select.setAttribute("aria-label", label);
   control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
@@ -4876,7 +4876,7 @@ function populateLogComponentFilter(model = latestPlatformHealth?.component_mode
   const select = $("logComponentFilter");
   if (!select || !Array.isArray(model)) return;
   const selected = select.value;
-  select.replaceChildren(new Option("Alle EP-componenten", ""));
+  select.replaceChildren(new Option(t("filter.all_ep_components"), ""));
   model.forEach((component) => select.append(new Option(t(component.name_key), component.id)));
   select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
 }

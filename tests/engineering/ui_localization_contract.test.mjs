@@ -35,5 +35,7 @@ test("strict Console mode fails instead of using English fallback", () => {
 test("guards raw machine codes and direct user-visible literals", () => {
   assert.equal(rawMachineCodeFindings('node.textContent = "FILE_INGRESS_STOPPED";').length, 1);
   assert.equal(userVisibleLiteralFindings('node.textContent = "New untranslated label";').length, 1);
+  assert.equal(userVisibleLiteralFindings('select.add(new Option("New untranslated option", "value"));').length, 1);
+  assert.equal(userVisibleLiteralFindings('node.setAttribute("aria-label", "New untranslated tooltip");').length, 1);
   assert.equal(verifyConsoleLocalization({ source: 'node.textContent = "↗";', label: "fixture" }).length, 0);
 });

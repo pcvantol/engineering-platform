@@ -9,16 +9,25 @@ import {
 export const UI_LITERAL_EXCEPTIONS = new Set([
   "", "⧉", "↑", "i", "×", "↺", "↻", "⌧", "▤", "✓", "✦", "◉", "⋯", "—", "⌄", "↗",
 ]);
+const TECHNICAL_LITERAL_EXCEPTIONS = new Set([
+  "application/x-ndjson;charset=utf-8", "button", "dialog", "none", "true", "false",
+]);
 const RAW_MACHINE_CODE = /(?:FILE|HTTP|CLI)_INGRESS_(?:HEALTHY|DOWN|AVAILABLE|DEGRADED|RUNNING|STOPPED)|\b(?:HEALTHY|AVAILABLE|RUNNING|STOPPED|DEGRADED)\b/;
 
 export function userVisibleLiteralFindings(source, label = "dashboard.js") {
   const findings = [];
-  for (const match of source.matchAll(/(?:\.textContent|\.innerText|\.title|\.placeholder)\s*=\s*(["'])(.*?)\1/g)) {
-    if (!UI_LITERAL_EXCEPTIONS.has(match[2])) findings.push(`UNCLASSIFIED_USER_VISIBLE_LITERAL ${label}:${match[2]}`);
-  }
-  for (const match of source.matchAll(/(?:label|title|placeholder)\s*:\s*(["'])(.*?)\1/g)) {
-    if (!UI_LITERAL_EXCEPTIONS.has(match[2])) findings.push(`UNCLASSIFIED_USER_VISIBLE_LITERAL ${label}:${match[2]}`);
-  }
+  const patterns = [
+    /(?:\.textContent|\.innerText|\.title|\.placeholder)\s*=\s*(["'])(.*?)\1/g,
+    /(?:label|title|placeholder|ariaLabel)\s*:\s*(["'])(.*?)\1/g,
+    /\.setAttribute\(\s*["'](?:aria-label|title|placeholder)["']\s*,\s*(["'])(.*?)\1\s*\)/g,
+    /new Option\(\s*(["'])(.*?)\1/g,
+  ];
+  for (const pattern of patterns)
+    for (const match of source.matchAll(pattern)) {
+      const literal = match[2];
+      if (!UI_LITERAL_EXCEPTIONS.has(literal) && !TECHNICAL_LITERAL_EXCEPTIONS.has(literal))
+        findings.push(`UNCLASSIFIED_USER_VISIBLE_LITERAL ${label}:${literal}`);
+    }
   return findings;
 }
 
