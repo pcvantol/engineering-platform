@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import threading
 import time
 from urllib.error import HTTPError, URLError
@@ -211,10 +212,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--server", required=True)
     parser.add_argument("--credential-env", default="EP_CONSUMER_TOKEN")
+    parser.add_argument("--serve", action="store_true", help="run the installed transport service until stopped")
+    parser.add_argument("--interval-seconds", type=float, default=0.2)
     args = parser.parse_args(argv)
     credential = os.environ.get(args.credential_env)
     if not credential:
         parser.error(f"{args.credential_env} is required")
+    if args.serve:
+        service = FileInboxService(args.root, server=args.server, credential=credential, interval_seconds=args.interval_seconds)
+        stopped = threading.Event()
+        def stop(_signum: int, _frame: object) -> None:
+            stopped.set()
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        service.start()
+        try:
+            while not stopped.wait(.2):
+                pass
+        finally:
+            service.stop()
+        return 0
     print(json.dumps(process_once(args.root, server=args.server, credential=credential), sort_keys=True))
     return 0
 

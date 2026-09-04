@@ -92,6 +92,13 @@ The worker reaches `RUNNING` before the qualification-only provider stop;
 provider, checkout and PR side effects are intentionally outside this ingress
 gate.  CI executes the target in Engineering Platform validation.
 
+The installed `engineering-platform-file-inbox --serve` mode is the transport
+runtime used when delivery must survive a temporary Server outage.  Its only
+durable artefacts are physical input/archive files, bounded quarantine receipts
+and a secret-free heartbeat; it never creates Actions, runs or an operational
+database.  A retry therefore answers only whether CENTRAL admission can be
+reached, never whether an admitted execution can be retried.
+
 ```text
 P_TRANSPORT_INGRESS_MATRIX = PASS
 SAME_CANONICAL_SUBMISSION_SERVICE = PASS
