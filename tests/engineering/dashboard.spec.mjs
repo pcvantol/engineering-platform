@@ -218,7 +218,14 @@ test.beforeEach(async ({ page }, testInfo) => {
   const goto = page.goto.bind(page);
   const reload = page.reload.bind(page);
   const prepareDashboard = async () => {
-    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    // This contract deliberately holds the initial configuration request. It
+    // verifies that the visible control remains locked during that load, so
+    // waiting for the configuration-dependent ready marker here would deadlock
+    // the test before it can release the request.
+    const waitsForConfiguration = testInfo.title !== "locks the visible log-level pulldown until its saved value is loaded or written";
+    if (waitsForConfiguration) {
+      await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    }
     if (![
       "puts every mobile title-bar setting in a labelled expandable panel",
       "matches the iPhone portrait dashboard visual reference",
