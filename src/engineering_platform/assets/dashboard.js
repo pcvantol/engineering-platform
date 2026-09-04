@@ -4572,10 +4572,7 @@ updateFavicon();
 const historicalDashboardLogCard = document.querySelector("#dashboardComponentLog")?.closest(".card");
 historicalDashboardLogCard?.setAttribute("hidden", "");
 historicalDashboardLogCard?.querySelectorAll(".component-log-download").forEach((button) => button.remove());
-document.querySelectorAll(".component-log-download").forEach((button) => {
-  button.dataset.component = "platform";
-});
-document.querySelectorAll(".clear-component-log").forEach((button) => button.remove());
+historicalDashboardLogCard?.querySelectorAll(".clear-component-log").forEach((button) => button.remove());
 function logComponentForTable(table) {
   return table.querySelector("#dashboardComponentLog") ? "dashboard" : "platform";
 }
@@ -4961,10 +4958,10 @@ document
     ),
   );
 function downloadComponentLog(component) {
-  const names = { platform: "engineering-platform" },
+  const names = { inbox: "inbox-watcher", platform: "engineering-platform" },
     name = names[component];
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
-  return fetch("/api/logs/" + (component === "platform" ? "all" : encodeURIComponent(component)), {
+  return fetch("/api/logs/" + (["platform", "inbox"].includes(component) ? "all" : encodeURIComponent(component)), {
     cache: "no-store",
   })
     .then((response) =>
@@ -5003,7 +5000,7 @@ function addComponentLogCopyButtons() {
     if (download.parentElement.querySelector(".component-log-copy")) return;
     const button = document.createElement("button");
     button.className = "dashboard-action dashboard-action--copy component-log-copy";
-    button.dataset.component = download.dataset.component;
+    button.dataset.component = "platform";
     // Preserve the stable test hook while the visible table moves from the
     // historical Inbox source to the combined Platform projection.
     button.dataset.testid = "copy-inbox-visible-log";
