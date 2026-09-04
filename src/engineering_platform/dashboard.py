@@ -2665,48 +2665,6 @@ def handler(
                     return
                 self._send(analysis, "text/markdown; charset=utf-8")
                 return
-            if request_path == "/api/provider-login/logout":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length))
-                    _logout_provider(root, str(payload.get("provider", "")))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    self._send(b'{"error":"Provider logout did not complete."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(b'{"logged_out":true}', "application/json; charset=utf-8")
-                return
-            if request_path == "/api/provider-login/repair":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length))
-                    if not isinstance(payload, dict) or set(payload) != {"provider", "action"}:
-                        raise ValueError
-                    provider, action = str(payload["provider"]), str(payload["action"])
-                    if action == "login":
-                        _start_provider_login(root, provider)
-                    elif action == "install":
-                        _install_provider(root, provider)
-                    else:
-                        raise ValueError
-                    log_event(logger, logging.INFO, "provider_repair_requested", diagnostic=f"provider={provider}; action={action}")
-                except (OSError, ValueError, json.JSONDecodeError):
-                    self._send(b'{"error":"Provider repair did not start safely."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(b'{"started":true}', "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/execution-runtime/repair":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    runtime = _execution_runtime_status()
-                    if runtime["state"] != "READY":
-                        raise ValueError
-                except ValueError:
-                    self._send(b'{"error":"Execution runtime is still unavailable."}', "application/json; charset=utf-8", 409)
-                    return
-                self._send(json.dumps({"rechecked": True, "runtime": runtime}).encode(), "application/json; charset=utf-8")
-                return
             if request_path == "/api/telemetry/clear":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -2783,47 +2741,6 @@ def handler(
                     self._send(b'{"error":"pr_check_repair_invalid_request"}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps({"queued": True, "pull_request": number}).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path.startswith("/api/components/") and request_path.endswith("/restart"):
-                component = request_path.removeprefix("/api/components/").removesuffix("/restart").rstrip("/")
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError("Ongeldig herstartverzoek.")
-                    if component not in RESTARTABLE_COMPONENTS:
-                        raise ValueError("Dit onderdeel kan niet veilig vanuit het dashboard worden herstart.")
-                    # Give the response a chance to reach the browser before the
-                    # dashboard asks launchd to replace its own process.
-                    Timer(0.25, _restart_component_after_response, args=(component, logger)).start()
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "component_restart_trigger_received",
-                        diagnostic=f"target={component}",
-                        context={
-                            **component_lifecycle_context(
-                                root,
-                                version=DASHBOARD_VERSION,
-                                launchd_label=LABEL,
-                                launch_agent_path=Path.home()
-                                / "Library/LaunchAgents"
-                                / f"{LABEL}.plist",
-                            ),
-                            "target_component": component,
-                        },
-                    )
-                except ValueError as error:
-                    self._send(
-                        json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
-                        "application/json; charset=utf-8",
-                        400,
-                    )
-                    return
-                self._send(
-                    json.dumps({"restarting": component}, ensure_ascii=False).encode(),
-                    "application/json; charset=utf-8",
-                    202,
-                )
                 return
             if request_path == "/api/rate-limit-reset":
                 try:

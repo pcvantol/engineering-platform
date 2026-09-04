@@ -3002,6 +3002,10 @@ class DashboardStatusTest(unittest.TestCase):
             "/api/status-reconciliation",
             "/api/execution-merge-wait-abort",
             "/api/queue-defer",
+            "/api/provider-login/repair",
+            "/api/provider-login/logout",
+            "/api/execution-runtime/repair",
+            "/api/components/dashboard_relay/restart",
         )
         with self._dashboard_http_connection() as (_, connection):
             for path in retired_routes:
