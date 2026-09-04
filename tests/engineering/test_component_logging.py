@@ -127,6 +127,23 @@ class ComponentLoggingTest(unittest.TestCase):
             component_logging.log_event(logger, logging.INFO, "first")
             self.assertFalse((root / ".engineering").exists())
 
+    def test_read_and_clear_never_use_a_repository_local_component_log_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy_log = root / ".engineering" / "logs" / "inbox.log"
+            legacy_log.parent.mkdir(parents=True)
+            legacy_log.write_text("legacy local authority", encoding="utf-8")
+            unavailable = component_logging.EngineeringStorageError("CENTRAL unavailable")
+            with patch.object(component_logging, "open_storage", side_effect=unavailable):
+                self.assertEqual(
+                    component_logging.component_log(root, "inbox"),
+                    b"CENTRAL componentlog is tijdelijk niet beschikbaar.",
+                )
+                self.assertEqual(component_logging.component_log_version(root, "inbox"), "central-unavailable")
+                with self.assertRaisesRegex(OSError, "CENTRAL componentlog kon niet worden gewist"):
+                    component_logging.clear_component_log(root, "inbox")
+            self.assertEqual(legacy_log.read_text(encoding="utf-8"), "legacy local authority")
+
     def test_component_log_page_filters_full_history_before_paginating(self) -> None:
         """Historical rows remain discoverable after newer rows fill a page."""
         with tempfile.TemporaryDirectory() as temporary:

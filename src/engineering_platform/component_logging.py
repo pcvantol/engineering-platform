@@ -145,7 +145,7 @@ def component_logger(
 
 
 def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
-    """Read canonical SQLite logs; use private files only if SQLite is unavailable."""
+    """Read component logs from CENTRAL, never from a repository-local fallback."""
     if component not in {"inbox", "dashboard"}:
         return b""
     try:
@@ -160,7 +160,7 @@ def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
         lines = [str(row[0]) for row in reversed(rows)]
         return ("\n".join(lines) or "Nog geen applicatielog beschikbaar.").encode()
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-        return _fallback_component_log(root, component, limit=limit)
+        return b"CENTRAL componentlog is tijdelijk niet beschikbaar."
 
 
 def component_log_page(
@@ -288,7 +288,7 @@ def component_log_page(
 
 
 def component_log_version(root: Path, component: str) -> str:
-    """Return a lightweight SQLite revision, falling back to legacy file metadata."""
+    """Return a lightweight CENTRAL SQLite revision."""
     if component not in {"inbox", "dashboard"}:
         return "missing"
     try:
@@ -302,15 +302,11 @@ def component_log_version(root: Path, component: str) -> str:
             connection.close()
         return f"sqlite:{count}:{newest}"
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-        try:
-            observed = (root / ".engineering" / "logs" / f"{component}.log").stat()
-            return f"fallback:{observed.st_mtime_ns}:{observed.st_size}"
-        except OSError:
-            return "missing"
+        return "central-unavailable"
 
 
 def clear_component_log(root: Path, component: str) -> None:
-    """Clear one canonical component log, falling back only when SQLite is unavailable."""
+    """Clear one CENTRAL component log without creating local log state."""
     if component not in {"inbox", "dashboard"}:
         raise ValueError("Onbekende componentlog.")
     try:
@@ -320,13 +316,8 @@ def clear_component_log(root: Path, component: str) -> None:
         finally:
             connection.close()
         return
-    except (EngineeringStorageError, sqlite3.DatabaseError):
-        path = root / ".engineering" / "logs" / f"{component}.log"
-        try:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path.write_text("", encoding="utf-8")
-        except OSError as error:
-            raise OSError("Applicatielog kon niet worden gewist.") from error
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+        raise OSError("CENTRAL componentlog kon niet worden gewist.") from error
 
 
 def prune_component_logs(root: Path, retention_days: int) -> None:
@@ -342,16 +333,6 @@ def prune_component_logs(root: Path, retention_days: int) -> None:
         )
     finally:
         connection.close()
-
-
-def _fallback_component_log(root: Path, component: str, *, limit: int) -> bytes:
-    try:
-        lines = (root / ".engineering" / "logs" / f"{component}.log").read_text(
-            encoding="utf-8"
-        ).splitlines()
-    except OSError:
-        return b"Nog geen applicatielog beschikbaar."
-    return ("\n".join(lines[-limit:])[-64_000:] or "Nog geen applicatielog beschikbaar.").encode()
 
 
 def log_event(
