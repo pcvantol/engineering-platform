@@ -8819,28 +8819,24 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("keeps a requested server-backed component-log page instead of clamping it to its 50 rows", async ({ page }) => {
     const requests = [];
-    const entriesFor = (component, pageNumber) => Array.from(
-      { length: pageNumber === 2 && component === "inbox" ? 1 : 50 },
+    const entriesFor = (pageNumber) => Array.from(
+      { length: pageNumber === 2 ? 1 : 50 },
       (_, index) => ({
         line: (pageNumber - 1) * 50 + index + 1,
         timestamp: `2026-08-02T12:${String(index).padStart(2, "0")}:00Z`,
         level: "INFO",
-        event: `${component}_server_${pageNumber}_${index}`,
+        event: `platform_server_${pageNumber}_${index}`,
         run_id: "—",
         details: "server page fixture",
       }),
     );
-    for (const component of ["inbox", "dashboard"]) {
-      await page.route(`**/api/logs/${component}?*`, async (route) => {
-        const pageNumber = Number(new URL(route.request().url()).searchParams.get("page")) || 1;
-        requests.push(`${component}:${pageNumber}`);
-        await route.fulfill({ json: {
-          entries: entriesFor(component, pageNumber),
-          total: component === "inbox" ? 51 : 50,
-          events: [`${component}_server_1_0`],
-        } });
-      });
-    }
+    await page.route("**/api/logs/all?*", async (route) => {
+      const pageNumber = Number(new URL(route.request().url()).searchParams.get("page")) || 1;
+      requests.push(`platform:${pageNumber}`);
+      await route.fulfill({ json: {
+        entries: entriesFor(pageNumber), total: 51, events: ["platform_server_1_0"],
+      } });
+    });
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
@@ -8850,10 +8846,8 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(next).toBeEnabled();
     await next.click();
     await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 2 van 2 · 51 regels");
-    await expect(page.locator("#inboxComponentLog")).toContainText("Inbox Server 2 0");
-    await expect(page.locator("#dashboardLogPagination")).toContainText("Pagina 1 van 1 · 50 regels");
-    expect(requests).toContain("inbox:2");
-    expect(requests).toContain("dashboard:1");
+    await expect(page.locator("#inboxComponentLog")).toContainText("Platform Server 2 0");
+    expect(requests).toContain("platform:2");
   });
 
   test("shows a searchable, sortable and paginated prompt history", async ({ page }) => {

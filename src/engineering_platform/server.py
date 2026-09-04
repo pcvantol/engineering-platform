@@ -41,7 +41,13 @@ from . import submission_service
 from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
-from .component_logging import component_logger, log_event
+from .component_logging import (
+    LOG_LEVELS_AT_OR_ABOVE,
+    MAX_COMPONENT_LOG_PAGE_SIZE,
+    VALID_LEVELS,
+    component_logger,
+    log_event,
+)
 from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
@@ -964,12 +970,11 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
             for role, content, model, created_at in rows]
 
 
-def _central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
-    """Read Server-owned component logs only from CENTRAL's log index."""
-    canonical_components = frozenset({
-        "ep_server", "platform_database", "lifecycle_worker", "operations_console",
-        "dashboard_relay", "http_ingress", "cli_ingress", "file_inbox_ingress",
-    })
+def _central_console_component_logs(
+    data_root: Path, component: str, query: dict[str, list[str]] | None = None, *, export_all: bool = False,
+) -> dict[str, object] | None:
+    """Read one filtered, sorted CENTRAL log page before it reaches the Console."""
+    canonical_components = PLATFORM_COMPONENT_IDS
     legacy_aliases = {
         "dashboard": "operations_console", "inbox": "file_inbox_ingress",
         "execution-host": "lifecycle_worker",
@@ -982,18 +987,67 @@ def _central_console_component_logs(data_root: Path, component: str) -> dict[str
         selected = frozenset({legacy_aliases[component]})
     else:
         return None
-    stored_components = tuple(
-        stored for stored, canonical in legacy_aliases.items() if canonical in selected
-    ) + tuple(selected)
+
+    values = query or {}
+    def first(name: str, default: str = "") -> str:
+        return str((values.get(name) or [default])[0])
+    try:
+        page, page_size = int(first("page", "1")), int(first("page_size", "50"))
+    except ValueError as error:
+        raise ValueError("Invalid component-log pagination.") from error
+    if page < 1 or not 1 <= page_size <= MAX_COMPONENT_LOG_PAGE_SIZE:
+        raise ValueError("Invalid component-log pagination.")
+    level, search = first("level").upper().strip(), first("search").strip()
+    if level and level not in VALID_LEVELS:
+        raise ValueError("Invalid component-log level.")
+    if len(search) > 160:
+        raise ValueError("Component-log search is too long.")
+    events = tuple(sorted({value.strip() for value in values.get("event", []) if value.strip()}))
+    if len(events) > 50 or any(len(event) > 160 for event in events):
+        raise ValueError("Invalid component-log event filter.")
+    sort_columns = {
+        "line": "id", "timestamp": "created_at", "level": "json_extract(payload, '$.level')",
+        "event": "json_extract(payload, '$.event')",
+        "runId": "COALESCE(json_extract(payload, '$.run_id'), '')",
+        "details": "COALESCE(json_extract(payload, '$.diagnostic'), '')",
+    }
+    sort_key, direction = first("sort", "timestamp"), first("direction", "desc").lower()
+    if sort_key not in sort_columns or direction not in {"asc", "desc"}:
+        raise ValueError("Invalid component-log sort.")
+
+    stored_components = tuple(alias for alias, canonical in legacy_aliases.items() if canonical in selected) + tuple(selected)
+    clauses = ["component IN (" + ",".join("?" for _ in stored_components) + ")"]
+    parameters: list[object] = list(stored_components)
+    start_at, end_at = first("start").strip(), first("end").strip()
+    if start_at:
+        clauses.append("created_at >= ?"); parameters.append(start_at)
+    if end_at:
+        clauses.append("created_at <= ?" if first("inclusive_end") == "1" else "created_at < ?"); parameters.append(end_at)
+    if search:
+        escaped = search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'"); parameters.append(f"%{escaped}%")
+    if level in LOG_LEVELS_AT_OR_ABOVE:
+        levels = LOG_LEVELS_AT_OR_ABOVE[level]
+        clauses.append("json_extract(payload, '$.level') IN (" + ",".join("?" for _ in levels) + ")"); parameters.extend(levels)
+    event_option_clauses, event_option_parameters = list(clauses), list(parameters)
+    if events:
+        clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in events) + ")"); parameters.extend(events)
+    where = " WHERE " + " AND ".join(clauses)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        total = int(connection.execute("SELECT COUNT(*) FROM engineering_component_logs" + where, parameters).fetchone()[0])
         rows = connection.execute(
-            "SELECT id,component,payload,created_at FROM engineering_component_logs WHERE component IN ("
-            + ",".join("?" for _ in stored_components)
-            + ") ORDER BY id DESC LIMIT 5000",
-            stored_components,
+            "SELECT id,component,payload,created_at FROM engineering_component_logs" + where
+            + f" ORDER BY {sort_columns[sort_key]} {direction.upper()}, id {direction.upper()} LIMIT ? OFFSET ?",
+            [*parameters, 5000 if export_all else page_size, 0 if export_all else (page - 1) * page_size],
+        ).fetchall()
+        event_rows = connection.execute(
+            "SELECT DISTINCT json_extract(payload, '$.event') FROM engineering_component_logs WHERE "
+            + " AND ".join(event_option_clauses)
+            + " AND json_extract(payload, '$.event') IS NOT NULL ORDER BY 1 LIMIT 500",
+            event_option_parameters,
         ).fetchall()
     entries: list[dict[str, object]] = []
-    for identifier, stored_component, payload, created_at in reversed(rows):
+    for identifier, stored_component, payload, created_at in rows:
         try:
             decoded = json.loads(str(payload))
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -1001,7 +1055,11 @@ def _central_console_component_logs(data_root: Path, component: str) -> dict[str
         record = decoded if isinstance(decoded, dict) else {}
         canonical = legacy_aliases.get(str(stored_component), str(stored_component))
         entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": canonical})
-    return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
+    return {
+        "scope": "PLATFORM", "component": component, "entries": entries,
+        "page": page, "page_size": page_size, "total": total,
+        "events": [str(row[0]) for row in event_rows if row[0]],
+    }
 
 
 def _clear_central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
@@ -1693,10 +1751,18 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return
         log_match = re.fullmatch(r"/api/logs/(all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path)
         if log_match and method == "do_GET":
-            payload = _central_console_component_logs(self.server.data_root, log_match.group(1))  # type: ignore[attr-defined]
+            query = parse_qs(request.query)
+            try:
+                payload = _central_console_component_logs(
+                    self.server.data_root, log_match.group(1), query,
+                    export_all=(query.get("format") or [""])[0] == "ndjson",
+                )  # type: ignore[attr-defined]
+            except ValueError:
+                self._send(400, {"error": "LOG_QUERY_INVALID"})
+                return
             if payload is None:
                 self._send(404, {"error": "LOG_COMPONENT_UNKNOWN"})
-            elif (parse_qs(request.query).get("format") or [""])[0] == "ndjson":
+            elif (query.get("format") or [""])[0] == "ndjson":
                 self._send_ndjson(list(payload["entries"]))
             else:
                 self._send(200, payload)

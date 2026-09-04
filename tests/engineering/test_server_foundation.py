@@ -190,6 +190,43 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
 
+    def test_central_log_route_filters_sorts_and_paginates_before_responding(self) -> None:
+        """The Console must receive a filtered CENTRAL page, never a sampled log tail."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            for event, level, diagnostic, created_at in (
+                ("zeta", "INFO", "unrelated", "2026-02-01T10:00:00+00:00"),
+                ("alpha", "WARNING", "needle one", "2026-02-02T10:00:00+00:00"),
+                ("beta", "ERROR", "needle two", "2026-02-03T10:00:00+00:00"),
+                ("gamma", "ERROR", "outside range", "2026-02-04T10:00:00+00:00"),
+            ):
+                connection.execute(
+                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
+                    ("operations_console", json.dumps({"event": event, "level": level, "diagnostic": diagnostic, "run_id": event}), created_at),
+                )
+        server.start(self.root)
+        query = (
+            "format=json&page=1&page_size=1&start=2026-02-02T00%3A00%3A00%2B00%3A00"
+            "&end=2026-02-04T00%3A00%3A00%2B00%3A00&level=WARNING&search=needle"
+            "&sort=event&direction=asc"
+        )
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{query}") as response:
+            filtered = json.loads(response.read())
+        self.assertEqual(filtered["total"], 2)
+        self.assertEqual(filtered["page"], 1)
+        self.assertEqual(filtered["page_size"], 1)
+        self.assertEqual([entry["event"] for entry in filtered["entries"]], ["alpha"])
+        self.assertEqual(filtered["entries"][0]["component"], "operations_console")
+        self.assertEqual(set(filtered["events"]), {"alpha", "beta"})
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?{query.replace('page=1', 'page=2', 1)}") as response:
+            second_page = json.loads(response.read())
+        self.assertEqual([entry["event"] for entry in second_page["entries"]], ["beta"])
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson&search=needle") as response:
+            exported = [json.loads(line) for line in response.read().decode().splitlines()]
+        self.assertEqual({entry["event"] for entry in exported}, {"alpha", "beta"})
+
     @patch("engineering_platform.server.dashboard._start_provider_login")
     @patch("engineering_platform.server._central_provider_readiness")
     def test_provider_login_repair_is_central_and_keeps_no_project_readiness(

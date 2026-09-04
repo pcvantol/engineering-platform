@@ -3477,7 +3477,10 @@ function componentLogRequestUrl(component) {
   if (search) query.set("search", search);
   if (level) query.set("level", level);
   [...($("logEventFilter")?.selectedOptions || [])].forEach((option) => query.append("event", option.value));
-  return "/api/logs/all?" + query;
+  // This filter changes the CENTRAL query itself, so it is applied before
+  // the server counts, sorts and selects the requested page.
+  const selectedComponent = $("logComponentFilter")?.value || "all";
+  return "/api/logs/" + encodeURIComponent(selectedComponent) + "?" + query;
 }
 function normalizedComponentLogEntries(records) {
   return structuredLogEntries((Array.isArray(records) ? records : []).map((record) => JSON.stringify(record)).join("\n"))
@@ -4966,7 +4969,12 @@ function downloadComponentLog(component) {
     name = names[component];
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
   const selected = $("logComponentFilter")?.value || "all";
-  return fetch("/api/logs/" + encodeURIComponent(selected) + "?format=ndjson", {
+  const request = new URL(componentLogRequestUrl(component), window.location.origin);
+  request.pathname = "/api/logs/" + encodeURIComponent(selected);
+  request.searchParams.set("format", "ndjson");
+  request.searchParams.delete("page");
+  request.searchParams.delete("page_size");
+  return fetch(request.pathname + request.search, {
     cache: "no-store",
   })
     .then((response) =>
