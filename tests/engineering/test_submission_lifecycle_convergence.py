@@ -190,27 +190,7 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
                 )
 
 
-class InboxWatcherSemanticInventoryTest(unittest.TestCase):
-    def test_inventory_covers_each_watcher_function_exactly_once(self) -> None:
+class RetiredInboxWatcherTest(unittest.TestCase):
+    def test_retired_watcher_runtime_is_not_packaged_source(self) -> None:
         repository = Path(__file__).resolve().parents[2]
-        inventory = json.loads(
-            (repository / "docs/engineering/INBOX_WATCHER_SEMANTIC_INVENTORY.json").read_text(encoding="utf-8")
-        )
-        source = repository / str(inventory["source"])
-        functions = {
-            node.name for node in ast.parse(source.read_text(encoding="utf-8")).body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        mapped = [
-            symbol for item in inventory["inventory"] for symbol in item["symbols"]
-        ]
-        self.assertEqual(len(mapped), len(set(mapped)))
-        self.assertEqual(set(mapped), functions)
-        self.assertTrue(
-            all(item["classification"] in inventory["classification_vocabulary"] for item in inventory["inventory"])
-        )
-        self.assertEqual(inventory["summary"]["declared_function_responsibilities"], len(functions))
-        self.assertEqual(inventory["summary"]["unclassified"], 0)
-        self.assertEqual(inventory["summary"]["ambiguous"], 0)
-        self.assertFalse(inventory["summary"]["server_to_codex_shortcut"])
-        self.assertEqual(inventory["summary"]["execution_protocol_status"], "NOT_IMPLEMENTED")
+        self.assertFalse((repository / "src/engineering_platform/inbox_watcher.py").exists())

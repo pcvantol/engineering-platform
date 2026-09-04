@@ -15,7 +15,6 @@ from unittest.mock import ANY, MagicMock, call, patch
 
 from engineering_platform import dashboard
 from engineering_platform.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
-from engineering_platform.inbox_watcher import WATCHER_VERSION
 from engineering_platform.platform_version import EngineeringPlatformManifest
 from engineering_platform.resources import package_path
 from engineering_platform.prompt_history import record_prompt_execution
@@ -517,7 +516,6 @@ class DashboardStatusTest(unittest.TestCase):
         manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))
 
         self.assertEqual(DASHBOARD_VERSION, manifest.dashboard_version)
-        self.assertEqual(WATCHER_VERSION, manifest.watcher_version)
 
     def test_dashboard_helpers_fail_closed_for_unavailable_local_dependencies(self) -> None:
         with patch("engineering_platform.dashboard.shutil.which", return_value=None):

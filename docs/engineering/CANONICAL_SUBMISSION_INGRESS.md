@@ -75,18 +75,14 @@ not an installed ingress or a supported watcher path.
 validates that the exact event sequence exists before returning a result or an
 idempotent replay. Transport is provenance, not execution authority.
 
-## Historical watcher semantic inventory
+## Retired watcher evidence
 
-The machine-checked [watcher semantic inventory](INBOX_WATCHER_SEMANTIC_INVENTORY.json)
-maps all 77 top-level watcher functions exactly once: 77 classified, 0
-unclassified and 0 ambiguous. It retains the six closed classifications used
-in the original receipt and captures the semantics that the future execution
-protocol must preserve.
-
-The old watcher is not CENTRAL execution authority. It is a source of
-transport-independent lifecycle semantics and, if enabled later, a file
-transport adapter. Schema 43 is a forward CENTRAL migration; no schema-40
-database is migrated or read.
+The historical Inbox watcher and its semantic inventory were retired after
+their transport, intake and lifecycle responsibilities moved to the
+Server-owned File Inbox, Submission Intake and CENTRAL Lifecycle Worker.
+Historical Git evidence records the prior implementation; it is not shipped,
+installed or executable in the supported product. Schema 43 is a forward
+CENTRAL migration; no schema-40 database is migrated or read.
 
 ## Post-merge installation plan
 

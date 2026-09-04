@@ -29,7 +29,6 @@ CLASSIFIED_FALLBACKS = {
     "execution_lifecycle.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "execution_timing.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "host_preflight.py": "RETIRED_DIRECT_HOST_COMPATIBILITY",
-    "inbox_watcher.py": "RETIRED_TRANSPORT_COMPATIBILITY",
     "live_status.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "local_api.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "local_api_credentials.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
@@ -63,9 +62,8 @@ def violations(source_root: Path) -> list[str]:
     host = (package / "execution_host.py").read_text(encoding="utf-8")
     if 'raise SystemExit("CENTRAL_OPERATIONAL_DATABASE_REQUIRED")' not in host:
         findings.append("DIRECT_HOST_CENTRAL_DATABASE_GATE_MISSING")
-    watcher = (package / "inbox_watcher.py").read_text(encoding="utf-8")
-    if "WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED" not in watcher:
-        findings.append("RETIRED_WATCHER_GATE_MISSING")
+    if (package / "inbox_watcher.py").exists():
+        findings.append("RETIRED_WATCHER_RUNTIME_PACKAGED")
     return findings
 
 

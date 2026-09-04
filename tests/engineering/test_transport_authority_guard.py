@@ -41,7 +41,8 @@ class TransportAuthorityGuardTest(unittest.TestCase):
             self.assertFalse((source_root / retired).exists(), retired)
         # Forensic attribution deliberately retains historical path strings as
         # evidence; this guard covers executable ingress/runtime modules.
-        for name in ("server.py", "file_inbox.py", "submission_intake.py", "submission_cli.py", "inbox_watcher.py"):
+        self.assertFalse((source_root / "inbox_watcher.py").exists())
+        for name in ("server.py", "file_inbox.py", "submission_intake.py", "submission_cli.py"):
             source_path = source_root / name
             source = source_path.read_text(encoding="utf-8")
             self.assertNotIn("workspace_inbox_api", source, source_path.name)
