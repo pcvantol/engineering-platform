@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from html import escape
 import http.server
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,7 @@ from . import submission_service
 from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
+from .component_logging import component_logger, log_event
 from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
 from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
@@ -2080,6 +2082,28 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGINT, stop)
     worker.start()
     inbox_service.start()
+    # A fresh installation must have operational evidence before its first
+    # submission.  These are genuine Server lifecycle events, persisted in
+    # the same CENTRAL store that backs the Console's combined log table.
+    for component, event in (
+        ("ep_server", "ep_server_started"),
+        ("platform_database", "central_log_store_ready"),
+        ("lifecycle_worker", "lifecycle_worker_started"),
+        ("operations_console", "operations_console_available"),
+        ("dashboard_relay", "dashboard_relay_available"),
+        ("http_ingress", "http_ingress_available"),
+        ("cli_ingress", "cli_ingress_available"),
+        ("file_inbox_ingress", "file_inbox_service_started"),
+    ):
+        log_event(
+            component_logger(
+                data_root, component,
+                central_database=data_root / SERVER_DATABASE_FILENAME,
+            ),
+            logging.INFO,
+            event,
+            context={"target_component": component},
+        )
     try:
         server.serve_forever()
     finally:

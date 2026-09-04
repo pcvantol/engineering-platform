@@ -639,5 +639,6 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with urlopen(f"http://127.0.0.1:{port}/api/logs/all?project=djconnect") as response:
             logs = json.loads(response.read())
         self.assertEqual(logs["scope"], "PLATFORM")
-        self.assertEqual(logs["entries"][0]["event"], "central_console_test")
-        self.assertEqual(logs["entries"][0]["component"], "operations_console")
+        central_record = next(entry for entry in logs["entries"] if entry["event"] == "central_console_test")
+        self.assertEqual(central_record["component"], "operations_console")
+        self.assertIn("ep_server_started", [entry["event"] for entry in logs["entries"]])
