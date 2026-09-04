@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from .agent_state import StateStore
 from .execution_lease import Lease, liveness, release
 from .execution_timing import complete_active_phase
-from .inbox_watcher import status as publish_watcher_status
 from .live_status import write_runner_process
 from .prompt_history import record_prompt_execution
 from .providers import GitProvider, LocalProcessProvider
@@ -266,11 +265,4 @@ def execute(
         store_projection(connection, f"emergency_recovery:{run_id}", outcome, classification="RECOVERY_EXPORT")
     finally:
         connection.close()
-    publish_watcher_status(
-        root, "JOB_FAILED", run_id=run_id, queued_jobs=0, queue_items=[],
-        runner_phase="FAILED", diagnostic=cancelled.diagnostic,
-        last_executed_title=Path(state.prompt_path).stem,
-        last_executed_run=run_id, last_executed_phase="FAILED",
-        current_action="Uitvoering geannuleerd via noodstop; werkmap teruggedraaid.",
-    )
     return outcome
