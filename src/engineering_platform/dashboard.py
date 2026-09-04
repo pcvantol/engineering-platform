@@ -75,6 +75,7 @@ from .dashboard_configuration import (
 from .platform_components import PLATFORM_COMPONENT_BY_ID
 from . import dashboard_state
 from . import managed_codex_runtime
+from . import server_relay
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
@@ -3417,33 +3418,18 @@ def launch_agent(repo: Path) -> Path:
 
 
 def relay_binary(repo: Path) -> Path:
-    return repo / ".engineering" / "bin" / "engineering-dashboard-relay"
+    """Compatibility reader for the historical CLI; Server owns relay paths."""
+    return server_relay.relay_binary(repo)
 
 
 def build_relay(repo: Path) -> Path:
-    """Compile the package-owned private Tailnet-to-loopback relay."""
-    compiler = shutil.which("swiftc")
-    if compiler is None:
-        raise RuntimeError("Swift compiler ontbreekt; de private dashboardrelay kan niet starten.")
-    binary = relay_binary(repo)
-    binary.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    compiled = LocalProcessProvider().execute(
-        repo, (compiler, str(package_path("dashboard_supervisor.swift")), "-o", str(binary))
-    )
-    if compiled.returncode:
-        raise RuntimeError("Dashboardrelay compilation failed.")
-    binary.chmod(0o700)
-    return binary
+    """Compatibility façade; the Server owns relay compilation."""
+    return server_relay.build_relay(repo)
 
 
 def relay_launch_agent(repo: Path, binary: Path) -> Path:
-    destination = Path.home() / "Library/LaunchAgents" / f"{RELAY_LABEL}.plist"
-    arguments = f"<string>{escape(str(binary))}</string>"
-    destination.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{RELAY_LABEL}</string><key>ProgramArguments</key><array>{arguments}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>',
-        encoding="utf-8",
-    )
-    return destination
+    """Compatibility façade; the Server owns relay LaunchAgent rendering."""
+    return server_relay.render_launch_agent(binary)
 
 
 def main(argv: list[str] | None = None) -> int:
