@@ -10347,89 +10347,94 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 
-  test("treats a detached watcher as a handoff while its execution host is active", async ({ page }) => {
-    // The initial platform-health request starts during page boot.  Keep that
-    // asynchronous source aligned with the projected handoff fixture so it
-    // cannot replace the deliberately unhealthy watcher between injection and
-    // assertion.
+  test("keeps platform health authoritative while an execution is active", async ({ page }) => {
+    // Platform health is independent of the selected project and of the
+    // execution queue.  An active execution must never mask a failed platform
+    // component or reintroduce the legacy watcher hand-off interpretation.
     await page.route("**/health", (route) => route.fulfill({ json: { components: {
-      dashboard: { healthy: true },
-      inbox_watcher: { healthy: false, state: "not_running", detail: "LaunchAgent is geladen, maar heeft geen actief proces" },
+      ep_server: { healthy: true },
+      platform_database: { healthy: true },
+      lifecycle_worker: { healthy: true },
+      operations_console: { healthy: true },
       dashboard_relay: { healthy: true },
+      http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
+      cli_ingress: { healthy: true },
+      file_inbox_ingress: { healthy: true },
     } } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       renderPlatformHealth({ components: {
-        dashboard: { healthy: true },
-        inbox_watcher: { healthy: false, state: "not_running", detail: "LaunchAgent is geladen, maar heeft geen actief proces" },
+        ep_server: { healthy: true },
+        platform_database: { healthy: true },
+        lifecycle_worker: { healthy: true },
+        operations_console: { healthy: true },
         dashboard_relay: { healthy: true },
+        http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
+        cli_ingress: { healthy: true },
+        file_inbox_ingress: { healthy: true },
       } });
-      r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-detached", workspace_state: "ACTIVE", queue_depth: 0 }, {});
+      r({ runs: [{ state: "RUNNING" }], workspace_state: "ACTIVE", queue_depth: 0 }, {});
     });
     const indicator = page.getByTestId("dashboard-health-indicator");
-    await expect(indicator).toHaveAttribute("data-health-state", "active");
+    await expect(indicator).toHaveAttribute("data-health-state", "error");
     await indicator.click();
-    const watcher = page.locator("#dashboardHealthChecks li").filter({ hasText: "Inbox-watcher" });
-    await expect(watcher).toHaveAttribute("data-health", "warning");
-    await expect(watcher).toContainText("Uitvoering afgehandeld door actieve execution host");
-    await expect(watcher).not.toContainText("Reden —");
+    await expect(page.locator("#dashboardHealthChecks")).toContainText("HTTP/API-ingang");
+    await expect(page.locator("#dashboardHealthChecks")).toContainText("1 uitvoering actief");
+    await expect(page.locator("#dashboardHealthChecks")).not.toContainText("Inbox-watcher");
   });
 
-  test("does not present a delegated execution host as unhealthy in its component card", async ({ page }) => {
+  test("renders canonical platform components in the platform card", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.evaluate(() => {
-      r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-delegated-card" }, {});
       renderPlatformHealth({ components: {
-        dashboard: { healthy: true },
-        inbox_watcher: { healthy: false, state: "not_running", detail: "LaunchAgent is geladen, maar heeft geen actief proces" },
+        ep_server: { healthy: true },
+        platform_database: { healthy: true },
+        lifecycle_worker: { healthy: true },
+        operations_console: { healthy: true },
         dashboard_relay: { healthy: true },
+        http_ingress: { healthy: true },
+        cli_ingress: { healthy: true },
+        file_inbox_ingress: { healthy: true },
       } });
     });
-    const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "Engineering Execution Host" });
-    await expect(card).toHaveAttribute("data-health", "delegated");
-    await expect(card).toContainText("Uitvoering afgehandeld door actieve execution host");
-    await expect(card).not.toContainText("Niet gezond");
+    const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
+    await expect(card).toHaveAttribute("data-health", "true");
+    await expect(card).not.toContainText("Inbox-watcher");
   });
 
-  test("shows a safe unhealthy component reason and opens its details from the status popout", async ({ page }) => {
+  test("opens canonical ingress details from the status popout", async ({ page }) => {
     await page.route("**/health", (route) => route.fulfill({ json: { components: {
-      dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
-      inbox_watcher: {
-        healthy: false,
-        state: "not_running",
-        detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
-      },
-      dashboard_relay: { healthy: true, detail: "LaunchAgent is geladen" },
+      ep_server: { healthy: true }, platform_database: { healthy: true }, lifecycle_worker: { healthy: true },
+      operations_console: { healthy: true }, dashboard_relay: { healthy: true },
+      http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
+      cli_ingress: { healthy: true }, file_inbox_ingress: { healthy: true },
     } } }));
-    await page.route("**/api/components/inbox_watcher/details", (route) => route.fulfill({ json: {
-      component: "inbox_watcher", healthy: false, state: "not_running",
-      detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
+    await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
+      component: "http_ingress", healthy: false, state: "HTTP_INGRESS_DOWN",
+      detail: "CENTRAL_LISTENER_UNAVAILABLE",
     } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
     await page.evaluate(() => {
       renderPlatformHealth({ components: {
-        dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
-        inbox_watcher: {
-          healthy: false,
-          state: "not_running",
-          detail: "Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32",
-        },
-        dashboard_relay: { healthy: true, detail: "LaunchAgent is geladen" },
+        ep_server: { healthy: true }, platform_database: { healthy: true }, lifecycle_worker: { healthy: true },
+        operations_console: { healthy: true }, dashboard_relay: { healthy: true },
+        http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
+        cli_ingress: { healthy: true }, file_inbox_ingress: { healthy: true },
       } });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
     });
     await page.getByTestId("dashboard-health-indicator").click();
-    const watcher = page.locator("#dashboardHealthChecks li").filter({ hasText: "Inbox-watcher" });
-    await expect(watcher).toContainText("Niet actief");
-    await expect(watcher).toContainText("Reden — Schema-activatie vereist: runtime ondersteunt schema 31, opslag staat op 32");
-    await watcher.click();
+    const ingress = page.locator("#dashboardHealthChecks li").filter({ hasText: "HTTP/API-ingang" });
+    await expect(ingress).toHaveAttribute("data-health", "bad");
+    await ingress.click();
     await expect(page.locator("#componentModal")).toBeVisible();
-    await expect(page.locator("#componentModalContent")).toContainText("Schema-activatie vereist");
+    await expect(page.locator("#componentModalTitle")).toHaveText("HTTP/API-ingang");
+    await expect(page.locator("#componentModalContent")).toContainText("Niet beschikbaar");
   });
 
   test("keeps the titlebar health tooltip inside a narrow viewport", async ({ page }) => {
