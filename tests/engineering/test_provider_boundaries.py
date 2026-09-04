@@ -8,7 +8,7 @@ class ProviderBoundaryTest(unittest.TestCase):
     def test_execution_lifecycle_modules_do_not_spawn_processes_directly(self) -> None:
         engineering = Path(__file__).parents[2] / "src" / "engineering_platform"
         for name in (
-            "execution_host.py", "inbox_watcher.py", "dashboard.py", "host_preflight.py",
+            "execution_host.py", "file_inbox.py", "dashboard.py", "host_preflight.py",
             "workspace_preflight.py", "qualification.py", "report_analysis.py", "codex_chat.py",
             "component_logging.py", "live_status.py",
         ):

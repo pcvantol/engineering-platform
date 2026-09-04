@@ -89,7 +89,7 @@ jobs:
               "engineering_platform/dashboard.py",
               "engineering_platform/platform_bootstrap.py",
               "engineering_platform/providers.py",
-              "engineering_platform/inbox_watcher.py",
+              "engineering_platform/file_inbox.py",
           )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]

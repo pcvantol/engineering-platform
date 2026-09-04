@@ -184,7 +184,7 @@ def _default_check(
         "Project Template": bool(ep_source and (ep_source / "templates" / "workspace-config.json").is_file()),
         "Workspace Provisioning": source_file("platform_bootstrap.py"),
         "Genesis Lifecycle": source_file("execution_host.py"),
-        "Strict Inbox Sequencing": source_file("inbox_watcher.py"),
+        "Strict Inbox Sequencing": source_file("file_inbox.py"),
         "Local Engineering Evidence Storage": bool(ep_source and (ep_source / "ENGINEERING_INBOX_PROTOCOL.md").is_file()),
         "Component Logging and Read-only Advice": source_file("component_logging.py") and source_file("codex_chat.py"),
     }

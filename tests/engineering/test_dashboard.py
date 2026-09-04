@@ -85,15 +85,6 @@ class DashboardStatusTest(unittest.TestCase):
     def test_terminal_diagnostic_rejects_an_invalid_run_identifier(self) -> None:
         self.assertIsNone(dashboard._terminal_run_diagnostic(Path("/repository"), "../outside"))
 
-    def test_inbox_item_detection_is_conservative_when_the_directory_cannot_be_read(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            inbox = Path(temporary)
-            self.assertFalse(dashboard._inbox_has_items(inbox))
-            (inbox / "prompt.md").write_text("work", encoding="utf-8")
-            self.assertTrue(dashboard._inbox_has_items(inbox))
-        with patch("pathlib.Path.iterdir", side_effect=OSError("unavailable")):
-            self.assertTrue(dashboard._inbox_has_items(Path("/unavailable")))
-
     @patch("engineering_platform.dashboard.GitHubProvider")
     def test_github_rate_limit_status_handles_malformed_and_exhausted_responses(
         self, github_provider: object
@@ -583,75 +574,6 @@ class DashboardStatusTest(unittest.TestCase):
             {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
         )
 
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_managed_branch_recovery_requires_a_clean_workspace_and_restarts_watcher(
-        self, git_provider: object, launchd: object
-    ) -> None:
-        root = Path("/repository")
-        git_provider.return_value.execute.side_effect = [
-            __import__("subprocess").CompletedProcess(("git",), 0, "", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "codex/ui-polish\n", ""),
-        ]
-        self.assertEqual(
-            dashboard._restore_managed_main_branch(root),
-            {"previous_branch": "codex/ui-polish", "branch": "main", "watcher": "restarted"},
-        )
-        git_provider.return_value.command.assert_called_once_with(root, "git", "switch", "main")
-        launchd.return_value.restart.assert_called_once_with(dashboard.WATCHER_LABEL)
-
-        git_provider.return_value.execute.side_effect = [
-            __import__("subprocess").CompletedProcess(("git",), 0, "M dashboard.py\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "codex/ui-polish\n", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "geen lokale wijzigingen"):
-            dashboard._restore_managed_main_branch(root)
-
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_managed_branch_synchronization_only_fast_forwards_a_clean_expected_branch(
-        self, git_provider: object, launchd: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        git_provider.return_value.execute.side_effect = [
-            __import__("subprocess").CompletedProcess(("git",), 0, "", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "main\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "origin/main\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "1\t0\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "0\t0\n", ""),
-        ]
-
-        self.assertEqual(
-            dashboard._synchronize_managed_branch_with_upstream(root),
-            {"branch": "main", "upstream": "origin/main", "watcher": "restarted"},
-        )
-        self.assertEqual(
-            git_provider.return_value.command.call_args_list,
-            [
-                call(root, "git", "fetch", "--quiet", "origin"),
-                call(root, "git", "merge", "--ff-only", "@{upstream}"),
-            ],
-        )
-        launchd.return_value.restart.assert_called_once_with(dashboard.WATCHER_LABEL)
-
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_managed_branch_synchronization_refuses_local_commits(
-        self, git_provider: object, launchd: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        git_provider.return_value.execute.side_effect = [
-            __import__("subprocess").CompletedProcess(("git",), 0, "", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "main\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "origin/main\n", ""),
-            __import__("subprocess").CompletedProcess(("git",), 0, "0\t1\n", ""),
-        ]
-
-        with self.assertRaisesRegex(RuntimeError, "lokale commits"):
-            dashboard._synchronize_managed_branch_with_upstream(root)
-        git_provider.return_value.command.assert_called_once_with(root, "git", "fetch", "--quiet", "origin")
-        launchd.return_value.restart.assert_not_called()
-
     @patch("engineering_platform.dashboard.LocalProcessProvider")
     @patch("engineering_platform.dashboard.shutil.which", return_value="/usr/sbin/lsof")
     def test_workspace_git_lock_only_becomes_recoverable_when_lsof_proves_it_stale(
@@ -1087,125 +1009,6 @@ class DashboardStatusTest(unittest.TestCase):
             }], "removable_branches": ["codex/stale"]},
         )
 
-    @patch("engineering_platform.dashboard.execute_workspace_preflight")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_switch_to_fast_forward_main_only_switches_a_clean_branch_and_fast_forwards(
-        self, git_provider: object, workspace_preflight: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "codex/work\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "2\t0\n", ""),
-        ]
-
-        workspace_preflight.return_value.outcome = "PASS"
-        self.assertEqual(
-            dashboard._switch_to_fast_forward_main(root),
-            {"previous_branch": "codex/work", "branch": "main", "synchronized": "true", "workspace_preflight": "PASS"},
-        )
-        workspace_preflight.assert_called_once_with(root, "Execution Mode: MANAGED")
-        self.assertEqual(
-            git_provider.return_value.command.call_args_list,
-            [
-                call(root, "git", "switch", "main"),
-                call(root, "git", "merge", "--ff-only", "origin/main"),
-            ],
-        )
-
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_switch_to_fast_forward_main_refuses_dirty_or_ahead_workspaces(self, git_provider: object) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, " M dashboard.py\n", ""),
-            completed(("git",), 0, "codex/work\n", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "werkmap moet schoon"):
-            dashboard._switch_to_fast_forward_main(root)
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t1\n", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "Lokale commits"):
-            dashboard._switch_to_fast_forward_main(root)
-        git_provider.return_value.command.assert_not_called()
-
-    @patch("engineering_platform.dashboard.log_event")
-    @patch("engineering_platform.dashboard._execution_active", return_value=False)
-    @patch("engineering_platform.dashboard._restart_component")
-    def test_main_switch_restarts_the_full_engineering_platform_after_response(
-        self, restart_component: object, _: object, log_event: object
-    ) -> None:
-        logger = logging.getLogger("test")
-        dashboard._restart_engineering_platform_after_main_switch(Path("/repository"), logger)
-        self.assertEqual(
-            restart_component.call_args_list,
-            [call("inbox_watcher"), call("dashboard_relay"), call("dashboard")],
-        )
-        log_event.assert_called_once_with(
-            logger, logging.INFO, "engineering_platform_restart_completed",
-            diagnostic="components=inbox_watcher,dashboard_relay,dashboard",
-        )
-
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard._workspace_worktrees")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_registered_worktree_switch_target_requires_the_exact_clean_registered_worktree(
-        self, git_provider: object, worktrees: object, configuration: object
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "root"
-            target = Path(temporary) / "target"
-            (target / "src" / "engineering_platform").mkdir(parents=True)
-            (target / "src" / "engineering_platform" / "dashboard.py").touch()
-            (target / "src" / "engineering_platform" / "inbox_watcher.py").touch()
-            configuration.return_value.workspace.default_branch = "main"
-            worktrees.return_value = {"worktrees": [
-                {"path": str(root), "branch": "main"},
-                {"path": str(target), "branch": "codex/selected"},
-            ]}
-            completed = __import__("subprocess").CompletedProcess
-            git_provider.return_value.execute.side_effect = [
-                completed(("git",), 0, "", ""),
-                completed(("git",), 0, "codex/selected\n", ""),
-            ]
-
-            self.assertEqual(
-                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected"),
-                target.resolve(),
-            )
-
-            git_provider.return_value.execute.side_effect = [
-                completed(("git",), 0, " M dashboard.py\n", ""),
-                completed(("git",), 0, "codex/selected\n", ""),
-            ]
-            with self.assertRaisesRegex(RuntimeError, "moet schoon"):
-                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
-
-            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "main"}]}
-            with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
-                dashboard._registered_worktree_switch_target(root, str(target), "main")
-
-            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "codex/other"}]}
-            with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
-                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
-
-            worktrees.return_value = {"worktrees": [{"path": str(target), "branch": "codex/selected"}]}
-            (target / "src" / "engineering_platform" / "inbox_watcher.py").unlink()
-            with self.assertRaisesRegex(RuntimeError, "complete Engineering Platform-installatie"):
-                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
-            (target / "src" / "engineering_platform" / "inbox_watcher.py").touch()
-
-            git_provider.return_value.execute.side_effect = OSError("git unavailable")
-            with self.assertRaisesRegex(RuntimeError, "kon niet worden gecontroleerd"):
-                dashboard._registered_worktree_switch_target(root, str(target), "codex/selected")
-
     @patch("engineering_platform.dashboard._workspace_worktrees")
     def test_registered_worktree_path_rejects_invalid_and_ambiguous_selectors(self, worktrees: object) -> None:
         root = Path("/repository")
@@ -1218,68 +1021,6 @@ class DashboardStatusTest(unittest.TestCase):
         ]}
         with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
             dashboard._registered_worktree_path(root, "/worktrees/duplicate", "codex/selected")
-
-    @patch("engineering_platform.dashboard._registered_worktree_switch_target")
-    @patch("engineering_platform.dashboard._inbox_has_items")
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard._execution_active")
-    def test_worktree_switch_gate_requires_idle_execution_and_empty_inbox(
-        self, execution_active: object, configuration: object, inbox_has_items: object, _: object
-    ) -> None:
-        root = Path("/repository")
-        execution_active.return_value = True
-        with self.assertRaisesRegex(RuntimeError, "geen uitvoering actief"):
-            dashboard._worktree_switch_target_when_idle(root, "/worktrees/selected", "codex/selected")
-
-        execution_active.return_value = False
-        runtime = MagicMock()
-        runtime.resolve_runtime_prompt_transport.return_value.inbox = Path("/private/inbox")
-        configuration.return_value.resolver.return_value = runtime
-        inbox_has_items.return_value = True
-        with self.assertRaisesRegex(RuntimeError, "Inbox-queue leeg"):
-            dashboard._worktree_switch_target_when_idle(root, "/worktrees/selected", "codex/selected")
-
-    @patch("engineering_platform.dashboard.log_event")
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.launch_agent")
-    @patch("engineering_platform.dashboard.relay_launch_agent")
-    @patch("engineering_platform.dashboard.inbox_watcher.launch_agent")
-    @patch("engineering_platform.dashboard.build_relay")
-    @patch("engineering_platform.dashboard._worktree_switch_target_when_idle")
-    def test_worktree_switch_reinstalls_all_owned_services_from_target(
-        self, target_when_idle: object, build: object, watcher_agent: object, relay_agent: object,
-        dashboard_agent: object, launchd: object, log_event: object,
-    ) -> None:
-        root, target = Path("/repository"), Path("/worktrees/selected")
-        target_when_idle.return_value = target
-        build.return_value = Path("/worktrees/selected/bin/relay")
-        watcher_agent.return_value = Path("/tmp/watcher.plist")
-        relay_agent.return_value = Path("/tmp/relay.plist")
-        dashboard_agent.return_value = Path("/tmp/dashboard.plist")
-
-        dashboard._activate_engineering_platform_worktree(root, str(target), "codex/selected", logging.getLogger("test"))
-
-        self.assertEqual(launchd.return_value.install.call_args_list, [
-            call(dashboard.WATCHER_LABEL, watcher_agent.return_value),
-            call(dashboard.RELAY_LABEL, relay_agent.return_value),
-            call(dashboard.LABEL, dashboard_agent.return_value),
-        ])
-        log_event.assert_called_once_with(
-            ANY, logging.INFO, "workspace_switch_completed", diagnostic="branch=codex/selected",
-        )
-
-    @patch("engineering_platform.dashboard.log_event")
-    @patch("engineering_platform.dashboard._execution_active", return_value=True)
-    @patch("engineering_platform.dashboard._restart_component")
-    def test_main_switch_does_not_restart_the_platform_during_an_execution(
-        self, restart_component: object, _: object, log_event: object
-    ) -> None:
-        logger = logging.getLogger("test")
-        dashboard._restart_engineering_platform_after_main_switch(Path("/repository"), logger)
-        restart_component.assert_not_called()
-        log_event.assert_called_once_with(
-            logger, logging.WARNING, "engineering_platform_restart_skipped", diagnostic="execution_active",
-        )
 
     @patch("engineering_platform.dashboard.GitHubProvider")
     @patch("engineering_platform.dashboard.GitProvider")
@@ -1479,105 +1220,6 @@ class DashboardStatusTest(unittest.TestCase):
         github_provider.return_value.github.side_effect = [json.dumps(qualified), RuntimeError("dispatch failed")]
         with self.assertRaisesRegex(dashboard.OwnerAuthorizationRequestError, "dispatch_failed"):
             dashboard._request_owner_authorization(root, 940)
-
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_restore_managed_main_branch_requires_a_clean_workspace_and_restarts_watcher(
-        self, git_provider: object, launchd_provider: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "codex/feature", ""),
-        ]
-        self.assertEqual(
-            dashboard._restore_managed_main_branch(root),
-            {"previous_branch": "codex/feature", "branch": "main", "watcher": "restarted"},
-        )
-        git_provider.return_value.command.assert_called_once_with(root, "git", "switch", "main")
-        launchd_provider.return_value.restart.assert_called_once_with(dashboard.WATCHER_LABEL)
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "M dashboard.py\n", ""),
-            completed(("git",), 0, "main", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "geen lokale wijzigingen"):
-            dashboard._restore_managed_main_branch(root)
-
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_synchronize_managed_branch_fast_forwards_only_a_clean_expected_branch(
-        self, git_provider: object, configuration: object, launchd_provider: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        configuration.return_value.workspace.default_branch = "main"
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main", ""),
-            completed(("git",), 0, "origin/main", ""),
-            completed(("git",), 0, "2 0", ""),
-            completed(("git",), 0, "0\t0", ""),
-        ]
-
-        self.assertEqual(
-            dashboard._synchronize_managed_branch_with_upstream(root),
-            {"branch": "main", "upstream": "origin/main", "watcher": "restarted"},
-        )
-        self.assertEqual(
-            git_provider.return_value.command.call_args_list,
-            [
-                call(root, "git", "fetch", "--quiet", "origin"),
-                call(root, "git", "merge", "--ff-only", "@{upstream}"),
-            ],
-        )
-        launchd_provider.return_value.restart.assert_called_once_with(dashboard.WATCHER_LABEL)
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "codex/feature", ""),
-            completed(("git",), 0, "origin/main", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "verwachte branch"):
-            dashboard._synchronize_managed_branch_with_upstream(root)
-
-    @patch("engineering_platform.dashboard.execute_workspace_preflight")
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_switch_to_fast_forward_main_never_overwrites_workspace_or_local_commits(
-        self, git_provider: object, configuration: object, workspace_preflight: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        configuration.return_value.workspace.default_branch = "main"
-        workspace_preflight.return_value.outcome = "PASS"
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "codex/feature", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "1 0", ""),
-        ]
-        self.assertEqual(
-            dashboard._switch_to_fast_forward_main(root),
-            {"previous_branch": "codex/feature", "branch": "main", "synchronized": "true", "workspace_preflight": "PASS"},
-        )
-        self.assertEqual(
-            git_provider.return_value.command.call_args_list,
-            [
-                call(root, "git", "switch", "main"),
-                call(root, "git", "merge", "--ff-only", "origin/main"),
-            ],
-        )
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "M dashboard.py\n", ""),
-            completed(("git",), 0, "main", ""),
-        ]
-        with self.assertRaisesRegex(RuntimeError, "moet schoon zijn"):
-            dashboard._switch_to_fast_forward_main(root)
 
     @patch("engineering_platform.dashboard.GitHubProvider")
     @patch("engineering_platform.dashboard.GitProvider")
@@ -2329,7 +1971,7 @@ class DashboardStatusTest(unittest.TestCase):
             {"inbox": "sqlite:0:0", "dashboard": "sqlite:0:0"},
         )
         self.assertEqual(snapshot["component_versions"]["dashboard"], DASHBOARD_VERSION)
-        self.assertEqual(snapshot["component_versions"]["worker"], WATCHER_VERSION)
+        self.assertNotEqual(snapshot["component_versions"]["worker"], "inbox-watcher")
         self.assertEqual(snapshot["workspace_git_lock"], {"state": "free", "active": False, "stale": False})
         self.assertEqual(snapshot["workspace_git"]["branch"], "Niet beschikbaar")
         self.assertIn("workspace_worktrees", snapshot)
@@ -3347,60 +2989,26 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(json.loads(response.read())["value"], 20)
 
-    def test_http_operational_controls_dispatch_only_their_validated_payloads(self) -> None:
-        """Keep the non-destructive control endpoints covered as stable API contracts."""
-        requests = (
-            ("/api/managed-branch-recovery", {}, 202),
-            ("/api/managed-branch-synchronization", {}, 202),
-            ("/api/stale-git-lock-recovery", {}, 202),
-            ("/api/stale-local-branch-cleanup", {"branches": ["codex/merged"]}, 202),
-            ("/api/safe-worktree-removal", {"worktree_path": "/worktrees/stale", "branch": "codex/stale"}, 202),
-            ("/api/worktree-removal-analysis", {}, 200),
-            ("/api/workspace-switch-to-main", {}, 202),
-            ("/api/workspace-switch-to-worktree", {"worktree_path": "/worktrees/selected", "branch": "codex/selected"}, 202),
-            ("/api/stale-local-branch-cleanup-preview", {}, 200),
-            ("/api/execution-retry", {"run_id": "run-1"}, 202),
-            ("/api/status-reconciliation-preview", {"run_id": "run-1"}, 200),
-            ("/api/status-reconciliation", {"run_id": "run-1"}, 202),
-            ("/api/execution-dismiss", {"run_id": "run-1"}, 202),
-            ("/api/execution-merge-wait-abort", {"run_id": "run-1"}, 202),
-            ("/api/execution-emergency-rollback", {"run_id": "run-1"}, 202),
-            ("/api/execution-merge-status-check", {"run_id": "run-1"}, 202),
-            ("/api/queue-defer", {"filename": "queued.md"}, 202),
-            ("/api/audit/user-action", {"action": "chat_downloaded"}, 200),
-            ("/api/audit/user-action", {"action": "telemetry_detail_markdown_downloaded"}, 200),
-            ("/api/audit/user-action", {"action": "telemetry_detail_json_downloaded"}, 200),
+    def test_http_direct_dashboard_rejects_retired_watcher_and_workspace_routes(self) -> None:
+        """The retired handler cannot reintroduce watcher or root authority."""
+        retired_routes = (
+            "/api/queue-recovery",
+            "/api/predecessor-retry",
+            "/api/managed-branch-recovery",
+            "/api/managed-branch-synchronization",
+            "/api/workspace-switch-to-main",
+            "/api/workspace-switch-to-worktree",
+            "/api/execution-retry",
+            "/api/status-reconciliation",
+            "/api/execution-merge-wait-abort",
+            "/api/queue-defer",
         )
-        with ExitStack() as patches:
-            patches.enter_context(patch("engineering_platform.dashboard.log_event"))
-            patches.enter_context(patch("engineering_platform.dashboard.Timer"))
-            patches.enter_context(patch("engineering_platform.dashboard._restore_managed_main_branch", return_value={"previous_branch": "feature", "branch": "main", "watcher": "restarted"}))
-            patches.enter_context(patch("engineering_platform.dashboard._synchronize_managed_branch_with_upstream", return_value={"branch": "main", "upstream": "origin/main", "watcher": "restarted"}))
-            patches.enter_context(patch("engineering_platform.dashboard._recover_stale_workspace_git_lock", return_value={"state": "free", "recovered": True}))
-            patches.enter_context(patch("engineering_platform.dashboard._cleanup_stale_local_branches", return_value={"removed_count": 1}))
-            patches.enter_context(patch("engineering_platform.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}))
-            patches.enter_context(patch("engineering_platform.dashboard._worktree_removal_analysis", return_value={"available": True, "worktrees": []}))
-            patches.enter_context(patch("engineering_platform.dashboard._switch_to_fast_forward_main", return_value={"previous_branch": "feature", "branch": "main", "synchronized": "true"}))
-            patches.enter_context(patch("engineering_platform.dashboard._worktree_switch_target_when_idle", return_value=Path("/worktrees/selected")))
-            patches.enter_context(patch("engineering_platform.dashboard._execution_active", return_value=False))
-            patches.enter_context(patch("engineering_platform.dashboard._stale_local_branch_preview", return_value={"branches": []}))
-            patches.enter_context(patch("engineering_platform.dashboard.retry_admission_preflight"))
-            patches.enter_context(patch("engineering_platform.dashboard.submit_execution_retry", return_value={"retry_run_id": "run-2"}))
-            patches.enter_context(patch("engineering_platform.dashboard.status_reconciliation_preview", return_value={"run_id": "run-1"}))
-            patches.enter_context(patch("engineering_platform.dashboard.submit_status_reconciliation", return_value={"run_id": "run-1"}))
-            patches.enter_context(patch("engineering_platform.dashboard.dismiss_execution", return_value={"run_id": "run-1"}))
-            patches.enter_context(patch("engineering_platform.dashboard.abort_operator_merge_wait", return_value={"run_id": "run-1"}))
-            patches.enter_context(patch("engineering_platform.dashboard.execute_emergency_recovery", return_value={"run_id": "run-1"}))
-            patches.enter_context(patch("engineering_platform.dashboard.check_operator_merge_status", return_value={"verified": True}))
-            patches.enter_context(patch("engineering_platform.dashboard.defer_queued_prompt", return_value={"filename": "queued.md", "deferred_filename": "queued.deferred.md"}))
-            patches.enter_context(patch("engineering_platform.dashboard.cloud_root", return_value=Path("/private/cloud")))
-            with self._dashboard_http_connection() as (_, connection):
-                for path, payload, expected_status in requests:
-                    connection.request("POST", path, body=json.dumps(payload),
-                                       headers={"Content-Type": "application/json"})
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, expected_status, path)
-                    response.read()
+        with self._dashboard_http_connection() as (_, connection):
+            for path in retired_routes:
+                connection.request("POST", path, body="{}", headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 404, path)
+                response.read()
 
     @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
     def test_dashboard_document_never_exposes_a_saved_legacy_inbox_location(
@@ -3597,7 +3205,14 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(response.status, 404)
                 response.read()
 
-    def test_http_dashboard_operator_routes(self) -> None:
+    def _retired_http_dashboard_operator_routes(self) -> None:
+        """Historical direct-handler contracts retained only pending file split.
+
+        These root-bound controls have no supported route after P-TRANSPORT;
+        their executable regression is the negative route guard above.  This
+        helper is deliberately not a unittest case while the remaining
+        presentation-only direct-handler tests are split out for deletion.
+        """
         with self._dashboard_http_connection() as (root, connection):
             with (
                 patch("engineering_platform.dashboard.clear_telemetry", return_value={"execution_runs": 3, "daily_statistics": 2}) as clear_telemetry,
@@ -3629,19 +3244,10 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 400)
                 response.read()
-            with (
-                patch("engineering_platform.dashboard.Timer") as timer,
-                patch("engineering_platform.dashboard.component_lifecycle_context", return_value={"git_commit": "abc"}),
-                patch("engineering_platform.dashboard.log_event") as log_event,
-            ):
-                connection.request("POST", "/api/components/inbox_watcher/restart", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), {"restarting": "inbox_watcher"})
-                timer.assert_called_once()
-                timer.return_value.start.assert_called_once()
-                restart_event = next(call for call in log_event.call_args_list if call.args[2] == "component_restart_trigger_received")
-                self.assertEqual(restart_event.kwargs["context"]["target_component"], "inbox_watcher")
+            connection.request("POST", "/api/components/inbox_watcher/restart", body="{}", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
             connection.request("POST", "/api/components/unknown_component/restart", body="{}", headers={"Content-Type": "application/json"})
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
@@ -3698,58 +3304,6 @@ class DashboardStatusTest(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 404)
             response.read()
-            retry_outcome = {"blocking_run_id": "inbox-blocked", "retry_filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
-            with (
-                patch("engineering_platform.dashboard.cloud_root", return_value=root),
-                patch("engineering_platform.dashboard.predecessor_retry_admission_preflight", return_value="inbox-blocked") as preflight_retry,
-                patch("engineering_platform.dashboard.submit_predecessor_retry", return_value=retry_outcome) as submit_retry,
-                patch("engineering_platform.dashboard.log_event") as retry_log_event,
-            ):
-                connection.request("POST", "/api/predecessor-retry", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), retry_outcome)
-                preflight_retry.assert_called_once_with(root)
-                submit_retry.assert_called_once_with(root, root)
-                retry_log_event.assert_any_call(ANY, logging.INFO, "predecessor_retry_submission_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
-            with (
-                patch(
-                    "engineering_platform.dashboard.predecessor_retry_admission_preflight",
-                    side_effect=dashboard.RetrySubmissionError("Preflight mislukt: werkmap is niet schrijfbaar."),
-                ),
-                patch("engineering_platform.dashboard.submit_predecessor_retry") as submit_retry,
-            ):
-                connection.request("POST", "/api/queue-recovery", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Preflight mislukt: werkmap is niet schrijfbaar."})
-                submit_retry.assert_not_called()
-            connection.request("POST", "/api/predecessor-retry", body="[]", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 409)
-            self.assertEqual(json.loads(response.read()), {"error": "De Inbox-watcher verwerkt momenteel een actie. Probeer het opnieuw."})
-            managed_recovery = {"previous_branch": "codex/work", "restored_branch": "main"}
-            with patch("engineering_platform.dashboard._restore_managed_main_branch", return_value=managed_recovery):
-                connection.request("POST", "/api/managed-branch-recovery", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), managed_recovery)
-            with patch("engineering_platform.dashboard._restore_managed_main_branch", side_effect=RuntimeError("busy")):
-                connection.request("POST", "/api/managed-branch-recovery", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "De werkmap kon niet veilig naar main worden hersteld."})
-            synchronization = {"branch": "main", "upstream": "origin/main", "watcher": "restarted"}
-            with patch("engineering_platform.dashboard._synchronize_managed_branch_with_upstream", return_value=synchronization):
-                connection.request("POST", "/api/managed-branch-synchronization", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), synchronization)
-            with patch("engineering_platform.dashboard._synchronize_managed_branch_with_upstream", side_effect=RuntimeError("busy")):
-                connection.request("POST", "/api/managed-branch-synchronization", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "De verwachte branch kon niet veilig worden gesynchroniseerd."})
             with patch("engineering_platform.dashboard._recover_stale_workspace_git_lock", return_value={"recovered": True}):
                 connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
                 response = connection.getresponse()

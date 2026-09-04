@@ -73,21 +73,10 @@ from .dashboard_configuration import (
     update as update_dashboard_configuration,
 )
 from . import dashboard_state
-from .workspace_preflight import execute as execute_workspace_preflight
 from . import managed_codex_runtime
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
-# Historical direct-dashboard controls are retired from the supported Server
-# Console.  Keep their label local to this compatibility module so importing
-# the canonical Server does not load the retired watcher runtime.
-LEGACY_WATCHER_LABEL = "com.djconnect.engineering-inbox-watcher"
-# Compatibility names remain lazy while direct-dashboard retirement proceeds.
-# They intentionally do not import the watcher at Server import time.
-WATCHER_LABEL = LEGACY_WATCHER_LABEL
-# Kept as a literal only for the historical direct-dashboard manifest shape;
-# it is not a supported Console component projection.
-WATCHER_VERSION = "2.0.0"
 DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
@@ -147,88 +136,8 @@ _snapshot_revision = 0
 
 COMPONENT_LABELS = {
     "dashboard": LABEL,
-    "inbox_watcher": LEGACY_WATCHER_LABEL,
     "dashboard_relay": RELAY_LABEL,
 }
-
-
-def _legacy_inbox_watcher() -> object:
-    """Load retired direct-dashboard support only when its old handler is used.
-
-    The supported Console is Server-native and must not instantiate or import
-    the historical watcher.  This narrow lazy boundary keeps old direct
-    dashboard requests diagnosable while the remaining handler is retired.
-    """
-    from . import inbox_watcher
-
-    return inbox_watcher
-
-
-class _LegacyInboxWatcherProxy:
-    """Compatibility proxy that delays importing the retired watcher module."""
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(_legacy_inbox_watcher(), name)
-
-
-inbox_watcher = _LegacyInboxWatcherProxy()
-
-
-class RetrySubmissionError(RuntimeError):
-    """Compatibility error for retired direct-dashboard request handling."""
-
-
-def _legacy_retry_submission_error() -> type[Exception]:
-    """Return the historical error type without importing it at module load."""
-    return _legacy_inbox_watcher().RetrySubmissionError  # type: ignore[union-attr,no-any-return]
-
-
-def cloud_root(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().cloud_root(*args, **kwargs)
-
-
-def queued_retry_children(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().queued_retry_children(*args, **kwargs)
-
-
-def predecessor_retry_admission_preflight(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().predecessor_retry_admission_preflight(*args, **kwargs)
-
-
-def submit_predecessor_retry(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().submit_predecessor_retry(*args, **kwargs)
-
-
-def retry_admission_preflight(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().retry_admission_preflight(*args, **kwargs)
-
-
-def submit_execution_retry(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().submit_execution_retry(*args, **kwargs)
-
-
-def status_reconciliation_preview(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().status_reconciliation_preview(*args, **kwargs)
-
-
-def submit_status_reconciliation(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().submit_status_reconciliation(*args, **kwargs)
-
-
-def dismiss_execution(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().dismiss_execution(*args, **kwargs)
-
-
-def abort_operator_merge_wait(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().abort_operator_merge_wait(*args, **kwargs)
-
-
-def check_operator_merge_status(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().check_operator_merge_status(*args, **kwargs)
-
-
-def defer_queued_prompt(*args: object, **kwargs: object) -> object:
-    return _legacy_inbox_watcher().defer_queued_prompt(*args, **kwargs)
 
 
 def _legacy_emergency_recovery() -> object:
@@ -342,7 +251,7 @@ def _sse_snapshot(root: Path) -> bytes:
         build_commit_reader=_build_commit,
         component_log_versions_reader=_component_log_versions,
         dashboard_version=DASHBOARD_VERSION,
-        worker_version=WATCHER_VERSION,
+        worker_version="retired-direct-dashboard",
     )
     try:
         payload = json.loads(snapshot)
@@ -378,15 +287,9 @@ def _sse_snapshot(root: Path) -> bytes:
 
 
 def _prompt_history(root: Path) -> bytes:
-    """Return the bounded, private SQLite prompt history projection."""
+    """Return historical terminal evidence without a watcher-local queue."""
     try:
-        try:
-            queued_children = queued_retry_children(cloud_root(repo=root))
-        except Exception:
-            # Terminal history remains authoritative when a local test or a
-            # temporarily unavailable transport cannot expose queued evidence.
-            queued_children = []
-        runs = prompt_history(root, queued_retry_children=queued_children)
+        runs = prompt_history(root, queued_retry_children=[])
         for run in runs:
             run["analysis_available"] = _report_analysis_available_for_run(
                 root, run.get("run_id")
@@ -871,14 +774,6 @@ def _execution_active(root: Path) -> bool:
     )
 
 
-def _inbox_has_items(inbox: Path) -> bool:
-    """Return whether the active Inbox contains work, conservatively on errors."""
-    try:
-        return any(not item.name.startswith(".") for item in inbox.iterdir())
-    except OSError:
-        return True
-
-
 def _codex_cli_update_status(root: Path, *, refresh: bool = False) -> dict[str, object]:
     """Read the published Codex CLI version without exposing account or npm output."""
     global _codex_update_cache
@@ -1124,7 +1019,6 @@ def _component_processes(component: str) -> list[dict[str, int | str]]:
     """Return bounded process evidence for a known local component only."""
     patterns = {
         "dashboard": ("engineering_platform.dashboard", "dashboard.py"),
-        "inbox_watcher": ("inbox_watcher",),
         "dashboard_relay": ("dashboard_supervisor",),
     }.get(component, ())
     if not patterns:
@@ -1233,30 +1127,6 @@ def _restart_component_after_response(component: str, logger: logging.Logger) ->
         log_event(logger, logging.ERROR, "component_restart_failed", diagnostic=str(error))
 
 
-def _restart_engineering_platform_after_main_switch(root: Path, logger: logging.Logger) -> None:
-    """Reload every owned Engineering Platform process after a main switch.
-
-    The dashboard runs the replacement last because restarting it terminates
-    this process.  A newly active execution wins over freshness: it is never
-    interrupted merely to reload the platform.
-    """
-    if _execution_active(root):
-        log_event(logger, logging.WARNING, "engineering_platform_restart_skipped", diagnostic="execution_active")
-        return
-    failed: list[str] = []
-    for component in ("inbox_watcher", "dashboard_relay", "dashboard"):
-        try:
-            _restart_component(component)
-        except OSError:
-            failed.append(component)
-    log_event(
-        logger,
-        logging.INFO if not failed else logging.ERROR,
-        "engineering_platform_restart_completed" if not failed else "engineering_platform_restart_failed",
-        diagnostic="components=" + (",".join(failed) if failed else "inbox_watcher,dashboard_relay,dashboard"),
-    )
-
-
 def _registered_worktree_path(root: Path, worktree_path: object, branch: object | None = None) -> Path:
     """Resolve one worktree from Git's current registration, never from HTTP input."""
     if not isinstance(worktree_path, str) or not worktree_path or (branch is not None and not isinstance(branch, str)):
@@ -1275,165 +1145,6 @@ def _registered_worktree_path(root: Path, worktree_path: object, branch: object 
     if not target.is_absolute():
         raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
     return target
-
-
-def _registered_worktree_switch_target(root: Path, worktree_path: object, branch: object) -> Path:
-    """Return one clean, currently registered non-main worktree or fail closed."""
-    if not isinstance(branch, str) or not branch:
-        raise ValueError("De gekozen worktree is ongeldig.")
-    target = _registered_worktree_path(root, worktree_path, branch)
-    if branch == PlatformConfiguration.load(root).workspace.default_branch:
-        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
-    if not target.is_dir() or not (target / "src" / "engineering_platform" / "dashboard.py").is_file() or not (target / "src" / "engineering_platform" / "inbox_watcher.py").is_file():
-        raise RuntimeError("De gekozen worktree bevat geen complete Engineering Platform-installatie.")
-    provider = GitProvider()
-    try:
-        status = provider.execute(target, "git", "status", "--porcelain", "--untracked-files=all")
-        active = provider.execute(target, "git", "branch", "--show-current")
-    except OSError as error:
-        raise RuntimeError("De gekozen worktree kon niet worden gecontroleerd.") from error
-    if status.returncode or active.returncode or status.stdout.strip() or active.stdout.strip() != branch:
-        raise RuntimeError("De gekozen worktree moet schoon zijn en exact op de geregistreerde branch staan.")
-    return target
-
-
-def _worktree_switch_target_when_idle(root: Path, worktree_path: object, branch: object) -> Path:
-    """Gate a worktree switch on authoritative run and Inbox state."""
-    if _execution_active(root):
-        raise RuntimeError("Naar een worktree schakelen kan alleen wanneer geen uitvoering actief is.")
-    active_inbox = PlatformConfiguration.load(root).resolver(root).resolve_runtime_prompt_transport().inbox
-    if _inbox_has_items(active_inbox):
-        raise RuntimeError("Naar een worktree schakelen kan alleen wanneer de Inbox-queue leeg is.")
-    return _registered_worktree_switch_target(root, worktree_path, branch)
-
-
-def _activate_engineering_platform_worktree(root: Path, worktree_path: str, branch: str, logger: logging.Logger) -> None:
-    """Revalidate and move the owned services to a selected clean worktree."""
-    try:
-        target = _worktree_switch_target_when_idle(root, worktree_path, branch)
-        relay = build_relay(target)
-        watcher_agent = inbox_watcher.launch_agent(target)
-        relay_agent = relay_launch_agent(target, relay)
-        dashboard_agent = launch_agent(target)
-        launchd = LaunchdProvider()
-        launchd.install(LEGACY_WATCHER_LABEL, watcher_agent)
-        launchd.install(RELAY_LABEL, relay_agent)
-        # Dashboard is deliberately last: its replacement terminates the
-        # current process only after watcher and relay point at the same root.
-        launchd.install(LABEL, dashboard_agent)
-    except (OSError, RuntimeError, ValueError) as error:
-        log_event(logger, logging.ERROR, "workspace_switch_failed", diagnostic=str(error))
-        return
-    log_event(logger, logging.INFO, "workspace_switch_completed", diagnostic=f"branch={branch}")
-
-
-def _restore_managed_main_branch(root: Path) -> dict[str, str]:
-    """Return a clean managed workspace to main, then restart its Inbox watcher."""
-    provider = GitProvider()
-    try:
-        status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
-        branch = provider.execute(root, "git", "branch", "--show-current")
-    except OSError as error:
-        raise RuntimeError("De werkmap kon niet worden gecontroleerd.") from error
-    if status.returncode or branch.returncode:
-        raise RuntimeError("De werkmap kon niet veilig worden gecontroleerd.")
-    if status.stdout.strip():
-        raise RuntimeError("Herstel is alleen mogelijk wanneer de werkmap geen lokale wijzigingen bevat.")
-    previous_branch = branch.stdout.strip()
-    if previous_branch != "main":
-        try:
-            provider.command(root, "git", "switch", "main")
-        except RuntimeError as error:
-            raise RuntimeError("De werkmap kon niet veilig naar main worden teruggezet.") from error
-    try:
-        LaunchdProvider().restart(LEGACY_WATCHER_LABEL)
-    except OSError as error:
-        raise RuntimeError("De werkmap staat op main, maar de Inbox-watcher kon niet worden herstart.") from error
-    return {"previous_branch": previous_branch, "branch": "main", "watcher": "restarted"}
-
-
-def _synchronize_managed_branch_with_upstream(root: Path) -> dict[str, str]:
-    """Fast-forward the configured managed branch, without overwriting work."""
-    provider = GitProvider()
-    expected_branch = PlatformConfiguration.load(root).workspace.default_branch
-    try:
-        status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
-        branch = provider.execute(root, "git", "branch", "--show-current")
-        upstream = provider.execute(root, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-    except OSError as error:
-        raise RuntimeError("De werkmap kon niet worden gecontroleerd.") from error
-    if status.returncode or branch.returncode or upstream.returncode:
-        raise RuntimeError("De werkmap kon niet veilig worden gecontroleerd.")
-    if status.stdout.strip():
-        raise RuntimeError("Herstel is alleen mogelijk wanneer de werkmap geen lokale wijzigingen bevat.")
-    if branch.stdout.strip() != expected_branch:
-        raise RuntimeError("Herstel is alleen mogelijk op de verwachte branch.")
-    upstream_ref = upstream.stdout.strip()
-    remote, separator, _ = upstream_ref.partition("/")
-    if not separator or not remote:
-        raise RuntimeError("De upstream van de verwachte branch is niet beschikbaar.")
-    try:
-        provider.command(root, "git", "fetch", "--quiet", remote)
-    except RuntimeError as error:
-        raise RuntimeError("De upstream van de verwachte branch kon niet worden opgehaald.") from error
-    divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
-    if divergence.returncode:
-        raise RuntimeError("De synchronisatiestatus van de verwachte branch is niet beschikbaar.")
-    try:
-        behind, ahead = (int(value) for value in divergence.stdout.split())
-    except ValueError as error:
-        raise RuntimeError("De synchronisatiestatus van de verwachte branch is ongeldig.") from error
-    if ahead:
-        raise RuntimeError("De verwachte branch bevat lokale commits en kan niet veilig worden hersteld.")
-    if behind:
-        try:
-            provider.command(root, "git", "merge", "--ff-only", "@{upstream}")
-        except RuntimeError as error:
-            raise RuntimeError("De verwachte branch kon niet veilig worden gesynchroniseerd.") from error
-    final = provider.execute(root, "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
-    if final.returncode or final.stdout.strip() != "0\t0":
-        raise RuntimeError("De verwachte branch is niet gesynchroniseerd met de upstream.")
-    try:
-        LaunchdProvider().restart(LEGACY_WATCHER_LABEL)
-    except OSError as error:
-        raise RuntimeError("De branch is gesynchroniseerd, maar de Inbox-watcher kon niet worden herstart.") from error
-    return {"branch": expected_branch, "upstream": upstream_ref, "watcher": "restarted"}
-
-
-def _switch_to_fast_forward_main(root: Path) -> dict[str, str]:
-    """Safely switch to the managed branch only when it can fast-forward."""
-    provider = GitProvider()
-    expected_branch = PlatformConfiguration.load(root).workspace.default_branch
-    try:
-        status = provider.execute(root, "git", "status", "--porcelain", "--untracked-files=all")
-        active = provider.execute(root, "git", "branch", "--show-current")
-        if status.returncode or active.returncode or status.stdout.strip():
-            raise RuntimeError("De werkmap moet schoon zijn voordat naar main wordt geschakeld.")
-        if provider.execute(root, "git", "fetch", "--prune", "origin").returncode:
-            raise RuntimeError("origin kon niet veilig worden ververst.")
-        divergence = provider.execute(root, "git", "rev-list", "--left-right", "--count", f"origin/{expected_branch}...{expected_branch}")
-        if divergence.returncode:
-            raise RuntimeError("De synchronisatiestatus van main is niet beschikbaar.")
-        behind, ahead = (int(value) for value in divergence.stdout.split())
-        if ahead:
-            raise RuntimeError("Lokale commits op main voorkomen een veilige fast-forward.")
-        previous_branch = active.stdout.strip()
-        if previous_branch != expected_branch:
-            provider.command(root, "git", "switch", expected_branch)
-        if behind:
-            provider.command(root, "git", "merge", "--ff-only", f"origin/{expected_branch}")
-    except (OSError, RuntimeError, ValueError) as error:
-        raise RuntimeError(str(error) or "Naar main schakelen is niet veilig gelukt.") from error
-    # The branch action is the point at which an earlier managed-branch drift
-    # can genuinely be resolved. Replace stale evidence with a fresh Level 2
-    # result before the services are restarted and re-project the dashboard.
-    workspace_preflight = execute_workspace_preflight(root, "Execution Mode: MANAGED")
-    return {
-        "previous_branch": previous_branch,
-        "branch": expected_branch,
-        "synchronized": "true",
-        "workspace_preflight": workspace_preflight.outcome,
-    }
 
 
 def _workspace_git_lock(root: Path, *, now: float | None = None) -> dict[str, object]:
@@ -3166,79 +2877,6 @@ def handler(
                     return
                 self._send(json.dumps(result).encode(), "application/json; charset=utf-8")
                 return
-            if request_path in {"/api/queue-recovery", "/api/predecessor-retry"}:
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    predecessor_retry_admission_preflight(root)
-                    outcome = submit_predecessor_retry(root, cloud_root(repo=root))
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "queue_recovery_triggered" if request_path == "/api/queue-recovery" else "predecessor_retry_submission_triggered",
-                        run_id=outcome["blocking_run_id"],
-                        diagnostic=f"retry_run_id={outcome['retry_run_id']}",
-                    )
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    content = json.dumps({"error": str(error)}, ensure_ascii=False).encode()
-                    self._send(content, "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError):
-                    self._send(
-                        b'{"error":"De Inbox-watcher verwerkt momenteel een actie. Probeer het opnieuw."}',
-                        "application/json; charset=utf-8",
-                        409,
-                    )
-                    return
-                self._send(
-                    json.dumps(outcome, ensure_ascii=False).encode(),
-                    "application/json; charset=utf-8",
-                    202,
-                )
-                return
-            if request_path == "/api/managed-branch-recovery":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    outcome = _restore_managed_main_branch(root)
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "managed_branch_recovery_completed",
-                        diagnostic=f"previous_branch={outcome['previous_branch']}; watcher=restarted",
-                    )
-                except (RuntimeError, ValueError):
-                    self._send(
-                        b'{"error":"De werkmap kon niet veilig naar main worden hersteld."}',
-                        "application/json; charset=utf-8",
-                        409,
-                    )
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/managed-branch-synchronization":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    outcome = _synchronize_managed_branch_with_upstream(root)
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "managed_branch_synchronization_completed",
-                        diagnostic=f"branch={outcome['branch']}; upstream={outcome['upstream']}; watcher=restarted",
-                    )
-                except (RuntimeError, ValueError):
-                    self._send(
-                        b'{"error":"De verwachte branch kon niet veilig worden gesynchroniseerd."}',
-                        "application/json; charset=utf-8",
-                        409,
-                    )
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
             if request_path == "/api/stale-git-lock-recovery":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -3327,39 +2965,6 @@ def handler(
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
                 return
-            if request_path == "/api/workspace-switch-to-main":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length != 2 or self.rfile.read(length) != b"{}":
-                        raise ValueError
-                    if _execution_active(root):
-                        raise RuntimeError("Naar main schakelen en Engineering Platform herstarten kan alleen wanneer geen uitvoering actief is.")
-                    outcome = _switch_to_fast_forward_main(root)
-                except (OSError, RuntimeError, ValueError) as error:
-                    self._send(json.dumps({"error": str(error) or "Naar main schakelen is niet veilig gelukt."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                # The dashboard must acknowledge the operator before it is
-                # replaced. The full platform reload makes the switched main
-                # revision the running revision for watcher, relay and UI.
-                Timer(0.25, _restart_engineering_platform_after_main_switch, args=(root, logger)).start()
-                outcome["engineering_platform"] = "restart_scheduled"
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/workspace-switch-to-worktree":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"worktree_path", "branch"}:
-                        raise ValueError
-                    target = _worktree_switch_target_when_idle(root, payload["worktree_path"], payload["branch"])
-                except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                    self._send(json.dumps({"error": str(error) or "Naar de worktree schakelen is niet veilig gelukt."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                # Validate again after this response: a newly claimed run or
-                # Inbox item always wins over a requested service relocation.
-                Timer(0.25, _activate_engineering_platform_worktree, args=(root, str(target), str(payload["branch"]), logger)).start()
-                self._send(json.dumps({"branch": payload["branch"], "worktree_path": str(target), "engineering_platform": "restart_scheduled"}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
             if request_path == "/api/stale-local-branch-cleanup-preview":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -3374,80 +2979,6 @@ def handler(
                     )
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
-                return
-            if request_path == "/api/execution-retry":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    retry_admission_preflight(root, payload["run_id"])
-                    outcome = submit_execution_retry(root, cloud_root(repo=root), payload["run_id"])
-                    log_event(logger, logging.INFO, "execution_retry_triggered", run_id=payload["run_id"], diagnostic=f"retry_run_id={outcome['retry_run_id']}")
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"De uitvoering kan nu niet veilig opnieuw worden gestart."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/status-reconciliation-preview":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    outcome = status_reconciliation_preview(root, payload["run_id"])
-                except (RetrySubmissionError, _legacy_retry_submission_error(), ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                    self._send(json.dumps({"error": str(error) or "Statusherstel is niet veilig beschikbaar."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
-                return
-            if request_path == "/api/status-reconciliation":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    outcome = submit_status_reconciliation(root, cloud_root(repo=root), payload["run_id"])
-                    log_event(logger, logging.INFO, "status_reconciliation_requested", run_id=payload["run_id"])
-                except (RetrySubmissionError, _legacy_retry_submission_error(), ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                    self._send(json.dumps({"error": str(error) or "Statusherstel kon niet veilig worden aangevraagd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/execution-dismiss":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    outcome = dismiss_execution(root, payload["run_id"])
-                    log_event(logger, logging.INFO, "execution_dismissed", run_id=payload["run_id"])
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"De uitvoering kan nu niet veilig worden bevestigd."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/execution-merge-wait-abort":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    outcome = abort_operator_merge_wait(root, payload["run_id"])
-                    log_event(logger, logging.INFO, "operator_merge_wait_aborted", run_id=payload["run_id"])
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"De wachtende uitvoering kon niet veilig worden afgebroken."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return
             if request_path == "/api/execution-emergency-rollback":
                 try:
@@ -3465,43 +2996,6 @@ def handler(
                     log_event(logger, logging.WARNING, "execution_emergency_rollback_completed", run_id=payload["run_id"])
                 except (EmergencyRecoveryError, _legacy_emergency_recovery().EmergencyRecoveryError, EngineeringStorageError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     self._send(json.dumps({"error": str(error) or "De noodactie kon niet veilig worden uitgevoerd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
-                return
-            if request_path == "/api/execution-merge-status-check":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
-                        raise ValueError
-                    outcome = check_operator_merge_status(root, payload["run_id"])
-                    log_event(logger, logging.INFO, "operator_merge_status_checked", run_id=payload["run_id"], diagnostic=str(outcome.get("reason") or outcome.get("continuation")))
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"De pull request-status kon niet veilig worden gecontroleerd."}', "application/json; charset=utf-8", 400)
-                    return
-                self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202 if outcome.get("verified") else 409)
-                return
-            if request_path == "/api/queue-defer":
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    if not isinstance(payload, dict) or set(payload) != {"filename"} or not isinstance(payload["filename"], str):
-                        raise ValueError
-                    outcome = defer_queued_prompt(root, cloud_root(repo=root), payload["filename"])
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "queue_item_deferred",
-                        diagnostic=f"filename={outcome['filename']}; deferred_filename={outcome['deferred_filename']}",
-                    )
-                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
-                    return
-                except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    self._send(b'{"error":"De Inbox-opdracht kan nu niet veilig worden uitgesteld."}', "application/json; charset=utf-8", 400)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
                 return

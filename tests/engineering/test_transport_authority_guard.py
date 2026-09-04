@@ -4,9 +4,6 @@ import ast
 from pathlib import Path
 import unittest
 
-from engineering_platform import inbox_watcher
-
-
 class TransportAuthorityGuardTest(unittest.TestCase):
     """Source-level canaries for the supported ingress authority boundary."""
 
@@ -27,4 +24,12 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         server_source = (source_root / "server.py").read_text(encoding="utf-8")
         self.assertIn("submission_service.request_from_mapping", server_source)
         self.assertIn("submission_service.submit(connection, request)", server_source)
-        self.assertEqual(inbox_watcher.RETIRED_OPERATIONAL_COMMANDS, frozenset({"once", "run", "install"}))
+        self.assertIn("_admit_server_owned_file_inbox", server_source)
+        self.assertIn("file_inbox.FileInboxService", server_source)
+
+    def test_supported_runtime_modules_do_not_import_the_retired_watcher(self) -> None:
+        source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
+        supported = ("server.py", "dashboard.py", "parity_lifecycle_dispatcher.py", "emergency_recovery.py")
+        for name in supported:
+            source = (source_root / name).read_text(encoding="utf-8")
+            self.assertNotIn("inbox_watcher", source, name)
