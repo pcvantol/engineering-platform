@@ -48,15 +48,6 @@ from .workspace_preflight import execute as execute_workspace_preflight
 from .capability_preflight import execute as execute_capability_preflight
 from .producer import ProducerMetadata, ProducerSubmissionError, parse_producer_metadata, parse_producer_submission
 from .drift_diagnostics import summary as drift_summary
-from .dependabot_admission import (
-    configured_repository as dependabot_repository,
-    discover_open_pull_requests,
-    envelope as dependabot_envelope,
-    inbox_contains_submission,
-    is_already_admitted as dependabot_already_admitted,
-    publish_envelope as publish_dependabot_envelope,
-    record_enqueued as record_dependabot_enqueued,
-)
 from .storage import ENGINEERING_STORAGE_SCHEMA_VERSION, EngineeringStorageError, dismissal_for_run, is_active_blocking_predecessor, load_projection, load_submission_for_run, open_storage, record_admission_decision, record_artifact, record_execution_dismissal, record_run_qualification_context, record_submission, store_projection
 from .execution_lease import reconcile_stale
 from .provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
@@ -1680,45 +1671,6 @@ def _scan_queue(root: Path, interval: float) -> list[QueueCandidate]:
     ]
 
 
-def _admit_dependabot_pull_requests(repo: Path, root: Path, logger: logging.Logger) -> int:
-    """Best-effort discovery that cannot block existing human Inbox work.
-
-    Each resulting JSON envelope is an ordinary EXTERNAL Producer submission;
-    execution, PR polling, bounded repair and audit remain owned by the
-    existing Managed workflow after normal watcher admission.
-    """
-    try:
-        repository = dependabot_repository(repo)
-        pull_requests = discover_open_pull_requests(repository)
-    except EngineeringStorageError as error:
-        log_event(logger, logging.WARNING, "dependabot_discovery_unavailable", diagnostic=str(error))
-        return 0
-    inbox = folders(root)["Inbox"]
-    enqueued = 0
-    for pull_request in pull_requests:
-        try:
-            if dependabot_already_admitted(repo, repository, pull_request.number):
-                continue
-            submission_id, content = dependabot_envelope(repository, pull_request)
-            if not inbox_contains_submission(inbox, submission_id):
-                publish_dependabot_envelope(inbox, pull_request, content)
-            record_dependabot_enqueued(
-                repo, repository, pull_request, submission_id,
-                observed_at=datetime.now(timezone.utc).isoformat(),
-            )
-            log_event(
-                logger, logging.INFO, "dependabot_prompt_enqueued",
-                diagnostic=f"pull_request={pull_request.number}; submission_id={submission_id}",
-            )
-            enqueued += 1
-        except EngineeringStorageError as error:
-            log_event(
-                logger, logging.ERROR, "dependabot_prompt_admission_failed",
-                diagnostic=f"pull_request={pull_request.number}; {error}",
-            )
-    return enqueued
-
-
 def _admit_queue_candidate(
     repo: Path,
     candidates: list[QueueCandidate],
@@ -1896,7 +1848,6 @@ def once(repo: Path, root: Path, interval: float = 1.0, *, background: bool = Fa
     logger = component_logger(repo, "inbox")
     areas = local_folders(repo)
     with _lock(repo):
-        _admit_dependabot_pull_requests(repo, root, logger)
         # Terminal telemetry is a rebuildable projection.  Drain durable
         # intents before any new work so a vanished daemon/lease cannot make a
         # completed run disappear from the dashboard or daily trend.

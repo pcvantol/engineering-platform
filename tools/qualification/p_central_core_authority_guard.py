@@ -21,7 +21,6 @@ CLASSIFIED_FALLBACKS = {
     "dashboard.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "dashboard_configuration.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "dashboard_state.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
-    "dependabot_admission.py": "RETIRED_TRANSPORT_COMPATIBILITY",
     "emergency_recovery.py": "HISTORICAL_COMPATIBILITY_ONLY",
     "execution_activity.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "execution_executor.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",

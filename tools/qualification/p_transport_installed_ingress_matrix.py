@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -110,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         # runner must not assume that its own interpreter happens to carry the
         # project build backend; build isolation is part of the wheel contract.
         subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(args.source_root)], check=True, capture_output=True, text=True)  # nosec B603
+        wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeError("CANDIDATE_WHEEL_UNAVAILABLE")
+        with zipfile.ZipFile(wheels[0]) as candidate:
+            if any(name.endswith("/dependabot_admission.py") for name in candidate.namelist()):
+                raise RuntimeError("INSTALLED_LEGACY_DEPENDABOT_RUNTIME_PRESENT")
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)  # nosec B603
         pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "--no-index", "--find-links", str(wheelhouse), "engineering-platform"], check=True, capture_output=True, text=True)  # nosec B603
@@ -486,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             process.terminate(); process.wait(timeout=5)
         evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
-        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "CENTRAL_DEPENDABOT_GATE": "PASS", "matrix": evidence}, sort_keys=True))
+        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "CENTRAL_DEPENDABOT_GATE": "PASS", "INSTALLED_LEGACY_DEPENDABOT_RUNTIME": 0, "matrix": evidence}, sort_keys=True))
     return 0
 
 

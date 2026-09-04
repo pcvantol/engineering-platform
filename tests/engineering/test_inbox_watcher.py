@@ -69,10 +69,6 @@ class InboxWatcherTest(unittest.TestCase):
             return_value=CapabilityPreflightResult("PASS", "now", 1, (), "RETRYABLE", None, "Capability admission passed."),
         )
         self.capability_preflight.start()
-        self.dependabot_admission = patch(
-            "engineering_platform.inbox_watcher._admit_dependabot_pull_requests", return_value=0
-        )
-        self.dependabot_admission.start()
         self.managed_runtime_prefix_patch = patch(
             "engineering_platform.platform_api.engineering_platform_codex_cli_prefix",
             return_value=self.managed_runtime_prefix,
@@ -93,7 +89,6 @@ class InboxWatcherTest(unittest.TestCase):
         self.preflight.stop()
         self.workspace_preflight.stop()
         self.capability_preflight.stop()
-        self.dependabot_admission.stop()
         self.managed_runtime_prefix_patch.stop()
         self.runtime_environment.stop()
         wait_for_pending_telemetry()
