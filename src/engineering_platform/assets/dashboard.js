@@ -364,9 +364,6 @@ function hasVisibleStaleLifecycle(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
     x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED";
 }
-function watcherDelegatedToActiveHost(component, status = latestStatus) {
-  return component?.component === "inbox_watcher" && component?.healthy !== true && isActiveRun(status || {});
-}
 function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
   const current = status && typeof status === "object" ? status : {}, components = platformHealth?.components || {};
   const model = Array.isArray(platformHealth?.component_model) ? platformHealth.component_model : [];
@@ -3632,11 +3629,10 @@ function showComponentModal(payload) {
   content.replaceChildren();
   const fields = document.createElement("dl");
   componentDetailField(fields, t("component.machine"), payload.machine);
-  const delegatedToActiveHost = watcherDelegatedToActiveHost(payload);
   componentDetailField(
     fields,
     t("component.status"),
-    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : payload.kind === "TRANSPORT" ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+    (payload.kind === "TRANSPORT" ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
       (transportDetail(payload.detail || payload.state || t("ui.no_component_explanation"))),
   );
@@ -3826,25 +3822,24 @@ function renderPlatformHealth(payload) {
       detail = document.createElement("span"),
       info = document.createElement("span"),
       componentHealthy = Boolean(component?.healthy),
-      delegatedToActiveHost = watcherDelegatedToActiveHost({ component: key, healthy: componentHealthy }),
       version =
         typeof component?.version === "string"
           ? " · " + t("component.version") + " " + component.version
           : "",
       uptime = formatComponentUptime(component?.uptime_seconds);
     item.className = "platform-health__component";
-    item.dataset.health = delegatedToActiveHost ? "delegated" : String(componentHealthy);
+    item.dataset.health = String(componentHealthy);
     item.tabIndex = 0;
     item.setAttribute("role", "button");
     item.setAttribute(
       "aria-label",
       t("component.more_information", { component: healthComponentLabel(key) }),
     );
-    indicator.className = healthIndicatorClass(delegatedToActiveHost || componentHealthy);
+    indicator.className = healthIndicatorClass(componentHealthy);
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
     name.textContent = healthComponentLabel(key);
-    if (["dashboard", "inbox_watcher", "dashboard_relay"].includes(key)) {
+    if (key === "dashboard_relay") {
       const linkIcon = document.createElement("span");
       linkIcon.className = "platform-health__component-link-icon";
       linkIcon.dataset.testid = "component-details-link-icon";
@@ -3861,7 +3856,7 @@ function renderPlatformHealth(payload) {
       (component?.reason_code || component?.recent_error) ? t("transport.recent_error") + " " + t("transport.reason." + (component.reason_code || "FILE_INBOX_DIAGNOSTIC")) : "",
     ].filter(Boolean).join(" · ");
     detail.textContent =
-      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN"))) +
+      transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN")) +
       " · " +
       transportDetail(component?.detail_code || component?.detail || (componentHealthy ? "CENTRAL_LISTENER_ENDPOINT" : "CENTRAL_LISTENER_UNAVAILABLE")) +
       version +

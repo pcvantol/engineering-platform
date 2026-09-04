@@ -6637,19 +6637,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(info).toHaveCSS("color", "rgb(163, 230, 53)");
   });
 
-  test("marks the three clickable platform components with a link icon", async ({ page }) => {
+  test("marks only Dashboard Relay with its external-link icon", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const rendered = await page.evaluate(() => {
       renderPlatformHealth({ components: {
-        dashboard: { healthy: true, detail: "HTTP-dashboard reageert" },
-        inbox_watcher: { healthy: true, detail: "LaunchAgent is geladen" },
+        ep_server: { healthy: true, detail: "Server actief" },
+        file_inbox_ingress: { healthy: true, status_code: "FILE_INGRESS_RUNNING", detail_code: "FILE_INBOX_HEARTBEAT" },
         dashboard_relay: { healthy: true, detail: "Relay is verbonden" },
-        execution_host: { healthy: true, detail: "Host is actief" },
+        lifecycle_worker: { healthy: true, detail: "Worker actief" },
       }});
       return [...document.querySelectorAll(".platform-health__component-name")]
         .map((name) => Boolean(name.querySelector("[data-testid='component-details-link-icon']")));
     });
-    expect(rendered).toEqual([true, true, true, false]);
+    expect(rendered).toEqual([false, false, true, false]);
   });
 
   test("keeps iPhone platform component cards on opaque, flat surfaces", async ({ page }) => {
