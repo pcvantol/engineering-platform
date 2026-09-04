@@ -97,11 +97,11 @@ The Dashboard access path is deliberately narrower than the Server's Platform
 Components projection:
 
 ```text
-Tailnet device → Tailscale IPv4 :8765 → Dashboard relay → 127.0.0.1 Dashboard
+Tailnet device → Tailscale IPv4 :8765 → Dashboard relay → 127.0.0.1 EP Server Console
 ```
 
-The Dashboard's `/health` endpoint proves only this access path. It is healthy
-when the loopback Dashboard and its relay are healthy; it must neither start
+The Server's relay component projection proves only this access path. It is
+healthy when the loopback Server Console and its relay are healthy; it must neither start
 nor require the historical `inbox_watcher` LaunchAgent. A missing watcher is
 therefore never a reason for the relay endpoint to return `503`.
 

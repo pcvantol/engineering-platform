@@ -40,6 +40,7 @@ from . import file_inbox
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
+from . import server_relay
 from . import storage
 from . import managed_codex_runtime
 from . import provider_readiness
@@ -2635,7 +2636,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -2673,6 +2674,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)
+        elif args.command == "relay-install":
+            initialize(args.data_root)
+            result = {"result": "INSTALLED", **server_relay.install(args.data_root)}
+        elif args.command == "relay-uninstall":
+            result = {"result": "UNINSTALLED", **server_relay.uninstall()}
         elif args.command == "topology":
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
