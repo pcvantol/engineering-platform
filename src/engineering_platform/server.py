@@ -1479,9 +1479,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
                     raise ValueError
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"key", "value", "previous"}:
+                    raise ValueError
                 result = central_database.update_console_interval_configuration(
-                    self.server.data_root, payload.get("key") if isinstance(payload, dict) else None,
-                    payload.get("value") if isinstance(payload, dict) else None,
+                    self.server.data_root, payload["key"], payload["value"],
                 )  # type: ignore[attr-defined]
                 self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
