@@ -415,72 +415,6 @@ test.describe("Engineering Status browser smoke", () => {
     expect(order).toBe(true);
   });
 
-  test("shows the Inbox location below its label with a matching change action", async ({ page }) => {
-    const selectedRoot = path.join(dashboardRoot, "selected-engineering-root");
-    mkdirSync(path.join(selectedRoot, "Inbox"), { recursive: true });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const queue = page.locator("#queueItems");
-    await queue.evaluate((element) => { element.open = true; });
-    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
-    const location = page.locator("#configurationInboxLocation");
-    await expect(location).toHaveText(/Inbox/);
-    await expect(location).toHaveClass(/configuration-inbox-location/);
-    const button = page.locator("#configurationInboxOpen");
-    await expect(button).toHaveText("Locatie wijzigen");
-    await expect(button).toBeEnabled();
-    await expect(page.locator("#configurationInboxUnavailable")).toBeHidden();
-    await expect(button).toHaveCSS("border-top-color", "rgb(129, 140, 248)");
-    await page.route("**/api/configuration/inbox-location/browse", (route) => route.fulfill({
-      json: { cancelled: false, value: selectedRoot },
-    }));
-    await button.click({ force: true });
-    await page.locator("#configurationInboxModal").evaluate((element) => {
-      if (!element.open) element.showModal();
-    });
-    await expect(page.locator("#configurationInboxModal .dashboard-modal-shell__panel")).toHaveCSS("border-top-color", "rgb(129, 140, 248)");
-    await expect(page.locator("#configurationInboxSave")).toHaveCSS("background-color", "rgb(49, 48, 82)");
-    const root = page.locator("#configurationInboxRoot");
-    await expect(root).not.toHaveValue(/\/Inbox$/);
-    await expect(root).toHaveCSS("width", /px/);
-    await expect(root).toHaveCSS("display", "block");
-    const browse = page.locator("#configurationInboxBrowse");
-    await expect(browse).toHaveText("Lokale map kiezen");
-    await browse.click({ force: true });
-    await expect(root).toHaveValue(selectedRoot);
-    await page.route("**/api/configuration/inbox-location", (route) => route.fulfill({
-      json: { key: "inbox_root", value: selectedRoot },
-    }));
-    const saveRequested = page.waitForRequest((request) => request.url().endsWith("/api/configuration/inbox-location"));
-    const saved = page.waitForResponse((response) => response.url().endsWith("/api/configuration/inbox-location"));
-    await page.locator("#configurationInboxSave").click();
-    await expect(page.locator("#confirmationModal")).toBeVisible();
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#confirmationModal")).not.toBeVisible();
-    await saveRequested;
-    expect((await saved).ok()).toBeTruthy();
-    await expect(page.locator("#configurationInboxStatus")).not.toBeEmpty();
-    await expect(page.locator("#configurationInboxModal")).not.toBeVisible({ timeout: 2_000 });
-    await expect(location).toHaveText(/selected-engineering-root\/Inbox$/);
-    await expect(page.locator("#configurationInboxStatus")).toHaveClass(/configuration-status--saved/);
-    await expect(page.locator("#configurationInboxStatus")).toHaveText(
-      DASHBOARD_MESSAGES.nl["configuration.inbox_location_saved"],
-    );
-  });
-
-  test("opens the displayed Engineering Inbox location through the approved Finder route", async ({ page }) => {
-    let requestedDirectory = null;
-    await page.route("**/api/open-local-directory", async (route) => {
-      requestedDirectory = JSON.parse(route.request().postData()).directory_path;
-      await route.fulfill({ status: 202, json: { opened_directory: requestedDirectory } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
-    const location = page.locator("#configurationInboxLocation");
-    const inboxPath = await location.textContent();
-    await dispatchDashboardPointerClick(location);
-    await expect.poll(() => requestedDirectory).toBe(inboxPath?.trim());
-  });
-
   test("shows localized provider login states in Configuration", async ({ page }) => {
     const openedRuntimes = [];
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
@@ -776,23 +710,6 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => repairs).toBe(2);
   });
 
-  test("disables the Inbox location action while the project queue has items", async ({ page }) => {
-    const initialSnapshot = page.waitForResponse((response) =>
-      new URL(response.url()).pathname === "/api/dashboard-snapshot",
-    );
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await waitForDashboardReady(page);
-    await initialSnapshot;
-    await page.evaluate(() => window.queueItems([
-      { filename: "waiting-assignment.md", title: "Waiting assignment" },
-    ], 1));
-    const button = page.locator("#configurationInboxOpen");
-    const notice = page.locator("#configurationInboxUnavailable");
-    await expect(button).toBeDisabled();
-    await expect(button).toHaveAttribute("aria-describedby", "configurationInboxUnavailable");
-    await expect(notice).toHaveText("Maak de Inbox eerst leeg voordat je de locatie wijzigt.");
-  });
-
   test("formats titleless structured queue submissions from safe metadata", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
@@ -807,38 +724,6 @@ test.describe("Engineering Status browser smoke", () => {
       "Inzending van menselijke operator · wijziging doorvoeren",
     );
     await expect(page.locator("#queueList")).not.toContainText("Structured submission");
-  });
-
-  test("shows Inbox watcher confirmation progress and never shows success after a restart failure", async ({ page }) => {
-    let completeRequest;
-    const requestHeld = new Promise((resolve) => { completeRequest = resolve; });
-    await page.route("**/api/configuration/inbox-location", async (route) => {
-      await requestHeld;
-      await route.fulfill({ status: 503, json: { error_code: "inbox_watcher_restart_failed" } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#configuration").evaluate((element) => { element.open = true; });
-    await page.locator("#configurationInboxOpen").click({ force: true });
-    await page.locator("#configurationInboxModal").evaluate((element) => {
-      if (!element.open) element.showModal();
-    });
-    await page.locator("#configurationInboxRoot").evaluate((element) => { element.readOnly = false; });
-    await page.locator("#configurationInboxRoot").fill("/private/new-engineering-root");
-    await page.locator("#configurationInboxSave").click();
-    await page.locator("#confirmationModalConfirm").click();
-    await expect(page.locator("#confirmationModal")).not.toBeVisible();
-
-    await expect(page.locator("#configurationInboxStatus")).toHaveText(
-      DASHBOARD_MESSAGES.nl["configuration.inbox_location_restarting"],
-    );
-    await expect(page.locator("#configurationInboxSave")).toBeDisabled();
-    await expect(page.locator("#configurationInboxBrowse")).toBeDisabled();
-    completeRequest();
-    await expect(page.locator("#configurationInboxStatus")).toHaveText(
-      DASHBOARD_MESSAGES.nl["configuration.inbox_location_restart_failed"],
-    );
-    await expect(page.locator("#configurationInboxStatus")).not.toHaveClass(/configuration-status--saved/);
-    await expect(page.locator("#configurationInboxModal")).toBeVisible();
   });
 
   test("projects local worktrees above open pull requests and refreshes their rows", async ({ page }) => {
@@ -1142,17 +1027,6 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.getByRole("button", { name: "Schakel naar worktree" })).toHaveCount(0);
   });
 
-  test("keeps project-scoped Inbox settings with the project queue", async ({ page }) => {
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    const queue = page.locator("#queueItems");
-    await queue.evaluate((element) => { element.open = true; });
-    for (const id of ["configurationInboxOpen", "configurationInboxScanInterval", "configurationOpenPrInterval"]) {
-      await expect(queue.locator(`#${id}`)).toHaveCount(1);
-      await expect(page.locator(`#configuration #${id}`)).toHaveCount(0);
-    }
-    await expect(queue.locator(".queue-project-settings")).toHaveCount(1);
-  });
-
   test("uses normal-weight labels for every dashboard button", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
@@ -1341,33 +1215,6 @@ test.describe("Engineering Status browser smoke", () => {
       await expect(page.locator("#logDateFromControl")).toBeHidden();
       await expect(page.locator("#logDateToControl")).toBeHidden();
     }
-  });
-
-  test("stacks the Inbox location action below its long path on iPhone", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    const configurationLoaded = page.waitForResponse("**/api/configuration");
-    const snapshotLoaded = page.waitForResponse("**/api/dashboard-snapshot");
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await Promise.all([configurationLoaded, snapshotLoaded]);
-    await page.locator("#queueItems").evaluate((element) => { element.open = true; });
-
-    const layout = await page.evaluate(() => {
-      const field = document.querySelector(".configuration-inbox-field");
-      const location = document.querySelector("#configurationInboxLocation");
-      const action = document.querySelector("#configurationInboxOpen");
-      const fieldBounds = field.getBoundingClientRect();
-      const locationBounds = location.getBoundingClientRect();
-      const actionBounds = action.getBoundingClientRect();
-      return {
-        actionTop: Math.round(actionBounds.top),
-        locationBottom: Math.round(locationBounds.bottom),
-        actionWidth: Math.round(actionBounds.width),
-        fieldWidth: Math.round(fieldBounds.width),
-      };
-    });
-
-    expect(layout.actionTop).toBeGreaterThanOrEqual(layout.locationBottom);
-    expect(layout.actionWidth).toBe(layout.fieldWidth);
   });
 
   test("checks provider readiness on open and exposes the bounded refresh interval", async ({ page }) => {
