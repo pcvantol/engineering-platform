@@ -6177,12 +6177,15 @@ function syncPlatformAttentionBanner() {
   const items = [
     $("codexProviderReadinessBanner"), $("githubProviderReadinessBanner"), $("executionRuntimeBanner"),
   ].filter((item) => item && !item.hidden);
+  const wasHidden = panel.hidden;
   panel.hidden = items.length === 0;
   if (!items.length) return;
   const labels = items.map((item) => item.querySelector("strong")?.textContent?.trim()).filter(Boolean);
   title.textContent = labels.join(" · ");
   summary.textContent = String(items.length);
-  panel.open = false;
+  // Keep the operator's expanded state across periodic readiness refreshes.
+  // Only a newly surfaced attention group starts collapsed.
+  if (wasHidden) panel.open = false;
 }
 function renderProviderLoginStatus(block, providers) {
   renderProviderReadinessBanner(providers);

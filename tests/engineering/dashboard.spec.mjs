@@ -657,6 +657,13 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/provider-login/repair", (route) => route.fulfill({ status: 202, json: { started: true } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
+    const attention = page.locator("#platformAttentionBanner");
+    await expect(attention).toBeVisible();
+    await attention.locator("summary").click();
+    await expect(attention).toHaveAttribute("open", "");
+    // A readiness recheck must preserve the operator's expanded group.
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(attention).toHaveAttribute("open", "");
     await expect(page.locator("#codexProviderReadinessBanner")).toBeVisible();
     await expect(page.locator("#githubProviderReadinessBanner")).toBeVisible();
     await page.locator("#codexProviderReadinessAction").click();
