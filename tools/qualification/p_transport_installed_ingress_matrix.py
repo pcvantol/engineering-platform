@@ -326,6 +326,24 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 process.terminate(); process.wait(timeout=5)
         evidence["EMPTY_RESTART_STABILITY"] = {"pass": True}
+        # Human Intent 2×: physical Markdown -> deterministic intake -> CENTRAL.
+        for human_mode in ("MANAGED", "GENESIS"):
+            project, repository = f"human-{human_mode.lower()}", f"human-{human_mode.lower()}-repo"
+            command(server, "bootstrap-topology", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository)
+            checkout = root / f"{project}-checkout"; checkout.mkdir(); subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+            command(server, "provision-declaration", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout)); command(server, "bind-repository", "--data-root", str(data_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+            credential = str(command(server, "issue-consumer-credential", "--data-root", str(data_root), "--project-id", project, "--consumer-id", project)["credential"])
+            metadata = f"project: {project}\nrepository: {repository}\nmode: {human_mode}\n" + ("target: /tmp/ep-human-genesis-target\n" if human_mode == "GENESIS" else "")
+            source = data_root / "file-inbox" / "incoming" / f"human-{human_mode.lower()}.md"
+            body = f"---\n{metadata}---\nImplement the installed human intent canary.\n"; source.write_text(body, encoding="utf-8")
+            environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
+            process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=environment)  # nosec B603
+            try:
+                digest = __import__("hashlib").sha256(body.encode()).hexdigest(); receipt_path = data_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
+                wait_for_file(receipt_path); receipt = json.loads(receipt_path.read_text()); diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
+                evidence[f"FILE_HUMAN_{human_mode}"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "normalization": "submission-intake-v1"}
+            finally:
+                process.terminate(); process.wait(timeout=5)
         evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "matrix": evidence}, sort_keys=True))
     return 0

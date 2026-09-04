@@ -120,7 +120,7 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
     for source in sorted(path for path in folders["incoming"].iterdir() if path.suffix.lower() in {".json", ".txt", ".md"}):
         claimed = folders["processing"] / source.name
         _move(source, claimed)
-    for claimed in sorted(folders["processing"].glob("*.json")):
+    for claimed in sorted(path for path in folders["processing"].iterdir() if path.suffix.lower() in {".json", ".txt", ".md"}):
         try:
             envelope, _raw, digest = _read_envelope(claimed)
             # Installed qualification only: terminate the real Server process
