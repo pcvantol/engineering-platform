@@ -161,6 +161,12 @@ validation, mode/Genesis validation, idempotency, admission, provenance and
 lifecycle initialization remain canonical. Its heartbeat is observation state,
 not a discovery cursor, queue, Action or run authority.
 
+If a binding changes after a PR head was admitted, that historical submission
+retains its original binding id/version in canonical constraints. Rediscovery
+of that same repository/PR/head under a different target fails closed with
+`BINDING_DRIFT_REQUIRES_NEW_HEAD`; a later head SHA is a distinct immutable
+delivery identity and is evaluated using the current active binding.
+
 ```text
 FILE_INBOX_EXTERNAL_CREDENTIAL = NONE
 FILE_INBOX_PROJECT_TOKEN_STORE = NONE

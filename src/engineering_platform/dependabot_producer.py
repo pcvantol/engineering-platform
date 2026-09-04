@@ -175,6 +175,18 @@ def admit(
         external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
         external_resource_identity=repository,
     )
+    historical = connection.execute(
+        """SELECT project_id,repository_id FROM ep_submissions
+           WHERE producer_id=? AND correlation_id=?
+             AND json_extract(constraints, '$.external_resource_identity')=?
+             AND json_extract(constraints, '$.head_sha')=?""",
+        (PRODUCER_ID, f"github-pr-{pull_request.number}", repository, pull_request.head_sha),
+    ).fetchall()
+    if any(tuple(row) != (binding.project_id, binding.repository_id) for row in historical):
+        # A binding change must never reinterpret already admitted external
+        # evidence into another project. A new PR head has a new immutable
+        # idempotency identity; this old head fails closed.
+        raise DependabotProducerError("BINDING_DRIFT_REQUIRES_NEW_HEAD")
     key = f"dependabot:{repository}:{pull_request.number}:{pull_request.head_sha}"
     request = submission_service.SubmissionRequest(
         project_id=binding.project_id,

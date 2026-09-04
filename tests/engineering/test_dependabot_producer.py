@@ -152,6 +152,43 @@ class DependabotProducerTests(unittest.TestCase):
                 )
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 0)
 
+    def test_binding_change_cannot_reinterpret_an_already_admitted_pr_head(self) -> None:
+        with sqlite3.connect(self.database) as connection:
+            dependabot_producer.admit(
+                connection,
+                external_repository="pcvantol/repository-a",
+                pull_request=self._pull(47),
+            )
+            original = external_producer_binding.resolve(
+                connection,
+                producer_type=external_producer_binding.DEPENDABOT,
+                external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
+                external_resource_identity="pcvantol/repository-a",
+            )
+            external_producer_binding.deactivate(
+                connection,
+                data_root=self.root,
+                binding_id=original.binding_id,
+                reason="controlled binding drift test",
+            )
+            external_producer_binding.register(
+                connection,
+                data_root=self.root,
+                producer_type=external_producer_binding.DEPENDABOT,
+                external_resource_type=external_producer_binding.GITHUB_REPOSITORY,
+                external_resource_identity="pcvantol/repository-a",
+                project_id="project-b",
+                repository_id="repository-b",
+                reason="controlled binding drift test",
+            )
+            with self.assertRaisesRegex(dependabot_producer.DependabotProducerError, "BINDING_DRIFT_REQUIRES_NEW_HEAD"):
+                dependabot_producer.admit(
+                    connection,
+                    external_repository="pcvantol/repository-a",
+                    pull_request=self._pull(47),
+                )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_submissions").fetchone()[0], 1)
+
     def test_discovery_requires_actual_dependabot_source_and_canonical_pull_url(self) -> None:
         accepted = {
             "number": 7,
