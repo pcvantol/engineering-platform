@@ -1861,14 +1861,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
             TransactionState("bound-validation-only", "pcvantol/djconnect", str(self.prompt), "CAPABILITY_REVIEW", action_intent="VALIDATION_ONLY"),
             {"validation_profile": {
                 "tier": "DASHBOARD", "version": "1.0",
-                "required_controls": ["git_diff_check", "engineering_python", "dashboard_browser"],
+                "required_controls": [
+                    "git_diff_check", "engineering_python", "console_route_ownership",
+                    "ui_localization", "dashboard_browser",
+                ],
             }},
         )
         self.assertFalse(state.terminal)
         context = load_validation_context(self.root, state.run_id)
         self.assertEqual(context["profile_reference"], "validation-profile-registry:DASHBOARD@1.0")
         self.assertEqual(context["profile_selection_source"], "producer_execution_context")
-        self.assertEqual(context["required_validation_controls"], ("git_diff_check", "engineering_python", "dashboard_browser"))
+        self.assertEqual(
+            context["required_validation_controls"],
+            ("git_diff_check", "engineering_python", "console_route_ownership", "ui_localization", "dashboard_browser"),
+        )
         self.assertEqual(context["control_bindings"][-1]["command"], ["npm", "run", "test:engineering-dashboard"])
         self.assertEqual(context["controls"], {})
         # The immutable run record prevents a later selection from rewriting
