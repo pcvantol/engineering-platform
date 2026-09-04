@@ -190,6 +190,20 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
 
+    @patch("engineering_platform.server.dashboard._start_provider_login")
+    @patch("engineering_platform.server._central_provider_readiness")
+    def test_provider_login_repair_is_central_and_keeps_no_project_readiness(
+        self, readiness: object, start_login: object,
+    ) -> None:
+        """A host-wide sign-in cannot fall through to a checkout route."""
+        readiness.return_value = {
+            "codex": {"state": "AUTH_REQUIRED", "executable": "/managed/codex", "version": "1", "scope": "PLATFORM"},
+            "github": {"state": "AUTH_REQUIRED", "executable": "/managed/gh", "version": "1", "scope": "PLATFORM"},
+        }
+        server._central_provider_repair(self.root, {"provider": "CODEX", "action": "login"})
+        start_login.assert_called_once_with(self.root, "CODEX")
+        self.assertEqual(readiness()["codex"]["state"], "AUTH_REQUIRED")
+
     def test_transport_components_are_platform_scoped_and_secret_free(self) -> None:
         server.initialize(self.root)
         components = server.status(self.root)["components"]

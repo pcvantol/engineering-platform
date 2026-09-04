@@ -941,6 +941,23 @@ def _central_provider_readiness(data_root: Path) -> dict[str, dict[str, object]]
     }
 
 
+def _central_provider_repair(data_root: Path, payload: object) -> None:
+    """Start one validated host-wide provider action without a checkout."""
+    if not isinstance(payload, dict) or set(payload) != {"provider", "action"}:
+        raise ValueError("Invalid provider repair request.")
+    provider, action = str(payload["provider"]), str(payload["action"])
+    if provider not in {"CODEX", "GITHUB"} or action not in {"login", "install"}:
+        raise ValueError("Invalid provider repair request.")
+    readiness = _central_provider_readiness(data_root)
+    state = str(readiness[provider.lower()]["state"])
+    if (action == "login" and state != "AUTH_REQUIRED") or (action == "install" and state != "UNAVAILABLE"):
+        raise ValueError("Provider is not ready for the requested repair.")
+    if action == "login":
+        dashboard._start_provider_login(data_root, provider)  # type: ignore[attr-defined]
+    else:
+        dashboard._install_provider(data_root, provider)  # type: ignore[attr-defined]
+
+
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
     """Overlay CENTRAL-only queue and provider evidence onto legacy payloads."""
     try:
@@ -1463,6 +1480,26 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return
         if request.path == "/api/provider-login-status" and method == "do_GET":
             self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
+            return
+        if request.path == "/api/provider-login/repair" and method == "do_POST":
+            # Provider installation and interactive sign-in are host-wide
+            # operations.  They must never fall through to the historical
+            # checkout-bound dashboard handler: on the <geen> projection that
+            # handler rejects the request for lack of a selected project and
+            # the subsequent readiness refresh misleadingly becomes a check
+            # failure.
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                _central_provider_repair(self.server.data_root, payload)  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "PROVIDER_REPAIR_UNAVAILABLE"})
+                return
+            self._send(202, {"started": True, "scope": "PLATFORM"})
             return
         if request.path == "/api/provider-capacity/configuration":
             if method == "do_GET":
