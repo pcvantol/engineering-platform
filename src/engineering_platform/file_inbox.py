@@ -24,6 +24,7 @@ MAX_FILE_BYTES = 131072
 MAX_REASON_LENGTH = 160
 HEARTBEAT_FILENAME = "file-inbox-heartbeat.json"
 QUALIFICATION_FAULT_ENVIRONMENT = "EP_FILE_INBOX_QUALIFICATION_FAULT"
+SUPPORTED_FILE_SUFFIXES = frozenset({".json", ".txt", ".md"})
 
 
 class FileInboxError(ValueError):
@@ -117,10 +118,10 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
     """Deliver every pending file once; unavailable CENTRAL leaves it retryable."""
     folders = _layout(root)
     counts = {"accepted": 0, "quarantined": 0, "retryable": 0}
-    for source in sorted(path for path in folders["incoming"].iterdir() if path.suffix.lower() in {".json", ".txt", ".md"}):
+    for source in sorted(path for path in folders["incoming"].iterdir() if path.suffix.lower() in SUPPORTED_FILE_SUFFIXES):
         claimed = folders["processing"] / source.name
         _move(source, claimed)
-    for claimed in sorted(path for path in folders["processing"].iterdir() if path.suffix.lower() in {".json", ".txt", ".md"}):
+    for claimed in sorted(path for path in folders["processing"].iterdir() if path.suffix.lower() in SUPPORTED_FILE_SUFFIXES):
         try:
             envelope, _raw, digest = _read_envelope(claimed)
             # Installed qualification only: terminate the real Server process
