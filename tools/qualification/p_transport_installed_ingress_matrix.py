@@ -298,6 +298,19 @@ def main(argv: list[str] | None = None) -> int:
             evidence["POST_ACCEPT_PRE_ARCHIVE_RECOVERY"] = {"pass": True, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"]}
         finally:
             process.terminate(); process.wait(timeout=5)
+        # Canary E: a fresh empty Server-owned Inbox remains healthy across a
+        # normal Server restart and creates no delivery state.
+        empty_root = root / "empty-central"; empty_port = port + 1
+        command(server, "init", "--data-root", str(empty_root), "--bind-port", str(empty_port))
+        empty_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
+        for restart in range(2):
+            process = subprocess.Popen([str(server), "serve", "--data-root", str(empty_root)], env=empty_environment)  # nosec B603
+            try:
+                heartbeat = empty_root / "file-inbox" / "file-inbox-heartbeat.json"; wait_for_file(heartbeat)
+                if central_counts(empty_root, "missing-project") != (0, 0): raise RuntimeError("EMPTY_RESTART_CREATED_STATE")
+            finally:
+                process.terminate(); process.wait(timeout=5)
+        evidence["EMPTY_RESTART_STABILITY"] = {"pass": True}
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
     return 0
 
