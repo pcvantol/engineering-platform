@@ -17,6 +17,7 @@ import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from .submission_intake import SubmissionIntakeError, normalize_human_file
 
 
 MAX_FILE_BYTES = 131072
@@ -50,8 +51,8 @@ def _read_envelope(path: Path) -> tuple[dict[str, object], bytes, str]:
     if not 0 < len(raw) <= MAX_FILE_BYTES or b"\0" in raw:
         raise FileInboxError("MALFORMED_FILE")
     try:
-        envelope = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        envelope = json.loads(raw.decode("utf-8")) if path.suffix.lower() == ".json" else normalize_human_file(path)
+    except (UnicodeDecodeError, json.JSONDecodeError, SubmissionIntakeError) as error:
         raise FileInboxError("MALFORMED_FILE") from error
     if not isinstance(envelope, dict) or set(envelope) != {"project_id", "submission"}:
         raise FileInboxError("MALFORMED_FILE")
@@ -116,7 +117,7 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
     """Deliver every pending file once; unavailable CENTRAL leaves it retryable."""
     folders = _layout(root)
     counts = {"accepted": 0, "quarantined": 0, "retryable": 0}
-    for source in sorted(folders["incoming"].glob("*.json")):
+    for source in sorted(path for path in folders["incoming"].iterdir() if path.suffix.lower() in {".json", ".txt", ".md"}):
         claimed = folders["processing"] / source.name
         _move(source, claimed)
     for claimed in sorted(folders["processing"].glob("*.json")):
