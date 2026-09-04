@@ -4569,7 +4569,9 @@ function renderDashboardTelemetry(snapshot) {
 updateFavicon();
 // Platform logs are one CENTRAL projection.  The former watcher/dashboard
 // split was only a historical storage detail, not a separate authority.
-document.querySelector("#dashboardComponentLog")?.closest(".card")?.setAttribute("hidden", "");
+const historicalDashboardLogCard = document.querySelector("#dashboardComponentLog")?.closest(".card");
+historicalDashboardLogCard?.setAttribute("hidden", "");
+historicalDashboardLogCard?.querySelectorAll(".component-log-download").forEach((button) => button.remove());
 document.querySelectorAll(".component-log-download").forEach((button) => {
   button.dataset.component = "platform";
 });
@@ -4718,7 +4720,7 @@ function filteredComponentLogEntries(component) {
     ),
     state = independentLogSortStates[component];
   const selectedComponent = $("logComponentFilter")?.value || "";
-  const sourceEntries = component === "platform" && !componentLogEntries.platform.length
+  const sourceEntries = component === "platform" && componentLogEntries.inbox.length
     ? componentLogEntries.inbox
     : componentLogEntries[component];
   return sourceEntries
@@ -4820,7 +4822,7 @@ function renderComponentLogs() {
         row = document.createElement("tr");
       cell.className = "log-empty";
       cell.colSpan = 6;
-      cell.textContent = (component === "platform" && !componentLogEntries.platform.length
+      cell.textContent = (component === "platform" && componentLogEntries.inbox.length
         ? componentLogEntries.inbox : componentLogEntries[component]).length
         ? t("logs.empty")
         : t("logs.not_available");
@@ -5002,7 +5004,9 @@ function addComponentLogCopyButtons() {
     const button = document.createElement("button");
     button.className = "dashboard-action dashboard-action--copy component-log-copy";
     button.dataset.component = download.dataset.component;
-    button.dataset.testid = "copy-" + download.dataset.component + "-visible-log";
+    // Preserve the stable test hook while the visible table moves from the
+    // historical Inbox source to the combined Platform projection.
+    button.dataset.testid = "copy-inbox-visible-log";
     button.type = "button";
     button.textContent = "⧉";
     button.disabled = !visibleComponentLogEntries(button.dataset.component).length;
