@@ -793,6 +793,24 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
     }
 
 
+def _no_project_console_snapshot() -> dict[str, object]:
+    """Give the Console a loadable CENTRAL-only snapshot at ``<geen>``.
+
+    The no-project document deliberately hides project state, but the shared
+    dashboard shell still hydrates through the snapshot endpoint. Returning a
+    minimal platform projection prevents it from remaining behind the loading
+    overlay while preserving the fail-closed boundary for all project routes.
+    """
+    queue = {"operator_handling": {}, "queue_depth": 0, "queue_items": []}
+    return {
+        "scope": "PLATFORM",
+        "queue": queue,
+        "runs": [],
+        "telemetry": [],
+        "status": {"lifecycle_source": "CENTRAL", **queue},
+    }
+
+
 def _central_console_run_detail(data_root: Path, project_id: str, run_id: str) -> dict[str, object] | None:
     """Resolve a run by canonical project/run identity, never by checkout."""
     snapshot = _central_console_project_snapshot(data_root, project_id)
@@ -1341,6 +1359,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return False
         if request.path == "/api/platform-status":
             self._send(200, _no_project_platform_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        if request.path in {"/api/dashboard-snapshot", "/api/status"}:
+            self._send(200, _no_project_console_snapshot())
             return True
         if request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]

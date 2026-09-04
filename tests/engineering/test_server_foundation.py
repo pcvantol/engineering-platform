@@ -419,7 +419,12 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 # (503), but an empty project selection must never reject a
                 # host-wide endpoint as missing project scope.
                 self.assertNotEqual(error.code, 409, path)
-        for path in ("/api/prompt-history", "/api/dashboard-snapshot", "/api/events"):
+        with urlopen(f"http://127.0.0.1:{port}/api/dashboard-snapshot") as response:
+            snapshot = json.loads(response.read())
+        self.assertEqual(snapshot["scope"], "PLATFORM")
+        self.assertEqual(snapshot["status"]["queue_depth"], 0)
+        self.assertEqual(snapshot["runs"], [])
+        for path in ("/api/prompt-history", "/api/events"):
             with self.assertRaises(HTTPError) as blocked:
                 urlopen(f"http://127.0.0.1:{port}{path}")
             self.assertEqual(blocked.exception.code, 409, path)

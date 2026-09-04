@@ -24,6 +24,11 @@ visible without a selected project and after a project is selected. Project
 content is rendered separately and cannot replace, filter, or become the
 authority for a transport card.
 
+Without a selected project, the Server supplies a minimal `PLATFORM` Console
+snapshot solely to hydrate that shared read-only Console surface. It contains
+no project queue, run, telemetry, or lifecycle data; project-only endpoints
+remain unavailable until the operator selects a project.
+
 | Card | Healthy vocabulary | Bounded information shown | Explicitly excluded |
 | --- | --- | --- | --- |
 | HTTP/API ingress | `HEALTHY`, `DEGRADED`, `DOWN` | listener/endpoint, useful protocol/runtime version, most recent successful submission, bounded error | queue, run, execution or CENTRAL retry state |
