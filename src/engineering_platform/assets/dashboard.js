@@ -1008,7 +1008,7 @@ function renderMarkdownDocument(target, value) {
   renderMarkdownAnswer(target, value);
 }
 let componentLogsLoaded = false,
-  componentLogEntries = { platform: [], inbox: [], dashboard: [] };
+  componentLogEntries = { platform: [] };
 function isUnhelpfulHttpServerDebugLog(entry) {
   return (
     String(entry?.level || "").toUpperCase() === "DEBUG" &&
@@ -3450,16 +3450,14 @@ chatMessage = (role, text, createdAt) => {
 renderChatHistory();
 $("chatSend").querySelector("span").textContent = "↑";
 const LOG_PAGE_SIZE = 50,
-  independentLogPageStates = { platform: 1, inbox: 1, dashboard: 1 },
+  independentLogPageStates = { platform: 1 },
   independentLogSortStates = {
     platform: { key: "timestamp", direction: "desc" },
-    inbox: { key: "timestamp", direction: "desc" },
-    dashboard: { key: "timestamp", direction: "desc" },
   },
-  componentLogTotals = { platform: 0, inbox: 0, dashboard: 0 },
-  componentLogAvailableEvents = { platform: [], inbox: [], dashboard: [] },
-  selectedComponentLogRows = { platform: new Set(), inbox: new Set(), dashboard: new Set() },
-  componentLogSelectionAnchor = { platform: null, inbox: null, dashboard: null };
+  componentLogTotals = { platform: 0 },
+  componentLogAvailableEvents = { platform: [] },
+  selectedComponentLogRows = { platform: new Set() },
+  componentLogSelectionAnchor = { platform: null };
 let componentLogVersion = "",
   componentLogServerPaged = false,
   componentLogRequestId = 0;
@@ -4656,8 +4654,6 @@ function clearComponentLogSelection(component) {
 }
 function clearAllComponentLogSelections() {
   clearComponentLogSelection("platform");
-  clearComponentLogSelection("inbox");
-  clearComponentLogSelection("dashboard");
 }
 function selectComponentLogRow(component, key, event) {
   const selected = selectedComponentLogRows[component], visible = visibleComponentLogEntries(component),
@@ -4810,10 +4806,7 @@ function renderComponentLogs() {
         row = document.createElement("tr");
       cell.className = "log-empty";
       cell.colSpan = 6;
-      cell.textContent = (component === "platform" && componentLogEntries.inbox.length
-        ? componentLogEntries.inbox : componentLogEntries[component]).length
-        ? t("logs.empty")
-        : t("logs.not_available");
+      cell.textContent = componentLogEntries[component].length ? t("logs.empty") : t("logs.not_available");
       row.append(cell);
       body.append(row);
     } else
@@ -4867,7 +4860,7 @@ function populateLogComponentFilter(model = latestPlatformHealth?.component_mode
   select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
 }
 function refreshComponentLogsForFilters() {
-  independentLogPageStates.platform = independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+  independentLogPageStates.platform = 1;
   clearAllComponentLogSelections();
   if (componentLogServerPaged) void refreshComponentLogs({}, true);
   else renderComponentLogs();
@@ -4954,8 +4947,7 @@ document
     ),
   );
 function downloadComponentLog(component) {
-  const names = { inbox: "inbox-watcher", platform: "engineering-platform" },
-    name = names[component];
+  const name = component === "platform" ? "engineering-platform" : null;
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
   const selected = $("logComponentFilter")?.value || "all";
   const request = new URL(componentLogRequestUrl(component), window.location.origin);
@@ -6820,7 +6812,7 @@ document.addEventListener("keydown", (event) => {
     clearAllSectionsIntentFromManualToggle(event);
 });
 
-for (const component of ["platform", "inbox", "dashboard"]) {
+for (const component of ["platform"]) {
   const saved = dashboardClientState.logSorts?.[component];
   if (
     saved &&
