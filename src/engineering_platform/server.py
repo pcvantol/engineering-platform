@@ -2537,6 +2537,10 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     worker.start()
+    if not worker.wait_until_running():
+        worker.stop()
+        server.server_close()
+        raise RuntimeError("Lifecycle Worker did not become ready.")
     inbox_service.start()
     dependabot_service.start()
     # A fresh installation must have operational evidence before its first

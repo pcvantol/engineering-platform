@@ -62,6 +62,7 @@ class LifecycleWorker:
         self._idle_seconds = idle_seconds
         self._failure_seconds = failure_seconds
         self._stop = Event()
+        self._ready = Event()
         self._lock = Lock()
         self._thread: Thread | None = None
         self._inflight: set[str] = set()
@@ -163,6 +164,7 @@ class LifecycleWorker:
 
     def _loop(self) -> None:
         self._replace(state=WORKER_RUNNING)
+        self._ready.set()
         while not self._stop.is_set():
             # CENTRAL is the sole operational store.  Its maintenance routine
             # is interval-bound and skips every active lifecycle.
@@ -193,6 +195,7 @@ class LifecycleWorker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._ready.clear()
         self._thread = Thread(target=self._loop, name="engineering-platform-lifecycle-worker", daemon=True)
         self._thread.start()
         # CENTRAL owns claims; the preserved Console owns terminal evidence.
@@ -203,6 +206,14 @@ class LifecycleWorker:
             name="engineering-platform-terminal-history-reconciliation",
             daemon=True,
         ).start()
+
+    def wait_until_running(self, timeout: float = 5.0) -> bool:
+        """Wait for the child loop's real readiness transition.
+
+        Server-owned producers depend on lifecycle admission being available;
+        this is a composition boundary, not a timing heuristic.
+        """
+        return self._ready.wait(timeout) and self.diagnostics().state == WORKER_RUNNING
 
     def stop(self, timeout: float = 2.0) -> None:
         self._stop.set()
