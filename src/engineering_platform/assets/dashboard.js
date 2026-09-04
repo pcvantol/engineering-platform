@@ -2907,7 +2907,9 @@ document.addEventListener("click", (event) => {
   else if (event.target.closest("[data-open-pull-request-check-repair]")) void requestOpenPullRequestCheckRepair(event.target.closest("[data-open-pull-request-check-repair]"));
   else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests({ announce: true });
 });
-let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
+let receivedDashboardServerPush = false,
+  initialDashboardStatusLoaded = false,
+  updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
@@ -2933,6 +2935,12 @@ async function loadInitialDashboardStatus() {
     dashboardStatusStore.update(fallback);
     humanize();
     setUpdateMode("refresh.failed_reconnecting");
+  } finally {
+    // Readiness means that the first authoritative status projection has
+    // settled (including its bounded fallback), not merely that the HTML has
+    // loaded.  Tests and operators can safely act on the visible state.
+    initialDashboardStatusLoaded = true;
+    hideDashboardSplash();
   }
 }
 let promptHistoryTerminalRun = null;
@@ -3068,7 +3076,7 @@ function localizeLogControls() {
     const option = document.querySelector(`#logLevelFilter option[value="${value}"]`);
     if (option) option.textContent = t(key);
   });
-  const cardTitles = ["section.platform_components"];
+  const cardTitles = ["section.logs"];
   document.querySelectorAll("#componentLogs .log-card-header strong").forEach((title, index) => {
     if (cardTitles[index]) title.textContent = t(cardTitles[index]);
   });
@@ -3263,10 +3271,10 @@ function applyAccessibility() {
   chatStatus.setAttribute("aria-live", "polite");
   messages.setAttribute("role", "log");
   messages.setAttribute("aria-relevant", "additions text");
-  document.querySelectorAll("#componentLogs .log-table").forEach((table, index) => {
+  document.querySelectorAll("#componentLogs .log-table").forEach((table) => {
     table.setAttribute(
       "aria-label",
-        index === 0 ? t("logs.inbox_entries") : t("logs.dashboard_entries"),
+      t("logs.platform_entries"),
     );
     table.querySelectorAll("th.log-sortable").forEach((header) => {
       header.setAttribute("role", "button");
@@ -3503,32 +3511,8 @@ function refreshComponentLogs(versions = {}, force = false) {
       $("componentLogControls").hidden = false;
       renderComponentLogs();
     })
-    .catch(async () => {
+    .catch(() => {
       if (requestId !== componentLogRequestId) return;
-      // The installed Server exposes the aggregate endpoint.  This short-lived
-      // compatibility read keeps an already-open older dashboard shell usable
-      // while its assets refresh after an upgrade.
-      try {
-        const [inbox, dashboard] = await Promise.all(["inbox", "dashboard"].map((component) =>
-          fetch(componentLogRequestUrl(component).replace("/api/logs/all", "/api/logs/" + component))
-            .then((response) => response.ok ? response.json() : Promise.reject(Error("legacy logs unavailable"))),
-        ));
-        if (requestId !== componentLogRequestId) return;
-        componentLogEntries.inbox = normalizedComponentLogEntries(inbox.entries);
-        componentLogEntries.dashboard = normalizedComponentLogEntries(dashboard.entries);
-        componentLogEntries.platform = componentLogEntries.inbox;
-        componentLogTotals.inbox = Number(inbox.total) || 0;
-        componentLogTotals.dashboard = Number(dashboard.total) || 0;
-        componentLogTotals.platform = componentLogTotals.inbox;
-        componentLogAvailableEvents.inbox = Array.isArray(inbox.events) ? inbox.events : [];
-        componentLogAvailableEvents.dashboard = Array.isArray(dashboard.events) ? dashboard.events : [];
-        componentLogAvailableEvents.platform = componentLogAvailableEvents.inbox;
-        componentLogServerPaged = true;
-        componentLogsLoaded = true;
-        $("componentLogControls").hidden = false;
-        renderComponentLogs();
-        return;
-      } catch {}
       componentLogServerPaged = false;
       componentLogsLoaded = true;
       componentLogEntries.platform = structuredLogEntries(JSON.stringify({
@@ -3551,7 +3535,9 @@ function renderLogsForSnapshot(snapshot) {
 }
 enableLiveComponentLogs();
 function healthComponentLabel(component) {
-  const definition = latestPlatformHealth?.components?.[component];
+  const definition = latestPlatformHealth?.component_model?.find(
+    (candidate) => candidate?.id === component,
+  );
   return definition?.name_key ? t(definition.name_key) : component;
 }
 const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
@@ -3783,8 +3769,25 @@ async function restartDashboardComponent() {
 $("componentModalClose").addEventListener("click", () =>
   $("componentModal").close(),
 );
+// Every modal offers an explicit primary exit.  A component without restart
+// capability otherwise has only its compact header glyph, which is an
+// insufficient initial focus target for keyboard and touch-assistive users.
+const componentModalDismiss = document.createElement("button");
+componentModalDismiss.id = "componentModalDismiss";
+componentModalDismiss.type = "button";
+componentModalDismiss.className = "dashboard-modal-shell__action dashboard-modal-shell__action--primary";
+componentModalDismiss.textContent = t("action.close");
+componentModalDismiss.addEventListener("click", () => $("componentModal").close());
+$("componentModalStatus").before(componentModalDismiss);
 $("componentModal").addEventListener("click", (event) => {
   if (event.target === $("componentModal")) $("componentModal").close();
+});
+$("componentModal").addEventListener("toggle", () => {
+  const modal = $("componentModal");
+  if (!modal.open) return;
+  const restart = $("componentModalRestart");
+  (restart && !restart.hidden && !restart.disabled ? restart : componentModalDismiss)
+    .focus({ preventScroll: true });
 });
 $("componentModal").addEventListener("close", stopComponentDetailsRefresh);
 $("executionModeModalClose").addEventListener("click", () =>
@@ -4565,17 +4568,8 @@ function renderDashboardTelemetry(snapshot) {
   executionTelemetry(snapshot.telemetry);
 }
 updateFavicon();
-// Platform logs are one CENTRAL projection.  The former watcher/dashboard
-// split was only a historical storage detail, not a separate authority.
-const historicalDashboardLogCard = document.querySelector("#dashboardComponentLog")?.closest(".card");
-historicalDashboardLogCard?.setAttribute("hidden", "");
-historicalDashboardLogCard?.querySelectorAll(".component-log-download").forEach((button) => button.remove());
-historicalDashboardLogCard?.querySelectorAll(".clear-component-log").forEach((button) => button.remove());
-document.querySelectorAll(".component-log-download").forEach((button) => {
-  button.dataset.component = "platform";
-});
 function logComponentForTable(table) {
-  return table.querySelector("#dashboardComponentLog") ? "dashboard" : "platform";
+  return "platform";
 }
 function updateIndependentLogSortHeaders() {
   document.querySelectorAll(".log-table").forEach((table) => {
@@ -4639,7 +4633,7 @@ function componentLogText(entries) {
   const header = [
       t("table.number"),
       t("table.timestamp"),
-      "EP-component",
+      t("filter.ep_component"),
       t("table.level"),
       t("table.event"),
       t("table.run_id"),
@@ -4722,9 +4716,7 @@ function filteredComponentLogEntries(component) {
     ),
     state = independentLogSortStates[component];
   const selectedComponent = $("logComponentFilter")?.value || "";
-  const sourceEntries = component === "platform" && componentLogEntries.inbox.length
-    ? componentLogEntries.inbox
-    : componentLogEntries[component];
+  const sourceEntries = componentLogEntries[component];
   return sourceEntries
     .filter((entry) => !selectedComponent || entry.component === selectedComponent)
     .filter((entry) => logMeetsMinimumLevel(entry, level))
@@ -5171,11 +5163,10 @@ document.addEventListener("touchend", endPullRefresh, { passive: true });
 document.addEventListener("touchcancel", endPullRefresh, { passive: true });
 function hideDashboardSplash() {
   const splash = $("dashboardSplash");
-  // A ready Console has completed its independent provider-readiness probe as
-  // well as its snapshot/configuration hydration. This avoids briefly hiding
-  // actionable provider attention while a slower local probe is still in
-  // flight.
-  if (!splash || !dashboardConfigurationLoaded || document.body.classList.contains("dashboard-ready")) return;
+  // Provider readiness is asynchronous platform observation. The visible
+  // Console becomes actionable once its configuration and first authoritative
+  // status projection have settled; a provider probe must not hold it hostage.
+  if (!splash || !dashboardConfigurationLoaded || !initialDashboardStatusLoaded || document.body.classList.contains("dashboard-ready")) return;
   document.body.classList.add("dashboard-ready");
   splash.setAttribute("aria-hidden", "true");
   setTimeout(() => {
@@ -6323,9 +6314,13 @@ function renderExecutionRuntimeStatus(runtime) {
 async function refreshProviderLoginStatus() {
   const block = providerLoginStatusBlock();
   if (!block) return;
+  // Provider/runtime probes are observational platform status. They must not
+  // hold the complete Console bootstrap hostage when a local executable or
+  // host probe is unavailable.
+  const probeOptions = { cache: "no-store", signal: AbortSignal.timeout(5_000) };
   const [providerResult, runtimeResult] = await Promise.allSettled([
-      fetch("/api/provider-login-status", { cache: "no-store" }),
-      fetch("/api/execution-runtime-status", { cache: "no-store" }),
+      fetch("/api/provider-login-status", probeOptions),
+      fetch("/api/execution-runtime-status", probeOptions),
     ]);
   try {
     if (providerResult.status !== "fulfilled") throw Error();
@@ -6745,10 +6740,13 @@ async function initializeDashboardConfiguration() {
     $("configurationStatus").textContent = t("configuration.load_failed");
     $("configurationStatus").classList.remove("configuration-status--saved");
   } finally {
-    await initialProviderReadiness;
     dashboardConfigurationLoaded = true;
     setDashboardConfigurationControlsDisabled(false);
     hideDashboardSplash();
+    // Provider readiness is platform observation, not a configuration or
+    // dashboard-bootstrap prerequisite. Its result updates the card when it
+    // arrives, but cannot hold the complete Console in splash state.
+    void initialProviderReadiness;
   }
 }
 ensureProviderReadinessConfigurationControl();

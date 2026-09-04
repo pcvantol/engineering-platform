@@ -33,6 +33,19 @@ function canonicalPlatformComponents(overrides = {}) {
   );
 }
 
+function canonicalPlatformComponentModel() {
+  return [
+    ["ep_server", "component.ep_server", "platform", true],
+    ["platform_database", "component.platform_database", "platform", true],
+    ["lifecycle_worker", "component.lifecycle_worker", "platform", true],
+    ["operations_console", "component.operations_console", "platform", true],
+    ["dashboard_relay", "component.dashboard_relay", "platform", false],
+    ["http_ingress", "transport.http", "ingress", true],
+    ["cli_ingress", "transport.cli", "ingress", false],
+    ["file_inbox_ingress", "transport.file", "ingress", true],
+  ].map(([id, name_key, group, critical]) => ({ id, name_key, group, critical }));
+}
+
 async function startDashboard(root, environment) {
   return new Promise((resolve, reject) => {
     const process = spawn(
@@ -42,9 +55,9 @@ async function startDashboard(root, environment) {
         "from pathlib import Path; import sys; from engineering_platform.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
-      { cwd: repository, env: environment, stdio: ["ignore", "pipe", "ignore"] },
+      { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
     );
-    let output = "";
+    let output = "", errors = "";
     const timeout = setTimeout(() => {
       process.kill("SIGTERM");
       reject(new Error("Engineering Status test server did not report a port in time."));
@@ -55,7 +68,7 @@ async function startDashboard(root, environment) {
     });
     process.once("exit", (code) => {
       clearTimeout(timeout);
-      reject(new Error(`Engineering Status test server exited before startup (code ${code}).`));
+      reject(new Error(`Engineering Status test server exited before startup (code ${code}): ${errors.trim() || "no stderr"}`));
     });
     process.stdout.on("data", (chunk) => {
       output += chunk;
@@ -64,6 +77,7 @@ async function startDashboard(root, environment) {
       clearTimeout(timeout);
       resolve({ process, url: `http://127.0.0.1:${port}` });
     });
+    process.stderr.on("data", (chunk) => { errors += chunk; });
   });
 }
 
@@ -747,8 +761,12 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("disables the Inbox location action while the project queue has items", async ({ page }) => {
+    const initialSnapshot = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dashboard-snapshot",
+    );
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await waitForDashboardReady(page);
+    await initialSnapshot;
     await page.evaluate(() => window.queueItems([
       { filename: "waiting-assignment.md", title: "Waiting assignment" },
     ], 1));
@@ -2266,13 +2284,10 @@ test.describe("Engineering Status browser smoke", () => {
         "aria-label",
         DASHBOARD_MESSAGES[language]["chat.copy_title"],
       );
-      await expect(page.locator("#componentLogs .log-table").first()).toHaveAttribute(
+      await expect(page.locator("#componentLogs .log-table")).toHaveCount(1);
+      await expect(page.locator("#componentLogs .log-table")).toHaveAttribute(
         "aria-label",
-        DASHBOARD_MESSAGES[language]["logs.inbox_entries"],
-      );
-      await expect(page.locator("#componentLogs .log-table").nth(1)).toHaveAttribute(
-        "aria-label",
-        DASHBOARD_MESSAGES[language]["logs.dashboard_entries"],
+        DASHBOARD_MESSAGES[language]["logs.platform_entries"],
       );
       await expect(page.getByTestId("copy-inbox-visible-log")).toHaveAttribute(
         "aria-label",
@@ -5171,7 +5186,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.waitForFunction(() => componentLogsLoaded);
     await page.evaluate(() => {
-      componentLogEntries.inbox = [
+      componentLogEntries.platform = [
         { line: 1, timestamp: new Date(2026, 7, 16, 9, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "day", details: "early-entry" },
         { line: 2, timestamp: new Date(2026, 7, 16, 11, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "range", details: "range-entry" },
         { line: 3, timestamp: new Date(2026, 7, 17, 9, 0).toISOString(), level: "INFO", event: "watcher_started", runId: "other", details: "other day" },
@@ -5183,17 +5198,17 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#logTimePreset").selectOption("day");
     await expect(page.locator("#logSpecificDateControl")).toBeVisible();
     await page.locator("#logSpecificDate").fill("2026-08-16");
-    await expect(page.locator("#inboxComponentLog")).toContainText("early-entry");
-    await expect(page.locator("#inboxComponentLog")).toContainText("range-entry");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("other day");
+    await expect(page.locator("#platformComponentLog")).toContainText("early-entry");
+    await expect(page.locator("#platformComponentLog")).toContainText("range-entry");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("other day");
 
     await page.locator("#logTimePreset").selectOption("range");
     await expect(page.locator("#logDateFromControl")).toBeVisible();
     await page.locator("#logDateFrom").fill("2026-08-16T10:30");
     await page.locator("#logDateTo").fill("2026-08-16T11:30");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("early-entry");
-    await expect(page.locator("#inboxComponentLog")).toContainText("range-entry");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("other day");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("early-entry");
+    await expect(page.locator("#platformComponentLog")).toContainText("range-entry");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("other day");
   });
 
   test("filters component logs from the selected minimum severity", async ({ page }) => {
@@ -5202,7 +5217,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.waitForFunction(() => componentLogsLoaded);
     await page.evaluate(() => {
-      componentLogEntries.inbox = [
+      componentLogEntries.platform = [
         { line: 1, timestamp: "2026-08-29T07:00:01Z", level: "DEBUG", event: "debug_entry", runId: "", details: "" },
         { line: 2, timestamp: "2026-08-29T07:00:02Z", level: "INFO", event: "info_entry", runId: "", details: "" },
         { line: 3, timestamp: "2026-08-29T07:00:03Z", level: "WARNING", event: "warning_entry", runId: "", details: "" },
@@ -5212,7 +5227,7 @@ test.describe("Engineering Status browser smoke", () => {
       componentLogServerPaged = false;
       renderComponentLogs();
     });
-    const visibleLevels = () => page.locator("#inboxComponentLog tr td:nth-child(3)").allTextContents();
+    const visibleLevels = () => page.locator("#platformComponentLog tr td:nth-child(3)").allTextContents();
     for (const [minimum, expected] of [
       ["DEBUG", ["ERROR", "WARNING", "INFO", "DEBUG"]],
       ["INFO", ["ERROR", "WARNING", "INFO"]],
@@ -5262,23 +5277,26 @@ test.describe("Engineering Status browser smoke", () => {
       const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9),
         yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9),
         older = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2, 9);
-      componentLogEntries.inbox = [
+      componentLogEntries.platform = [
         { line: 1, timestamp: today.toISOString(), level: "INFO", event: "watcher_started", runId: "today", details: "today-entry" },
         { line: 2, timestamp: yesterday.toISOString(), level: "INFO", event: "watcher_started", runId: "yesterday", details: "yesterday-entry" },
         { line: 3, timestamp: older.toISOString(), level: "INFO", event: "watcher_started", runId: "older", details: "older-entry" },
       ];
       componentLogEntries.dashboard = [];
+      componentLogServerPaged = false;
       renderComponentLogs();
     });
     await page.locator("#logTimePreset").selectOption("today");
-    await expect(page.locator("#inboxComponentLog")).toContainText("today-entry");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("yesterday-entry");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("older-entry");
+    await page.evaluate(() => { componentLogServerPaged = false; renderComponentLogs(); });
+    await expect(page.locator("#platformComponentLog")).toContainText("today-entry");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("yesterday-entry");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("older-entry");
 
     await page.locator("#logTimePreset").selectOption("yesterday");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("today-entry");
-    await expect(page.locator("#inboxComponentLog")).toContainText("yesterday-entry");
-    await expect(page.locator("#inboxComponentLog")).not.toContainText("older-entry");
+    await page.evaluate(() => { componentLogServerPaged = false; renderComponentLogs(); });
+    await expect(page.locator("#platformComponentLog")).not.toContainText("today-entry");
+    await expect(page.locator("#platformComponentLog")).toContainText("yesterday-entry");
+    await expect(page.locator("#platformComponentLog")).not.toContainText("older-entry");
   });
 
   test("sends every component-log filter and sort to CENTRAL before server pagination", async ({ page }) => {
@@ -5303,10 +5321,14 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.waitForFunction(() => componentLogsLoaded);
+    await page.evaluate(() => {
+      const select = document.querySelector("#logComponentFilter");
+      select.append(new Option("Operations Console", "operations_console"));
+    });
 
     await page.locator("#logComponentFilter").selectOption("operations_console");
     await page.locator("#logTimePreset").selectOption("yesterday");
-    await expect(page.locator("#inboxComponentLog")).toContainText("needle from yesterday");
+    await expect(page.locator("#platformComponentLog")).toContainText("needle from yesterday");
     await page.locator("#logFilter").fill("needle");
     await page.locator("#logLevelFilter").selectOption("WARNING");
     await page.locator("#logEventFilter").selectOption("historical_warning");
@@ -5328,18 +5350,18 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("localizes component log table headings for every supported language", async ({ page }) => {
     const expectations = [
-      ["en", "Inbox watcher", ["#", "Timestamp", "Level", "Event", "Run ID", "Details"]],
-      ["nl", "Inbox-watcher", ["#", "Tijdstip", "Niveau", "Gebeurtenis", "Run-ID", "Details"]],
-      ["de", "Inbox-Watcher", ["#", "Zeitpunkt", "Stufe", "Ereignis", "Run-ID", "Details"]],
-      ["fr", "Surveillant de la boîte de réception", ["#", "Horodatage", "Niveau", "Événement", "ID d’exécution", "Détails"]],
-      ["es", "Monitor de bandeja de entrada", ["#", "Marca de tiempo", "Nivel", "Evento", "ID de ejecución", "Detalles"]],
+      ["en", "Logs", ["#", "Timestamp", "Level", "Event", "Run ID", "Details"]],
+      ["nl", "Logs", ["#", "Tijdstip", "Niveau", "Gebeurtenis", "Run-ID", "Details"]],
+      ["de", "Protokolle", ["#", "Zeitpunkt", "Stufe", "Ereignis", "Run-ID", "Details"]],
+      ["fr", "Journaux", ["#", "Horodatage", "Niveau", "Événement", "ID d’exécution", "Détails"]],
+      ["es", "Registros", ["#", "Marca de tiempo", "Nivel", "Evento", "ID de ejecución", "Detalles"]],
     ];
     for (const [language, title, headers] of expectations) {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await selectDashboardLocale(page, language);
       await expect(page.locator("html")).toHaveAttribute("lang", language);
       await expect(page.locator("#componentLogs .log-card-header strong").first()).toHaveText(title);
-      await expect(page.locator("#inboxComponentLog").locator("xpath=preceding-sibling::thead[1]/tr/th")).toHaveText(headers);
+      await expect(page.locator("#platformComponentLog").locator("xpath=preceding-sibling::thead[1]/tr/th")).toHaveText(headers);
     }
   });
 
@@ -5370,14 +5392,14 @@ test.describe("Engineering Status browser smoke", () => {
       await page.locator("#autoRefresh").uncheck();
       const rendered = await page.evaluate(() => {
         refreshComponentLogs = async () => {};
-        componentLogEntries.inbox = [
+        componentLogEntries.platform = [
           { line: 1, timestamp: "2026-08-16T09:00:00Z", level: "INFO", event: "watcher_started", runId: "run-1", details: "" },
           { line: 2, timestamp: "2026-08-16T09:01:00Z", level: "INFO", event: "stale_git_lock_recovered", runId: "run-2", details: "" },
         ];
         componentLogEntries.dashboard = [];
         renderComponentLogs();
         return {
-          inbox: document.querySelector("#inboxComponentLog")?.textContent || "",
+          inbox: document.querySelector("#platformComponentLog")?.textContent || "",
           events: Object.fromEntries(
             [...document.querySelectorAll("#logEventFilter option")].map((option) => [option.value, option.textContent || ""]),
           ),
@@ -6778,8 +6800,13 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("uses the canonical Server title for a core platform component", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => renderPlatformHealth({
+      component_model: [{ id: "ep_server", name_key: "component.ep_server" }],
+      components: { ep_server: { healthy: true } },
+    }));
     await page.evaluate(() => showComponentModal({
       component: "ep_server",
+      name_key: "component.ep_server",
       healthy: true,
       detail: "connected",
       git_commit: "host-only-commit",
@@ -6942,6 +6969,11 @@ test.describe("Engineering Status browser smoke", () => {
     test.setTimeout(60_000);
     const projection = {
       scope: "PLATFORM",
+      component_model: [
+        { id: "http_ingress", name_key: "transport.http", group: "ingress" },
+        { id: "cli_ingress", name_key: "transport.cli", group: "ingress" },
+        { id: "file_inbox_ingress", name_key: "transport.file", group: "ingress" },
+      ],
       components: {
         http_ingress: { state: "HEALTHY", healthy: true, detail: "CENTRAL listener endpoint", version: "1" },
         cli_ingress: { state: "AVAILABLE", healthy: true, detail: "Canonical submission compatibility", version: "1" },
@@ -6959,6 +6991,7 @@ test.describe("Engineering Status browser smoke", () => {
       await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
+      await page.evaluate((health) => renderPlatformHealth(health), projection);
       for (const [component, state] of [
         ["http_ingress", "HEALTHY"], ["cli_ingress", "AVAILABLE"], ["file_inbox_ingress", "DEGRADED"],
       ]) {
@@ -6980,6 +7013,11 @@ test.describe("Engineering Status browser smoke", () => {
     test.setTimeout(90_000);
     const projection = {
       scope: "PLATFORM",
+      component_model: [
+        { id: "http_ingress", name_key: "transport.http", group: "ingress" },
+        { id: "cli_ingress", name_key: "transport.cli", group: "ingress" },
+        { id: "file_inbox_ingress", name_key: "transport.file", group: "ingress" },
+      ],
       components: {
         http_ingress: { status_code: "HTTP_INGRESS_HEALTHY", healthy: true, detail_code: "CENTRAL_LISTENER_ENDPOINT", version: "1" },
         cli_ingress: { status_code: "CLI_INGRESS_AVAILABLE", healthy: true, detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY", version: "1" },
@@ -7818,12 +7856,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.getByTestId("theme-toggle").click();
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
-    await page.evaluate(() => renderLogPagination("inbox", 1, 1));
+    await page.evaluate(() => renderLogPagination("platform", 1, 1));
 
-    await expect(page.getByTestId("clear-inbox-log")).toHaveText("⌧");
-    await expect(page.getByTestId("clear-inbox-log")).toHaveCSS("background-color", "rgb(255, 241, 244)");
-    await expect(page.getByTestId("download-inbox-log")).toHaveCSS("background-color", "rgb(255, 248, 239)");
-    await expect(page.locator("#inboxLogPagination button").first()).toHaveCSS("background-color", "rgb(255, 243, 226)");
+    await expect(page.getByTestId("clear-platform-log")).toHaveText("⌧");
+    await expect(page.getByTestId("clear-platform-log")).toHaveCSS("background-color", "rgb(255, 241, 244)");
+    await expect(page.getByTestId("download-platform-log")).toHaveCSS("background-color", "rgb(255, 248, 239)");
+    await expect(page.locator("#platformLogPagination button").first()).toHaveCSS("background-color", "rgb(255, 243, 226)");
   });
 
   test("keeps component-log download and destructive clear hover treatments distinct", async ({ page }) => {
@@ -7832,17 +7870,14 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#dashboardSplash").evaluate((element) => { element.hidden = true; });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
-    await page.evaluate(() => renderLogPagination("inbox", 1, 1));
+    await page.evaluate(() => renderLogPagination("platform", 1, 1));
 
-    for (const action of [
-      page.getByTestId("download-inbox-log"),
-      page.getByTestId("download-dashboard-log"),
-    ]) {
+    for (const action of [page.getByTestId("download-platform-log")]) {
       await action.hover();
       await expect(action).toHaveCSS("background-color", "rgb(240, 182, 106)");
       await expect(action).toHaveCSS("color", "rgb(32, 24, 18)");
     }
-    for (const action of [page.getByTestId("clear-inbox-log"), page.getByTestId("clear-dashboard-log")]) {
+    for (const action of [page.getByTestId("clear-platform-log")]) {
       await action.hover();
       await expect(action).toHaveCSS("background-color", "rgb(255, 113, 143)");
       await expect(action).toHaveCSS("color", "rgb(35, 19, 26)");
@@ -7895,7 +7930,7 @@ test.describe("Engineering Status browser smoke", () => {
       URL.createObjectURL = () => "blob:component-log";
       HTMLAnchorElement.prototype.click = function click() { window.__componentLogDownload = this.download; };
     });
-    await dispatchDashboardPointerClick(page.getByTestId("download-inbox-log"));
+    await dispatchDashboardPointerClick(page.getByTestId("download-platform-log"));
     await expect.poll(() => page.evaluate(() => window.__componentLogDownload)).toMatch(/^engineering-platform-log-.*\.ndjson$/);
   });
 
@@ -7930,7 +7965,7 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
 
-    await expect(page.locator("#inboxComponentLog tr")).toHaveCount(1);
+    await expect(page.locator("#platformComponentLog tr")).toHaveCount(1);
     await dispatchDashboardPointerClick(page.getByTestId("copy-inbox-visible-log"));
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("retain_me");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("visible-run");
@@ -7955,7 +7990,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
-      componentLogEntries.inbox = [
+      componentLogEntries.platform = [
         { line: 1, timestamp: "2026-08-07T10:00:00Z", level: "INFO", event: "first_event", runId: "first-run", details: "first detail" },
         { line: 2, timestamp: "2026-08-07T10:01:00Z", level: "ERROR", event: "second_event", runId: "second-run", details: "second detail" },
         { line: 3, timestamp: "2026-08-07T10:02:00Z", level: "WARNING", event: "third_event", runId: "third-run", details: "third detail" },
@@ -7965,7 +8000,7 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
 
-    const rows = page.locator("#inboxComponentLog tr");
+    const rows = page.locator("#platformComponentLog tr");
     await expect(rows).toHaveCount(3);
     const divider = await rows.nth(0).locator("td").first().evaluate((cell) => getComputedStyle(cell).borderBottomColor);
     expect(divider).not.toBe("rgb(61, 54, 81)");
@@ -8023,7 +8058,7 @@ test.describe("Engineering Status browser smoke", () => {
       return data.getData("text/plain");
     })).toBe("");
 
-    await page.locator("#inboxComponentLog tr").first().click();
+    await page.locator("#platformComponentLog tr").first().click();
     await page.locator(".reset-log-filters").click();
     expect(await page.evaluate(() => {
       const data = new DataTransfer();
@@ -8033,7 +8068,7 @@ test.describe("Engineering Status browser smoke", () => {
 
     await page.evaluate(() => {
       document.querySelector("#logFilter").value = "";
-      componentLogEntries.inbox = Array.from({ length: 51 }, (_, index) => ({
+      componentLogEntries.platform = Array.from({ length: 51 }, (_, index) => ({
         line: index + 1,
         timestamp: `2026-08-07T10:${String(index).padStart(2, "0")}:00Z`,
         level: "INFO",
@@ -8043,8 +8078,8 @@ test.describe("Engineering Status browser smoke", () => {
       }));
       document.querySelector("#logFilter").dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await page.locator("#inboxComponentLog tr").first().click();
-    await page.locator("#inboxLogPagination button").last().click();
+    await page.locator("#platformComponentLog tr").first().click();
+    await page.locator("#platformLogPagination button").last().click();
     expect(await page.evaluate(() => {
       const data = new DataTransfer();
       document.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data }));
@@ -8055,10 +8090,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("uses the shared single-line circular border for download glyphs", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
 
-    for (const button of [
-      page.getByTestId("download-inbox-log"),
-      page.getByTestId("download-dashboard-log"),
-    ]) {
+    for (const button of [page.getByTestId("download-platform-log")]) {
       await expect(button).toHaveCSS("border-top-width", "1px");
       await expect(button).toHaveCSS("border-top-style", "solid");
       await expect(button).toHaveCSS("border-top-left-radius", "50%");
@@ -8085,7 +8117,7 @@ test.describe("Engineering Status browser smoke", () => {
         if (button.classList.contains("component-log-copy")) return "copy";
         return "clear";
       }),
-    ))).toEqual([["download", "copy", "clear"], ["download", "copy", "clear"]]);
+    ))).toEqual([["download", "copy", "clear"]]);
   });
 
   test("uses the generic orange download glyph in the prompt-scoped chat", async ({ page }) => {
@@ -8714,25 +8746,19 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentLogControls")).not.toHaveAttribute("hidden", "");
   });
 
-  test("sorts the two component-log tables independently", async ({ page }) => {
+  test("sorts the single canonical Platform log table", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     const tables = page.locator("#componentLogs .log-table");
-    await expect(tables).toHaveCount(2);
-
-    const inboxLevel = tables.nth(0).locator('th[data-sort-key="level"]');
-    const dashboardLevel = tables.nth(1).locator('th[data-sort-key="level"]');
-    const dashboardTimestamp = tables.nth(1).locator('th[data-sort-key="timestamp"]');
-
-    await inboxLevel.click();
-    await expect(inboxLevel).toHaveAttribute("aria-sort", "ascending");
-    await expect(dashboardLevel).toHaveAttribute("aria-sort", "none");
-    await expect(dashboardTimestamp).toHaveAttribute("aria-sort", "descending");
-
-    await dashboardLevel.click();
-    await expect(dashboardLevel).toHaveAttribute("aria-sort", "ascending");
-    await expect(inboxLevel).toHaveAttribute("aria-sort", "ascending");
+    await expect(tables).toHaveCount(1);
+    const level = tables.locator('th[data-sort-key="level"]');
+    const timestamp = tables.locator('th[data-sort-key="timestamp"]');
+    await level.click();
+    await expect(level).toHaveAttribute("aria-sort", "ascending");
+    await expect(timestamp).toHaveAttribute("aria-sort", "none");
+    await level.click();
+    await expect(level).toHaveAttribute("aria-sort", "descending");
   });
 
   test("uses the remaining component-log table width for Details", async ({ page }) => {
@@ -8746,14 +8772,14 @@ test.describe("Engineering Status browser smoke", () => {
     expect(detailsWidth).toBeGreaterThan(300);
   });
 
-  test("keeps each component-log table horizontally scrollable on iPhone", async ({ page }) => {
+  test("keeps the canonical Platform log table horizontally scrollable on iPhone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
 
     const tables = page.locator("#componentLogs .log-table");
-    await expect(tables).toHaveCount(2);
-    for (const table of [tables.nth(0), tables.nth(1)]) {
+    await expect(tables).toHaveCount(1);
+    for (const table of [tables.first()]) {
       const geometry = await table.evaluate((element) => {
         const container = element.parentElement;
         container.scrollLeft = 80;
@@ -8787,7 +8813,7 @@ test.describe("Engineering Status browser smoke", () => {
       // This fixture exercises the resilient local fallback. Production uses
       // server pagination, so an API page is never sliced again by the client.
       componentLogServerPaged = false;
-      componentLogEntries.inbox = Array.from({ length: 51 }, (_, index) => ({
+      componentLogEntries.platform = Array.from({ length: 51 }, (_, index) => ({
         line: index + 1,
         timestamp: `2026-08-02T00:${String(index).padStart(2, "0")}:00Z`,
         level: "INFO",
@@ -8795,34 +8821,23 @@ test.describe("Engineering Status browser smoke", () => {
         runId: "—",
         details: "test",
       }));
-      componentLogEntries.dashboard = Array.from({ length: 2 }, (_, index) => ({
-        line: index + 1,
-        timestamp: `2026-08-02T01:0${index}:00Z`,
-        level: "INFO",
-        event: `dashboard_${index}`,
-        runId: "—",
-        details: "test",
-      }));
-      independentLogPageStates.inbox = 1;
-      independentLogPageStates.dashboard = 1;
+      independentLogPageStates.platform = 1;
       componentLogsLoaded = true;
       renderComponentLogs();
     });
-    await expect(page.locator("#inboxComponentLog tr")).toHaveCount(50);
-    await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 1 van 2 · 51 regels");
-    await expect(page.locator("#dashboardLogPagination")).toContainText("Pagina 1 van 1 · 2 regels");
-    const previousInboxLogPage = page.locator("#inboxLogPagination").getByRole("button", { name: "Vorige" });
+    await expect(page.locator("#platformComponentLog tr")).toHaveCount(50);
+    await expect(page.locator("#platformLogPagination")).toContainText("Pagina 1 van 2 · 51 regels");
+    const previousInboxLogPage = page.locator("#platformLogPagination").getByRole("button", { name: "Vorige" });
     await previousInboxLogPage.hover();
     await expect(previousInboxLogPage).toHaveCSS("background-color", "rgb(240, 182, 106)");
     await expect(previousInboxLogPage).toHaveCSS("color", "rgb(16, 21, 29)");
-    const nextInboxLogPage = page.locator("#inboxLogPagination").getByRole("button", { name: "Volgende" });
+    const nextInboxLogPage = page.locator("#platformLogPagination").getByRole("button", { name: "Volgende" });
     await nextInboxLogPage.hover();
     await expect(nextInboxLogPage).toHaveCSS("background-color", "rgb(240, 182, 106)");
     await expect(nextInboxLogPage).toHaveCSS("color", "rgb(32, 24, 18)");
     await nextInboxLogPage.click();
-    await expect(page.locator("#inboxComponentLog tr")).toHaveCount(1);
-    await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 2 van 2 · 51 regels");
-    await expect(page.locator("#dashboardComponentLog tr")).toHaveCount(2);
+    await expect(page.locator("#platformComponentLog tr")).toHaveCount(1);
+    await expect(page.locator("#platformLogPagination")).toContainText("Pagina 2 van 2 · 51 regels");
   });
 
   test("keeps a requested server-backed component-log page instead of clamping it to its 50 rows", async ({ page }) => {
@@ -8849,12 +8864,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.locator("#autoRefresh").uncheck();
-    await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 1 van 2 · 51 regels");
-    const next = page.locator("#inboxLogPagination").getByRole("button", { name: "Volgende" });
+    await expect(page.locator("#platformLogPagination")).toContainText("Pagina 1 van 2 · 51 regels");
+    const next = page.locator("#platformLogPagination").getByRole("button", { name: "Volgende" });
     await expect(next).toBeEnabled();
     await next.click();
-    await expect(page.locator("#inboxLogPagination")).toContainText("Pagina 2 van 2 · 51 regels");
-    await expect(page.locator("#inboxComponentLog")).toContainText("Platform Server 2 0");
+    await expect(page.locator("#platformLogPagination")).toContainText("Pagina 2 van 2 · 51 regels");
+    await expect(page.locator("#platformComponentLog")).toContainText("Platform Server 2 0");
     expect(requests).toContain("platform:2");
   });
 
@@ -9130,7 +9145,7 @@ test.describe("Engineering Status browser smoke", () => {
     expect(submittedRun).toBe("inbox-history-25");
     await page.locator("#promptHistoryChatClose").click();
     await expect(page.locator("#promptHistoryChatModal")).not.toBeVisible();
-    await expect(page.getByTestId("download-inbox-log")).toHaveCount(1);
+    await expect(page.getByTestId("download-platform-log")).toHaveCount(1);
   });
 
   test("shows saved conversations loading and submitted questions immediately", async ({ page }) => {
@@ -9507,12 +9522,12 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#themeToggle").click();
     await page.evaluate(() => {
-      document.querySelector("#inboxComponentLog").innerHTML =
+      document.querySelector("#platformComponentLog").innerHTML =
         '<tr><td class="log-level log-level--info">INFO</td><td class="log-level log-level--error">ERROR</td></tr>';
     });
 
-    await expect(page.locator("#inboxComponentLog .log-level--info").first()).toHaveCSS("color", "rgb(23, 105, 170)");
-    await expect(page.locator("#inboxComponentLog .log-level--error").first()).toHaveCSS("color", "rgb(180, 35, 64)");
+    await expect(page.locator("#platformComponentLog .log-level--info").first()).toHaveCSS("color", "rgb(23, 105, 170)");
+    await expect(page.locator("#platformComponentLog .log-level--error").first()).toHaveCSS("color", "rgb(180, 35, 64)");
   });
 
   test("uses monospace without a filled inline-code surface in AI answers", async ({ page }) => {
@@ -9702,7 +9717,7 @@ test.describe("Engineering Status browser smoke", () => {
     await page.waitForFunction(() => componentLogsLoaded === true);
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
-      componentLogEntries.inbox = structuredLogEntries(
+      componentLogEntries.platform = structuredLogEntries(
         '{"timestamp":"2026-08-02T19:26:10.878167+00:00","level":"INFO","event":"formatted"}\n'
         + '{"timestamp":"onbekend-tijdstip","level":"WARNING","event":"fallback"}',
       );
@@ -9710,21 +9725,21 @@ test.describe("Engineering Status browser smoke", () => {
       renderComponentLogs();
     });
 
-    await expect(page.locator("#inboxComponentLog tr td").nth(1)).toContainText("02-08-2026");
-    await expect(page.locator("#inboxComponentLog tr td").nth(1)).toContainText("21:26:10");
-    await expect(page.locator("#inboxComponentLog tr").nth(1).locator("td").nth(1)).toHaveText("onbekend-tijdstip");
+    await expect(page.locator("#platformComponentLog tr td").nth(1)).toContainText("02-08-2026");
+    await expect(page.locator("#platformComponentLog tr td").nth(1)).toContainText("21:26:10");
+    await expect(page.locator("#platformComponentLog tr").nth(1).locator("td").nth(1)).toHaveText("onbekend-tijdstip");
   });
 
   test("treats an absent component log as an empty state, not malformed JSON", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#componentLogs").evaluate((element) => { element.open = true; });
     await page.evaluate(() => {
-      componentLogEntries.inbox = structuredLogEntries("Nog geen applicatielog beschikbaar.");
+      componentLogEntries.platform = structuredLogEntries("Nog geen applicatielog beschikbaar.");
       componentLogEntries.dashboard = [];
       renderComponentLogs();
     });
 
-    const inboxText = await page.locator("#inboxComponentLog").textContent();
+    const inboxText = await page.locator("#platformComponentLog").textContent();
     expect(inboxText).toContain("Nog geen applicatielog beschikbaar.");
     expect(inboxText).not.toContain("ONGELDIGE JSON");
     expect(inboxText).not.toContain("onleesbare logregel");
@@ -10126,7 +10141,7 @@ test.describe("Engineering Status browser smoke", () => {
       nativeDialogs.push(dialog.type());
       await dialog.dismiss();
     });
-    await page.getByTestId("clear-inbox-log").click();
+    await page.getByTestId("clear-platform-log").click();
     const modal = page.locator("#confirmationModal");
     await expect(modal).toBeVisible();
     await expect(page.locator("#confirmationModalCancel")).toBeFocused();
@@ -10147,7 +10162,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(modal).not.toBeVisible();
     expect(postCount).toBe(0);
 
-    await page.getByTestId("clear-inbox-log").click();
+    await page.getByTestId("clear-platform-log").click();
     await page.locator("#confirmationModalConfirm").click();
     await expect.poll(() => postCount).toBe(1);
     expect(nativeDialogs).toEqual([]);
@@ -10323,14 +10338,16 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("shows live platform readiness in the titlebar health indicator", async ({ page }) => {
     const components = canonicalPlatformComponents();
-    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
+    await page.route("**/health", (route) => route.fulfill({ json: {
+      components, component_model: canonicalPlatformComponentModel(),
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate((components) => {
-      renderPlatformHealth({ components });
+    await page.evaluate(({ components, component_model }) => {
+      renderPlatformHealth({ components, component_model });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
-    }, components);
+    }, { components, component_model: canonicalPlatformComponentModel() });
     const indicator = page.getByTestId("dashboard-health-indicator");
     await expect(indicator).toHaveAttribute("data-health-state", "ready");
     await expect(page.locator("#dashboardHealthTooltip")).toBeHidden();
@@ -10339,7 +10356,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("HTTP/API-ingang");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Bestandsinbox-ingang");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Geen uitvoering actief");
-    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Toegang");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Platform");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Ingangen");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Uitvoering");
     await expect(page.locator("#dashboardHealthTooltip")).not.toContainText("Werkruimte gereed");
@@ -10352,7 +10369,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(indicator).toHaveAttribute("data-health-state", "ready");
     await page.evaluate(() => r({ runs: [], queue_depth: 2 }, {}));
     await expect(page.locator("#dashboardHealthChecks")).toContainText("2 opdrachten in wachtrij");
-    await page.evaluate(() => renderPlatformHealth({ components: { http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN" } } }));
+    await page.evaluate((component_model) => renderPlatformHealth({
+      component_model,
+      components: { http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN" } },
+    }), canonicalPlatformComponentModel());
     await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 
@@ -10363,14 +10383,16 @@ test.describe("Engineering Status browser smoke", () => {
     const components = canonicalPlatformComponents({
       http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
     });
-    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
+    await page.route("**/health", (route) => route.fulfill({ json: {
+      components, component_model: canonicalPlatformComponentModel(),
+    } }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate((components) => {
-      renderPlatformHealth({ components });
+    await page.evaluate(({ components, component_model }) => {
+      renderPlatformHealth({ components, component_model });
       r({ runs: [{ state: "RUNNING" }], workspace_state: "ACTIVE", queue_depth: 0 }, {});
-    }, components);
+    }, { components, component_model: canonicalPlatformComponentModel() });
     const indicator = page.getByTestId("dashboard-health-indicator");
     await expect(indicator).toHaveAttribute("data-health-state", "error");
     await indicator.click();
@@ -10382,7 +10404,10 @@ test.describe("Engineering Status browser smoke", () => {
   test("renders canonical platform components in the platform card", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
-    await page.evaluate((components) => renderPlatformHealth({ components }), canonicalPlatformComponents());
+    await page.evaluate(
+      ({ components, component_model }) => renderPlatformHealth({ components, component_model }),
+      { components: canonicalPlatformComponents(), component_model: canonicalPlatformComponentModel() },
+    );
     const card = page.locator("#platformHealth .platform-health__component").filter({ hasText: "EP-server" });
     await expect(card).toHaveAttribute("data-health", "true");
     await expect(card).not.toContainText("Inbox-watcher");
@@ -10392,7 +10417,9 @@ test.describe("Engineering Status browser smoke", () => {
     const components = canonicalPlatformComponents({
       http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN", detail_code: "CENTRAL_LISTENER_UNAVAILABLE" },
     });
-    await page.route("**/health", (route) => route.fulfill({ json: { components } }));
+    await page.route("**/health", (route) => route.fulfill({ json: {
+      components, component_model: canonicalPlatformComponentModel(),
+    } }));
     await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
       component: "http_ingress", healthy: false, state: "HTTP_INGRESS_DOWN",
       detail: "CENTRAL_LISTENER_UNAVAILABLE",
@@ -10400,10 +10427,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
     await page.locator("#autoRefresh").uncheck();
-    await page.evaluate((components) => {
-      renderPlatformHealth({ components });
+    await page.evaluate(({ components, component_model }) => {
+      renderPlatformHealth({ components, component_model });
       r({ watcher_state: "WATCHER_IDLE", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {});
-    }, components);
+    }, { components, component_model: canonicalPlatformComponentModel() });
     await page.getByTestId("dashboard-health-indicator").click();
     const ingress = page.locator("#dashboardHealthChecks li").filter({ hasText: "HTTP/API-ingang" });
     await expect(ingress).toHaveAttribute("data-health", "bad");
