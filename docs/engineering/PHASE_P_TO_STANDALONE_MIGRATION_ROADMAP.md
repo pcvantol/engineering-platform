@@ -4,7 +4,7 @@
 
 **Last reviewed:** 2026-09-02
 
-This roadmap complements `PHASE_P_MIGRATION_GAPS_REGISTER.md`. The migration-gaps register remains the authoritative Phase-P completion gate; this document fixes the intended sequencing from the current Phase-P transition state through a fully operational standalone Engineering Platform.
+This roadmap complements `PHASE_P_MIGRATION_GAPS_REGISTER.md`. The migration-gaps register remains the authoritative Phase-P completion gate. The [migration-to-V1 dependency authority](../development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md#migration-to-v1-dependency-authority) is authoritative for the ordering and stable identifiers through `EP::STANDALONE_EP_VERIFIED`; this document must not create a conflicting sequence.
 
 ## Architectural destination
 
@@ -23,11 +23,11 @@ The final product lifecycle also includes a Universal Installer. Version 1 owns 
 7. **P-RELEASE — trusted release/update authority.** Establish signed, checksummed EP wheel releases, an embedded verification trust root, release channels, compatibility policy, quiesce/atomic activation, preflight, and rollback. GitHub Releases or an equivalent governed registry is distribution; cryptographic verification establishes trust.
 8. **Phase-P migration re-audit.** Every active migration-gap entry must be repaired or explicitly retired. Required invariants include one operational database, zero active local operational authority, zero active DJConnect coupling, CENTRAL-native project isolation, and all three transports operational.
 9. **P-D — final installed product Goldens.** Resume the historically BLOCKED P-D qualification and prove Managed, Genesis, and armed-interrupt/retry end-to-end behavior on the migrated architecture. `P_D_PREVIOUS_ATTEMPT = BLOCKED` remains historical truth until this final qualification passes.
-10. **CUTOVER-DJCONNECT.** Perform reverse responsibility/zero-loss audit, then remove the embedded Engineering Platform implementation, services, workflows, runtime, scheduler, Console, and provider host from the DJConnect repository. Historical provenance may remain. DJConnect retains only project-specific EP declaration/configuration and later Agent binding metadata.
-11. **Phase S — generic Project Agent execution.** Move physical execution from the Server behind the generic Project Agent boundary. CENTRAL retains admission, scheduling, lifecycle, and evidence authority. Agent disconnect/reconnect and recovery must not create a second scheduler or lifecycle authority.
-12. **Real-project Agent configuration.** Configure the same generic Project Agent binary for the `engineering-platform` source project and for `djconnect`. No project-specific Agent binary or DJConnect-specific execution code is allowed.
-13. **Agent Goldens / dogfooding.** Prove EP can develop EP and DJConnect through the Agent seam, both projects can execute concurrently while each retains one FIFO lane, and Agent interruption/reconnect recovers deterministically from CENTRAL.
-14. **Standalone operational classification.** Only after the preceding gates may the product be classified `STANDALONE_ENGINEERING_PLATFORM_OPERATIONAL`; Agent completion is separately classified `GENERIC_PROJECT_AGENT_OPERATIONAL`.
+10. **Phase-S execution-protocol foundation.** Implement only the minimum CENTRAL-to-Project-Agent protocol and parity evidence required for one governed execution. This is a B9 prerequisite; CENTRAL retains admission, scheduling, lifecycle and evidence authority.
+11. **B8E and B9 / `EP::STANDALONE_EP_VERIFIED`.** Complete the zero-loss audit and activate the clean standalone authority only after every prerequisite named in the canonical migration-to-V1 dependency authority passes.
+12. **`EP::SOURCE_RETIREMENT_DJCONNECT_V1`.** After standalone verification, perform the reverse responsibility audit and retire obsolete DJConnect EP source, services, workflows, runtime, scheduler, Console and provider-host entrypoints. Historical provenance remains read-only. This is source retirement, not the runtime-authority cutover.
+13. **Phase-S real-project Agent qualification.** Configure the generic Agent for the EP source project and DJConnect, then prove multi-project dogfooding, FIFO isolation and deterministic Agent interruption/reconnect recovery. This broader programme is post-standalone.
+14. **Standalone operational classification.** Classify `STANDALONE_ENGINEERING_PLATFORM_OPERATIONAL` after the preceding standalone gates; classify `GENERIC_PROJECT_AGENT_OPERATIONAL` only after the broader Agent qualification.
 
 ## Permanent Golden assurance model
 
