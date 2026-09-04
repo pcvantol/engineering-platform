@@ -2446,51 +2446,10 @@ def doctor(repo: Path, root: Path) -> int:
     return 0 if state == "REMOTE_ENGINEERING_READY" else 1
 
 
-def migrate_icloud_archives(repo: Path, root: Path) -> dict[str, int]:
-    """Move legacy iCloud archives into EP storage, leaving only Inbox behind."""
-    local = local_folders(repo)
-    targets = {
-        "Running": local["Running"],
-        "Completed": local["Completed"],
-        "Failed": local["Failed"],
-        "Reports": repo / ".engineering" / "reports",
-    }
-    moved = deleted = 0
-    for name, target in targets.items():
-        source_directory = root / name
-        if not source_directory.is_dir():
-            continue
-        target.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for source in source_directory.iterdir():
-            if source.is_symlink() or not source.is_file():
-                continue
-            destination = target / source.name
-            if destination.exists():
-                source.unlink()
-                deleted += 1
-            else:
-                _move(source, destination)
-                moved += 1
-        source_directory.rmdir()
-    for name in ("status.json", "status.md"):
-        source = root / name
-        destination = repo / ".engineering" / "status" / name
-        if not source.is_file() or source.is_symlink():
-            continue
-        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if destination.exists():
-            source.unlink()
-            deleted += 1
-        else:
-            _move(source, destination)
-            moved += 1
-    return {"moved": moved, "deleted_duplicates": deleted}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=("once", "run", "status", "install", "uninstall", "doctor", "migrate-icloud-archives")
+        "command", choices=("once", "run", "status", "install", "uninstall", "doctor")
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--icloud-root")
@@ -2622,9 +2581,6 @@ def main(argv: list[str] | None = None) -> int:
             if (repo / ".engineering" / "status" / "status.md").exists()
             else "WATCHER_IDLE"
         )
-        return 0
-    if args.command == "migrate-icloud-archives":
-        print(json.dumps(migrate_icloud_archives(repo, root), sort_keys=True))
         return 0
     agent = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     if args.command == "install":

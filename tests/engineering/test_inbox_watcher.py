@@ -2168,22 +2168,6 @@ class InboxWatcherTest(unittest.TestCase):
         ):
             inbox_watcher.dismiss_execution(self.repo, run_id)
 
-    def test_migration_moves_legacy_archives_and_removes_iCloud_status(self) -> None:
-        (self.root / "Completed").mkdir()
-        (self.root / "Reports").mkdir()
-        (self.root / "Completed" / "old.txt").write_text("# old", encoding="utf-8")
-        (self.root / "Reports" / "old.md").write_text("# report", encoding="utf-8")
-        (self.root / "status.json").write_text('{"watcher_state":"WATCHER_IDLE"}', encoding="utf-8")
-        migrated = inbox_watcher.migrate_icloud_archives(self.repo, self.root)
-        self.assertEqual(migrated, {"moved": 3, "deleted_duplicates": 0})
-        self.assertTrue((self.repo / ".engineering" / "inbox" / "Completed" / "old.txt").exists())
-        self.assertTrue((self.repo / ".engineering" / "reports" / "old.md").exists())
-        self.assertTrue((self.repo / ".engineering" / "status" / "status.json").exists())
-        self.assertFalse((self.root / "Completed").exists())
-        self.assertFalse((self.root / "Reports").exists())
-        self.assertFalse((self.root / "status.json").exists())
-
-
 def json_status(repo: Path) -> dict[str, object]:
     import json
     return json.loads((repo / ".engineering" / "status" / "status.json").read_text(encoding="utf-8"))
