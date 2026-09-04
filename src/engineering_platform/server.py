@@ -54,8 +54,6 @@ from .component_logging import (
     component_logger,
     log_event,
 )
-from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
-from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import EngineeringPlatformManifest
@@ -732,7 +730,7 @@ def status(data_root: Path) -> dict[str, object]:
         "lifecycle_worker": {
             # The worker is hosted by the sole installed Server process.  A
             # stopped process is never reported as an active worker.
-            "state": WORKER_RUNNING if running else "STOPPED",
+            "state": "RUNNING" if running else "STOPPED",
         },
         "bind": {"host": config.bind_host, "port": config.bind_port},
         "components": components,
@@ -2124,6 +2122,14 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(selected, str) or selected not in project_ids:
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
+            # The preserved execution lifecycle is loaded only when its
+            # project-scoped mutation is requested.  Importing the canonical
+            # Server must not load retired watcher-era implementation modules.
+            from .parity_lifecycle_dispatcher import (
+                ParityLifecycleDispatchError,
+                dismiss_operator_gate,
+                retry_operator_gate,
+            )
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 2 <= length <= 256:
@@ -2299,6 +2305,10 @@ def serve(data_root: Path) -> int:
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
+    # Lifecycle composition is intentionally lazy: read-only Server import
+    # and Console startup must stay independent of retired watcher modules.
+    from .lifecycle_worker import LifecycleWorker
+
     worker = LifecycleWorker(data_root)
     # The File Inbox is an installed Server child, not a Dashboard or
     # checkout-owned watcher.  Its heartbeat is the source for its platform

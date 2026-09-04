@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 import socket
@@ -39,6 +41,28 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(report["operational_state"], "empty-valid")
         self.assertFalse(report["running"])
         self.assertFalse((self.root / ".engineering").exists())
+
+    def test_server_import_does_not_load_retired_inbox_watcher_runtime(self) -> None:
+        """The Server Console must not resurrect the retired watcher by import."""
+        repository = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository / "src")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import engineering_platform.server; "
+                    "assert 'engineering_platform.inbox_watcher' not in sys.modules"
+                ),
+            ],
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_server_component_projection_is_exactly_the_canonical_model(self) -> None:
         """Cards, details and logs cannot gain an independent component identity."""

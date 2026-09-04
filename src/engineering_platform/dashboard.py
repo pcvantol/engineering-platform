@@ -28,10 +28,6 @@ from .platform_api import PlatformConfiguration
 from .platform_bootstrap import provision_runtime_workspace as provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
-from .inbox_watcher import LABEL as WATCHER_LABEL
-from .inbox_watcher import WATCHER_VERSION
-from .inbox_watcher import RetrySubmissionError, abort_operator_merge_wait, check_operator_merge_status, cloud_root, defer_queued_prompt, dismiss_execution, predecessor_retry_admission_preflight, queued_retry_children, retry_admission_preflight, status_reconciliation_preview, submit_execution_retry, submit_predecessor_retry, submit_status_reconciliation
-from . import inbox_watcher
 from .component_logging import (
     DEFAULT_LOG_LEVEL,
     LOG_LEVEL_ENVIRONMENT,
@@ -69,7 +65,6 @@ from .storage import (
 from .provider_usage import provider_usage_summary
 from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
-from .emergency_recovery import EmergencyRecoveryError, execute as execute_emergency_recovery, preview as emergency_recovery_preview
 from .platform_version import EngineeringPlatformManifest
 from .resources import package_path
 from .dashboard_configuration import (
@@ -83,6 +78,16 @@ from . import managed_codex_runtime
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = "com.djconnect.engineering-dashboard-relay"
+# Historical direct-dashboard controls are retired from the supported Server
+# Console.  Keep their label local to this compatibility module so importing
+# the canonical Server does not load the retired watcher runtime.
+LEGACY_WATCHER_LABEL = "com.djconnect.engineering-inbox-watcher"
+# Compatibility names remain lazy while direct-dashboard retirement proceeds.
+# They intentionally do not import the watcher at Server import time.
+WATCHER_LABEL = LEGACY_WATCHER_LABEL
+# Kept as a literal only for the historical direct-dashboard manifest shape;
+# it is not a supported Console component projection.
+WATCHER_VERSION = "2.0.0"
 DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
@@ -142,9 +147,103 @@ _snapshot_revision = 0
 
 COMPONENT_LABELS = {
     "dashboard": LABEL,
-    "inbox_watcher": WATCHER_LABEL,
+    "inbox_watcher": LEGACY_WATCHER_LABEL,
     "dashboard_relay": RELAY_LABEL,
 }
+
+
+def _legacy_inbox_watcher() -> object:
+    """Load retired direct-dashboard support only when its old handler is used.
+
+    The supported Console is Server-native and must not instantiate or import
+    the historical watcher.  This narrow lazy boundary keeps old direct
+    dashboard requests diagnosable while the remaining handler is retired.
+    """
+    from . import inbox_watcher
+
+    return inbox_watcher
+
+
+class _LegacyInboxWatcherProxy:
+    """Compatibility proxy that delays importing the retired watcher module."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(_legacy_inbox_watcher(), name)
+
+
+inbox_watcher = _LegacyInboxWatcherProxy()
+
+
+class RetrySubmissionError(RuntimeError):
+    """Compatibility error for retired direct-dashboard request handling."""
+
+
+def _legacy_retry_submission_error() -> type[Exception]:
+    """Return the historical error type without importing it at module load."""
+    return _legacy_inbox_watcher().RetrySubmissionError  # type: ignore[union-attr,no-any-return]
+
+
+def cloud_root(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().cloud_root(*args, **kwargs)
+
+
+def queued_retry_children(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().queued_retry_children(*args, **kwargs)
+
+
+def predecessor_retry_admission_preflight(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().predecessor_retry_admission_preflight(*args, **kwargs)
+
+
+def submit_predecessor_retry(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().submit_predecessor_retry(*args, **kwargs)
+
+
+def retry_admission_preflight(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().retry_admission_preflight(*args, **kwargs)
+
+
+def submit_execution_retry(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().submit_execution_retry(*args, **kwargs)
+
+
+def status_reconciliation_preview(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().status_reconciliation_preview(*args, **kwargs)
+
+
+def submit_status_reconciliation(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().submit_status_reconciliation(*args, **kwargs)
+
+
+def dismiss_execution(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().dismiss_execution(*args, **kwargs)
+
+
+def abort_operator_merge_wait(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().abort_operator_merge_wait(*args, **kwargs)
+
+
+def check_operator_merge_status(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().check_operator_merge_status(*args, **kwargs)
+
+
+def defer_queued_prompt(*args: object, **kwargs: object) -> object:
+    return _legacy_inbox_watcher().defer_queued_prompt(*args, **kwargs)
+
+
+def _legacy_emergency_recovery() -> object:
+    """Load retired direct-dashboard recovery support only on an old request."""
+    from . import emergency_recovery
+
+    return emergency_recovery
+
+
+class EmergencyRecoveryError(RuntimeError):
+    """Compatibility error for the retired direct-dashboard recovery route."""
+
+
+def execute_emergency_recovery(*args: object, **kwargs: object) -> object:
+    return _legacy_emergency_recovery().execute(*args, **kwargs)
 RESTARTABLE_COMPONENTS = frozenset(COMPONENT_LABELS)
 AUDITABLE_USER_ACTIONS = frozenset(
     {
@@ -253,7 +352,7 @@ def _sse_snapshot(root: Path) -> bytes:
         return snapshot
     payload["workspace_git_lock"] = _workspace_git_lock(root)
     status = payload.get("status")
-    payload["emergency_recovery"] = emergency_recovery_preview(
+    payload["emergency_recovery"] = _legacy_emergency_recovery().preview(
         root, status.get("run_id") if isinstance(status, dict) else None
     )
     # Git state is deliberately projected with the SSE payload instead of
@@ -1217,7 +1316,7 @@ def _activate_engineering_platform_worktree(root: Path, worktree_path: str, bran
         relay_agent = relay_launch_agent(target, relay)
         dashboard_agent = launch_agent(target)
         launchd = LaunchdProvider()
-        launchd.install(WATCHER_LABEL, watcher_agent)
+        launchd.install(LEGACY_WATCHER_LABEL, watcher_agent)
         launchd.install(RELAY_LABEL, relay_agent)
         # Dashboard is deliberately last: its replacement terminates the
         # current process only after watcher and relay point at the same root.
@@ -1247,7 +1346,7 @@ def _restore_managed_main_branch(root: Path) -> dict[str, str]:
         except RuntimeError as error:
             raise RuntimeError("De werkmap kon niet veilig naar main worden teruggezet.") from error
     try:
-        LaunchdProvider().restart(WATCHER_LABEL)
+        LaunchdProvider().restart(LEGACY_WATCHER_LABEL)
     except OSError as error:
         raise RuntimeError("De werkmap staat op main, maar de Inbox-watcher kon niet worden herstart.") from error
     return {"previous_branch": previous_branch, "branch": "main", "watcher": "restarted"}
@@ -1295,7 +1394,7 @@ def _synchronize_managed_branch_with_upstream(root: Path) -> dict[str, str]:
     if final.returncode or final.stdout.strip() != "0\t0":
         raise RuntimeError("De verwachte branch is niet gesynchroniseerd met de upstream.")
     try:
-        LaunchdProvider().restart(WATCHER_LABEL)
+        LaunchdProvider().restart(LEGACY_WATCHER_LABEL)
     except OSError as error:
         raise RuntimeError("De branch is gesynchroniseerd, maar de Inbox-watcher kon niet worden herstart.") from error
     return {"branch": expected_branch, "upstream": upstream_ref, "watcher": "restarted"}
@@ -3081,7 +3180,7 @@ def handler(
                         run_id=outcome["blocking_run_id"],
                         diagnostic=f"retry_run_id={outcome['retry_run_id']}",
                     )
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     content = json.dumps({"error": str(error)}, ensure_ascii=False).encode()
                     self._send(content, "application/json; charset=utf-8", 409)
                     return
@@ -3285,7 +3384,7 @@ def handler(
                     retry_admission_preflight(root, payload["run_id"])
                     outcome = submit_execution_retry(root, cloud_root(repo=root), payload["run_id"])
                     log_event(logger, logging.INFO, "execution_retry_triggered", run_id=payload["run_id"], diagnostic=f"retry_run_id={outcome['retry_run_id']}")
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
@@ -3300,7 +3399,7 @@ def handler(
                     if not isinstance(payload, dict) or set(payload) != {"run_id"} or not isinstance(payload["run_id"], str):
                         raise ValueError
                     outcome = status_reconciliation_preview(root, payload["run_id"])
-                except (RetrySubmissionError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error(), ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     self._send(json.dumps({"error": str(error) or "Statusherstel is niet veilig beschikbaar."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 200)
@@ -3313,7 +3412,7 @@ def handler(
                         raise ValueError
                     outcome = submit_status_reconciliation(root, cloud_root(repo=root), payload["run_id"])
                     log_event(logger, logging.INFO, "status_reconciliation_requested", run_id=payload["run_id"])
-                except (RetrySubmissionError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error(), ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     self._send(json.dumps({"error": str(error) or "Statusherstel kon niet veilig worden aangevraagd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
@@ -3326,7 +3425,7 @@ def handler(
                         raise ValueError
                     outcome = dismiss_execution(root, payload["run_id"])
                     log_event(logger, logging.INFO, "execution_dismissed", run_id=payload["run_id"])
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
@@ -3342,7 +3441,7 @@ def handler(
                         raise ValueError
                     outcome = abort_operator_merge_wait(root, payload["run_id"])
                     log_event(logger, logging.INFO, "operator_merge_wait_aborted", run_id=payload["run_id"])
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
@@ -3364,7 +3463,7 @@ def handler(
                         if central_database is not None else execute_emergency_recovery(root, payload["run_id"])
                     )
                     log_event(logger, logging.WARNING, "execution_emergency_rollback_completed", run_id=payload["run_id"])
-                except (EmergencyRecoveryError, EngineeringStorageError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                except (EmergencyRecoveryError, _legacy_emergency_recovery().EmergencyRecoveryError, EngineeringStorageError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                     self._send(json.dumps({"error": str(error) or "De noodactie kon niet veilig worden uitgevoerd."}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 self._send(json.dumps(outcome, ensure_ascii=False).encode(), "application/json; charset=utf-8", 202)
@@ -3377,7 +3476,7 @@ def handler(
                         raise ValueError
                     outcome = check_operator_merge_status(root, payload["run_id"])
                     log_event(logger, logging.INFO, "operator_merge_status_checked", run_id=payload["run_id"], diagnostic=str(outcome.get("reason") or outcome.get("continuation")))
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
@@ -3398,7 +3497,7 @@ def handler(
                         "queue_item_deferred",
                         diagnostic=f"filename={outcome['filename']}; deferred_filename={outcome['deferred_filename']}",
                     )
-                except RetrySubmissionError as error:
+                except (RetrySubmissionError, _legacy_retry_submission_error()) as error:
                     self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 409)
                     return
                 except (RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
