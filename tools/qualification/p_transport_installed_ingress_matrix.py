@@ -128,6 +128,19 @@ def main(argv: list[str] | None = None) -> int:
                     receipt = json.loads(next(iter(set(receipt_path.glob("*.receipt.json")) - receipts_before)).read_text())
                 diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
                 evidence[f"{transport}_{mode}"] = {"submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "dispatch_state": diagnosis["dispatch_state"], "pass": True}
+                if transport == "FILE_INBOX":
+                    # Reappearance is a real filesystem delivery.  Its digest
+                    # becomes the same canonical idempotency identity, so
+                    # CENTRAL must retain exactly one submission/run.
+                    before = central_counts(data_root, project)
+                    source.write_text(json.dumps({"project_id": project, "submission": item}), encoding="utf-8")
+                    deadline = time.monotonic() + 15
+                    while source.exists() and time.monotonic() < deadline:
+                        time.sleep(.1)
+                    after = central_counts(data_root, project)
+                    if source.exists() or before != (1, 1) or after != (1, 1):
+                        raise RuntimeError("FILE_INBOX_REPLAY_DUPLICATED_OR_UNDELIVERED")
+                    evidence[f"{transport}_{mode}"]["replay"] = "PASS"
             finally:
                 process.terminate(); process.wait(timeout=5)
         print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
