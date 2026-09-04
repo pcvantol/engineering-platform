@@ -88,3 +88,27 @@ the status popout and every component detail modal. It contains `ep_server`
 with `incoming`, `processing`, `accepted` and `quarantine` dispositions; its
 Server-composed service writes the liveness heartbeat. This is not a watcher,
 checkout, selected-project or filesystem-backlog queue model.
+
+## Dashboard relay runtime contract
+
+The Dashboard access path is deliberately narrower than the Server's Platform
+Components projection:
+
+```text
+Tailnet device → Tailscale IPv4 :8765 → Dashboard relay → 127.0.0.1 Dashboard
+```
+
+The Dashboard's `/health` endpoint proves only this access path. It is healthy
+when the loopback Dashboard and its relay are healthy; it must neither start
+nor require the historical `inbox_watcher` LaunchAgent. A missing watcher is
+therefore never a reason for the relay endpoint to return `503`.
+
+File Inbox health, retry state and quarantine count are instead exposed by
+the installed EP Server's canonical `file_inbox_ingress` component. That
+component is Server-owned and has no independently installed watcher or
+daemon. The Dashboard relay has no submission, File Inbox, Action, run or
+execution authority.
+
+This separation keeps a successful remote access check from claiming that
+the Server itself is running: Server and File Inbox availability remain visible
+through the canonical Server component projection.
