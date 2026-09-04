@@ -51,3 +51,22 @@ No removal is authorized from this register while its classification is
 `UNRESOLVED`.  The next audit pass must turn every material row into one of
 the permitted terminal classifications with exact callers and installed-wheel
 evidence.
+
+## LR-02 direct-route consequence map
+
+The historical direct handler is not a supported route owner.  The following
+map prevents a coverage repair from silently preserving it or deleting an
+unreplaced capability.
+
+| Historical route family | Canonical successor / disposition | State |
+| --- | --- | --- |
+| Provider login, provider logout, provider repair and execution-runtime repair | Server PLATFORM routes; direct mutations removed | RETIRED_FROM_DIRECT_HANDLER |
+| Component restart | Server PLATFORM route using `PLATFORM_COMPONENTS`; direct mutation removed | RETIRED_FROM_DIRECT_HANDLER |
+| Console HTML, assets, platform status, canonical component logs and Server settings | Server Console and explicit PLATFORM routes | SUCCESSOR_EXISTS; direct read wrapper pending removal |
+| Project runs, reports, details and chat history | Server selected-project routes backed by CENTRAL projections | SUCCESSOR_EXISTS; direct read wrapper pending removal |
+| Root-local telemetry, worktree, report, chat, Codex-update and workspace diagnostics | No canonical successor is yet established for each individual capability | DO_NOT_DELETE_UNTIL_CLASSIFIED |
+| Historical Dashboard LaunchAgent and its relay installer | Relay remains an access adapter, but its lifecycle must move to Server-owned installation infrastructure | SERVER_INFRASTRUCTURE_EXTRACTION_REQUIRED |
+
+The final two rows are explicitly not compatibility exemptions.  They are the
+remaining LR-02 consequence-closure work and must be resolved before the
+direct handler or its package/runtime surface can be declared retired.
