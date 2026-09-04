@@ -1856,6 +1856,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
             self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
             return
+        if re.fullmatch(r"/api/logs/(?:inbox|dashboard)", request.path):
+            # These former dashboard-owned streams are deliberately absent
+            # from the canonical CENTRAL component model.  Handle them before
+            # scope resolution so a stale caller cannot turn a retired route
+            # into a project-delegation failure.
+            self._send(410, {"error": "LEGACY_COMPONENT_LOG_ROUTE_RETIRED"})
+            return
         log_match = re.fullmatch(rf"/api/logs/(all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path)
         if log_match and method == "do_GET":
             query = parse_qs(request.query)

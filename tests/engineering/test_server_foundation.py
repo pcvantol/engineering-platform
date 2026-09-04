@@ -548,7 +548,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         for path in (
             "/health", "/api/platform-status", "/api/dashboard-snapshot",
             "/api/status", "/api/provider-login-status",
-            "/api/execution-runtime-status", "/api/logs/inbox",
+            "/api/execution-runtime-status",
             "/api/components/ep_server/details", "/api/components/platform_database/details",
             "/api/components/lifecycle_worker/details", "/api/components/operations_console/details",
             "/api/components/dashboard_relay/details", "/api/components/file_inbox_ingress/details", "/api/configuration",
@@ -560,6 +560,14 @@ class StandaloneServerFoundationTest(unittest.TestCase):
                 except HTTPError as error:
                     self.assertNotEqual(error.code, 409, path)
                     self.assertEqual(error.headers["EP-Console-Route-Owner"], "PLATFORM", path)
+        # Retired routes are handled before project selection too, but retain
+        # their own explicit historical owner rather than masquerading as a
+        # supported platform component projection.
+        for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):
+            with self.assertRaises(HTTPError) as retired:
+                urlopen(Request(f"http://127.0.0.1:{port}/api/logs/inbox", headers=headers))
+            self.assertEqual(retired.exception.code, 410)
+            self.assertEqual(retired.exception.headers["EP-Console-Route-Owner"], "HISTORICAL_UNREACHABLE")
         # Actions are just as host-wide as their status cards. Invalid bodies
         # make these probes non-mutating while still exercising dispatch.
         for path, body in (

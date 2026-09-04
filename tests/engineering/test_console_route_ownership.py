@@ -17,6 +17,10 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
         for method, path in (("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/all"), ("GET", "/api/configuration")):
             self.assertEqual(route_owner(method, path).owner, PLATFORM, path)
 
+    def test_retired_component_log_routes_cannot_become_project_routes(self) -> None:
+        for method, path in (("GET", "/api/logs/inbox"), ("POST", "/api/logs/dashboard")):
+            self.assertEqual(route_owner(method, path).owner, HISTORICAL_UNREACHABLE, path)
+
     def test_qualification_guard_passes_for_installed_console_source(self) -> None:
         self.assertEqual(guard.violations(SOURCE_ROOT), [])
 
