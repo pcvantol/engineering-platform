@@ -403,6 +403,19 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertFalse(component["healthy"])
         self.assertEqual(component["status_code"], "DASHBOARD_RELAY_UNAVAILABLE")
 
+    def test_only_the_canonical_relay_lifecycle_can_be_restarted(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.log_event"
+        ) as logged:
+            result = server._restart_platform_component(self.root, "dashboard_relay")
+        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
+        self.assertEqual(result, {"restarting": "dashboard_relay", "scope": "PLATFORM"})
+        logged.assert_called_once()
+        for component in ("ep_server", "file_inbox_ingress", "unknown_component"):
+            with self.subTest(component=component), self.assertRaisesRegex(ValueError, "COMPONENT_RESTART_NOT_SUPPORTED"):
+                server._restart_platform_component(self.root, component)
+
     def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
         server.initialize(self.root)
         inbox = self.root / server.FILE_INBOX_DIRECTORY
@@ -655,6 +668,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         for path, body in (
             ("/api/provider-login/repair", b"{}"),
             ("/api/execution-runtime/repair", b"{}"),
+            ("/api/components/dashboard_relay/restart", b"[]"),
             ("/api/configuration", b"{}"),
         ):
             for headers in ({}, {"X-Engineering-Platform-Project": "djconnect"}):

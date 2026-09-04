@@ -718,7 +718,37 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
     component = status(data_root)["components"].get(component_id)  # type: ignore[index]
     if not isinstance(component, dict):
         return None
-    return {"component": component_id, "machine": os.uname().nodename, "restart_supported": False, **component}
+    definition = PLATFORM_COMPONENT_BY_ID[component_id]
+    return {
+        "component": component_id,
+        "machine": os.uname().nodename,
+        "restart_supported": definition.restart_supported,
+        **component,
+    }
+
+
+def _restart_platform_component(data_root: Path, component_id: str) -> dict[str, object]:
+    """Restart one explicitly restartable Platform component through its owner.
+
+    Component identifiers and lifecycle labels come exclusively from the
+    canonical model.  This deliberately does not expose a generic process or
+    LaunchAgent control endpoint.
+    """
+    definition = PLATFORM_COMPONENT_BY_ID.get(component_id)
+    if definition is None or not definition.restart_supported or not definition.lifecycle_label:
+        raise ValueError("COMPONENT_RESTART_NOT_SUPPORTED")
+    LaunchdProvider().restart(definition.lifecycle_label)
+    log_event(
+        component_logger(
+            data_root,
+            definition.id,
+            central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
+        logging.INFO,
+        "component_restart_requested",
+        context={"target_component": definition.id},
+    )
+    return {"restarting": definition.id, "scope": "PLATFORM"}
 
 
 def status(data_root: Path) -> dict[str, object]:
@@ -1946,6 +1976,19 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if method == "do_GET" and component_match:
             detail = _platform_component_detail(self.server.data_root, component_match.group(1))  # type: ignore[attr-defined]
             self._send(200, detail) if detail is not None else self._send(404, {"error": "COMPONENT_UNKNOWN"})
+            return
+        restart_match = re.fullmatch(r"/api/components/([a-z_]+)/restart", request.path)
+        if method == "do_POST" and restart_match:
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                result = _restart_platform_component(self.server.data_root, restart_match.group(1))  # type: ignore[attr-defined]
+            except (ValueError, OSError):
+                self._send(409, {"error": "COMPONENT_RESTART_UNAVAILABLE"})
+            else:
+                self._send(202, result)
             return
         if self._central_database_configuration(method):
             return
