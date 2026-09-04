@@ -80,7 +80,6 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 49
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
-FILE_INBOX_MODE_ENVIRONMENT = "EP_FILE_INBOX_COMPOSITION_MODE"
 _CENTRAL_LOG_SORT_COLUMNS = {
     "line": "id",
     "timestamp": "created_at",
@@ -2271,10 +2270,7 @@ def serve(data_root: Path) -> int:
     # The File Inbox is an installed Server child, not a Dashboard or
     # checkout-owned watcher.  Its heartbeat is the source for its platform
     # component health; a prior successful file is never treated as liveness.
-    inbox_mode = os.environ.get(FILE_INBOX_MODE_ENVIRONMENT, "EMBEDDED").upper()
-    if inbox_mode not in {"EMBEDDED", "EXTERNAL", "DISABLED"}:
-        raise ServerConfigurationError("FILE_INBOX_COMPOSITION_MODE_INVALID")
-    inbox_service = file_inbox.FileInboxService(data_root / FILE_INBOX_DIRECTORY, server=f"http://{config.bind_host}:{config.bind_port}", credential=os.environ.get("EP_CONSUMER_TOKEN")) if inbox_mode == "EMBEDDED" else None
+    inbox_service = file_inbox.FileInboxService(data_root / FILE_INBOX_DIRECTORY, server=f"http://{config.bind_host}:{config.bind_port}", credential=os.environ.get("EP_CONSUMER_TOKEN"))
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
@@ -2284,8 +2280,7 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     worker.start()
-    if inbox_service is not None:
-        inbox_service.start()
+    inbox_service.start()
     # A fresh installation must have operational evidence before its first
     # submission.  These are genuine Server lifecycle events, persisted in
     # the same CENTRAL store that backs the Console's combined log table.
@@ -2297,7 +2292,7 @@ def serve(data_root: Path) -> int:
         ("dashboard_relay", "dashboard_relay_available"),
         ("http_ingress", "http_ingress_available"),
         ("cli_ingress", "cli_ingress_available"),
-        ("file_inbox_ingress", f"file_inbox_{inbox_mode.lower()}"),
+        ("file_inbox_ingress", "file_inbox_service_started"),
     ):
         log_event(
             component_logger(
@@ -2311,8 +2306,7 @@ def serve(data_root: Path) -> int:
     try:
         server.serve_forever()
     finally:
-        if inbox_service is not None:
-            inbox_service.stop()
+        inbox_service.stop()
         worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
