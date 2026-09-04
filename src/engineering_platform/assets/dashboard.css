@@ -1160,6 +1160,7 @@ html[data-theme="light"] .dashboard-status-banner--provider-auth_required .provi
 .dashboard-health__tooltip .dashboard-health__check[data-health="bad"] .dashboard-health__value{color:#ff9cab}
 .dashboard-health__tooltip .dashboard-health__check[data-health="unknown"] .dashboard-health__value{color:#c6d1df}
 .dashboard-health__tooltip .dashboard-health__reason{color:#cbd7e5;font-size:12px;grid-column:1 / -1;line-height:1.3;overflow-wrap:anywhere}
+.dashboard-health__tooltip .dashboard-health__section{border-top:1px solid #ffffff2b;color:#9ed6ff;font-size:11px;font-weight:800;letter-spacing:.06em;margin-top:4px;padding-top:7px;text-transform:uppercase}
 html[data-theme="light"] .dashboard-health__tooltip .dashboard-health__reason{color:#415168}
 @media (min-width:1241px){
   .dashboard-titlebar__actions>.dashboard-health__tooltip{left:0;right:auto;top:calc(100% + 8px)}

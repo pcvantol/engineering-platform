@@ -372,13 +372,14 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
   const critical = ["ep_server", "platform_database", "lifecycle_worker", "http_ingress", "cli_ingress"];
   const unhealthy = Object.entries(components).filter(([, value]) => value?.healthy !== true);
   const state = !Object.keys(components).length ? "unknown" : unhealthy.some(([key]) => critical.includes(key)) ? "error" : unhealthy.length ? "blocked" : "ready";
-  const checks = Object.entries(components).map(([key, component]) => [
-    healthComponentLabel(key), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {},
-    { component: key, transport: true },
-  ]);
+  const componentGroups = [["platform", ["ep_server", "platform_database", "lifecycle_worker"]], ["access", ["operations_console", "dashboard_relay"]], ["ingress", ["http_ingress", "cli_ingress", "file_inbox_ingress"]]];
+  const checks = componentGroups.flatMap(([section, ids]) => ids.filter((key) => components[key]).map((key) => {
+    const component = components[key];
+    return [healthComponentLabel(key), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {}, { component: key, transport: true, section: t("dashboard.health.section." + section) }];
+  }));
   const queueDepth = Math.max(0, Number(current.queue_depth) || 0), active = Array.isArray(current.runs) ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length : Number(Boolean(current.active_run));
-  checks.push(["execution", active ? "active" : "none_active", active ? "good" : "good", { count: active }]);
-  checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }]);
+  checks.push(["execution", active ? "active" : "none_active", "good", { count: active }, { section: t("dashboard.health.section.execution") }]);
+  checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }, { section: t("dashboard.health.section.execution") }]);
   return { state, checks };
 }
 function renderDashboardHealth(status = latestStatus, platformHealth = latestPlatformHealth) {
@@ -390,7 +391,15 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
   accessibleLabel.textContent = t("dashboard.health.title") + ": " + title;
   tooltipTitle.textContent = t("dashboard.health.title") + " · " + title;
   checks.replaceChildren();
+  let previousSection = "";
   for (const [name, value, tone, values = {}, metadata = {}] of presentation.checks) {
+    if (metadata.section && metadata.section !== previousSection) {
+      const heading = document.createElement("li");
+      heading.className = "dashboard-health__section";
+      heading.textContent = metadata.section;
+      checks.append(heading);
+      previousSection = metadata.section;
+    }
     const item = document.createElement("li"), label = document.createElement("span"), result = document.createElement("span");
     item.dataset.health = tone;
     item.className = "dashboard-health__check";
@@ -3554,7 +3563,7 @@ function transportDetail(code) {
   const key = "transport.detail." + normalized;
   // Detail codes are a closed Server contract. Never turn an arbitrary
   // diagnostic string into a localization key (or leak it into the UI).
-  return Object.hasOwn(DASHBOARD_MESSAGES[currentLocale] || {}, key)
+  return new Set(["CENTRAL_LISTENER_ENDPOINT", "CENTRAL_LISTENER_UNAVAILABLE", "CANONICAL_SUBMISSION_COMPATIBILITY", "CENTRAL_ENDPOINT_UNAVAILABLE", "FILE_INBOX_HEARTBEAT", "FILE_INBOX_HEARTBEAT_MISSING"]).has(normalized)
     ? t(key)
     : t("ui.no_component_explanation");
 }
@@ -3562,6 +3571,8 @@ const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
   "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",
 ]);
 function dashboardHealthValue(value, values) {
+  if (value === "active") return t("dashboard.health.active_count", values);
+  if (value === "queue_waiting") return t("dashboard.health.queue_waiting_count", values);
   return DASHBOARD_HEALTH_VALUE_KEYS.has(value) ? t("dashboard.health." + value, values) : translate(value);
 }
 let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;

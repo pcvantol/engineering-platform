@@ -10323,18 +10323,20 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("HTTP/API-ingang");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Bestandsinbox-ingang");
     await expect(page.locator("#dashboardHealthTooltip")).toContainText("Geen uitvoering actief");
-    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Werkruimte gereed");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Toegang");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Ingangen");
+    await expect(page.locator("#dashboardHealthTooltip")).toContainText("Uitvoering");
+    await expect(page.locator("#dashboardHealthTooltip")).not.toContainText("Werkruimte gereed");
     const componentRows = page.locator("#dashboardHealthChecks .dashboard-health__check--component");
-    await expect(componentRows).toHaveCount(3);
-    await expect(componentRows.locator("[data-testid='dashboard-health-component-link-icon']")).toHaveCount(3);
+    await expect(componentRows).toHaveCount(4);
+    await expect(componentRows.locator("[data-testid='dashboard-health-component-link-icon']")).toHaveCount(4);
 
-    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
-    await expect(indicator).toHaveAttribute("data-health-state", "active");
-    await page.evaluate(() => r({ watcher_state: "ENGINEERING_RUN_ACTIVE", run_id: "inbox-active", workspace_state: "ACTIVE", queue_depth: 0 }, {}));
-    await expect(page.locator("#dashboardHealthChecks li").filter({ hasText: "Werkruimte" })).toHaveAttribute("data-health", "good");
-    await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE", current_phase: "BLOCKED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
-    await expect(indicator).toHaveAttribute("data-health-state", "blocked");
-    await page.evaluate(() => r({ watcher_state: "HOST_PREFLIGHT_FAILED", workspace_state: "WORKSPACE_READY", queue_depth: 0 }, {}));
+    await page.evaluate(() => r({ runs: [{ state: "RUNNING" }], queue_depth: 0 }, {}));
+    await expect(page.locator("#dashboardHealthChecks")).toContainText("1 uitvoering actief");
+    await expect(indicator).toHaveAttribute("data-health-state", "ready");
+    await page.evaluate(() => r({ runs: [], queue_depth: 2 }, {}));
+    await expect(page.locator("#dashboardHealthChecks")).toContainText("2 opdrachten in wachtrij");
+    await page.evaluate(() => renderPlatformHealth({ components: { http_ingress: { healthy: false, status_code: "HTTP_INGRESS_DOWN" } } }));
     await expect(indicator).toHaveAttribute("data-health-state", "error");
   });
 
