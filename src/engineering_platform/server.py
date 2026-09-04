@@ -1428,7 +1428,6 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
         )
         scoped = _centralize_workspace_identity(scoped, project_id)
         scoped = _retire_legacy_inbox_configuration(scoped, data_root)
-        scoped = _centralize_component_log_surface(scoped)
         central_section = _central_database_section(data_root).encode("utf-8")
         # The repository binding is not project identity: that remains wholly
         # CENTRAL-owned above.  It is, however, useful operational evidence
@@ -1479,7 +1478,6 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         1,
     )
     document = _retire_legacy_inbox_configuration(document, data_root)
-    document = _centralize_component_log_surface(document)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
     document = document.replace(

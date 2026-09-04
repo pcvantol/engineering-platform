@@ -16,7 +16,7 @@ not a roadmap.
 | AC-08 | high | Qualification lacked CLI invalid-Genesis, complete Human negatives and port isolation. | Installed matrix now uses OS-assigned ports and includes the missing negative cases. | FIXED — installed matrix PASS |
 | AC-09 | high | Human receipt lacked complete audit-chain provenance. | Accepted receipt now records source/normalized digest, scope, requested mode, normalization method/version and submission identity. | IN_PROGRESS — run linkage and durable audit verification pending |
 | AC-10 | high | Localization guard omits some Server-generated surface and stale watcher copy. | The Server-owned no-project title, explanation and selector now use five-locale keys; the broader Server-rendered surface audit remains in progress. | IN_PROGRESS |
-| AC-11 | high | Presentation-level Console/log compatibility transforms conceal legacy source structure. | Browser logging no longer retains separate Inbox/Dashboard state. The remaining Server HTML transform is still tracked for structural retirement. | IN_PROGRESS |
+| AC-11 | high | Presentation-level Console/log compatibility transforms conceal legacy source structure. | Browser logging no longer retains separate Inbox/Dashboard state, and both supported Server document paths now consume the canonical log markup directly. The unused historical helper remains for the broader structural dashboard deletion in AC-06. | IN_PROGRESS |
 | AC-12 | high | Retroactive CENTRAL armed-repair end-to-end evidence is missing. | Recover contract, add installed positive/negative/restart gate. | IN_PROGRESS |
 
 `UNRESOLVED_AUDIT_FINDINGS` remains non-zero until every `IN_PROGRESS` item
