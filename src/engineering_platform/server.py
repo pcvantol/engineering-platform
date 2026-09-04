@@ -645,7 +645,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
         },
         "file_inbox_ingress": {
             "healthy": file_state == "RUNNING", "state": file_state,
-            "detail": "File Inbox adapter heartbeat" if file_state == "RUNNING" else "File Inbox adapter heartbeat unavailable",
+            "detail": "File Inbox adapter heartbeat" if server_running and heartbeat_fresh else "File Inbox adapter heartbeat unavailable",
             "watched_location": heartbeat.get("watched_location") if heartbeat else str(data_root / FILE_INBOX_DIRECTORY),
             "heartbeat": heartbeat_at or None,
             "last_successful_submission": file_last,

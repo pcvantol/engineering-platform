@@ -213,6 +213,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         ):
             component = server.status(self.root)["components"]["file_inbox_ingress"]
         self.assertEqual(component["state"], "DEGRADED")
+        self.assertEqual(component["detail"], "File Inbox adapter heartbeat")
         self.assertEqual(component["quarantine_count"], 1)
         self.assertEqual(component["recent_error"], "MALFORMED_FILE")
 
