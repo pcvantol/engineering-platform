@@ -4,7 +4,8 @@
   "version": "2.0.0",
   "scripts": {
     "test:engineering-dashboard": "PYTHONPATH=src python3 -m engineering_platform.dashboard_browser_validation",
-    "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs"
+    "test:engineering-dashboard-logic": "node --test tests/engineering/dashboard_status_store.test.mjs tests/engineering/ui_localization_contract.test.mjs",
+    "test:ui-localization": "node tools/qualification/ui_localization_contract.mjs ."
   },
   "devDependencies": {
     "@playwright/test": "1.62.1"

@@ -3502,10 +3502,6 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "lifecycle.detail_local_validation_evidence": "Iteraciones de validación local",
 });
 
-for (const locale of ["nl", "de", "fr", "es"]) for (const [key, value] of Object.entries(DASHBOARD_MESSAGES.en)) {
-  if (key.startsWith("telemetry.phase.") && !Object.hasOwn(DASHBOARD_MESSAGES[locale], key)) DASHBOARD_MESSAGES[locale][key] = value;
-}
-
 // Dynamic operational copy is not discoverable from static dashboard markup.
 // Keep its CI inventory next to the catalogs so renderers and tests share one
 // source of truth when a lifecycle phase or watcher state is added.
@@ -3722,11 +3718,66 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"transport.http":"HTTP/API-ingang","transp
 Object.assign(DASHBOARD_MESSAGES.de, {"transport.http":"HTTP/API-Eingang","transport.cli":"CLI-Eingang","transport.file":"Datei-Inbox-Eingang","transport.state.HEALTHY":"Fehlerfrei","transport.state.DOWN":"Nicht verfügbar","transport.state.AVAILABLE":"Verfügbar","transport.state.DEGRADED":"Beeinträchtigt","transport.state.RUNNING":"Aktiv","transport.state.STOPPED":"Gestoppt","transport.detail.listener":"CENTRAL-Listener-Endpunkt","transport.detail.compatibility":"Kompatibilität mit kanonischer Übermittlung","transport.detail.heartbeat":"Heartbeat des Datei-Inbox-Adapters","transport.detail.heartbeat_unavailable":"Heartbeat des Datei-Inbox-Adapters nicht verfügbar","transport.last_submission":"Letzte erfolgreiche Übermittlung","transport.location":"Überwachter Speicherort","transport.heartbeat":"Heartbeat","transport.delivery_retry":"Zustellversuch","transport.quarantine":"Quarantänisierte Elemente","transport.recent_error":"Aktuelle Diagnose","transport.retry.NONE":"Keine","transport.retry.PENDING":"Ausstehend"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"transport.http":"Entrée HTTP/API","transport.cli":"Entrée CLI","transport.file":"Entrée Boîte de réception de fichiers","transport.state.HEALTHY":"Sain","transport.state.DOWN":"Indisponible","transport.state.AVAILABLE":"Disponible","transport.state.DEGRADED":"Dégradé","transport.state.RUNNING":"Actif","transport.state.STOPPED":"Arrêté","transport.detail.listener":"Point d’écoute CENTRAL","transport.detail.compatibility":"Compatibilité avec la soumission canonique","transport.detail.heartbeat":"Signal de vie de l’adaptateur de fichiers","transport.detail.heartbeat_unavailable":"Signal de vie de l’adaptateur de fichiers indisponible","transport.last_submission":"Dernière soumission réussie","transport.location":"Emplacement surveillé","transport.heartbeat":"Signal de vie","transport.delivery_retry":"Nouvelle tentative de livraison","transport.quarantine":"Éléments en quarantaine","transport.recent_error":"Diagnostic récent","transport.retry.NONE":"Aucune","transport.retry.PENDING":"En attente"});
 Object.assign(DASHBOARD_MESSAGES.es, {"transport.http":"Entrada HTTP/API","transport.cli":"Entrada CLI","transport.file":"Entrada de bandeja de archivos","transport.state.HEALTHY":"Saludable","transport.state.DOWN":"No disponible","transport.state.AVAILABLE":"Disponible","transport.state.DEGRADED":"Degradado","transport.state.RUNNING":"Activo","transport.state.STOPPED":"Detenido","transport.detail.listener":"Punto de escucha CENTRAL","transport.detail.compatibility":"Compatibilidad con envío canónico","transport.detail.heartbeat":"Señal de vida del adaptador de archivos","transport.detail.heartbeat_unavailable":"Señal de vida del adaptador de archivos no disponible","transport.last_submission":"Último envío correcto","transport.location":"Ubicación supervisada","transport.heartbeat":"Señal de vida","transport.delivery_retry":"Reintento de entrega","transport.quarantine":"Elementos en cuarentena","transport.recent_error":"Diagnóstico reciente","transport.retry.NONE":"Ninguno","transport.retry.PENDING":"Pendiente"});
+// CENTRAL projects semantic codes only. The Console remains the sole owner of
+// human language; aliases preserve old installed projections during upgrade.
+Object.assign(DASHBOARD_MESSAGES.en, {"transport.status.HTTP_INGRESS_HEALTHY":"Healthy","transport.status.HTTP_INGRESS_DOWN":"Down","transport.status.CLI_INGRESS_AVAILABLE":"Available","transport.status.CLI_INGRESS_DEGRADED":"Degraded","transport.status.FILE_INGRESS_RUNNING":"Running","transport.status.FILE_INGRESS_DEGRADED":"Degraded","transport.status.FILE_INGRESS_STOPPED":"Stopped","transport.detail.CENTRAL_LISTENER_ENDPOINT":"CENTRAL listener endpoint","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"CENTRAL listener unavailable","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Canonical submission compatibility","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"CENTRAL endpoint unavailable","transport.detail.FILE_INBOX_HEARTBEAT":"File Inbox adapter heartbeat","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"File Inbox adapter heartbeat unavailable","transport.reason.FILE_INBOX_DIAGNOSTIC":"A bounded File Inbox diagnostic is available","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"None","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Pending"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"transport.status.HTTP_INGRESS_HEALTHY":"Gezond","transport.status.HTTP_INGRESS_DOWN":"Niet beschikbaar","transport.status.CLI_INGRESS_AVAILABLE":"Beschikbaar","transport.status.CLI_INGRESS_DEGRADED":"Gedegradeerd","transport.status.FILE_INGRESS_RUNNING":"Actief","transport.status.FILE_INGRESS_DEGRADED":"Gedegradeerd","transport.status.FILE_INGRESS_STOPPED":"Gestopt","transport.detail.CENTRAL_LISTENER_ENDPOINT":"CENTRAL-luisterendpoint","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"CENTRAL-luisterendpoint niet beschikbaar","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibel met canonieke indiening","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"CENTRAL-endpoint niet beschikbaar","transport.detail.FILE_INBOX_HEARTBEAT":"Heartbeat van Bestandsinbox-adapter","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Heartbeat van Bestandsinbox-adapter niet beschikbaar","transport.reason.FILE_INBOX_DIAGNOSTIC":"Een begrensde Bestandsinbox-diagnose is beschikbaar","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Geen","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"In behandeling"});
+Object.assign(DASHBOARD_MESSAGES.de, {"transport.status.HTTP_INGRESS_HEALTHY":"Fehlerfrei","transport.status.HTTP_INGRESS_DOWN":"Nicht verfügbar","transport.status.CLI_INGRESS_AVAILABLE":"Verfügbar","transport.status.CLI_INGRESS_DEGRADED":"Beeinträchtigt","transport.status.FILE_INGRESS_RUNNING":"Aktiv","transport.status.FILE_INGRESS_DEGRADED":"Beeinträchtigt","transport.status.FILE_INGRESS_STOPPED":"Gestoppt","transport.detail.CENTRAL_LISTENER_ENDPOINT":"CENTRAL-Listener-Endpunkt","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"CENTRAL-Listener-Endpunkt nicht verfügbar","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Kompatibilität mit kanonischer Übermittlung","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"CENTRAL-Endpunkt nicht verfügbar","transport.detail.FILE_INBOX_HEARTBEAT":"Heartbeat des Datei-Inbox-Adapters","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Heartbeat des Datei-Inbox-Adapters nicht verfügbar","transport.reason.FILE_INBOX_DIAGNOSTIC":"Eine begrenzte Datei-Inbox-Diagnose ist verfügbar","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Keine","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Ausstehend"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"transport.status.HTTP_INGRESS_HEALTHY":"Sain","transport.status.HTTP_INGRESS_DOWN":"Indisponible","transport.status.CLI_INGRESS_AVAILABLE":"Disponible","transport.status.CLI_INGRESS_DEGRADED":"Dégradé","transport.status.FILE_INGRESS_RUNNING":"Actif","transport.status.FILE_INGRESS_DEGRADED":"Dégradé","transport.status.FILE_INGRESS_STOPPED":"Arrêté","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Point d’écoute CENTRAL","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Point d’écoute CENTRAL indisponible","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibilité avec la soumission canonique","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Point de terminaison CENTRAL indisponible","transport.detail.FILE_INBOX_HEARTBEAT":"Signal de vie de l’adaptateur de fichiers","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Signal de vie de l’adaptateur de fichiers indisponible","transport.reason.FILE_INBOX_DIAGNOSTIC":"Un diagnostic limité de la boîte de réception est disponible","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Aucune","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"En attente"});
+Object.assign(DASHBOARD_MESSAGES.es, {"transport.status.HTTP_INGRESS_HEALTHY":"Saludable","transport.status.HTTP_INGRESS_DOWN":"No disponible","transport.status.CLI_INGRESS_AVAILABLE":"Disponible","transport.status.CLI_INGRESS_DEGRADED":"Degradado","transport.status.FILE_INGRESS_RUNNING":"Activo","transport.status.FILE_INGRESS_DEGRADED":"Degradado","transport.status.FILE_INGRESS_STOPPED":"Detenido","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Punto de escucha CENTRAL","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Punto de escucha CENTRAL no disponible","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibilidad con envío canónico","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Extremo CENTRAL no disponible","transport.detail.FILE_INBOX_HEARTBEAT":"Señal de vida del adaptador de archivos","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Señal de vida del adaptador de archivos no disponible","transport.reason.FILE_INBOX_DIAGNOSTIC":"Hay disponible un diagnóstico limitado de la bandeja de archivos","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Ninguno","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Pendiente"});
+Object.assign(DASHBOARD_MESSAGES.en, {"component.reason.FILE_INBOX_DIAGNOSTIC":"A bounded File Inbox diagnostic is available"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Een begrensde Bestandsinbox-diagnose is beschikbaar"});
+Object.assign(DASHBOARD_MESSAGES.de, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Eine begrenzte Datei-Inbox-Diagnose ist verfügbar"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Un diagnostic limité de la boîte de réception est disponible"});
+Object.assign(DASHBOARD_MESSAGES.es, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Hay disponible un diagnóstico limitado de la bandeja de archivos"});
 
-export function createTranslator(locale) {
+export class LocalizationContractError extends Error {
+  constructor({ locale, key, surface = "Console" }) {
+    super(`LOCALIZATION_MISSING locale=${locale} key=${key} surface=${surface}`);
+    this.name = "LocalizationContractError";
+    this.locale = locale;
+    this.key = key;
+    this.surface = surface;
+  }
+}
+
+const PLACEHOLDER_TRANSLATION = /^\s*(?:TODO|TBD|TRANSLATE(?:\s+ME)?|MISSING)\s*$/i;
+
+/**
+ * Return deterministic catalog findings. English is the canonical key-set
+ * authority; supported locales must be exact, non-empty translations.
+ */
+export function localizationContractFindings(catalogs = DASHBOARD_MESSAGES) {
+  const canonical = new Set(Object.keys(catalogs.en || {})), findings = [];
+  for (const language of SUPPORTED_LOCALES) {
+    const messages = catalogs[language] || {}, keys = new Set(Object.keys(messages));
+    for (const key of canonical) {
+      if (!keys.has(key)) findings.push(`MISSING_KEY locale=${language} key=${key}`);
+      else if (typeof messages[key] !== "string" || !messages[key].trim()) findings.push(`EMPTY_TRANSLATION locale=${language} key=${key}`);
+      else if (PLACEHOLDER_TRANSLATION.test(messages[key])) findings.push(`PLACEHOLDER_TRANSLATION locale=${language} key=${key}`);
+    }
+    for (const key of keys) if (!canonical.has(key)) findings.push(`ORPHAN_KEY locale=${language} key=${key}`);
+  }
+  return findings;
+}
+
+export function assertLocalizationContract(catalogs = DASHBOARD_MESSAGES) {
+  const findings = localizationContractFindings(catalogs);
+  if (findings.length) throw new Error(`LOCALIZATION_KEY_PARITY_FAILED\n${findings.join("\n")}`);
+  return { supportedLocales: [...SUPPORTED_LOCALES], keyCount: Object.keys(catalogs.en).length };
+}
+
+export function createTranslator(locale, { strict = false, surface = "Console" } = {}) {
   const active = normalizeLocale(locale);
-  return (key, values = {}, fallback = key) => String(messages[active]?.[key] ?? messages.en[key] ?? fallback)
-    .replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+  return (key, values = {}, fallback = key) => {
+    const own = DASHBOARD_MESSAGES[active]?.[key];
+    if (typeof own !== "string" || !own.trim()) {
+      if (strict) throw new LocalizationContractError({ locale: active, key: String(key), surface });
+      return String(DASHBOARD_MESSAGES.en?.[key] ?? fallback)
+        .replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+    }
+    return own.replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+  };
 }
 
 const localeTags = Object.freeze({
@@ -3742,8 +3793,8 @@ const localeTags = Object.freeze({
  * this service instead of constructing their own Intl instances or choosing
  * a language for comparisons, casing and pluralisation.
  */
-export function createLocaleService(locale) {
-  const language = normalizeLocale(locale), tag = localeTags[language], translate = createTranslator(language);
+export function createLocaleService(locale, options = {}) {
+  const language = normalizeLocale(locale), tag = localeTags[language], translate = createTranslator(language, options);
   const dateTime = new Intl.DateTimeFormat(tag, {
     timeZone: "Europe/Amsterdam",
     dateStyle: "full",

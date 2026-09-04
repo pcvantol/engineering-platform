@@ -246,9 +246,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         server.initialize(self.root)
         components = server.status(self.root)["components"]
         self.assertEqual(set(components), {"http_ingress", "cli_ingress", "file_inbox_ingress"})
-        self.assertEqual(components["http_ingress"]["state"], "DOWN")
-        self.assertEqual(components["cli_ingress"]["state"], "DEGRADED")
-        self.assertEqual(components["file_inbox_ingress"]["state"], "STOPPED")
+        self.assertEqual(components["http_ingress"]["status_code"], "HTTP_INGRESS_DOWN")
+        self.assertEqual(components["cli_ingress"]["status_code"], "CLI_INGRESS_DEGRADED")
+        self.assertEqual(components["file_inbox_ingress"]["status_code"], "FILE_INGRESS_STOPPED")
         self.assertNotIn("credential", repr(components).lower())
 
     def test_live_file_inbox_with_quarantine_is_degraded_without_execution_state(self) -> None:
@@ -264,10 +264,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             "engineering_platform.server._alive", return_value=True,
         ):
             component = server.status(self.root)["components"]["file_inbox_ingress"]
-        self.assertEqual(component["state"], "DEGRADED")
-        self.assertEqual(component["detail"], "File Inbox adapter heartbeat")
+        self.assertEqual(component["status_code"], "FILE_INGRESS_DEGRADED")
+        self.assertEqual(component["detail_code"], "FILE_INBOX_HEARTBEAT")
         self.assertEqual(component["quarantine_count"], 1)
-        self.assertEqual(component["recent_error"], "MALFORMED_FILE")
+        self.assertEqual(component["reason_code"], "FILE_INBOX_DIAGNOSTIC")
 
     def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
         historical = (

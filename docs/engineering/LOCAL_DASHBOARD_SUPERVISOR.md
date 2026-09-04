@@ -503,6 +503,18 @@ authority.
 
 ## Browser validation
 
+### Enforced five-language localization
+
+`dashboard_locales.mjs` is the canonical Console catalog and English owns its
+key set. Every supported locale (`en`, `nl`, `de`, `fr`, `es`) must have exactly
+the same non-empty, non-placeholder keys. `UI-GOLDEN-LOCALIZATION` enforces
+that parity, a strict runtime mode that throws on a missing lookup rather than
+falling back to English, semantic CENTRAL status-code rendering, and the
+classified user-visible-literal source guard. A Console asset, template, or
+CENTRAL Console-projection change automatically selects this gate in the
+validation profile and hosted CI. This is shared Console engineering policy for
+Agent View, Installer, Forge, and Workspace surfaces that use these assets.
+
 The Engineering Platform validation workflow runs a Playwright Chromium smoke
 test against a locally started dashboard. It uses an iPhone-sized viewport and
 checks the private status surface, workspace category and collapsed completed

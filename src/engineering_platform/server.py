@@ -617,8 +617,8 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
             "SELECT transport,MAX(created_at) FROM ep_submissions GROUP BY transport"
         ):
             latest[str(transport)] = str(created_at)
-    http_state = "HEALTHY" if server_running else "DOWN"
-    cli_state = "AVAILABLE" if server_running else "DEGRADED"
+    http_status_code = "HTTP_INGRESS_HEALTHY" if server_running else "HTTP_INGRESS_DOWN"
+    cli_status_code = "CLI_INGRESS_AVAILABLE" if server_running else "CLI_INGRESS_DEGRADED"
     file_last = latest.get("FILE_INBOX")
     heartbeat = file_inbox.read_heartbeat(data_root / FILE_INBOX_DIRECTORY)
     heartbeat_at = str(heartbeat.get("updated_at", "")) if heartbeat else ""
@@ -633,28 +633,32 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     # quarantined ingress is operational but needs attention.  It is not a
     # CENTRAL execution/run failure and cannot affect queue authority.
     file_attention_needed = delivery_retry != "NONE" or bool(recent_error) or quarantine_count > 0
-    file_state = "STOPPED" if not server_running or not heartbeat_fresh else "DEGRADED" if file_attention_needed else "RUNNING"
+    file_status_code = (
+        "FILE_INGRESS_STOPPED" if not server_running or not heartbeat_fresh
+        else "FILE_INGRESS_DEGRADED" if file_attention_needed else "FILE_INGRESS_RUNNING"
+    )
     return {
         "http_ingress": {
-            "healthy": server_running, "state": http_state,
-            "detail": "CENTRAL listener endpoint" if server_running else "CENTRAL listener unavailable",
+            "healthy": server_running, "status_code": http_status_code,
+            "detail_code": "CENTRAL_LISTENER_ENDPOINT" if server_running else "CENTRAL_LISTENER_UNAVAILABLE",
             "version": "1",  # canonical submission protocol version
             "last_successful_submission": latest.get("HTTP"), "recent_error": None,
         },
         "cli_ingress": {
-            "healthy": server_running, "state": cli_state,
-            "detail": "Canonical submission compatibility" if server_running else "CENTRAL endpoint unavailable",
+            "healthy": server_running, "status_code": cli_status_code,
+            "detail_code": "CANONICAL_SUBMISSION_COMPATIBILITY" if server_running else "CENTRAL_ENDPOINT_UNAVAILABLE",
             "version": "1", "last_successful_submission": latest.get("CLI"), "recent_error": None,
         },
         "file_inbox_ingress": {
-            "healthy": file_state == "RUNNING", "state": file_state,
-            "detail": "File Inbox adapter heartbeat" if server_running and heartbeat_fresh else "File Inbox adapter heartbeat unavailable",
+            "healthy": file_status_code == "FILE_INGRESS_RUNNING", "status_code": file_status_code,
+            "detail_code": "FILE_INBOX_HEARTBEAT" if server_running and heartbeat_fresh else "FILE_INBOX_HEARTBEAT_MISSING",
             "watched_location": heartbeat.get("watched_location") if heartbeat else str(data_root / FILE_INBOX_DIRECTORY),
             "heartbeat": heartbeat_at or None,
             "last_successful_submission": file_last,
-            "delivery_retry": delivery_retry,
+            "delivery_retry_code": f"FILE_INGRESS_DELIVERY_RETRY_{delivery_retry}",
             "quarantine_count": quarantine_count,
-            "recent_error": recent_error,
+            # Never transport a raw exception into a presentation projection.
+            "reason_code": "FILE_INBOX_DIAGNOSTIC" if recent_error else None,
         },
     }
 

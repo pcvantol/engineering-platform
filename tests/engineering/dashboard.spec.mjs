@@ -6940,6 +6940,30 @@ test.describe("Engineering Status browser smoke", () => {
     }
   });
 
+  test("UI-GOLDEN-LOCALIZATION renders Console transport surfaces in strict mode", async ({ page }) => {
+    test.setTimeout(90_000);
+    const projection = {
+      scope: "PLATFORM",
+      components: {
+        http_ingress: { status_code: "HTTP_INGRESS_HEALTHY", healthy: true, detail_code: "CENTRAL_LISTENER_ENDPOINT", version: "1" },
+        cli_ingress: { status_code: "CLI_INGRESS_AVAILABLE", healthy: true, detail_code: "CANONICAL_SUBMISSION_COMPATIBILITY", version: "1" },
+        file_inbox_ingress: { status_code: "FILE_INGRESS_STOPPED", healthy: false, detail_code: "FILE_INBOX_HEARTBEAT_MISSING", reason_code: "FILE_INBOX_DIAGNOSTIC", delivery_retry_code: "FILE_INGRESS_DELIVERY_RETRY_PENDING", quarantine_count: 1 },
+      },
+    };
+    await page.route("**/health", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(projection) }));
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(`${dashboardUrl}/?localizationStrict=1`, { waitUntil: "domcontentloaded" });
+      await waitForDashboardReady(page);
+      await selectDashboardLocale(page, language);
+      await page.evaluate((health) => renderPlatformHealth(health), projection);
+      const fileCard = page.locator(".platform-health__component").filter({ hasText: DASHBOARD_MESSAGES[language]["transport.file"] });
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.status.FILE_INGRESS_STOPPED"]);
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.detail.FILE_INBOX_HEARTBEAT_MISSING"]);
+      await expect(fileCard).toContainText(DASHBOARD_MESSAGES[language]["transport.reason.FILE_INBOX_DIAGNOSTIC"]);
+      await expect(fileCard).not.toContainText("FILE_INGRESS_STOPPED");
+    }
+  });
+
   test("shows the managed Codex CLI provenance in host preflight", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {

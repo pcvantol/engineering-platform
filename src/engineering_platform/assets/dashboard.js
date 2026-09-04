@@ -8,7 +8,10 @@ function initialDashboardLocale() {
     return preferredLocale({});
   }
 }
-let dashboardLocale = initialDashboardLocale(), locale = createLocaleService(dashboardLocale);
+const strictLocalizationMode = new URLSearchParams(window.location.search).get("localizationStrict") === "1";
+let dashboardLocale = initialDashboardLocale(), locale = createLocaleService(dashboardLocale, {
+  strict: strictLocalizationMode, surface: "Operations Console",
+});
 const localizationCalls = new Map();
 function t(key, values = {}, fallback = key) {
   const text = locale.t(key, values, fallback);
@@ -167,6 +170,16 @@ document
     element.addEventListener("input", () => sanitizeDeclaredFreeInput(element)),
   );
 const OPERATIONAL_PRESENTATION_KEYS = {
+  none_active: "dashboard.health.none_active",
+  queue_empty: "dashboard.health.queue_empty",
+  queue_waiting: "dashboard.health.queue_waiting",
+  running: "dashboard.health.running",
+  not_running: "dashboard.health.not_running",
+  unknown: "dashboard.health.unknown",
+  ready: "dashboard.health.ready",
+  active: "dashboard.health.active",
+  blocked: "dashboard.health.blocked",
+  error: "dashboard.health.error",
   ENGINEERING_RUN_STALE: "operational.stale_run",
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
@@ -388,7 +401,7 @@ function dashboardHealthPresentation(status = latestStatus, platformHealth = lat
       : "";
     return [
       name,
-      String(component?.state || unavailable),
+      String(component?.status_code || component?.state || unavailable),
       healthy ? "good" : components ? "bad" : "unknown",
       {},
       { component: components ? componentKey : null, reason, transport: true },
@@ -419,7 +432,7 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
     item.dataset.health = tone;
     item.className = "dashboard-health__check";
     label.textContent = metadata.transport ? name : t("dashboard.health." + name);
-    result.textContent = metadata.transport ? transportState(value) : t("dashboard.health." + value, values, translate(value));
+    result.textContent = metadata.transport ? transportState(value) : dashboardHealthValue(value, values);
     result.className = "dashboard-health__value";
     item.append(label, result);
     if (metadata.reason) {
@@ -3553,9 +3566,33 @@ function healthComponentLabel(component) {
     file_inbox_ingress: t("transport.file"),
   }[component] || component;
 }
-function transportState(value) { return t("transport.state." + String(value), {}, String(value)); }
-function transportDetail(value) {
-  return t({"CENTRAL listener endpoint":"transport.detail.listener","Canonical submission compatibility":"transport.detail.compatibility","File Inbox adapter heartbeat":"transport.detail.heartbeat","File Inbox adapter heartbeat unavailable":"transport.detail.heartbeat_unavailable"}[String(value)] || "", {}, String(value));
+const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
+  HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
+  DEGRADED: "FILE_INGRESS_DEGRADED", RUNNING: "FILE_INGRESS_RUNNING", STOPPED: "FILE_INGRESS_STOPPED",
+});
+const LEGACY_TRANSPORT_DETAIL_CODES = Object.freeze({
+  "CENTRAL listener endpoint": "CENTRAL_LISTENER_ENDPOINT",
+  "CENTRAL listener unavailable": "CENTRAL_LISTENER_UNAVAILABLE",
+  "Canonical submission compatibility": "CANONICAL_SUBMISSION_COMPATIBILITY",
+  "CENTRAL endpoint unavailable": "CENTRAL_ENDPOINT_UNAVAILABLE",
+  "File Inbox adapter heartbeat": "FILE_INBOX_HEARTBEAT",
+  "File Inbox adapter heartbeat unavailable": "FILE_INBOX_HEARTBEAT_MISSING",
+});
+function transportState(code) {
+  const raw = String(code || ""), normalized = LEGACY_TRANSPORT_STATUS_CODES[raw] || raw;
+  return normalized.startsWith("HTTP_INGRESS_") || normalized.startsWith("CLI_INGRESS_") || normalized.startsWith("FILE_INGRESS_")
+    ? t("transport.status." + normalized)
+    : t("dashboard.health." + normalized);
+}
+function transportDetail(code) {
+  const normalized = LEGACY_TRANSPORT_DETAIL_CODES[String(code)] || String(code || "");
+  return t("transport.detail." + normalized);
+}
+const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
+  "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",
+]);
+function dashboardHealthValue(value, values) {
+  return DASHBOARD_HEALTH_VALUE_KEYS.has(value) ? t("dashboard.health." + value, values) : translate(value);
 }
 let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;
 let componentDetailsRefreshIntervalMs = 5e3;
@@ -3821,14 +3858,14 @@ function renderPlatformHealth(payload) {
     const transportFacts = [
       component?.last_successful_submission ? t("transport.last_submission") + " " + component.last_successful_submission : "",
       component?.watched_location ? t("transport.location") + " " + component.watched_location : "",
-      component?.delivery_retry ? t("transport.delivery_retry") + " " + t("transport.retry." + component.delivery_retry, {}, String(component.delivery_retry)) : "",
+      (component?.delivery_retry_code || component?.delivery_retry) ? t("transport.delivery_retry") + " " + t("transport.retry." + (component.delivery_retry_code || `FILE_INGRESS_DELIVERY_RETRY_${component.delivery_retry}`)) : "",
       Number.isFinite(Number(component?.quarantine_count)) ? t("transport.quarantine") + " " + component.quarantine_count : "",
-      component?.recent_error ? t("transport.recent_error") + " " + component.recent_error : "",
+      (component?.reason_code || component?.recent_error) ? t("transport.recent_error") + " " + t("transport.reason." + (component.reason_code || "FILE_INBOX_DIAGNOSTIC")) : "",
     ].filter(Boolean).join(" · ");
     detail.textContent =
-      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : transportState(component?.state || (componentHealthy ? "HEALTHY" : "DOWN"))) +
+      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN"))) +
       " · " +
-      transportDetail(component?.detail || component?.state || t("ui.no_component_explanation")) +
+      transportDetail(component?.detail_code || component?.detail || (componentHealthy ? "CENTRAL_LISTENER_ENDPOINT" : "CENTRAL_LISTENER_UNAVAILABLE")) +
       version +
       (uptime ? " · " + t("component.uptime") + " " + uptime : "") +
       (transportFacts ? " · " + transportFacts : "");
@@ -5751,7 +5788,7 @@ function updateLocalePicker() {
 }
 function changeDashboardLocale(value) {
   dashboardLocale = normalizeLocale(value);
-  locale = createLocaleService(dashboardLocale);
+  locale = createLocaleService(dashboardLocale, { strict: strictLocalizationMode, surface: "Operations Console" });
   dashboardClientState.locale = dashboardLocale;
   saveDashboardClientState();
   window.location.reload();
