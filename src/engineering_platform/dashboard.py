@@ -2580,7 +2580,15 @@ def _start_provider_login(root: Path, provider: str) -> None:
         if _provider_login_active and time.monotonic() - _provider_login_started_at < _PROVIDER_LOGIN_TIMEOUT_SECONDS:
             raise ValueError("Another provider sign-in is already in progress.")
     shell_command = "exec " + " ".join(shlex.quote(part) for part in command)
-    apple_script = f'tell application "Terminal" to do script {json.dumps(shell_command)}'
+    # `do script` can create a background tab when Terminal is not frontmost.
+    # Bring it forward first so the operator receives the interactive device or
+    # browser login prompt instead of a silent, hidden dispatch.
+    apple_script = "\n".join((
+        'tell application "Terminal"',
+        "activate",
+        f"do script {json.dumps(shell_command)}",
+        "end tell",
+    ))
     completed = LocalProcessProvider().execute(root, ("/usr/bin/osascript", "-e", apple_script))
     if completed.returncode:
         raise ValueError("Provider login window could not be opened.")

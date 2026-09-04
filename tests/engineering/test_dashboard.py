@@ -249,6 +249,10 @@ class DashboardStatusTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already in progress"):
                 dashboard._start_provider_login(Path("/workspace"), "GITHUB")
         self.assertEqual(process.return_value.execute.call_count, 1)
+        apple_script = process.return_value.execute.call_args.args[1][2]
+        self.assertIn('tell application "Terminal"', apple_script)
+        self.assertIn("activate", apple_script)
+        self.assertIn("/usr/local/bin/codex login --device-auth", apple_script)
 
     @patch("engineering_platform.dashboard.LocalProcessProvider")
     @patch("engineering_platform.dashboard.sys.platform", "darwin")
