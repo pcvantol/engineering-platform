@@ -460,7 +460,6 @@ def main(argv: list[str] | None = None) -> int:
             checkout = root / f"{project}-checkout"; checkout.mkdir(); subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
             command(server, "provision-declaration", "--data-root", str(dependabot_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
             command(server, "bind-repository", "--data-root", str(dependabot_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
-            command(server, "register-producer-binding", "--data-root", str(dependabot_root), "--producer-type", "DEPENDABOT", "--external-resource-type", "GITHUB_REPOSITORY", "--external-resource-identity", external, "--project-id", project, "--repository-id", repository, "--reason", "installed qualification")
         fixture = root / "dependabot-github-fixture.json"
         fixture.write_text(json.dumps({
             "example/repository-a": [{"number": 71, "title": "Bump example A", "html_url": "https://github.com/example/repository-a/pull/71", "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/a", "sha": "a" * 40}}],
@@ -469,6 +468,25 @@ def main(argv: list[str] | None = None) -> int:
         dependabot_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_DEPENDABOT_QUALIFICATION_FIXTURE": str(fixture)}
         process = subprocess.Popen([str(server), "serve", "--data-root", str(dependabot_root)], env=dependabot_environment)  # nosec B603
         try:
+            # The real Server owns both the worker and producer.  Establish
+            # actual worker readiness before enabling discovery through its
+            # administrative binding contract, so this qualification does not
+            # accidentally measure a child-start race instead of admission
+            # and lifecycle convergence.
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                try:
+                    with urlopen(f"http://127.0.0.1:{dependabot_port}/health", timeout=1) as response:  # nosec B310
+                        health = json.loads(response.read())
+                    if health.get("lifecycle_worker", {}).get("state") == "RUNNING":
+                        break
+                except (OSError, json.JSONDecodeError):
+                    pass
+                time.sleep(.1)
+            else:
+                raise RuntimeError("DEPENDABOT_LIFECYCLE_WORKER_NOT_READY")
+            for project, repository, external in dependabot_pairs:
+                command(server, "register-producer-binding", "--data-root", str(dependabot_root), "--producer-type", "DEPENDABOT", "--external-resource-type", "GITHUB_REPOSITORY", "--external-resource-identity", external, "--project-id", project, "--repository-id", repository, "--reason", "installed qualification")
             deadline = time.monotonic() + 15
             rows: list[tuple[str, str, str]] = []
             heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
