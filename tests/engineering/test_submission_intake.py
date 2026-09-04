@@ -29,3 +29,9 @@ class SubmissionIntakeTest(unittest.TestCase):
         for content in ("hello", "---\nproject: forge\nmode: MANAGED\n---\nhello", "---\nproject: forge\nrepository: forge-repo\nmode: INVALID\n---\nhello", "---\nproject: forge\nrepository: forge-repo\nmode: MANAGED\n---\n"):
             with self.assertRaises(SubmissionIntakeError):
                 self.parse(content)
+
+    def test_normalization_provenance_is_canonical_and_transport_neutral(self) -> None:
+        result = self.parse("---\nproject: forge\nrepository: forge-repo\nmode: MANAGED\n---\nPortable intent.\n")
+        submission = result["submission"]  # type: ignore[assignment]
+        self.assertEqual(submission["producer"]["version"], "submission-intake-v1")  # type: ignore[index]
+        self.assertEqual(submission["constraints"]["normalization"], "submission-intake-v1")  # type: ignore[index]

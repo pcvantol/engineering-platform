@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | HTTP `POST /v1/projects/{project}/submissions` | THIN_TRANSPORT | `request_from_mapping` → `submission_service.submit` in the Server CENTRAL database | no retry, queue, lifecycle worker, or execution call |
 | `engineering-platform submit` | THIN_TRANSPORT | parses local prompt/constraints → authenticated HTTP endpoint → same service | no SQLite import or direct CENTRAL-table access |
-| `engineering-platform-file-inbox` | THIN_TRANSPORT | explicit JSON envelope → authenticated HTTP endpoint → same service | only physical archive/receipt acknowledgement; no database, StateStore, lifecycle, queue, or execution |
+| Server-owned File Inbox | THIN_TRANSPORT | structured `.json` directly, or Human Intent `.md`/`.txt` through `submission-intake-v1` → authenticated HTTP endpoint → same service | only physical archive/receipt acknowledgement; no database, StateStore, lifecycle, queue, execution, CWD or repository inference |
 | `inbox_watcher.py` `once`, `run`, `install` | HISTORICAL_ONLY | fail closed with `WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED` before operational access | retained implementation is unreachable from installed supported ingress |
 | `submission_service.submit_legacy_file` | HISTORICAL_ONLY | direct test/provenance helper only | no script or supported runtime route reaches it |
 
@@ -92,6 +92,15 @@ The worker reaches `RUNNING` before the qualification-only provider stop;
 provider, checkout and PR side effects are intentionally outside this ingress
 gate.  CI executes the target in Engineering Platform validation.
 
+The same executable also qualifies the Server-owned durability windows (down
+before claim, after claim, after CENTRAL acceptance and empty restart), the
+HTTP/CLI/File Inbox negative matrix, storage authority and the Human Intent
+File Inbox 2× matrix.  Human files retain original intent in the canonical
+prompt, record normalization `submission-intake-v1`, and require explicit
+project, repository, mode and (for Genesis) target metadata.  See
+[`HUMAN_INTENT_FILE_INBOX.md`](HUMAN_INTENT_FILE_INBOX.md) for the public
+operator contract and historical-capability replacement map.
+
 File Inbox is an EP Server-owned ingress.  When the Server is stopped, no
 ingress claimant is active: files remain in `incoming/` and are delivered only
 after Server restart.  Its durable input/archive files, bounded quarantine
@@ -105,6 +114,11 @@ SAME_CANONICAL_SUBMISSION_SERVICE = PASS
 SAME_CENTRAL_ADMISSION_MODEL = PASS
 SAME_LIFECYCLE_INITIALIZATION_MODEL = PASS
 DIRECT_RUNNER_BYPASS = 0
+P_TRANSPORT_FILE_DURABILITY_GATE = PASS
+P_TRANSPORT_NEGATIVE_INGRESS_GATE = PASS
+P_TRANSPORT_STORAGE_AUTHORITY_GATE = PASS
+P_TRANSPORT_FILE_HUMAN_2X = PASS
+HUMAN_INTENT_FAIL_CLOSED = PASS
 ```
 
 ```text

@@ -60,10 +60,11 @@ class CanonicalSubmissionLifecycleTest(unittest.TestCase):
         assert receipt["transport"] == transport
 
     def _payload(self, key: str, mode: str = "MANAGED") -> dict[str, object]:
+        target = "\nTarget repository: /tmp/isolated-genesis-target" if mode == "GENESIS" else ""
         return {
             "repository_id": "isolated-repository",
             "producer": {"id": "canary", "type": "HUMAN", "version": "1"},
-            "prompt": f"Execution Mode: {mode.title()}\n\nValidate only; this isolated canary must not execute.",
+            "prompt": f"Execution Mode: {mode.title()}{target}\n\nValidate only; this isolated canary must not execute.",
             "idempotency_key": key,
             "correlation_id": "canary-correlation",
             "mission_id": "canary-mission",
