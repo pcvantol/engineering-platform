@@ -15,7 +15,7 @@ not a roadmap.
 | AC-07 | high | CENTRAL logging had a Server-bound checkout-file fallback. `REPOSITORY_LOCAL_COMPONENT_LOG_FALLBACK=0` | Server-bound logger now emits only bounded stderr on CENTRAL failure; no local persistent fallback. Legacy writers retire with AC-06. | IN_PROGRESS |
 | AC-08 | high | Qualification lacked CLI invalid-Genesis, complete Human negatives and port isolation. | Installed matrix now uses OS-assigned ports and includes the missing negative cases. | FIXED — installed matrix PASS |
 | AC-09 | high | Human receipt lacked complete audit-chain provenance. | Accepted receipt now records source/normalized digest, scope, requested mode, normalization method/version and submission identity. | IN_PROGRESS — run linkage and durable audit verification pending |
-| AC-10 | high | Localization guard omits some Server-generated surface and stale watcher copy. | Expand source/runtime guard after structural legacy deletion. | IN_PROGRESS |
+| AC-10 | high | Localization guard omits some Server-generated surface and stale watcher copy. | The Server-owned no-project title, explanation and selector now use five-locale keys; the broader Server-rendered surface audit remains in progress. | IN_PROGRESS |
 | AC-11 | high | Presentation-level Console/log compatibility transforms conceal legacy source structure. | Replace or retire with AC-06. | IN_PROGRESS |
 | AC-12 | high | Retroactive CENTRAL armed-repair end-to-end evidence is missing. | Recover contract, add installed positive/negative/restart gate. | IN_PROGRESS |
 

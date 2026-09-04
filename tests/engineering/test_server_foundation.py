@@ -239,6 +239,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             document = response.read().decode("utf-8")
         self.assertIn('data-project-id="none"', document)
         self.assertIn('id="noProjectSelected"', document)
+        self.assertIn('data-i18n="central.no_project_selected_title"', document)
+        self.assertIn('data-i18n="central.no_project_selected_body"', document)
+        self.assertNotIn('Geen project gekozen', document)
 
     def test_central_log_route_filters_sorts_and_paginates_before_responding(self) -> None:
         """The Console must receive a filtered CENTRAL page, never a sampled log tail."""
@@ -645,6 +648,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertNotIn('>DJConnect</option>', selector)
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
         self.assertIn('id="noProjectSelected"', no_project)
+        self.assertIn('data-i18n="central.no_project_selected_title"', no_project)
+        self.assertIn('data-i18n="central.no_project_selected_body"', no_project)
+        self.assertIn('data-i18n="project.label"', no_project)
+        self.assertNotIn('Geen project gekozen', no_project)
         self.assertIn('dashboard-status-banner--no-project', no_project)
         self.assertLess(no_project.index('id="noProjectSelected"'), no_project.index('<main class="dashboard-grid"'))
         self.assertNotIn(str(roots[0]), no_project)

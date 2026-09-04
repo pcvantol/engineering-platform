@@ -1457,9 +1457,9 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
         configuration_inbox="Niet beschikbaar",
     )
     options = _console_project_options(None, projects)
-    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
     boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
-    empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong>Geen project gekozen</strong><span>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</span></aside>'''
+    empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
 body[data-project-id="none"] #promptHistory,
@@ -1509,7 +1509,7 @@ def _selected_project_console_document(project_id: str, projects: list[dict[str,
         configuration_inbox="Not available from the CENTRAL Console.",
     )
     options = _console_project_options(project_id, projects)
-    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
     document = document.replace(
         b'<label class="dashboard-locale"', selector.encode("utf-8") + b'<label class="dashboard-locale"', 1,
     )
