@@ -72,6 +72,21 @@ def wait_for_file(path: Path, timeout: float = 15) -> None:
         raise RuntimeError(f"timed out waiting for {path}")
 
 
+def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
+    """Inspect the installed fixture without treating transport files as DBs."""
+    databases = list(root.rglob("engineering.db"))
+    canonical = data_root / "engineering.db"
+    local = [path for path in databases if path != canonical]
+    state_stores = [path for path in root.rglob("*") if path.name.lower() in {"statestore", "state-store"}]
+    if databases != [canonical] or local or state_stores:
+        raise RuntimeError("STORAGE_AUTHORITY_INVARIANT_FAILED")
+    inbox = data_root / "file-inbox"
+    expected = {"incoming", "processing", "accepted", "quarantine", "file-inbox-heartbeat.json"}
+    if not expected <= {path.name for path in inbox.iterdir()}:
+        raise RuntimeError("TRANSPORT_STATE_LAYOUT_FAILED")
+    return {"operational_database_authorities": 1, "local_operational_db": 0, "local_statestore": 0, "secondary_operational_db": 0, "transport_state": "TRANSPORT_DELIVERY_STATE"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
@@ -311,7 +326,8 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 process.terminate(); process.wait(timeout=5)
         evidence["EMPTY_RESTART_STABILITY"] = {"pass": True}
-        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "matrix": evidence}, sort_keys=True))
+        evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
+        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "matrix": evidence}, sort_keys=True))
     return 0
 
 
