@@ -70,7 +70,10 @@ class FileInboxTransportTest(unittest.TestCase):
         """Liveness comes from the real adapter service, never a UI fixture."""
         installation_inbox = self.root / server.FILE_INBOX_DIRECTORY
         service = file_inbox.FileInboxService(
-            installation_inbox, server=f"http://127.0.0.1:{self.port}", credential=self.credential,
+            installation_inbox,
+            admission=lambda envelope, receipt_id, received_at: server._admit_server_owned_file_inbox(
+                self.root, envelope, receipt_id, received_at,
+            ),
             interval_seconds=0.02,
         )
         service.start()
@@ -82,5 +85,21 @@ class FileInboxTransportTest(unittest.TestCase):
                 time.sleep(0.02)
             self.assertEqual(component["status_code"], "FILE_INGRESS_RUNNING")
             self.assertTrue(component["healthy"])
+        finally:
+            service.stop()
+
+    def test_live_file_inbox_without_submission_auth_is_not_ready(self) -> None:
+        """A child thread without admission auth is never a healthy ingress."""
+        installation_inbox = self.root / server.FILE_INBOX_DIRECTORY
+        service = file_inbox.FileInboxService(installation_inbox, interval_seconds=0.02)
+        service.start()
+        try:
+            for _ in range(50):
+                component = server.status(self.root)["components"]["file_inbox_ingress"]
+                if component["status_code"] == "FILE_INGRESS_NOT_READY":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(component["status_code"], "FILE_INGRESS_NOT_READY")
+            self.assertFalse(component["healthy"])
         finally:
             service.stop()

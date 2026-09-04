@@ -3541,7 +3541,7 @@ function healthComponentLabel(component) {
 }
 const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
   HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
-  DEGRADED: "FILE_INGRESS_DEGRADED", RUNNING: "FILE_INGRESS_RUNNING", STOPPED: "FILE_INGRESS_STOPPED",
+  DEGRADED: "FILE_INGRESS_DEGRADED", RUNNING: "FILE_INGRESS_RUNNING", NOT_READY: "FILE_INGRESS_NOT_READY", STOPPED: "FILE_INGRESS_STOPPED",
 });
 const LEGACY_TRANSPORT_DETAIL_CODES = Object.freeze({
   "CENTRAL listener endpoint": "CENTRAL_LISTENER_ENDPOINT",
@@ -3636,12 +3636,12 @@ function showComponentModal(payload) {
   componentDetailField(
     fields,
     t("component.status"),
-    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : ["http_ingress", "cli_ingress", "file_inbox_ingress"].includes(payload.component) ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : payload.kind === "TRANSPORT" ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
       (transportDetail(payload.detail || payload.state || t("ui.no_component_explanation"))),
   );
   componentDetailField(fields, t("component.version"), payload.version);
-  if (["http_ingress", "cli_ingress", "file_inbox_ingress"].includes(payload.component)) {
+  if (payload.kind === "TRANSPORT") {
     const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
     componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
     componentDetailField(fields, t("transport.location"), payload.watched_location);

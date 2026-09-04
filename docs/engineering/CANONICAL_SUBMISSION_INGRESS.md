@@ -33,13 +33,24 @@ boundary, so durable receipts distinguish HTTP and CLI without splitting their
 lifecycle. `--correlation-id`, `--mission-id`, `--engineering-action-id` and a
 JSON-object `--constraints-file` cover the remaining normalized request fields.
 
-The installed `engineering-platform-file-inbox` adapter accepts only UTF-8 JSON:
+The Server-owned File Inbox child accepts structured UTF-8 JSON and human
+intent `.txt`/`.md` files from its configured installation `file-inbox/`
+directory. It is not an installed executable and cannot be started apart from
+EP Server:
 
 ```json
 {"project_id":"djconnect","submission":{"repository_id":"djconnect","producer":{"id":"file-inbox","type":"HUMAN"},"prompt":"..."}}
 ```
 
-There is no default project or current-directory inference. It moves one file
+There is no default project or current-directory inference. File Inbox is an
+explicit bounded internal principal (`FILE_INBOX`), not an impersonated
+project consumer: it bypasses only external bearer authentication and then
+calls the same canonical Submission Service as HTTP and CLI. Project and
+repository registration, mode/Genesis validation, idempotency, admission and
+lifecycle validation all remain mandatory. No File Inbox credential, project
+token map or internal HTTP endpoint exists.
+
+It moves one file
 through `incoming/`, `processing/`, `accepted/`, or `quarantine/`. The SHA-256
 of the physical file is its deterministic transport receipt/idempotency key,
 so a restart after CENTRAL acceptance replays the same canonical request and
@@ -86,6 +97,6 @@ database is migrated or read.
 3. Start an isolated installed-package CENTRAL and perform an acceptance-only
    HTTP/CLI/file canary with a disposable project submission; confirm all three
    event boundaries end in `NOT_DISPATCHED`. Do not use the live B8 CENTRAL.
-4. Configure the file adapter with its explicit Server URL and scoped
-   credential. B9 remains forbidden until B8C passes, B8D passes and the
+4. Start EP Server; its Server-owned File Inbox child recovers pending physical
+   delivery state. B9 remains forbidden until B8C passes, B8D passes and the
    execution protocol is explicitly ready.

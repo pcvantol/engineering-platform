@@ -17,7 +17,6 @@ engineering-execution-host = "engineering_platform.__main__:main"
 engineering-platform-host = "engineering_platform.__main__:main"
 engineering-platform-server = "engineering_platform.server:main"
 engineering-platform = "engineering_platform.submission_cli:main"
-engineering-platform-file-inbox = "engineering_platform.file_inbox:main"
 engineering-project-agent = "engineering_platform.project_agent:main"
 
 [tool.setuptools]

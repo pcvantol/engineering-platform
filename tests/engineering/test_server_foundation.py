@@ -326,6 +326,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         inbox = self.root / server.FILE_INBOX_DIRECTORY
         inbox.mkdir(parents=True)
         (inbox / file_inbox.HEARTBEAT_FILENAME).write_text(json.dumps({
+            "state": "READY", "readiness": "SUBMISSION_CAPABLE",
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "watched_location": str(inbox), "delivery_retry": "NONE",
             "quarantine_count": 1, "recent_error": "MALFORMED_FILE",

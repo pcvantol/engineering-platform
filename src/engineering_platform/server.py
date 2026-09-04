@@ -23,7 +23,7 @@ import sqlite3
 import subprocess  # nosec B404
 import sys
 import time
-from typing import Protocol
+from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
 from urllib.parse import SplitResult, parse_qs, parse_qsl, urlencode, urlsplit
@@ -46,6 +46,7 @@ from .platform_components import (
     PLATFORM_COMPONENT_BY_ID,
     PLATFORM_COMPONENT_IDS,
     PLATFORM_COMPONENTS,
+    PLATFORM_COMPONENT_ROUTE_PATTERN,
 )
 from .component_logging import (
     LOG_LEVELS_AT_OR_ABOVE,
@@ -650,6 +651,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     except ValueError:
         heartbeat_fresh = False
     delivery_retry = str(heartbeat.get("delivery_retry", "NONE")) if heartbeat else "NONE"
+    submission_ready = bool(heartbeat and heartbeat.get("state") == "READY" and heartbeat.get("readiness") == "SUBMISSION_CAPABLE")
     quarantine_count = int(heartbeat.get("quarantine_count", 0)) if heartbeat and isinstance(heartbeat.get("quarantine_count", 0), int) else 0
     recent_error = heartbeat.get("recent_error") if heartbeat else None
     # A live watcher with pending delivery, a bounded adapter diagnostic, or
@@ -658,6 +660,7 @@ def _transport_components(data_root: Path, *, server_running: bool) -> dict[str,
     file_attention_needed = delivery_retry != "NONE" or bool(recent_error) or quarantine_count > 0
     file_status_code = (
         "FILE_INGRESS_STOPPED" if not server_running or not heartbeat_fresh
+        else "FILE_INGRESS_NOT_READY" if not submission_ready
         else "FILE_INGRESS_DEGRADED" if file_attention_needed else "FILE_INGRESS_RUNNING"
     )
     return {
@@ -1571,6 +1574,41 @@ def _authenticated_consumer(connection: sqlite3.Connection, token: object, proje
     return str(row[0]) if row else None
 
 
+def _admit_server_owned_file_inbox(
+    data_root: Path, envelope: dict[str, object], receipt_id: str, received_at: str,
+) -> dict[str, object]:
+    """Use the canonical application service for the Server's File Inbox child.
+
+    The adapter bypasses only external consumer authentication. Request
+    parsing, project/repository scope, execution-mode validation, idempotency,
+    admission and lifecycle initialization remain owned by ``submission_service``.
+    """
+    project_id = envelope.get("project_id")
+    submission = envelope.get("submission")
+    if not isinstance(project_id, str) or not isinstance(submission, Mapping):
+        raise file_inbox.FileInboxError("MALFORMED_FILE")
+    payload = dict(submission)
+    payload["idempotency_key"] = receipt_id
+    payload["transport_receipt_id"] = receipt_id
+    payload["transport_received_at"] = received_at
+    constraints = payload.get("constraints")
+    if constraints is None:
+        payload["constraints"] = {"transport_principal": "FILE_INBOX"}
+    elif isinstance(constraints, Mapping):
+        payload["constraints"] = {**constraints, "transport_principal": "FILE_INBOX"}
+    try:
+        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+            request = submission_service.request_from_mapping(project_id, payload, transport="FILE_INBOX")
+            return submission_service.submit(connection, request).to_dict()
+    except submission_service.SubmissionError as error:
+        raise file_inbox.FileInboxError(error.code) from error
+    except (OSError, sqlite3.Error) as error:
+        # A Server/database interruption is delivery availability, never an
+        # execution failure. The physical item remains in ``processing`` for
+        # the bounded File Inbox retry loop.
+        raise URLError("CENTRAL_UNAVAILABLE") from error
+
+
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _status(self) -> dict[str, object]:
         report = status(self.server.data_root)  # type: ignore[attr-defined]
@@ -1663,7 +1701,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path in {"/api/process-metrics", "/api/usage"}:
             self._send(200, {"scope": "PLATFORM", "available": False})
             return True
-        if re.fullmatch(r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path):
+        if re.fullmatch(rf"/api/logs/(?:all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path):
             component = request.path.rsplit("/", 1)[-1]
             self._send(200, _central_console_component_logs(self.server.data_root, component) or {"error": "LOG_COMPONENT_UNKNOWN"})  # type: ignore[attr-defined]
             return True
@@ -1827,7 +1865,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
             self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
             return
-        log_match = re.fullmatch(r"/api/logs/(all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path)
+        log_match = re.fullmatch(rf"/api/logs/(all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path)
         if log_match and method == "do_GET":
             query = parse_qs(request.query)
             try:
@@ -2002,7 +2040,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/configuration":
                 self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
                 return
-            if re.fullmatch(r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path):
+            if re.fullmatch(rf"/api/logs/(?:all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path):
                 component = request.path.rsplit("/", 1)[-1]
                 payload = _central_console_component_logs(self.server.data_root, component)  # type: ignore[attr-defined]
                 if payload is None:
@@ -2267,7 +2305,12 @@ def serve(data_root: Path) -> int:
     # The File Inbox is an installed Server child, not a Dashboard or
     # checkout-owned watcher.  Its heartbeat is the source for its platform
     # component health; a prior successful file is never treated as liveness.
-    inbox_service = file_inbox.FileInboxService(data_root / FILE_INBOX_DIRECTORY, server=f"http://{config.bind_host}:{config.bind_port}", credential=os.environ.get("EP_CONSUMER_TOKEN"))
+    inbox_service = file_inbox.FileInboxService(
+        data_root / FILE_INBOX_DIRECTORY,
+        admission=lambda envelope, receipt_id, received_at: _admit_server_owned_file_inbox(
+            data_root, envelope, receipt_id, received_at,
+        ),
+    )
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
@@ -2281,24 +2324,15 @@ def serve(data_root: Path) -> int:
     # A fresh installation must have operational evidence before its first
     # submission.  These are genuine Server lifecycle events, persisted in
     # the same CENTRAL store that backs the Console's combined log table.
-    for component, event in (
-        ("ep_server", "ep_server_started"),
-        ("platform_database", "central_log_store_ready"),
-        ("lifecycle_worker", "lifecycle_worker_started"),
-        ("operations_console", "operations_console_available"),
-        ("dashboard_relay", "dashboard_relay_available"),
-        ("http_ingress", "http_ingress_available"),
-        ("cli_ingress", "cli_ingress_available"),
-        ("file_inbox_ingress", "file_inbox_service_started"),
-    ):
+    for definition in PLATFORM_COMPONENTS:
         log_event(
             component_logger(
-                data_root, component,
+                data_root, definition.id,
                 central_database=data_root / SERVER_DATABASE_FILENAME,
             ),
             logging.INFO,
-            event,
-            context={"target_component": component},
+            definition.startup_event,
+            context={"target_component": definition.id},
         )
     try:
         server.serve_forever()

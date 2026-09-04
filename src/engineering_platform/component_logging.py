@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 
 from .agent_state import redact_diagnostic
@@ -126,6 +127,17 @@ class SQLiteLogHandler(logging.Handler):
             finally:
                 connection.close()
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError, TypeError, ValueError):
+            # A Server-bound Platform component has exactly one persistent
+            # authority: CENTRAL.  Falling back into an arbitrary checkout
+            # would silently create a second supported log store.  Legacy
+            # callers without a CENTRAL binding retain their historical
+            # bootstrap behaviour only until their runtime is retired.
+            if self.central_database is not None:
+                try:
+                    sys.stderr.write("engineering-platform: CENTRAL component log unavailable\n")
+                except OSError:
+                    pass
+                return
             try:
                 self._fallback_handler().emit(record)
             except OSError:

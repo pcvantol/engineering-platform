@@ -7,7 +7,6 @@ consulted for authority.
 """
 from __future__ import annotations
 
-import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -15,6 +14,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from collections.abc import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from .submission_intake import SubmissionIntakeError, normalize_human_file
@@ -29,6 +29,9 @@ SUPPORTED_FILE_SUFFIXES = frozenset({".json", ".txt", ".md"})
 
 class FileInboxError(ValueError):
     """A bounded, terminal file-transport rejection."""
+
+
+Admission = Callable[[dict[str, object], str, str], dict[str, object]]
 
 
 def _utcnow() -> str:
@@ -114,8 +117,18 @@ def _submit(server: str, credential: str, envelope: dict[str, object], *, receip
     return result
 
 
-def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
-    """Deliver every pending file once; unavailable CENTRAL leaves it retryable."""
+def process_once(
+    root: Path, *, server: str | None = None, credential: str | None = None,
+    admission: Admission | None = None,
+) -> dict[str, int]:
+    """Deliver every pending file once; unavailable CENTRAL leaves it retryable.
+
+    The installed Server child supplies ``admission``.  It is an in-process
+    call to the same canonical application service used after HTTP/CLI caller
+    authentication; File Inbox never gets a project bearer credential.
+    ``server``/``credential`` remain private test seams for the transport's
+    public HTTP equivalence tests and are not an installed executable surface.
+    """
     folders = _layout(root)
     counts = {"accepted": 0, "quarantined": 0, "retryable": 0}
     for source in sorted(path for path in folders["incoming"].iterdir() if path.suffix.lower() in SUPPORTED_FILE_SUFFIXES):
@@ -129,11 +142,25 @@ def process_once(root: Path, *, server: str, credential: str) -> dict[str, int]:
             if os.environ.get(QUALIFICATION_FAULT_ENVIRONMENT) == "AFTER_CLAIM_BEFORE_SUBMIT":
                 os._exit(86)  # nosec B605 -- deliberate crash-canary boundary
             receipt_id, received_at = f"file:{digest}", _utcnow()
-            receipt = _submit(server, credential, envelope, receipt_id=receipt_id, received_at=received_at)
+            if admission is not None:
+                receipt = admission(envelope, receipt_id, received_at)
+            elif server is not None and credential is not None:
+                receipt = _submit(server, credential, envelope, receipt_id=receipt_id, received_at=received_at)
+            else:
+                raise FileInboxError("FILE_INBOX_AUTH_UNAVAILABLE")
             if os.environ.get(QUALIFICATION_FAULT_ENVIRONMENT) == "AFTER_CENTRAL_ACCEPT_BEFORE_ARCHIVE":
                 os._exit(87)  # nosec B605 -- deliberate crash-canary boundary
+            submission = envelope["submission"]
+            constraints = submission.get("constraints") if isinstance(submission, dict) else {}
+            normalized = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
             _write_receipt(_receipt_path(folders["accepted"], digest), {
                 "transport": "FILE_INBOX", "receipt_id": receipt_id, "received_at": received_at,
+                "source_digest": digest, "project_id": envelope["project_id"],
+                "repository_id": submission.get("repository_id") if isinstance(submission, dict) else None,
+                "requested_mode": constraints.get("mode") if isinstance(constraints, dict) else None,
+                "normalization_method": constraints.get("normalization") if isinstance(constraints, dict) else "STRUCTURED",
+                "normalization_version": constraints.get("normalization") if isinstance(constraints, dict) else "STRUCTURED_V1",
+                "normalized_submission_digest": hashlib.sha256(normalized).hexdigest(),
                 "submission_id": receipt["submission_id"], "duplicate": bool(receipt.get("duplicate")),
             })
             _move(claimed, folders["accepted"] / f"{digest}.json")
@@ -172,8 +199,11 @@ def read_heartbeat(root: Path) -> dict[str, object] | None:
 class FileInboxService:
     """Installed Server-composed File Inbox adapter with a bounded heartbeat."""
 
-    def __init__(self, root: Path, *, server: str, credential: str | None, interval_seconds: float = 2.0) -> None:
-        self.root, self.server, self.credential = root, server, credential
+    def __init__(
+        self, root: Path, *, admission: Admission | None = None,
+        server: str | None = None, credential: str | None = None, interval_seconds: float = 2.0,
+    ) -> None:
+        self.root, self.admission, self.server, self.credential = root, admission, server, credential
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -182,21 +212,25 @@ class FileInboxService:
 
     def _write_heartbeat(self) -> None:
         folders = _layout(self.root)
+        ready = self.admission is not None
         payload = {
-            "state": "RUNNING",
+            # A live thread without a submission credential cannot admit a
+            # file.  Process liveness must never be projected as readiness.
+            "state": "READY" if ready else "RUNNING_NOT_READY",
+            "readiness": "SUBMISSION_CAPABLE" if ready else "AUTHENTICATION_UNAVAILABLE",
             "updated_at": _utcnow(),
             "watched_location": str(self.root),
             "delivery_retry": "PENDING" if self._counts["retryable"] else "NONE",
             "quarantine_count": len(list(folders["quarantine"].glob("*.json"))),
-            "recent_error": self._recent_error,
+            "recent_error": self._recent_error or (None if ready else "FILE_INBOX_AUTH_UNAVAILABLE"),
         }
         _write_receipt(heartbeat_path(self.root), payload)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                if self.credential:
-                    self._counts = process_once(self.root, server=self.server, credential=self.credential)
+                if self.admission is not None:
+                    self._counts = process_once(self.root, admission=self.admission)
                     self._recent_error = None
                 self._write_heartbeat()
             except (OSError, ValueError, URLError) as error:
@@ -213,20 +247,3 @@ class FileInboxService:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=self.interval_seconds + 1)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="engineering-platform-file-inbox")
-    parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--server", required=True)
-    parser.add_argument("--credential-env", default="EP_CONSUMER_TOKEN")
-    args = parser.parse_args(argv)
-    credential = os.environ.get(args.credential_env)
-    if not credential:
-        parser.error(f"{args.credential_env} is required")
-    print(json.dumps(process_once(args.root, server=args.server, credential=credential), sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

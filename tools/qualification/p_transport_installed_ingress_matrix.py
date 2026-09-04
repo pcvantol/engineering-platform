@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -72,6 +73,13 @@ def wait_for_file(path: Path, timeout: float = 15) -> None:
         raise RuntimeError(f"timed out waiting for {path}")
 
 
+def isolated_port() -> int:
+    """Ask the OS for an ephemeral loopback port for this isolated fixture."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
     """Inspect the installed fixture without treating transport files as DBs."""
     databases = list(root.rglob("engineering.db"))
@@ -103,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "--no-index", "--find-links", str(wheelhouse), "engineering-platform"], check=True, capture_output=True, text=True)  # nosec B603
         server, cli = venv / "bin" / "engineering-platform-server", venv / "bin" / "engineering-platform"
-        port = 18765
+        port = isolated_port()
         command(server, "init", "--data-root", str(data_root), "--bind-port", str(port))
         base = f"http://127.0.0.1:{port}"
         evidence: dict[str, dict[str, object]] = {}
@@ -141,12 +149,15 @@ def main(argv: list[str] | None = None) -> int:
                         invalid.write_text("[]", encoding="utf-8")
                         invalid_prompt = root / "invalid-mode.md"
                         invalid_prompt.write_text("Execution Mode: INVALID\n", encoding="utf-8")
+                        invalid_genesis_prompt = root / "invalid-genesis-target.md"
+                        invalid_genesis_prompt.write_text("Execution Mode: GENESIS\nTarget repository: relative\n", encoding="utf-8")
                         cases = (
                             ("missing_prompt", ["--prompt-file", str(root / "missing.md")]),
                             ("unknown_project", ["--project", "unknown-project"]),
                             ("unknown_repository", ["--repository", "unknown-repository"]),
                             ("invalid_constraints", ["--constraints-file", str(invalid)]),
                             ("invalid_mode", ["--prompt-file", str(invalid_prompt)]),
+                            ("invalid_genesis_target", ["--prompt-file", str(invalid_genesis_prompt)]),
                         )
                         base_args = [str(cli), "submit", "--server", base, "--project", project, "--repository", repository, "--producer-id", "installed-canary", "--producer-type", "HUMAN", "--prompt-file", str(prompt)]
                         for name, replacement in cases:
@@ -318,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             process.terminate(); process.wait(timeout=5)
         # Canary E: a fresh empty Server-owned Inbox remains healthy across a
         # normal Server restart and creates no delivery state.
-        empty_root = root / "empty-central"; empty_port = port + 1
+        empty_root = root / "empty-central"; empty_port = isolated_port()
         command(server, "init", "--data-root", str(empty_root), "--bind-port", str(empty_port))
         empty_environment = {**os.environ, "EP_QUALIFICATION_INITIALIZE_ONLY": "1"}
         for restart in range(2):
@@ -329,6 +340,44 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 process.terminate(); process.wait(timeout=5)
         evidence["EMPTY_RESTART_STABILITY"] = {"pass": True}
+        # One Server-owned File Inbox is an internal principal, not a
+        # single-project bearer consumer. Prove two explicit project scopes
+        # admit independently while cross-project and unknown envelopes are
+        # quarantined without any EP_CONSUMER_TOKEN in the Server process.
+        multi_root, multi_port = root / "multi-project-central", isolated_port()
+        command(server, "init", "--data-root", str(multi_root), "--bind-port", str(multi_port))
+        multi_pairs = (("file-multi-a", "file-multi-repository-a"), ("file-multi-b", "file-multi-repository-b"))
+        for project, repository in multi_pairs:
+            command(server, "bootstrap-topology", "--data-root", str(multi_root), "--project-id", project, "--repository-id", repository)
+            checkout = root / f"{project}-checkout"; checkout.mkdir(); subprocess.run(["git", "init", "-q", str(checkout)], check=True)  # nosec B603
+            command(server, "provision-declaration", "--data-root", str(multi_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+            command(server, "bind-repository", "--data-root", str(multi_root), "--project-id", project, "--repository-id", repository, "--path", str(checkout))
+        multi_incoming = multi_root / "file-inbox" / "incoming"; multi_incoming.mkdir(parents=True, exist_ok=True)
+        multi_files = {
+            "project-a.json": {"project_id": "file-multi-a", "submission": payload("file-multi-repository-a", "MANAGED", "file-multi-a")},
+            "project-b.json": {"project_id": "file-multi-b", "submission": payload("file-multi-repository-b", "MANAGED", "file-multi-b")},
+            "cross-project.json": {"project_id": "file-multi-a", "submission": payload("file-multi-repository-b", "MANAGED", "file-multi-cross")},
+            "unknown-project.json": {"project_id": "unknown-file-project", "submission": payload("file-multi-repository-a", "MANAGED", "file-multi-unknown")},
+        }
+        encoded_multi = {name: json.dumps(body, sort_keys=True) for name, body in multi_files.items()}
+        for name, body in encoded_multi.items(): (multi_incoming / name).write_text(body, encoding="utf-8")
+        no_file_credential = {key: value for key, value in os.environ.items() if key != "EP_CONSUMER_TOKEN"}
+        no_file_credential["EP_QUALIFICATION_INITIALIZE_ONLY"] = "1"
+        process = subprocess.Popen([str(server), "serve", "--data-root", str(multi_root)], env=no_file_credential)  # nosec B603
+        try:
+            for name in ("project-a.json", "project-b.json"):
+                digest = __import__("hashlib").sha256(encoded_multi[name].encode()).hexdigest()
+                receipt_path = multi_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
+                wait_for_file(receipt_path)
+                wait_for_dispatch(server, multi_root, str(json.loads(receipt_path.read_text())["submission_id"]))
+            deadline = time.monotonic() + 15
+            quarantine = multi_root / "file-inbox" / "quarantine"
+            while len(list(quarantine.glob("*.receipt.json"))) < 2 and time.monotonic() < deadline: time.sleep(.1)
+            if central_counts(multi_root, "file-multi-a") != (1, 1) or central_counts(multi_root, "file-multi-b") != (1, 1) or len(list(quarantine.glob("*.receipt.json"))) != 2:
+                raise RuntimeError("FILE_INBOX_MULTI_PROJECT_AUTHORITY_FAILED")
+            evidence["FILE_INBOX_MULTI_PROJECT_AUTHORITY"] = {"pass": True, "cross_project_submissions": 0}
+        finally:
+            process.terminate(); process.wait(timeout=5)
         # Human Intent 2×: physical Markdown -> deterministic intake -> CENTRAL.
         for human_mode in ("MANAGED", "GENESIS"):
             project, repository = f"human-{human_mode.lower()}", f"human-{human_mode.lower()}-repo"
@@ -355,13 +404,21 @@ def main(argv: list[str] | None = None) -> int:
                     physical = lambda: [path for path in quarantine.glob("*.json") if not path.name.endswith(".receipt.json")]
                     before_quarantine = len(physical())
                     invalid_human = {
+                        "human-malformed-metadata.md": "---\nproject human\n---\nintent",
                         "human-missing-project.md": "---\nrepository: x\nmode: MANAGED\n---\nintent",
+                        "human-missing-repository.md": f"---\nproject: {project}\nmode: MANAGED\n---\nintent",
                         "human-unknown-project.md": "---\nproject: unknown\nrepository: x\nmode: MANAGED\n---\nintent",
+                        "human-unknown-repository.md": f"---\nproject: {project}\nrepository: unknown\nmode: MANAGED\n---\nintent",
                         "human-invalid-mode.md": f"---\nproject: {project}\nrepository: {repository}\nmode: INVALID\n---\nintent",
                         "human-genesis-target.md": f"---\nproject: {project}\nrepository: {repository}\nmode: GENESIS\n---\nintent",
+                        "human-invalid-genesis-target.md": f"---\nproject: {project}\nrepository: {repository}\nmode: GENESIS\ntarget: relative\n---\nintent",
                         "human-empty.md": f"---\nproject: {project}\nrepository: {repository}\nmode: MANAGED\n---\n",
+                        "human-binary.md": b"\x00not-text",
+                        "human-oversized.md": b"x" * 131073,
                     }
-                    for name, content in invalid_human.items(): (data_root / "file-inbox" / "incoming" / name).write_text(content, encoding="utf-8")
+                    for name, content in invalid_human.items():
+                        target = data_root / "file-inbox" / "incoming" / name
+                        target.write_bytes(content) if isinstance(content, bytes) else target.write_text(content, encoding="utf-8")
                     deadline = time.monotonic() + 15
                     while len(physical()) < before_quarantine + len(invalid_human) and time.monotonic() < deadline: time.sleep(.1)
                     if len(physical()) != before_quarantine + len(invalid_human) or central_counts(data_root, project) != (1, 1): raise RuntimeError("HUMAN_INTENT_FAIL_CLOSED")

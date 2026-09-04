@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | HTTP `POST /v1/projects/{project}/submissions` | THIN_TRANSPORT | `request_from_mapping` → `submission_service.submit` in the Server CENTRAL database | no retry, queue, lifecycle worker, or execution call |
 | `engineering-platform submit` | THIN_TRANSPORT | parses local prompt/constraints → authenticated HTTP endpoint → same service | no SQLite import or direct CENTRAL-table access |
-| Server-owned File Inbox | THIN_TRANSPORT | structured `.json` directly, or Human Intent `.md`/`.txt` through `submission-intake-v1` → authenticated HTTP endpoint → same service | only physical archive/receipt acknowledgement; no database, StateStore, lifecycle, queue, execution, CWD or repository inference |
+| Server-owned File Inbox | SERVER_INTERNAL_THIN_TRANSPORT | structured `.json` directly, or Human Intent `.md`/`.txt` through `submission-intake-v1` → bounded in-process `FILE_INBOX` principal → `request_from_mapping` → `submission_service.submit` | only external caller authentication is bypassed; project/repository, mode/Genesis, idempotency, admission and lifecycle validation remain mandatory; no credential, HTTP endpoint, database, StateStore, lifecycle, queue, execution, CWD or repository inference |
 | `inbox_watcher.py` `once`, `run`, `install` | HISTORICAL_ONLY | fail closed with `WATCHER_RETIRED_CENTRAL_LIFECYCLE_REQUIRED` before operational access | retained implementation is unreachable from installed supported ingress |
 | `submission_service.submit_legacy_file` | HISTORICAL_ONLY | direct test/provenance helper only | no script or supported runtime route reaches it |
 
@@ -33,10 +33,10 @@ remain unavailable until the operator selects a project.
 | --- | --- | --- | --- |
 | HTTP/API ingress | `HEALTHY`, `DEGRADED`, `DOWN` | listener/endpoint, useful protocol/runtime version, most recent successful submission, bounded error | queue, run, execution or CENTRAL retry state |
 | CLI ingress | `AVAILABLE`, `DEGRADED`, `UNAVAILABLE` | canonical-submission compatibility, useful CLI/runtime version, most recent successful CLI submission, bounded error | daemon/running claim and lifecycle state |
-| File Inbox ingress | `RUNNING`, `DEGRADED`, `STOPPED` | adapter heartbeat, watched location, most recent submission, ingress-delivery retry, quarantine count, bounded error | CENTRAL execution/run retry or lifecycle state |
+| File Inbox ingress | `RUNNING`, `NOT_READY`, `DEGRADED`, `STOPPED` | adapter heartbeat, watched location, submission-readiness, most recent submission, ingress-delivery retry, quarantine count, bounded error | CENTRAL execution/run retry or lifecycle state |
 
 File Inbox retry information denotes delivery from the ingress adapter to the
-canonical Server admission route only. It is deliberately not an execution
+canonical Server admission application service only. It is deliberately not an execution
 retry counter. Detail panels apply the selected Console locale to timestamps
 and expose diagnostic identifiers rather than exception text, credentials, or
 other secrets.
@@ -107,6 +107,32 @@ after Server restart.  Its durable input/archive files, bounded quarantine
 receipts and secret-free heartbeat are transport evidence, never Actions,
 runs or an operational database.  Transport durability is therefore distinct
 from independent transport availability.
+
+### File Inbox internal-principal security decision
+
+`FILE_INBOX` is a Server-owned in-process principal, not an external consumer.
+It has **no** bearer credential, project-token store, internal HTTP route or
+persisted secret. The Server passes a bounded in-process admission callback to
+its child adapter. That callback invokes the same canonical submission
+application service as authenticated HTTP and CLI after those transports have
+completed caller authentication. It cannot infer a project from a folder,
+checkout, CWD or default; each physical envelope still supplies an explicit
+project and repository and CENTRAL validates their active binding.
+
+The installed matrix proves project A/repository A and project B/repository B
+admit through the same Server-owned Inbox, while project A/repository B and an
+unknown project quarantine without an Action or run. The matrix process has no
+`EP_CONSUMER_TOKEN` for this File Inbox canary.
+
+```text
+FILE_INBOX_EXTERNAL_CREDENTIAL = NONE
+FILE_INBOX_PROJECT_TOKEN_STORE = NONE
+FILE_INBOX_INTERNAL_HTTP_BYPASS = NONE
+FILE_INBOX_USES_CANONICAL_ADMISSION = TRUE
+FILE_INBOX_BYPASSES_ADMISSION_VALIDATION = FALSE
+FILE_INBOX_MULTI_PROJECT_AUTHORITY = PASS
+CROSS_PROJECT_FILE_INBOX_SUBMISSION = 0
+```
 
 ```text
 P_TRANSPORT_INGRESS_MATRIX = PASS
