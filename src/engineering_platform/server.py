@@ -66,6 +66,14 @@ SERVER_CONFIGURATION_VERSION = 2
 SERVER_STORE_SCHEMA_VERSION = 49
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
+PLATFORM_COMPONENT_DEFINITIONS: dict[str, dict[str, str]] = {
+    "ep_server": {"kind": "DAEMON", "active": "EP_SERVER_ACTIVE", "inactive": "EP_SERVER_UNAVAILABLE", "detail": "EP_SERVER_ENDPOINT"},
+    "platform_database": {"kind": "STORAGE", "active": "PLATFORM_DATABASE_HEALTHY", "inactive": "PLATFORM_DATABASE_UNAVAILABLE", "detail": "PLATFORM_DATABASE_STORAGE"},
+    "lifecycle_worker": {"kind": "IN_PROCESS_COMPONENT", "active": "LIFECYCLE_WORKER_ACTIVE", "inactive": "LIFECYCLE_WORKER_UNAVAILABLE", "detail": "LIFECYCLE_WORKER_SERVER_HOSTED"},
+    "operations_console": {"kind": "UI_SERVICE", "active": "OPERATIONS_CONSOLE_AVAILABLE", "inactive": "OPERATIONS_CONSOLE_UNAVAILABLE", "detail": "OPERATIONS_CONSOLE_SERVER_NATIVE"},
+    "dashboard_relay": {"kind": "UI_SERVICE", "active": "DASHBOARD_RELAY_ACTIVE", "inactive": "DASHBOARD_RELAY_UNAVAILABLE", "detail": "DASHBOARD_RELAY_SERVER_NATIVE"},
+}
+PLATFORM_COMPONENT_IDS = frozenset((*PLATFORM_COMPONENT_DEFINITIONS, "http_ingress", "cli_ingress", "file_inbox_ingress"))
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -680,13 +688,14 @@ def status(data_root: Path) -> dict[str, object]:
     components = _transport_components(data_root, server_running=running)
     # One Server-native inventory feeds Components, the titlebar popout and
     # detail modals. It deliberately contains no watcher/check-out model.
-    components.update({
-        "ep_server": {"healthy": running, "status_code": "EP_SERVER_ACTIVE" if running else "EP_SERVER_UNAVAILABLE", "detail_code": "EP_SERVER_ENDPOINT"},
-        "platform_database": {"healthy": True, "status_code": "PLATFORM_DATABASE_HEALTHY", "detail_code": "PLATFORM_DATABASE_STORAGE", "version": str(SERVER_STORE_SCHEMA_VERSION)},
-        "lifecycle_worker": {"healthy": running, "status_code": "LIFECYCLE_WORKER_ACTIVE" if running else "LIFECYCLE_WORKER_UNAVAILABLE", "detail_code": "LIFECYCLE_WORKER_SERVER_HOSTED"},
-        "operations_console": {"healthy": running, "status_code": "OPERATIONS_CONSOLE_AVAILABLE" if running else "OPERATIONS_CONSOLE_UNAVAILABLE", "detail_code": "OPERATIONS_CONSOLE_SERVER_NATIVE"},
-        "dashboard_relay": {"healthy": running, "status_code": "DASHBOARD_RELAY_ACTIVE" if running else "DASHBOARD_RELAY_UNAVAILABLE", "detail_code": "DASHBOARD_RELAY_SERVER_NATIVE"},
-    })
+    for component_id, definition in PLATFORM_COMPONENT_DEFINITIONS.items():
+        healthy = True if component_id == "platform_database" else running
+        components[component_id] = {
+            "kind": definition["kind"], "healthy": healthy,
+            "status_code": definition["active"] if healthy else definition["inactive"],
+            "detail_code": definition["detail"],
+            **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if component_id == "platform_database" else {}),
+        }
     return {
         "service": "engineering-platform-server",
         "instance_id": identity.instance_id,
@@ -1612,7 +1621,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
             return
-        component_match = re.fullmatch(r"/api/components/(ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)/details", request.path)
+        component_match = re.fullmatch(r"/api/components/([a-z_]+)/details", request.path)
+        if component_match and component_match.group(1) not in PLATFORM_COMPONENT_IDS:
+            component_match = None
         if method == "do_GET" and component_match:
             detail = _platform_component_detail(self.server.data_root, component_match.group(1))  # type: ignore[attr-defined]
             self._send(200, detail) if detail is not None else self._send(404, {"error": "COMPONENT_UNKNOWN"})
