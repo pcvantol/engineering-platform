@@ -54,7 +54,10 @@ class ParityContextTests(unittest.TestCase):
                 store.validate_action_scope(repository_id="beta")
 
     def test_genesis_is_transported_and_read_context_needs_no_root(self) -> None:
-        submission = self._submit("alpha", "Execution Mode: Genesis\nTarget repository:\n/tmp/target\n")
+        # Genesis metadata is deliberately line-oriented at the canonical
+        # admission boundary.  Keep this parity test on the valid, explicit
+        # public contract rather than relying on the retired multiline form.
+        submission = self._submit("alpha", "Execution Mode: Genesis\nTarget repository: /tmp/target\n")
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             local_repository_binding.unbind_local_repository(connection, project_id="alpha", repository_id="alpha")
             readonly = parity_context.project_context(connection, data_root=self.data, project_id="alpha", repository_id="alpha", require_local_root=False)

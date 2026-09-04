@@ -6549,15 +6549,15 @@ test.describe("Engineering Status browser smoke", () => {
       healthy: expect.any(Boolean),
       components: expect.objectContaining({
         dashboard: expect.objectContaining({ healthy: true, state: "running" }),
-        inbox_watcher: expect.objectContaining({ healthy: expect.any(Boolean) }),
         dashboard_relay: expect.objectContaining({ healthy: expect.any(Boolean) }),
       }),
     }));
     expect(health.components.dashboard.version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(health.components.inbox_watcher.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(health.components.dashboard.uptime_seconds).toEqual(expect.any(Number));
-    expect(health.components.inbox_watcher).toHaveProperty("uptime_seconds");
     expect(health.components.dashboard_relay).toHaveProperty("uptime_seconds");
+    // File Inbox is a Server-owned transport component.  The retired
+    // repository-local Inbox watcher must never be projected as healthy.
+    expect(health.components).not.toHaveProperty("inbox_watcher");
     expect(health.components).not.toHaveProperty("private_remote_access");
 
     const favicon = await request.get(`${dashboardUrl}/assets/operations-console/apple-touch-icon-dark.png`);
