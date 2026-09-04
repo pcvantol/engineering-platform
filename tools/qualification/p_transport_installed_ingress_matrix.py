@@ -89,7 +89,10 @@ def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
     if databases != [canonical] or local or state_stores:
         raise RuntimeError("STORAGE_AUTHORITY_INVARIANT_FAILED")
     inbox = data_root / "file-inbox"
-    expected = {"incoming", "processing", "accepted", "quarantine", "file-inbox-heartbeat.json", "dependabot-producer-heartbeat.json"}
+    # This inventory is specifically File Inbox delivery state. Dependabot
+    # has a separate Server-child heartbeat, asserted by its own installed
+    # producer canary below rather than misclassified as an Inbox artifact.
+    expected = {"incoming", "processing", "accepted", "quarantine", "file-inbox-heartbeat.json"}
     if not expected <= {path.name for path in inbox.iterdir()}:
         raise RuntimeError("TRANSPORT_STATE_LAYOUT_FAILED")
     return {"operational_database_authorities": 1, "local_operational_db": 0, "local_statestore": 0, "secondary_operational_db": 0, "transport_state": "TRANSPORT_DELIVERY_STATE"}
@@ -448,14 +451,18 @@ def main(argv: list[str] | None = None) -> int:
         try:
             deadline = time.monotonic() + 15
             rows: list[tuple[str, str, str]] = []
+            heartbeat = dependabot_root / "dependabot-producer-heartbeat.json"
             while time.monotonic() < deadline:
                 with sqlite3.connect(dependabot_root / "engineering.db") as connection:
                     rows = [(str(row[0]), str(row[1]), str(row[2])) for row in connection.execute("SELECT submission_id,project_id,repository_id FROM ep_submissions WHERE transport='DEPENDABOT' ORDER BY project_id")]
-                if len(rows) == 2:
+                if len(rows) == 2 and heartbeat.exists():
                     break
                 time.sleep(.1)
-            if len(rows) != 2 or {(row[1], row[2]) for row in rows} != {("dependabot-a", "dependabot-repository-a"), ("dependabot-b", "dependabot-repository-b")}:
+            if not heartbeat.exists() or len(rows) != 2 or {(row[1], row[2]) for row in rows} != {("dependabot-a", "dependabot-repository-a"), ("dependabot-b", "dependabot-repository-b")}:
                 raise RuntimeError("DEPENDABOT_MULTI_PROJECT_BINDING_FAILED")
+            heartbeat_payload = json.loads(heartbeat.read_text())
+            if heartbeat_payload.get("state") != "READY" or heartbeat_payload.get("readiness") != "DISCOVERY_CAPABLE":
+                raise RuntimeError("DEPENDABOT_READY_IMPLIES_OPERATIONAL_FAILED")
             for submission_id, _project, _repository in rows:
                 wait_for_dispatch(server, dependabot_root, submission_id)
             evidence["DEPENDABOT_MULTI_PROJECT_BINDING"] = {"pass": True, "submissions": [row[0] for row in rows]}
