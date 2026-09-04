@@ -31,3 +31,15 @@ change authority, select a checkout, or delegate that route.
 ## Removed fallback paths
 
 There are no platform-to-project fallback paths. Provider login repair/logout and execution-runtime repair resolve before project lookup; the retired runtime-directory action is unreachable rather than delegated.
+
+## Canonical platform component inventory
+
+The installed Server owns one component inventory, used by Platform Components,
+the status popout and every component detail modal. It contains `ep_server`
+(DAEMON), `platform_database` (STORAGE), `lifecycle_worker`
+(IN_PROCESS_COMPONENT), `operations_console` (UI_SERVICE), `dashboard_relay`
+(UI_SERVICE), and `http_ingress`, `cli_ingress`, `file_inbox_ingress`
+(TRANSPORT). The File Inbox is installation-owned at `<data_root>/file-inbox`
+with `incoming`, `processing`, `accepted` and `quarantine` dispositions; its
+Server-composed service writes the liveness heartbeat. This is not a watcher,
+checkout, selected-project or filesystem-backlog queue model.

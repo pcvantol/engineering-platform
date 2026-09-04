@@ -368,54 +368,17 @@ function watcherDelegatedToActiveHost(component, status = latestStatus) {
   return component?.component === "inbox_watcher" && component?.healthy !== true && isActiveRun(status || {});
 }
 function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
-  const current = status && typeof status === "object" ? status : null,
-    components = platformHealth?.components && typeof platformHealth.components === "object"
-      ? platformHealth.components
-      : null,
-    httpHealthy = components?.http_ingress?.healthy === true,
-    cliHealthy = components?.cli_ingress?.healthy === true,
-    fileHealthy = components?.file_inbox_ingress?.healthy === true,
-    queueDepth = Math.max(0, Number(current?.queue_depth) || 0),
-    watcherState = String(current?.watcher_state || ""),
-    workspaceState = String(current?.workspace_state || ""),
-    phase = String(current?.current_phase || "").toUpperCase(),
-    watcherStateUpper = watcherState.toUpperCase(),
-    active = isActiveRun(current || {}),
-    workspaceActive = active && workspaceState === "ACTIVE",
-    blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
-    failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
-      (components && (!httpHealthy || !cliHealthy || !fileHealthy));
-  let state = "unknown";
-  if (failed) state = "error";
-  else if (blocked || queueDepth > 0) state = "blocked";
-  else if (active) state = "active";
-  else if (httpHealthy && cliHealthy && fileHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
-  const componentCheck = (name, componentKey, healthy) => {
-    const component = components?.[componentKey];
-    const unavailable = components ? "not_running" : "unknown";
-    const reasonCode = !healthy && components && typeof component?.reason_code === "string"
-      ? component.reason_code
-      : "";
-    const reason = !healthy && components
-      ? (reasonCode ? t("component.reason." + reasonCode) : String(component?.detail || component?.state || "").trim())
-      : "";
-    return [
-      name,
-      String(component?.status_code || component?.state || unavailable),
-      healthy ? "good" : components ? "bad" : "unknown",
-      {},
-      { component: components ? componentKey : null, reason, transport: true },
-    ];
-  };
-  const checks = [
-    componentCheck(t("transport.http"), "http_ingress", httpHealthy),
-    componentCheck(t("transport.cli"), "cli_ingress", cliHealthy),
-    componentCheck(t("transport.file"), "file_inbox_ingress", fileHealthy),
-    ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
-    ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
-    ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
-    ["workspace", workspaceState || "unknown", workspaceState === "WORKSPACE_READY" || workspaceActive ? "good" : workspaceState ? "bad" : "unknown"],
-  ];
+  const current = status && typeof status === "object" ? status : {}, components = platformHealth?.components || {};
+  const critical = ["ep_server", "platform_database", "lifecycle_worker", "http_ingress", "cli_ingress"];
+  const unhealthy = Object.entries(components).filter(([, value]) => value?.healthy !== true);
+  const state = !Object.keys(components).length ? "unknown" : unhealthy.some(([key]) => critical.includes(key)) ? "error" : unhealthy.length ? "blocked" : "ready";
+  const checks = Object.entries(components).map(([key, component]) => [
+    healthComponentLabel(key), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {},
+    { component: key, transport: true },
+  ]);
+  const queueDepth = Math.max(0, Number(current.queue_depth) || 0), active = Array.isArray(current.runs) ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length : Number(Boolean(current.active_run));
+  checks.push(["execution", active ? "active" : "none_active", active ? "good" : "good", { count: active }]);
+  checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }]);
   return { state, checks };
 }
 function renderDashboardHealth(status = latestStatus, platformHealth = latestPlatformHealth) {
@@ -432,7 +395,7 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
     item.dataset.health = tone;
     item.className = "dashboard-health__check";
     label.textContent = metadata.transport ? name : t("dashboard.health." + name);
-    result.textContent = metadata.transport ? transportState(value) : dashboardHealthValue(value, values);
+    result.textContent = metadata.transport ? (value.includes("INGRESS_") ? transportState(value) : (tone === "good" ? t("component.health_healthy") : t("component.health_unhealthy"))) : dashboardHealthValue(value, values);
     result.className = "dashboard-health__value";
     item.append(label, result);
     if (metadata.reason) {
@@ -3558,9 +3521,11 @@ function renderLogsForSnapshot(snapshot) {
 enableLiveComponentLogs();
 function healthComponentLabel(component) {
   return {
-    dashboard: t("logs.status_dashboard"),
-    inbox_watcher: t("component.execution_host"),
-    dashboard_relay: t("component.dashboard_relay"),
+    ep_server: "EP Server",
+    platform_database: "Platform database",
+    lifecycle_worker: "Lifecycle Worker",
+    operations_console: "Operations Console",
+    dashboard_relay: "Dashboard Relay",
     http_ingress: t("transport.http"),
     cli_ingress: t("transport.cli"),
     file_inbox_ingress: t("transport.file"),
@@ -3586,7 +3551,12 @@ function transportState(code) {
 }
 function transportDetail(code) {
   const normalized = LEGACY_TRANSPORT_DETAIL_CODES[String(code)] || String(code || "");
-  return t("transport.detail." + normalized);
+  const key = "transport.detail." + normalized;
+  // Detail codes are a closed Server contract. Never turn an arbitrary
+  // diagnostic string into a localization key (or leak it into the UI).
+  return Object.hasOwn(DASHBOARD_MESSAGES[currentLocale] || {}, key)
+    ? t(key)
+    : t("ui.no_component_explanation");
 }
 const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
   "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",

@@ -669,7 +669,7 @@ def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, 
     component = status(data_root)["components"].get(component_id)  # type: ignore[index]
     if not isinstance(component, dict):
         return None
-    return {"component": component_id, "machine": "CENTRAL", "restart_supported": False, **component}
+    return {"component": component_id, "machine": os.uname().nodename, "restart_supported": False, **component}
 
 
 def status(data_root: Path) -> dict[str, object]:
@@ -677,6 +677,16 @@ def status(data_root: Path) -> dict[str, object]:
     config = ServerConfiguration.load(data_root)
     runtime = _runtime(data_root)
     running = bool(runtime and _alive(runtime.get("pid")))
+    components = _transport_components(data_root, server_running=running)
+    # One Server-native inventory feeds Components, the titlebar popout and
+    # detail modals. It deliberately contains no watcher/check-out model.
+    components.update({
+        "ep_server": {"healthy": running, "status_code": "EP_SERVER_ACTIVE" if running else "EP_SERVER_UNAVAILABLE", "detail_code": "EP_SERVER_ENDPOINT"},
+        "platform_database": {"healthy": True, "status_code": "PLATFORM_DATABASE_HEALTHY", "detail_code": "PLATFORM_DATABASE_STORAGE", "version": str(SERVER_STORE_SCHEMA_VERSION)},
+        "lifecycle_worker": {"healthy": running, "status_code": "LIFECYCLE_WORKER_ACTIVE" if running else "LIFECYCLE_WORKER_UNAVAILABLE", "detail_code": "LIFECYCLE_WORKER_SERVER_HOSTED"},
+        "operations_console": {"healthy": running, "status_code": "OPERATIONS_CONSOLE_AVAILABLE" if running else "OPERATIONS_CONSOLE_UNAVAILABLE", "detail_code": "OPERATIONS_CONSOLE_SERVER_NATIVE"},
+        "dashboard_relay": {"healthy": running, "status_code": "DASHBOARD_RELAY_ACTIVE" if running else "DASHBOARD_RELAY_UNAVAILABLE", "detail_code": "DASHBOARD_RELAY_SERVER_NATIVE"},
+    })
     return {
         "service": "engineering-platform-server",
         "instance_id": identity.instance_id,
@@ -691,7 +701,7 @@ def status(data_root: Path) -> dict[str, object]:
             "state": WORKER_RUNNING if running else "STOPPED",
         },
         "bind": {"host": config.bind_host, "port": config.bind_port},
-        "components": _transport_components(data_root, server_running=running),
+        "components": components,
     }
 
 
@@ -808,7 +818,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
     }
 
 
-def _no_project_console_snapshot() -> dict[str, object]:
+def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
     """Give the Console a loadable CENTRAL-only snapshot at ``<geen>``.
 
     The no-project document deliberately hides project state, but the shared
@@ -816,7 +826,13 @@ def _no_project_console_snapshot() -> dict[str, object]:
     minimal platform projection prevents it from remaining behind the loading
     overlay while preserving the fail-closed boundary for all project routes.
     """
-    queue = {"operator_handling": {}, "queue_depth": 0, "queue_items": []}
+    # Aggregate the canonical CENTRAL submission state only. File Inbox files,
+    # watcher backlogs and transport retry diagnostics never affect this count.
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        queue_depth = int(connection.execute(
+            "SELECT COUNT(*) FROM ep_submissions WHERE state IN ('QUEUED','ADMITTED')"
+        ).fetchone()[0])
+    queue = {"operator_handling": {}, "queue_depth": queue_depth, "queue_items": [], "scope": "ALL_PROJECTS"}
     return {
         "scope": "PLATFORM",
         "queue": queue,
@@ -1402,7 +1418,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, _no_project_platform_projection(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path in {"/api/dashboard-snapshot", "/api/status"}:
-            self._send(200, _no_project_console_snapshot())
+            self._send(200, _no_project_console_snapshot(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path == "/api/events":
             self._stream_no_project_console_events()
@@ -1536,7 +1552,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             previous: bytes | None = None
             for iteration in range(300):
                 payload = json.dumps(
-                    _no_project_console_snapshot(), separators=(",", ":")
+                    _no_project_console_snapshot(self.server.data_root), separators=(",", ":")  # type: ignore[attr-defined]
                 ).encode("utf-8")
                 if payload != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
@@ -1596,7 +1612,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
             return
-        component_match = re.fullmatch(r"/api/components/(http_ingress|cli_ingress|file_inbox_ingress)/details", request.path)
+        component_match = re.fullmatch(r"/api/components/(ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)/details", request.path)
         if method == "do_GET" and component_match:
             detail = _platform_component_detail(self.server.data_root, component_match.group(1))  # type: ignore[attr-defined]
             self._send(200, detail) if detail is not None else self._send(404, {"error": "COMPONENT_UNKNOWN"})
