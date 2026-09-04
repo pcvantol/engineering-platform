@@ -5346,6 +5346,21 @@ test.describe("Engineering Status browser smoke", () => {
       && query.get("sort") === "event"
       && query.get("direction") === "asc",
     )).toBe(true);
+
+    const requestsBeforeReset = centralQueries.length;
+    await page.locator(".reset-log-filters").click();
+    await expect(page.locator("#logComponentFilter")).toHaveValue("");
+    const resetComponentLabel = await page.locator("#logComponentFilter option:checked").textContent();
+    await expect(page.locator("#logComponentFilter + .dashboard-select-picker .dashboard-locale__button"))
+      .toContainText(resetComponentLabel || "");
+    await expect.poll(() => centralQueries.slice(requestsBeforeReset).some(({ component, query }) =>
+      component === "all"
+      && !query.has("start")
+      && !query.has("end")
+      && !query.has("search")
+      && !query.has("level")
+      && query.getAll("event").length === 0,
+    )).toBe(true);
   });
 
   test("localizes component log table headings for every supported language", async ({ page }) => {

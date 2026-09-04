@@ -4895,6 +4895,9 @@ resetLogFiltersButton.addEventListener("click", () => {
   $("logComponentFilter").value = "";
   syncDashboardSelectPicker($("logLevelFilter"));
   syncDashboardSelectPicker($("logTimePreset"));
+  // The component picker is an enhanced select. Keep its visible label in
+  // sync with the native value just like the other single-select filters.
+  syncDashboardSelectPicker($("logComponentFilter"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
   updateLogTimeFilterControls();
   refreshComponentLogsForFilters();
