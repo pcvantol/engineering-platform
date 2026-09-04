@@ -82,6 +82,19 @@ PLATFORM_COMPONENT_DEFINITIONS: dict[str, dict[str, str]] = {
     "dashboard_relay": {"kind": "UI_SERVICE", "active": "DASHBOARD_RELAY_ACTIVE", "inactive": "DASHBOARD_RELAY_UNAVAILABLE", "detail": "DASHBOARD_RELAY_SERVER_NATIVE"},
 }
 PLATFORM_COMPONENT_IDS = frozenset((*PLATFORM_COMPONENT_DEFINITIONS, "http_ingress", "cli_ingress", "file_inbox_ingress"))
+_CENTRAL_LOG_COMPONENT_ALIASES = {
+    "dashboard": "operations_console",
+    "inbox": "file_inbox_ingress",
+    "execution-host": "lifecycle_worker",
+}
+_CENTRAL_LOG_SORT_COLUMNS = {
+    "line": "id",
+    "timestamp": "created_at",
+    "level": "json_extract(payload, '$.level')",
+    "event": "json_extract(payload, '$.event')",
+    "runId": "COALESCE(json_extract(payload, '$.run_id'), '')",
+    "details": "COALESCE(json_extract(payload, '$.diagnostic'), '')",
+}
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -970,29 +983,30 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
             for role, content, model, created_at in rows]
 
 
-def _central_console_component_logs(
-    data_root: Path, component: str, query: dict[str, list[str]] | None = None, *, export_all: bool = False,
-) -> dict[str, object] | None:
-    """Read one filtered, sorted CENTRAL log page before it reaches the Console."""
-    canonical_components = PLATFORM_COMPONENT_IDS
-    legacy_aliases = {
-        "dashboard": "operations_console", "inbox": "file_inbox_ingress",
-        "execution-host": "lifecycle_worker",
-    }
-    if component == "all":
-        selected = canonical_components
-    elif component in canonical_components:
-        selected = frozenset({component})
-    elif component in legacy_aliases:
-        selected = frozenset({legacy_aliases[component]})
-    else:
-        return None
+@dataclass(frozen=True)
+class _CentralLogQuery:
+    page: int
+    page_size: int
+    start_at: str
+    end_at: str
+    inclusive_end: bool
+    search: str
+    level: str
+    events: tuple[str, ...]
+    sort_key: str
+    direction: str
 
-    values = query or {}
+
+def _parse_central_log_query(values: dict[str, list[str]] | None) -> _CentralLogQuery:
+    """Validate the public query once, before composing any CENTRAL SQL."""
+    query = values or {}
+
     def first(name: str, default: str = "") -> str:
-        return str((values.get(name) or [default])[0])
+        return str((query.get(name) or [default])[0])
+
     try:
-        page, page_size = int(first("page", "1")), int(first("page_size", "50"))
+        page = int(first("page", "1"))
+        page_size = int(first("page_size", "50"))
     except ValueError as error:
         raise ValueError("Invalid component-log pagination.") from error
     if page < 1 or not 1 <= page_size <= MAX_COMPONENT_LOG_PAGE_SIZE:
@@ -1002,43 +1016,86 @@ def _central_console_component_logs(
         raise ValueError("Invalid component-log level.")
     if len(search) > 160:
         raise ValueError("Component-log search is too long.")
-    events = tuple(sorted({value.strip() for value in values.get("event", []) if value.strip()}))
+    events = tuple(sorted({value.strip() for value in query.get("event", []) if value.strip()}))
     if len(events) > 50 or any(len(event) > 160 for event in events):
         raise ValueError("Invalid component-log event filter.")
-    sort_columns = {
-        "line": "id", "timestamp": "created_at", "level": "json_extract(payload, '$.level')",
-        "event": "json_extract(payload, '$.event')",
-        "runId": "COALESCE(json_extract(payload, '$.run_id'), '')",
-        "details": "COALESCE(json_extract(payload, '$.diagnostic'), '')",
-    }
     sort_key, direction = first("sort", "timestamp"), first("direction", "desc").lower()
-    if sort_key not in sort_columns or direction not in {"asc", "desc"}:
+    if sort_key not in _CENTRAL_LOG_SORT_COLUMNS or direction not in {"asc", "desc"}:
         raise ValueError("Invalid component-log sort.")
+    return _CentralLogQuery(
+        page=page,
+        page_size=page_size,
+        start_at=first("start").strip(),
+        end_at=first("end").strip(),
+        inclusive_end=first("inclusive_end") == "1",
+        search=search,
+        level=level,
+        events=events,
+        sort_key=sort_key,
+        direction=direction,
+    )
 
-    stored_components = tuple(alias for alias, canonical in legacy_aliases.items() if canonical in selected) + tuple(selected)
+
+def _central_log_components(component: str) -> tuple[frozenset[str], tuple[str, ...]] | None:
+    """Resolve a canonical or historical component route without project context."""
+    if component == "all":
+        selected = PLATFORM_COMPONENT_IDS
+    elif component in PLATFORM_COMPONENT_IDS:
+        selected = frozenset({component})
+    elif component in _CENTRAL_LOG_COMPONENT_ALIASES:
+        selected = frozenset({_CENTRAL_LOG_COMPONENT_ALIASES[component]})
+    else:
+        return None
+    stored = tuple(
+        alias for alias, canonical in _CENTRAL_LOG_COMPONENT_ALIASES.items() if canonical in selected
+    ) + tuple(selected)
+    return selected, stored
+
+
+def _central_console_component_logs(
+    data_root: Path,
+    component: str,
+    query: dict[str, list[str]] | None = None,
+    *,
+    export_all: bool = False,
+) -> dict[str, object] | None:
+    """Read one filtered, sorted CENTRAL log page before it reaches the Console."""
+    selection = _central_log_components(component)
+    if selection is None:
+        return None
+    _, stored_components = selection
+    filters = _parse_central_log_query(query)
     clauses = ["component IN (" + ",".join("?" for _ in stored_components) + ")"]
     parameters: list[object] = list(stored_components)
-    start_at, end_at = first("start").strip(), first("end").strip()
-    if start_at:
-        clauses.append("created_at >= ?"); parameters.append(start_at)
-    if end_at:
-        clauses.append("created_at <= ?" if first("inclusive_end") == "1" else "created_at < ?"); parameters.append(end_at)
-    if search:
-        escaped = search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'"); parameters.append(f"%{escaped}%")
-    if level in LOG_LEVELS_AT_OR_ABOVE:
-        levels = LOG_LEVELS_AT_OR_ABOVE[level]
-        clauses.append("json_extract(payload, '$.level') IN (" + ",".join("?" for _ in levels) + ")"); parameters.extend(levels)
+    if filters.start_at:
+        clauses.append("created_at >= ?")
+        parameters.append(filters.start_at)
+    if filters.end_at:
+        clauses.append("created_at <= ?" if filters.inclusive_end else "created_at < ?")
+        parameters.append(filters.end_at)
+    if filters.search:
+        escaped = filters.search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'")
+        parameters.append(f"%{escaped}%")
+    if filters.level in LOG_LEVELS_AT_OR_ABOVE:
+        levels = LOG_LEVELS_AT_OR_ABOVE[filters.level]
+        clauses.append("json_extract(payload, '$.level') IN (" + ",".join("?" for _ in levels) + ")")
+        parameters.extend(levels)
     event_option_clauses, event_option_parameters = list(clauses), list(parameters)
-    if events:
-        clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in events) + ")"); parameters.extend(events)
+    if filters.events:
+        clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in filters.events) + ")")
+        parameters.extend(filters.events)
     where = " WHERE " + " AND ".join(clauses)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         total = int(connection.execute("SELECT COUNT(*) FROM engineering_component_logs" + where, parameters).fetchone()[0])
         rows = connection.execute(
             "SELECT id,component,payload,created_at FROM engineering_component_logs" + where
-            + f" ORDER BY {sort_columns[sort_key]} {direction.upper()}, id {direction.upper()} LIMIT ? OFFSET ?",
-            [*parameters, 5000 if export_all else page_size, 0 if export_all else (page - 1) * page_size],
+            + f" ORDER BY {_CENTRAL_LOG_SORT_COLUMNS[filters.sort_key]} {filters.direction.upper()}, id {filters.direction.upper()} LIMIT ? OFFSET ?",
+            [
+                *parameters,
+                5000 if export_all else filters.page_size,
+                0 if export_all else (filters.page - 1) * filters.page_size,
+            ],
         ).fetchall()
         event_rows = connection.execute(
             "SELECT DISTINCT json_extract(payload, '$.event') FROM engineering_component_logs WHERE "
@@ -1053,26 +1110,26 @@ def _central_console_component_logs(
         except (TypeError, ValueError, json.JSONDecodeError):
             decoded = {"event": "malformed_central_log"}
         record = decoded if isinstance(decoded, dict) else {}
-        canonical = legacy_aliases.get(str(stored_component), str(stored_component))
+        canonical = _CENTRAL_LOG_COMPONENT_ALIASES.get(str(stored_component), str(stored_component))
         entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": canonical})
     return {
         "scope": "PLATFORM", "component": component, "entries": entries,
-        "page": page, "page_size": page_size, "total": total,
+        "page": filters.page, "page_size": filters.page_size, "total": total,
         "events": [str(row[0]) for row in event_rows if row[0]],
     }
 
 
 def _clear_central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
     """Delete only the explicitly selected CENTRAL component-log projection."""
-    canonical_components = PLATFORM_COMPONENT_IDS
-    aliases = {"dashboard": "operations_console", "inbox": "file_inbox_ingress", "execution-host": "lifecycle_worker"}
     if component == "all":
-        selected = canonical_components
-    elif component in canonical_components:
+        selected = PLATFORM_COMPONENT_IDS
+    elif component in PLATFORM_COMPONENT_IDS:
         selected = frozenset({component})
     else:
         return None
-    stored = tuple(alias for alias, canonical in aliases.items() if canonical in selected) + tuple(selected)
+    stored = tuple(
+        alias for alias, canonical in _CENTRAL_LOG_COMPONENT_ALIASES.items() if canonical in selected
+    ) + tuple(selected)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
         cursor = connection.execute(
             "DELETE FROM engineering_component_logs WHERE component IN (" + ",".join("?" for _ in stored) + ")",
