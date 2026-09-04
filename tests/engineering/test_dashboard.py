@@ -235,24 +235,21 @@ class DashboardStatusTest(unittest.TestCase):
     @patch("engineering_platform.dashboard.CodexCliProvider")
     @patch("engineering_platform.dashboard.shutil.which", return_value="/usr/local/bin/gh")
     @patch("engineering_platform.dashboard.sys.platform", "darwin")
-    def test_provider_login_allows_only_one_interactive_repair(
+    def test_provider_login_allows_a_retry_and_the_other_provider(
         self, _which: MagicMock, codex: MagicMock, process: MagicMock,
     ) -> None:
         completed = __import__("subprocess").CompletedProcess
         codex.return_value.status.return_value.qualified = True
         codex.return_value._executable = "/usr/local/bin/codex"
         process.return_value.execute.return_value = completed(("osascript",), 0, "", "")
-        with patch.object(dashboard, "_provider_login_active", None), patch.object(
-            dashboard, "_provider_login_started_at", 0.0
-        ):
-            dashboard._start_provider_login(Path("/workspace"), "CODEX")
-            with self.assertRaisesRegex(ValueError, "already in progress"):
-                dashboard._start_provider_login(Path("/workspace"), "GITHUB")
-        self.assertEqual(process.return_value.execute.call_count, 1)
+        dashboard._start_provider_login(Path("/workspace"), "CODEX")
+        dashboard._start_provider_login(Path("/workspace"), "CODEX")
+        dashboard._start_provider_login(Path("/workspace"), "GITHUB")
+        self.assertEqual(process.return_value.execute.call_count, 3)
         apple_script = process.return_value.execute.call_args.args[1][2]
         self.assertIn('tell application "Terminal"', apple_script)
         self.assertIn("activate", apple_script)
-        self.assertIn("/usr/local/bin/codex login --device-auth", apple_script)
+        self.assertIn("gh auth login --hostname github.com --web", apple_script)
 
     @patch("engineering_platform.dashboard.LocalProcessProvider")
     @patch("engineering_platform.dashboard.sys.platform", "darwin")

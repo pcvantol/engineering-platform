@@ -140,9 +140,6 @@ _codex_update_cache: tuple[float, dict[str, object]] | None = None
 _codex_update_install_lock = Lock()
 _provider_install_lock = Lock()
 _provider_login_lock = Lock()
-_provider_login_active: str | None = None
-_provider_login_started_at = 0.0
-_PROVIDER_LOGIN_TIMEOUT_SECONDS = 300.0
 _snapshot_revision_lock = Lock()
 _snapshot_fingerprint: bytes | None = None
 _snapshot_revision = 0
@@ -2534,15 +2531,8 @@ def _workspace_free_disk_space(root: Path) -> str:
 
 def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
     """Dashboard projection of the shared token-free provider readiness check."""
-    global _provider_login_active, _provider_login_started_at
     statuses = provider_readiness_status(root)
     runtime = provider_runtime_details(root)
-    with _provider_login_lock:
-        active = _provider_login_active
-        expired = time.monotonic() - _provider_login_started_at >= _PROVIDER_LOGIN_TIMEOUT_SECONDS
-        if active and (expired or statuses.get(active.lower(), {}).get("state") == "READY"):
-            _provider_login_active = None
-            _provider_login_started_at = 0.0
     return {
         provider: {**value, **runtime.get(provider, {})}
         for provider, value in statuses.items()
@@ -2566,7 +2556,6 @@ def _start_provider_login(root: Path, provider: str) -> None:
         "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
         "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
     }
-    global _provider_login_active, _provider_login_started_at
     command = commands.get(provider)
     if command is None:
         raise ValueError("Unsupported provider login request.")
@@ -2576,9 +2565,6 @@ def _start_provider_login(root: Path, provider: str) -> None:
         raise ValueError("GitHub CLI is not installed.")
     if sys.platform != "darwin":
         raise ValueError("Interactive provider login is supported from the local macOS dashboard only.")
-    with _provider_login_lock:
-        if _provider_login_active and time.monotonic() - _provider_login_started_at < _PROVIDER_LOGIN_TIMEOUT_SECONDS:
-            raise ValueError("Another provider sign-in is already in progress.")
     shell_command = "exec " + " ".join(shlex.quote(part) for part in command)
     # `do script` can create a background tab when Terminal is not frontmost.
     # Bring it forward first so the operator receives the interactive device or
@@ -2589,12 +2575,13 @@ def _start_provider_login(root: Path, provider: str) -> None:
         f"do script {json.dumps(shell_command)}",
         "end tell",
     ))
-    completed = LocalProcessProvider().execute(root, ("/usr/bin/osascript", "-e", apple_script))
+    # Serialize only the AppleScript dispatch itself.  A Terminal session can
+    # be cancelled outside EP, so retaining a five-minute "active" lock made
+    # legitimate retries and the other provider appear permanently broken.
+    with _provider_login_lock:
+        completed = LocalProcessProvider().execute(root, ("/usr/bin/osascript", "-e", apple_script))
     if completed.returncode:
         raise ValueError("Provider login window could not be opened.")
-    with _provider_login_lock:
-        _provider_login_active = provider
-        _provider_login_started_at = time.monotonic()
 
 
 def _install_provider(root: Path, provider: str) -> None:
