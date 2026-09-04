@@ -589,30 +589,6 @@ class DashboardStatusTest(unittest.TestCase):
             {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
         )
 
-    @patch("engineering_platform.dashboard.storage_activation_required", return_value=True)
-    @patch("engineering_platform.dashboard._launch_agent_health")
-    def test_inbox_watcher_health_exposes_storage_activation_as_its_safe_reason(
-        self, launch_agent_health: object, _: object
-    ) -> None:
-        launch_agent_health.return_value = {
-            "healthy": False,
-            "state": "not_running",
-            "detail": "LaunchAgent is geladen, maar heeft geen actief proces",
-        }
-        health = dashboard._inbox_watcher_health(Path("/repository"))
-        self.assertFalse(health["healthy"])
-        self.assertEqual(health["reason_code"], "storage_activation_required")
-        self.assertIn("opslagactivatie", str(health["detail"]))
-
-    @patch("engineering_platform.dashboard.storage_activation_required", return_value=False)
-    @patch("engineering_platform.dashboard._launch_agent_health")
-    def test_inbox_watcher_health_preserves_the_live_process_projection(
-        self, launch_agent_health: object, _: object
-    ) -> None:
-        expected = {"healthy": True, "state": "running", "detail": "LaunchAgent-proces is actief"}
-        launch_agent_health.return_value = expected
-        self.assertIs(dashboard._inbox_watcher_health(Path("/repository")), expected)
-
     @patch("engineering_platform.dashboard.LaunchdProvider")
     @patch("engineering_platform.dashboard.GitProvider")
     def test_managed_branch_recovery_requires_a_clean_workspace_and_restarts_watcher(

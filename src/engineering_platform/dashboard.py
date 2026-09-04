@@ -65,7 +65,6 @@ from .storage import (
     EngineeringStorageError,
     load_projection,
     open_storage,
-    storage_activation_required,
 )
 from .provider_usage import provider_usage_summary
 from .execution_activity import terminal_activity_summary
@@ -971,18 +970,6 @@ def _launch_agent_health(label: str) -> dict[str, str | bool]:
     if state.detail == "launchctl unavailable":
         return {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"}
     return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is geladen, maar heeft geen actief proces" if state.detail.endswith("no active process") else "LaunchAgent is niet geladen"}
-
-
-def _inbox_watcher_health(root: Path) -> dict[str, str | bool]:
-    """Add a safe startup reason when the watcher is not actually live."""
-    health = _launch_agent_health(WATCHER_LABEL)
-    if bool(health["healthy"]) or not storage_activation_required(root):
-        return health
-    return {
-        **health,
-        "detail": "Gecontroleerde opslagactivatie vereist voordat de Inbox-watcher kan starten.",
-        "reason_code": "storage_activation_required",
-    }
 
 
 def _platform_health(root: Path) -> dict[str, object]:
