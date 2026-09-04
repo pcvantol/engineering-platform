@@ -1051,8 +1051,10 @@ function structuredLogEntries(text) {
             )
             .join(" · ");
         return {
+          ...entry,
           line: index + 1,
           timestamp: String(entry.timestamp || ""),
+          component: String(entry.component || ""),
           level: String(entry.level || t("logs.unknown_level")).toUpperCase(),
           event: String(entry.event || t("logs.unknown_event")),
           runId: entry.run_id == null ? "" : String(entry.run_id),
@@ -4573,6 +4575,9 @@ const historicalDashboardLogCard = document.querySelector("#dashboardComponentLo
 historicalDashboardLogCard?.setAttribute("hidden", "");
 historicalDashboardLogCard?.querySelectorAll(".component-log-download").forEach((button) => button.remove());
 historicalDashboardLogCard?.querySelectorAll(".clear-component-log").forEach((button) => button.remove());
+document.querySelectorAll(".component-log-download").forEach((button) => {
+  button.dataset.component = "platform";
+});
 function logComponentForTable(table) {
   return table.querySelector("#dashboardComponentLog") ? "dashboard" : "platform";
 }
@@ -4630,7 +4635,7 @@ document.querySelectorAll(".log-table").forEach((table) => {
 });
 updateIndependentLogSortHeaders();
 function componentLogRowKey(entry) {
-  return [entry.line, entry.timestamp, entry.level, entry.event, entry.runId, entry.details]
+  return [entry.line, entry.timestamp, entry.component, entry.level, entry.event, entry.runId, entry.details]
     .map((value) => String(value ?? ""))
     .join("\u001f");
 }
@@ -4638,18 +4643,22 @@ function componentLogText(entries) {
   const header = [
       t("table.number"),
       t("table.timestamp"),
+      "EP-component",
       t("table.level"),
       t("table.event"),
       t("table.run_id"),
       t("table.details"),
+      "raw_json",
     ].join("\t"),
     rows = entries.map((entry) => [
       entry.line,
       logTimestampText(entry.timestamp),
+      entry.component || "—",
       entry.level,
       entry.event,
       entry.runId || "—",
       entry.details || "—",
+      JSON.stringify(entry),
     ].join("\t"));
   return [header, ...rows].join("\n");
 }
@@ -4913,8 +4922,8 @@ installLogDateClearButtons();
 updateLogTimeFilterControls();
 renderComponentLogs();
 function clearComponentLog(component, button) {
-  const name =
-    component === "inbox" ? t("component.execution_host") : t("logs.status_dashboard");
+  const selected = $("logComponentFilter")?.value || "all";
+  const name = selected === "all" ? t("section.platform_components") : healthComponentLabel(selected);
   confirmDashboardAction(
     t("action.clear_logs"),
     t("logs.clear_description", { component: name }),
@@ -4925,24 +4934,19 @@ function clearComponentLog(component, button) {
     button.disabled = true;
     try {
       const response = await fetch(
-        "/api/logs/" + encodeURIComponent(component),
+        "/api/logs/all",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({ component: selected }),
         },
       );
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw Error(payload.error || t("logs.clear_failed"));
       }
-      componentLogEntries[component] = structuredLogEntries(
-        await fetch("/api/logs/" + encodeURIComponent(component)).then(
-          (response) => response.text(),
-        ),
-      );
       componentLogVersion = "";
-      renderComponentLogs();
+      await refreshComponentLogs({}, true);
     } catch {
       button.title = t("logs.clear_failed");
     } finally {
@@ -4961,7 +4965,8 @@ function downloadComponentLog(component) {
   const names = { inbox: "inbox-watcher", platform: "engineering-platform" },
     name = names[component];
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
-  return fetch("/api/logs/" + (["platform", "inbox"].includes(component) ? "all" : encodeURIComponent(component)), {
+  const selected = $("logComponentFilter")?.value || "all";
+  return fetch("/api/logs/" + encodeURIComponent(selected) + "?format=ndjson", {
     cache: "no-store",
   })
     .then((response) =>
@@ -5018,6 +5023,9 @@ function addComponentLogCopyButtons() {
   });
 }
 addComponentLogCopyButtons();
+document.querySelectorAll(".clear-component-log").forEach((button) => {
+  button.dataset.component = "platform";
+});
 document.querySelectorAll(".clear-component-log").forEach((button) => {
   button.classList.add("dashboard-action", "dashboard-action--destructive");
   button.textContent = "⌧";

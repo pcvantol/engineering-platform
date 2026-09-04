@@ -7875,7 +7875,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(report).toHaveCSS("color", "rgb(23, 35, 49)");
   });
 
-  test("downloads each redacted component log", async ({ page }) => {
+  test("downloads the complete CENTRAL component-log projection as NDJSON", async ({ page }) => {
     await page.route("**/api/logs/**", (route) => route.fulfill({ contentType: "application/x-ndjson", body: '{"level":"INFO","event":"test"}\n' }));
     await page.route("**/api/audit/user-action", (route) => route.fulfill({ contentType: "application/json", body: '{"logged":true}' }));
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
@@ -7887,10 +7887,8 @@ test.describe("Engineering Status browser smoke", () => {
       URL.createObjectURL = () => "blob:component-log";
       HTMLAnchorElement.prototype.click = function click() { window.__componentLogDownload = this.download; };
     });
-    for (const [testId, filename] of [["download-inbox-log", "inbox-watcher-log-"], ["download-dashboard-log", "statusdashboard-log-"]]) {
-      await dispatchDashboardPointerClick(page.getByTestId(testId));
-      await expect.poll(() => page.evaluate(() => window.__componentLogDownload)).toMatch(new RegExp(`^${filename}.*\\.ndjson$`));
-    }
+    await dispatchDashboardPointerClick(page.getByTestId("download-inbox-log"));
+    await expect.poll(() => page.evaluate(() => window.__componentLogDownload)).toMatch(/^engineering-platform-log-.*\.ndjson$/);
   });
 
   test("copies only the visible filtered component-log entries", async ({ page }) => {
@@ -7914,13 +7912,13 @@ test.describe("Engineering Status browser smoke", () => {
           },
         },
       });
-      componentLogEntries.inbox = [
-        { line: 1, timestamp: "2026-08-07T10:00:00Z", level: "INFO", event: "retain_me", runId: "visible-run", details: "visible detail" },
-        { line: 2, timestamp: "2026-08-07T10:01:00Z", level: "ERROR", event: "exclude_me", runId: "hidden-run", details: "hidden detail" },
+      componentLogEntries.platform = [
+        { line: 1, timestamp: "2026-08-07T10:00:00Z", component: "ep_server", level: "INFO", event: "retain_me", runId: "visible-run", details: "visible detail", target_component: "ep_server" },
+        { line: 2, timestamp: "2026-08-07T10:01:00Z", component: "dashboard_relay", level: "ERROR", event: "exclude_me", runId: "hidden-run", details: "hidden detail" },
       ];
       componentLogServerPaged = false;
       document.querySelector("#logFilter").value = "retain_me";
-      independentLogPageStates.inbox = 1;
+      independentLogPageStates.platform = 1;
       renderComponentLogs();
     });
 
@@ -7928,6 +7926,8 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(page.getByTestId("copy-inbox-visible-log"));
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("retain_me");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("visible-run");
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("ep_server");
+    await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).toContain("target_component");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("exclude_me");
     await expect.poll(() => page.evaluate(() => window.__copiedVisibleLog)).not.toContain("hidden-run");
   });
@@ -10106,12 +10106,13 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#technicalDetails")).toHaveAttribute("open", "");
   });
 
-  test("uses an in-app confirmation modal before clearing each component log", async ({ page }) => {
+  test("uses an in-app confirmation modal before clearing the selected CENTRAL component projection", async ({ page }) => {
     let postCount = 0;
-    await page.route("**/api/logs/inbox", async (route) => {
+    await page.route("**/api/logs/all", async (route) => {
       if (route.request().method() === "POST") {
         postCount += 1;
-        await route.fulfill({ contentType: "application/json", body: '{"cleared":"inbox"}' });
+        expect(route.request().postDataJSON()).toEqual({ component: "all" });
+        await route.fulfill({ contentType: "application/json", body: '{"deleted":1,"scope":"PLATFORM","component":"all"}' });
         return;
       }
       await route.fulfill({ contentType: "text/plain", body: "" });
@@ -10139,14 +10140,13 @@ test.describe("Engineering Status browser smoke", () => {
     }
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-size", "13px");
     await expect(page.locator("#confirmationModalConfirm")).toHaveCSS("font-family", await page.locator("#rateLimitReset").evaluate((button) => getComputedStyle(button).fontFamily));
-    await expect(modal).toContainText("De applicatielogs van Engineering Execution Host wissen?");
+    await expect(modal).toContainText("Lokale hostonderdelen");
     await page.keyboard.press("Escape");
     await expect(modal).not.toBeVisible();
     expect(postCount).toBe(0);
 
     await page.getByTestId("clear-inbox-log").click();
     await page.locator("#confirmationModalConfirm").click();
-    await expect(page.getByTestId("clear-dashboard-log")).toBeVisible();
     await expect.poll(() => postCount).toBe(1);
     expect(nativeDialogs).toEqual([]);
   });

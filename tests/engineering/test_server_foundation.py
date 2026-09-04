@@ -642,3 +642,23 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         central_record = next(entry for entry in logs["entries"] if entry["event"] == "central_console_test")
         self.assertEqual(central_record["component"], "operations_console")
         self.assertIn("ep_server_started", [entry["event"] for entry in logs["entries"]])
+        ndjson_request = Request(
+            f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson",
+        )
+        with urlopen(ndjson_request) as response:
+            self.assertEqual(response.headers["Content-Type"], "application/x-ndjson; charset=utf-8")
+            exported = [json.loads(line) for line in response.read().decode("utf-8").splitlines()]
+        exported_record = next(entry for entry in exported if entry["event"] == "central_console_test")
+        self.assertEqual(exported_record["component"], "operations_console")
+        self.assertIn("timestamp", exported_record)
+        delete_request = Request(
+            f"http://127.0.0.1:{port}/api/logs/all",
+            data=b'{"component":"operations_console"}', method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(delete_request) as response:
+            deleted = json.loads(response.read())
+        self.assertGreaterEqual(deleted["deleted"], 1)
+        with urlopen(f"http://127.0.0.1:{port}/api/logs/operations_console") as response:
+            remaining = json.loads(response.read())
+        self.assertNotIn("central_console_test", [entry["event"] for entry in remaining["entries"]])

@@ -1004,6 +1004,25 @@ def _central_console_component_logs(data_root: Path, component: str) -> dict[str
     return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
 
 
+def _clear_central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
+    """Delete only the explicitly selected CENTRAL component-log projection."""
+    canonical_components = PLATFORM_COMPONENT_IDS
+    aliases = {"dashboard": "operations_console", "inbox": "file_inbox_ingress", "execution-host": "lifecycle_worker"}
+    if component == "all":
+        selected = canonical_components
+    elif component in canonical_components:
+        selected = frozenset({component})
+    else:
+        return None
+    stored = tuple(alias for alias, canonical in aliases.items() if canonical in selected) + tuple(selected)
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        cursor = connection.execute(
+            "DELETE FROM engineering_component_logs WHERE component IN (" + ",".join("?" for _ in stored) + ")",
+            stored,
+        )
+    return {"scope": "PLATFORM", "component": component, "deleted": int(cursor.rowcount)}
+
+
 def _central_console_configuration(data_root: Path) -> dict[str, object]:
     """Expose only configuration already owned by CENTRAL in this phase."""
     return {
@@ -1440,6 +1459,18 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _send_ndjson(self, entries: list[dict[str, object]]) -> None:
+        encoded = ("\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + ("\n" if entries else "")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def _send_console_asset(self, request: SplitResult) -> bool:
         """Serve installed Console assets without selecting a project/root."""
         asset = _CONSOLE_STATIC_ASSETS.get(request.path)
@@ -1659,6 +1690,31 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         # coverage without granting a selected project any authority.
         self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
         if method == "do_GET" and self._send_console_asset(request):
+            return
+        log_match = re.fullmatch(r"/api/logs/(all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", request.path)
+        if log_match and method == "do_GET":
+            payload = _central_console_component_logs(self.server.data_root, log_match.group(1))  # type: ignore[attr-defined]
+            if payload is None:
+                self._send(404, {"error": "LOG_COMPONENT_UNKNOWN"})
+            elif (parse_qs(request.query).get("format") or [""])[0] == "ndjson":
+                self._send_ndjson(list(payload["entries"]))
+            else:
+                self._send(200, payload)
+            return
+        if log_match and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"component"} or not isinstance(payload["component"], str):
+                    raise ValueError
+                result = _clear_central_console_component_logs(self.server.data_root, payload["component"])  # type: ignore[attr-defined]
+                if result is None:
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "LOG_COMPONENT_INVALID"})
+            else:
+                self._send(200, result)
             return
         # Platform health is deliberately independent of the browser's
         # selected project preference, so the same components remain visible

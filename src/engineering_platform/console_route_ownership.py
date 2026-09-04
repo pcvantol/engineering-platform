@@ -37,7 +37,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET",), r"/api/platform-status", PLATFORM, "platform_components", "Platform Components projection", True),
     ConsoleRoute(("GET",), r"/api/(?:dashboard-snapshot|status|events)", PLATFORM, "platform_components", "Platform status projection or stream", True),
     ConsoleRoute(("GET",), r"/api/components/(?:ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)/details", PLATFORM, "platform_components", "Component detail popout", True),
-    ConsoleRoute(("GET",), r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", PLATFORM, "platform_components", "Platform component logs", True),
+    ConsoleRoute(("GET", "POST"), r"/api/logs/(?:all|dashboard|inbox|ep_server|platform_database|lifecycle_worker|operations_console|dashboard_relay|http_ingress|cli_ingress|file_inbox_ingress)", PLATFORM, "platform_components", "Platform component logs", True),
     ConsoleRoute(("GET",), r"/api/provider-login-status", PLATFORM, "provider_login", "Provider readiness", True),
     ConsoleRoute(("POST",), r"/api/provider-login/(?:repair|logout)", PLATFORM, "provider_login", "Provider login action", True),
     ConsoleRoute(("GET",), r"/api/execution-runtime-status", PLATFORM, "execution_runtime", "Execution runtime readiness", True),
