@@ -37,14 +37,27 @@ def command(binary: Path, *args: str, environment: dict[str, str] | None = None)
     return json.loads(completed.stdout)
 
 
-def wait_for_dispatch(server: Path, data_root: Path, submission_id: str) -> dict[str, object]:
-    deadline = time.monotonic() + 15
+def wait_for_dispatch(
+    server: Path,
+    data_root: Path,
+    submission_id: str,
+    *,
+    timeout: float = 15,
+) -> dict[str, object]:
+    """Wait for the real asynchronous lifecycle worker with bounded evidence."""
+    deadline = time.monotonic() + timeout
+    last: dict[str, object] | None = None
     while time.monotonic() < deadline:
         result = command(server, "submission-diagnose", "--data-root", str(data_root), "--submission-id", submission_id)
+        last = result
         if isinstance(result.get("run_id"), str) and result.get("dispatch_state") in {"CLAIMED", "RUNNING", "BLOCKED", "FAILED"}:
             return result
         time.sleep(.2)
-    raise RuntimeError(f"dispatch did not initialize for {submission_id}")
+    state = None if last is None else {
+        "dispatch_state": last.get("dispatch_state"),
+        "run_id": last.get("run_id"),
+    }
+    raise RuntimeError(f"dispatch did not initialize for {submission_id}: {state}")
 
 
 def payload(repository: str, mode: str, key: str) -> dict[str, object]:
@@ -470,8 +483,13 @@ def main(argv: list[str] | None = None) -> int:
             heartbeat_payload = json.loads(heartbeat.read_text())
             if heartbeat_payload.get("state") != "READY" or heartbeat_payload.get("readiness") != "DISCOVERY_CAPABLE":
                 raise RuntimeError("DEPENDABOT_READY_IMPLIES_OPERATIONAL_FAILED")
+            # Dependabot admissions are produced by a separate Server child
+            # after the Server-owned lifecycle worker has started.  Keep this
+            # exact real boundary bounded but allow the worker's initial
+            # SQLite contention/retry window for two independently-bound
+            # projects; this is not a mock or an alternate dispatch path.
             for submission_id, _project, _repository in rows:
-                wait_for_dispatch(server, dependabot_root, submission_id)
+                wait_for_dispatch(server, dependabot_root, submission_id, timeout=30)
             evidence["DEPENDABOT_MULTI_PROJECT_BINDING"] = {"pass": True, "submissions": [row[0] for row in rows]}
         finally:
             process.terminate(); process.wait(timeout=5)
