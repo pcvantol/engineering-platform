@@ -1170,6 +1170,25 @@ _WORKSPACE_ID_FIELD = re.compile(
 )
 
 
+def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
+    """Remove checkout/watcher Inbox controls from the installed Console.
+
+    File Inbox is an installation-owned transport.  The retained dashboard
+    template may contain historical controls, but they are not a supported
+    CENTRAL Console surface and must not be reachable by a selected project.
+    """
+    document = re.sub(br'<div class="field configuration-field">.*?id="configurationInboxOpen".*?</div>', b"", document, count=1)
+    document = re.sub(br'<label for="configurationInboxScanInterval">.*?</label>', b"", document, count=1)
+    document = re.sub(br'<dialog class="dashboard-modal-shell.*?id="configurationInboxModal".*?</dialog>', b"", document, count=1)
+    location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve())).encode("utf-8")
+    readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label">File Inbox ingress</span><span>' + location + b'</span></p>'
+    return document.replace(
+        b'<p class="category-description" data-i18n="description.configuration"></p>',
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + readonly,
+        1,
+    )
+
+
 def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
     """Make CENTRAL's selected project the sole visible workspace identity."""
     replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"
@@ -1241,6 +1260,7 @@ def _console_document_transform(project_id: str, projects: list[dict[str, str]],
             count=1,
         )
         scoped = _centralize_workspace_identity(scoped, project_id)
+        scoped = _retire_legacy_inbox_configuration(scoped, data_root)
         central_section = _central_database_section(data_root).encode("utf-8")
         # The repository binding is not project identity: that remains wholly
         # CENTRAL-owned above.  It is, however, useful operational evidence
@@ -1290,6 +1310,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         selector.encode("utf-8") + b'<label class="dashboard-locale"',
         1,
     )
+    document = _retire_legacy_inbox_configuration(document, data_root)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
     document = document.replace(
