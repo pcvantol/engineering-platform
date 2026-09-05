@@ -1752,7 +1752,13 @@ class LocalAgentRunnerTest(unittest.TestCase):
                 runner._execute_required_validation_controls(state)
             with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": ()}):
                 runner._execute_required_validation_controls(state)
-        self.assertEqual(terminal.call_count, 3)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": ({"validation_id": "other", "command": ["check"]},)}):
+                runner._execute_required_validation_controls(state)
+            invalid_command = {"validation_id": "suite", "category": "test", "control_identity": "check", "command": "not-a-command-list"}
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": (invalid_command,)}), \
+                 patch.object(runner, "_managed_action"):
+                runner._execute_required_validation_controls(state)
+        self.assertEqual(terminal.call_count, 5)
 
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
