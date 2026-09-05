@@ -722,17 +722,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('data-project-id="engineering-platform" data-project-name="engineering-platform"', second)
         self.assertNotIn(str(roots[0]), first)
         self.assertNotIn("Project-scoped local workspace", first)
-        selector = server._console_document_transform(
-            "djconnect", [{"project_id": "djconnect", "repository_id": "djconnect"}], roots[0], self.root,
-        )(b"<main></main>").decode("utf-8")
         no_project = server._no_project_console_document(
             [{"project_id": "djconnect", "repository_id": "djconnect"}],
             self.root,
         ).decode("utf-8")
-        self.assertIn('&lt;geen&gt;</option>', selector)
-        self.assertIn("dashboard-select-options-changed", selector)
-        self.assertIn('>djconnect</option>', selector)
-        self.assertNotIn('>DJConnect</option>', selector)
         self.assertIn('data-project-id="none" data-project-name="&lt;geen&gt;"', no_project)
         self.assertIn('id="noProjectSelected"', no_project)
         self.assertIn('data-i18n="central.no_project_selected_title"', no_project)

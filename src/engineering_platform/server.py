@@ -1577,46 +1577,6 @@ def _console_project_boundary(project_id: str, options: str) -> str:
     )
 
 
-def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path, data_root: Path):
-    """Bind CENTRAL project scope to the historical title-bar selector.
-
-    The Operations Console already owns its project selector in the title bar.
-    The Server supplies its authoritative options and request scoping there;
-    it must not add a second selector to the dashboard content.
-    """
-    options = _console_project_options(project_id, projects)
-    scoped_body = (
-        f'<body data-project-id="{escape(project_id, quote=True)}" '
-        f'data-project-name="{escape(project_id, quote=True)}">'
-    ).encode("utf-8")
-    boundary = _console_project_boundary(project_id, options)
-    def transform(document: bytes) -> bytes:
-        scoped = re.sub(
-            br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
-            scoped_body,
-            document,
-            count=1,
-        )
-        scoped = _centralize_workspace_identity(scoped, project_id)
-        scoped = _retire_legacy_inbox_configuration(scoped, data_root)
-        central_section = _central_database_section(data_root).encode("utf-8")
-        # The repository binding is not project identity: that remains wholly
-        # CENTRAL-owned above.  It is, however, useful operational evidence
-        # and the dashboard turns this concrete local path into its approved
-        # Finder link.  Do not redact it into prose, otherwise there is no
-        # valid path left for that safe, allowlisted action.
-        scoped = scoped.replace(
-            b'<p class="category-description" data-i18n="description.configuration"></p>',
-            b'<p class="category-description" data-i18n="description.configuration"></p>' + central_section,
-            1,
-        )
-        return scoped.replace(
-            b"</main>", boundary.encode("utf-8") + b"</main>", 1,
-        )
-
-    return transform
-
-
 def _no_project_console_document(projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render global Console controls without selecting project-owned data."""
     document = dashboard._dashboard_html(
