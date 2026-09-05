@@ -9,7 +9,7 @@ not a roadmap.
 | AC-01 | critical | Console exposed component restart without a Server-owned lifecycle operation. `VISIBLE_RESTART_WITHOUT_REAL_ROUTE=0` | Canonical model now marks every component `restart_supported=false`; real Console projections cannot render a false operation. | QUALIFIED — focused Server/browser regression, fresh candidate and exact-head hosted validation PASS at `23c08d2200b56d237ff6afd4f254a98c54a85f9c`. |
 | AC-02 | critical | A published File Inbox executable could claim an Inbox outside EP Server. `STANDALONE_FILE_INBOX_EXECUTABLE=0` | Removed the package entry point and module CLI entry; File Inbox is constructed only by `server.serve`. | QUALIFIED — installed-wheel absence and exact-head installed ingress matrix PASS at `23c08d2200b56d237ff6afd4f254a98c54a85f9c`. |
 | AC-03 | high | A live child without admission capability was projected healthy. `FILE_INBOX_READY_IMPLIES_SUBMISSION_CAPABLE=TRUE` | Heartbeat differentiates `READY` from `RUNNING_NOT_READY`; platform projection maps the latter to `FILE_INGRESS_NOT_READY`. | QUALIFIED — negative readiness projection, fresh candidate and exact-head hosted validation PASS at `23c08d2200b56d237ff6afd4f254a98c54a85f9c`. |
-| AC-04 | critical | One external project credential could not safely represent multi-project File Inbox authority. | Canonical security decision: Server-owned `FILE_INBOX` principal invokes `request_from_mapping` and `submission_service.submit` in-process. It bypasses only external caller authentication. Exact-head installed 3×2 ingress matrix passed, including `DEPENDABOT_MULTI_PROJECT_BINDING`. | QUALIFIED — 2026-09-05, installed candidate at `4125cc298193695e3fc31d93b5fe6fb24ff14630`. |
+| AC-04 | critical | One external project credential could not safely represent multi-project File Inbox authority. | Canonical security decision: Server-owned `FILE_INBOX` principal invokes `request_from_mapping` and `submission_service.submit` in-process. It bypasses only external caller authentication. Dependabot now retries a transient CENTRAL SQLite startup lock within one second instead of deferring another independently bound project for the normal scan interval. Exact-head installed 3×2 ingress matrix passed, including `DEPENDABOT_MULTI_PROJECT_BINDING`. | QUALIFIED — focused transient-lock regression, rebuilt candidate and exact-head hosted validation PASS at `382cecfe5d0dd59e9e278f725efb1f971a0018e3`. |
 | AC-05 | high | Component consumers duplicated identity inventories. `PLATFORM_COMPONENT_MODEL_COUNT=1` | `platform_components.py` is the single supported identity source. The bounded retired alias input set is denied before project resolution; it cannot select, write, route, configure, restart or own lifecycle. All new component-log writers reject noncanonical identities. Fresh-candidate suite, coverage and exact-head hosted validation pass. | QUALIFIED — `655052adcb7a61ad45e2f107793a6273fd93da78`. |
 | AC-06 | critical | The legacy Dashboard direct wrapper and historical configuration runtime authority had remained in the supported Console chain. | Server now calls the Console document renderer directly by its Server-owned semantic name; the active Console module no longer imports or reads `historical_dashboard_configuration`. Structural guards reject reintroduction; installed ingress, route, browser and exact-head validation pass. | QUALIFIED — `f1555a88edf206bf51362a6a5593af440ca9e9de`. |
 | AC-07 | high | CENTRAL logging had a Server-bound checkout-file fallback. `REPOSITORY_LOCAL_COMPONENT_LOG_FALLBACK=0` | CENTRAL is the sole durable operational log authority. The local Execution Host Codex diagnostic writer/readers are retired; CENTRAL failure is bounded stderr only; LaunchAgent output is discarded rather than persisted. Static guard, fresh candidate (1156 tests/coverage) and exact-head hosted validation pass. | QUALIFIED — `af0cc0705de07a8700ef9d4e522d62fd87c1073b`. |
@@ -39,9 +39,9 @@ copy and is not exact-worktree evidence. Rebuild with
 before each final measurement.
 
 The latest rebuilt-candidate run at exact head
-`4125cc298193695e3fc31d93b5fe6fb24ff14630` passed **1147 tests**. Complete
+`382cecfe5d0dd59e9e278f725efb1f971a0018e3` passed **1163 tests**. Complete
 production branch coverage has **zero** modules below 80.20%; the minimum is
-`central_store_migration.py` at **80.26%**. The installed 3×2 ingress matrix
+`execution_host.py` at **80.28%**. The installed 3×2 ingress matrix
 and the hosted `validate` workflow were rerun at that same head and passed.
 
 ```ini
@@ -70,7 +70,7 @@ current source, installed-candidate, or mutation evidence contradicts it.
 ### Measurement freshness
 
 **Last authoritative candidate measurement:** rebuilt from exact head
-`23c08d2200b56d237ff6afd4f254a98c54a85f9c`; **1162 Python tests passed** and
+`382cecfe5d0dd59e9e278f725efb1f971a0018e3`; **1163 Python tests passed** and
 every production module met the 80.20% branch-coverage contract. The minimum
 was `execution_host.py` at **80.28%**. The hosted `validate` workflow,
 including the installed ingress matrix, passed at that exact head.
