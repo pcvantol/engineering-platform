@@ -11,7 +11,7 @@ not a roadmap.
 | AC-03 | high | A live child without admission capability was projected healthy. `FILE_INBOX_READY_IMPLIES_SUBMISSION_CAPABLE=TRUE` | Heartbeat differentiates `READY` from `RUNNING_NOT_READY`; platform projection maps the latter to `FILE_INGRESS_NOT_READY`. | FIXED — installed negative canary pending full gate |
 | AC-04 | critical | One external project credential could not safely represent multi-project File Inbox authority. | Canonical security decision: Server-owned `FILE_INBOX` principal invokes `request_from_mapping` and `submission_service.submit` in-process. It bypasses only external caller authentication. Exact-head installed 3×2 ingress matrix passed, including `DEPENDABOT_MULTI_PROJECT_BINDING`. | QUALIFIED — 2026-09-05, installed candidate at `4125cc298193695e3fc31d93b5fe6fb24ff14630`. |
 | AC-05 | high | Component consumers duplicated identity inventories. `PLATFORM_COMPONENT_MODEL_COUNT=1` | Route pattern, startup events and transport rendering derive from `platform_components`; browser logging now has one platform state and derives selectable component identities from that model. Remaining aliases/legacy inventory are tracked by AC-06. | IN_PROGRESS |
-| AC-06 | critical | The legacy Dashboard direct wrapper remains packaged and has supported-looking root/worktree paths. `SUPPORTED_LEGACY_INBOX_WATCHER_RUNTIME=0` | `inbox_watcher.py` is absent, but the re-audit found `server.py → server_console_services._dashboard_html`, retained historical configuration writes and retained Finder helpers. Structural source guards are insufficient to prove physical retirement. | REOPENED BY EVIDENCE GAP |
+| AC-06 | critical | The legacy Dashboard direct wrapper and historical configuration runtime authority had remained in the supported Console chain. | Server now calls the Console document renderer directly by its Server-owned semantic name; the active Console module no longer imports or reads `historical_dashboard_configuration`. Structural guards reject reintroduction; installed ingress, route, browser and exact-head validation pass. | QUALIFIED — `f1555a88edf206bf51362a6a5593af440ca9e9de`. |
 | AC-07 | high | CENTRAL logging had a Server-bound checkout-file fallback. `REPOSITORY_LOCAL_COMPONENT_LOG_FALLBACK=0` | The Server-bound logger now emits only bounded stderr on CENTRAL failure; no local persistent fallback. All active writers use canonical `operations_console` or `file_inbox_ingress` identities. Historical reads/routes remain tied solely to the direct Dashboard-wrapper retirement tracked by AC-06. | IN_PROGRESS |
 | AC-08 | high | Qualification lacked CLI invalid-Genesis, complete Human negatives and port isolation. | Installed matrix now uses OS-assigned ports and includes the missing negative cases. | FIXED — installed matrix PASS |
 | AC-09 | high | Human receipt lacked complete audit-chain provenance. | Accepted receipt now records source/normalized digest, scope, requested mode, normalization method/version and submission identity. | IN_PROGRESS — run linkage and durable audit verification pending |
@@ -22,8 +22,9 @@ not a roadmap.
 `UNRESOLVED_AUDIT_FINDINGS` remains non-zero until every `IN_PROGRESS` item
 has a real product-boundary canary and exact-head installed-wheel evidence.
 
-AC-06 remains a blocking evidence gap. This register is therefore not evidence
-for human UI review or Owner Authorization.
+This register is therefore not evidence for human UI review or Owner
+Authorization: remaining installed qualification and retirement items are
+listed below.
 
 ## Coverage-contract handoff — 2026-09-05
 
@@ -80,13 +81,13 @@ rerun at that exact head.
 
 | Area | Current finding | Evidence already observed | Closure criterion |
 | --- | --- | --- | --- |
-| Direct Dashboard retirement | **OPEN / contradictory evidence** | `server.py` still delegates to `server_console_services._dashboard_html`; historical Dashboard configuration services remain imported; the wrapper has supported-looking Console paths. | Remove the direct wrapper/runtime path or prove every remaining helper is presentation-only with permanent absence guards and installed-candidate proof. Do not report LR-02 as requalified until this exact evidence is resolved. |
+| Direct Dashboard retirement | **QUALIFIED** | Server has no `_dashboard_html` reference; supported Console rendering uses `render_console_document`, and the active Console module has no historical Dashboard-configuration import or read. Exact-head guards, browser checks, installed ingress and validation pass. | Preserve the structural regression guard. |
 | Legacy Inbox / watcher removal | **OPEN evidence gap** | `inbox_watcher.py` is absent, but historical Inbox configuration and wrapper-related paths remain. `legacy_inbox_migration.py` is historical-only; its symlink-retention defect is fixed. | Prove no supported watcher/InBox alias, local Inbox location, or wrapper route has execution/configuration authority. |
 | File Inbox ingress | **QUALIFIED** | Exact-head installed ingress matrix passed, including `DEPENDABOT_MULTI_PROJECT_BINDING`, HTTP/API, CLI, File Inbox, Human Intent, replay, negative-ingress and storage-authority canaries. | Preserve the qualified contract under future ingress changes. |
 | Host Admin boundary | **RETAINED, requalification required** | Registry/containment/mutation gates were previously designed; removed worktree/lock mutations must not be advertised by any Console route/UI. | Re-run target registry, containment, inventory, audit and mutation-gate tests against the installed candidate. |
 | Relay ownership | **REQUALIFY** | Relay is Server-owned by design; source has Server relay lifecycle and no checkout launcher evidence was accepted. | Re-run installation-owned relay build/install/uninstall, route, and negative checkout-authority tests. |
 | Route ownership | **OPEN evidence gap** | Console wrapper is still reached from `server.py`; no project fallback must be restored. | Route ownership guard and installed route canary show zero ambiguous ownership, zero project delegation for platform routes, and zero Dashboard route owner. |
-| Configuration authority | **OPEN / contradictory evidence** | Historical Dashboard configuration module remains a Server Console dependency. | Central Server/Project/Installation setting inventory is complete; historical configuration has no supported write/read authority or runtime fallback. |
+| Configuration authority | **PARTIALLY QUALIFIED** | Active Console configuration reads now resolve through CENTRAL; structural guards reject historical Dashboard configuration imports/reads in Server and supported Console code. | Complete the broader central Server/Project/Installation settings inventory and retirement proof. |
 | Local data authority | **REQUALIFY** | Migration-only historical Inbox artifacts are retained; CENTRAL-only authority was the intended model. | Re-run local-data retirement matrix and prove no execution, queue, project, browser, checkout, or root-local authority remains. |
 | Migration to CENTRAL | **OPEN** | `central_store_migration.py` now meets the coverage contract (80.26%); earlier migration audit evidence includes abort/pre-handoff and historical-source paths, but not a complete exact-head cutover qualification. The historical Inbox archive mover is not a CENTRAL authority migration and must remain classified as historical-only. | Inventory each legacy source; prove bounded source identity, quiescence/admission freeze, schema compatibility, copy/import verification, durable receipt, rollback before cutover, and CENTRAL-only authority after cutover. Run positive, stale-source, malformed-source, conflict, interruption, rollback and postcondition canaries. |
 | Component aliases and logging | **OPEN** | Canonical component model exists, but AC-05/AC-07 remain in progress and historical Dashboard/Inbox log surfaces require retirement proof. | One component inventory; zero writable/selectable/lifecycle legacy aliases; CENTRAL-only logs with no local fallback. |
@@ -102,14 +103,14 @@ exact candidate head.
 
 ### Final retirement re-audit — 2026-09-05
 
-The re-audit is intentionally **not closed**. Current source still contains
-two Server calls to `server_console_services._dashboard_html` and
-`server_console_services` still imports `historical_dashboard_configuration`.
-The historical checkout-bound runtime-directory action remains explicitly
-unreachable (`410`) and the local-data, component-model and route-ownership
-guards pass, but that is not sufficient evidence to retire the retained direct
-Dashboard wrapper/configuration runtime. AC-06 therefore remains the closure
-blocker for final retirement.
+The direct Dashboard-wrapper/configuration dependency is closed: the Server
+has no `_dashboard_html` call, and its supported Console module neither imports
+nor reads `historical_dashboard_configuration`. The historical checkout-bound
+runtime-directory action remains explicitly unreachable (`410`). The
+local-data, component-model, route-ownership and new Dashboard-retirement
+guards pass, as do the exact-head installed ingress, browser and hosted
+validation checks. Final retirement remains pending only for the other rows in
+this register; AC-06 is no longer its blocker.
 
 ## Legacy branch successor reconciliation
 
