@@ -104,6 +104,8 @@ _PROVIDER_LOGIN_LOCK = Lock()
 _PROVIDER_INSTALL_LOCK = Lock()
 _CODEX_RATE_LIMIT_CACHE: tuple[float, bytes] | None = None
 _CODEX_RATE_LIMIT_CACHE_LOCK = Lock()
+_CODEX_IDENTITY_CACHE: tuple[float, dict[str, str]] | None = None
+_CODEX_IDENTITY_CACHE_LOCK = Lock()
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -184,7 +186,7 @@ def _codex_rate_limits() -> bytes:
     with _CODEX_RATE_LIMIT_CACHE_LOCK:
         if _CODEX_RATE_LIMIT_CACHE and now - _CODEX_RATE_LIMIT_CACHE[0] < 60:
             return _CODEX_RATE_LIMIT_CACHE[1]
-    identity = dashboard._codex_provider_identity()
+    identity = _codex_provider_identity()
     provider = CodexCliProvider(); process = None
     try:
         process = provider.app_server()
@@ -236,6 +238,27 @@ def _rate_limit_window_label(duration: int) -> str:
     if duration % 1_440 == 0: return f"{duration // 1_440}-daags venster"
     if duration % 60 == 0: return f"{duration // 60}-uursvenster"
     return f"{duration}-minutenvenster"
+
+
+def _codex_provider_identity() -> dict[str, str]:
+    """Return the managed Codex CLI identity without selecting PATH authority."""
+    global _CODEX_IDENTITY_CACHE
+    now = time.monotonic()
+    with _CODEX_IDENTITY_CACHE_LOCK:
+        if _CODEX_IDENTITY_CACHE and now - _CODEX_IDENTITY_CACHE[0] < 300:
+            return dict(_CODEX_IDENTITY_CACHE[1])
+    identity = {"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"}
+    executable = CodexCliProvider()._executable
+    if executable:
+        candidate = Path(executable).expanduser()
+        if candidate.is_absolute(): identity["provider_path"] = str(candidate.parent.parent)
+        try: completed = LocalProcessProvider().execute(default_data_root(), (executable, "--version"))
+        except OSError: completed = None
+        if completed and completed.returncode == 0:
+            match = re.search(r"(?<!\d)(\d+\.\d+\.\d+)(?!\d)", (completed.stdout or completed.stderr).strip())
+            if match: identity["provider_version"] = match.group(1)
+    with _CODEX_IDENTITY_CACHE_LOCK: _CODEX_IDENTITY_CACHE = (now, identity)
+    return dict(identity)
 
 
 def _start_provider_login(data_root: Path, provider: str) -> None:
