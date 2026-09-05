@@ -30,6 +30,14 @@ Git-lock recovery, worktree operations, disk/runtime/Codex diagnostics and
 local report/chat/workspace diagnostics remain quarantined legacy inputs, not
 Console features to delete blindly.
 
+The first supported Host Admin capability is `GET /api/host-admin/diagnostics`.
+It is a Server-owned, read-only projection of the explicit installation root's
+disk capacity and the managed Codex runtime state.  It takes no path, project,
+repository or command input and deliberately returns neither runtime paths nor
+environment/process details.  Worktree removal and Git-lock repair have no
+supported Host Admin route yet; their legacy helpers remain unqualified until
+their target, audit and safety contract are implemented.
+
 `dashboard_relay` is an installation-owned Server access adapter.  Its binary
 belongs under the Server data root and its LaunchAgent lifecycle is invoked
 only through Server installation administration.  It forwards Tailnet access

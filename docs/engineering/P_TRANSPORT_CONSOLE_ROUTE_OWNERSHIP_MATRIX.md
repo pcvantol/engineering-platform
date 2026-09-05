@@ -16,6 +16,7 @@ change authority, select a checkout, or delegate that route.
 | PLATFORM | `GET /api/execution-runtime-status`; `POST /api/execution-runtime/repair` | Execution runtime status and repair |
 | PLATFORM | `GET /api/provider-capacity`, `/api/github-rate-limit`; `GET/POST /api/provider-capacity/configuration` | Provider capacity/readiness diagnostics and settings |
 | PLATFORM | `GET/POST /api/configuration`; `GET /api/central-database/download`; `POST /api/central-database/open-directory`; `GET/POST /api/central-database/configuration` | Server settings and Central database operations |
+| HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
 | PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
 | PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,chat,details}`, `/api/telemetry/{date}`; `POST /api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
 | TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
@@ -26,6 +27,7 @@ change authority, select a checkout, or delegate that route.
 - `PLATFORM_ROUTE(<geen>) == PLATFORM_ROUTE(selected_project)` for authority and health semantics. The selected project can only affect documented display context.
 - A Platform component family has one scope across status, detail, repair/action, restart (where present), and diagnostics/logs: `COMPONENT_ROUTE_SCOPE_CONSISTENT=PASS`.
 - Project routes fail closed without a valid project identity; they do not inherit a first checkout.
+- The Host Admin diagnostic resolves before project selection and receives only the explicit EP Server installation root. It neither accepts a filesystem target nor exposes Finder, worktree, Git-lock or arbitrary-command actions.
 - `tools/qualification/console_route_ownership_guard.py` runs in normal validation and emits `PLATFORM_ROUTE_PROJECT_DELEGATION=0`, `PLATFORM_ROUTE_CHECKOUT_DEPENDENCY=0`, and `AMBIGUOUS_ROUTE_OWNERSHIP=0`.
 
 ## Removed fallback paths
