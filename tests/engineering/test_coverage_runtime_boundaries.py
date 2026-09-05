@@ -1398,8 +1398,15 @@ class InstallationBoundaryTests(unittest.TestCase):
         records = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(records[0]["worker_eligible"], True)
         self.assertEqual(records[0]["transport_provenance"], "COMPLETE")
+        self.assertEqual(records[0]["admission_audit_provenance"], "UNAVAILABLE")
         self.assertEqual(records[0]["execution_receipt_provenance"], "UNAVAILABLE")
         self.assertEqual(records[0]["dispatch_scope_provenance"], "COMPLETE")
+        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)", ("sub-a", "ADMISSION_GRANTED", "{}", "now"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-a"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["admission_audit_provenance"], "PRESENT")
         with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO execution_receipts(run_id,producer_id,producer_type,execution_host,execution_host_version,receipt_timestamp,execution_outcome) VALUES(?,?,?,?,?,?,?)", ("run-a", "test", "TEST", "Engineering Platform", "2.0", "now", "COMPLETE"))
         output = io.StringIO()
