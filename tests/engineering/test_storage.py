@@ -69,6 +69,22 @@ class EngineeringStorageTest(unittest.TestCase):
             missing = StateStore(root / "other" / "runs", central_database=root / "missing.db")
             with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
                 missing.run_ids()
+
+    def test_checkpoint_store_removes_json_shadow_and_rejects_corrupt_durable_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = StateStore(root / ".engineering" / "engineering-runs")
+            state = TransactionState("remove-safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            path = store.save(state)
+            self.assertTrue(path.exists())
+            connection = open_storage(root)
+            connection.execute("UPDATE engineering_transactions SET payload='{' WHERE run_id=?", (state.run_id,))
+            connection.close()
+            with self.assertRaisesRegex(StateError, "canonical checkpoint is corrupt"):
+                store.load(state.run_id)
+            store.remove(state.run_id)
+            self.assertFalse(path.exists())
+            self.assertEqual(store.run_ids(), ())
     def test_schema_39_adds_verifier_only_local_api_credential_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
