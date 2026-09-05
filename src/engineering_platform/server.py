@@ -826,6 +826,7 @@ def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
         "detail_code": definition.detail_code,
         "lifecycle_label": label,
         "lifecycle_state": "RUNNING" if relay_running else "STOPPED",
+        "uptime_seconds": 0,
         "recent_error": None if healthy else detail,
     }
 
@@ -894,8 +895,25 @@ def status(data_root: Path) -> dict[str, object]:
             "detail_code": definition.detail_code,
             **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if definition.id == "platform_database" else {}),
         }
+    server_component = components["ep_server"]
+    server_component["version"] = _console_platform_version()
+    started_at = runtime.get("started_at") if runtime else None
+    if isinstance(started_at, str):
+        try:
+            server_component["uptime_seconds"] = max(
+                0, int((datetime.now(timezone.utc) - datetime.fromisoformat(started_at)).total_seconds())
+            )
+        except ValueError:
+            pass
+    healthy = all(
+        bool(components[item.id].get("healthy"))
+        for item in PLATFORM_COMPONENTS
+        if item.critical
+    )
     return {
         "service": "engineering-platform-server",
+        "healthy": healthy,
+        "health": "ok" if healthy else "degraded",
         "instance_id": identity.instance_id,
         "store": "ready",
         "schema_version": SERVER_STORE_SCHEMA_VERSION,

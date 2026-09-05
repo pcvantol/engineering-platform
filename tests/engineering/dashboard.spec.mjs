@@ -52,7 +52,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from http.server import ThreadingHTTPServer; from pathlib import Path; import sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'engineering.db'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository', 'role': 'authority'}, 'validation': {'kind': 'none'}}); connection.commit(); connection.close(); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
+        "from http.server import ThreadingHTTPServer; from pathlib import Path; import datetime, json, os, sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'engineering.db'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository','role':'authority'}, 'validation': {'kind':'none'}}); connection.commit(); connection.close(); (root / 'runtime.json').write_text(json.dumps({'pid': os.getpid(), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
@@ -6530,7 +6530,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("exposes the structured Engineering Platform health projection", async ({ request }) => {
-    const response = await request.get(`${dashboardUrl}/health`);
+    const response = await request.get(new URL("/health", dashboardUrl).href);
     expect([200, 503]).toContain(response.status());
 
     const health = await response.json();
@@ -6538,31 +6538,32 @@ test.describe("Engineering Status browser smoke", () => {
       health: health.healthy ? "ok" : "degraded",
       healthy: expect.any(Boolean),
       components: expect.objectContaining({
-        dashboard: expect.objectContaining({ healthy: true, state: "running" }),
+        ep_server: expect.objectContaining({ healthy: true, status_code: "EP_SERVER_ACTIVE" }),
         dashboard_relay: expect.objectContaining({ healthy: expect.any(Boolean) }),
       }),
     }));
-    expect(health.components.dashboard.version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(health.components.dashboard.uptime_seconds).toEqual(expect.any(Number));
+    expect(health.components.ep_server.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(health.components.ep_server.uptime_seconds).toEqual(expect.any(Number));
     expect(health.components.dashboard_relay).toHaveProperty("uptime_seconds");
     // File Inbox is a Server-owned transport component.  The retired
     // repository-local Inbox watcher must never be projected as healthy.
     expect(health.components).not.toHaveProperty("inbox_watcher");
+    expect(health.components).not.toHaveProperty("dashboard");
     expect(health.components).not.toHaveProperty("private_remote_access");
 
-    const favicon = await request.get(`${dashboardUrl}/assets/operations-console/apple-touch-icon-dark.png`);
+    const favicon = await request.get(new URL("/assets/operations-console/apple-touch-icon-dark.png", dashboardUrl).href);
     expect(favicon.status()).toBe(200);
     expect(favicon.headers()["content-type"]).toContain("image/png");
-    const stylesheet = await request.get(`${dashboardUrl}/assets/dashboard.css`);
+    const stylesheet = await request.get(new URL("/assets/dashboard.css", dashboardUrl).href);
     expect(stylesheet.status()).toBe(200);
     expect(stylesheet.headers()["content-type"]).toContain("text/css");
-    const script = await request.get(`${dashboardUrl}/assets/dashboard.js`);
+    const script = await request.get(new URL("/assets/dashboard.js", dashboardUrl).href);
     expect(script.status()).toBe(200);
     expect(script.headers()["content-type"]).toContain("text/javascript");
-    const locales = await request.get(`${dashboardUrl}/assets/dashboard_locales.mjs`);
+    const locales = await request.get(new URL("/assets/dashboard_locales.mjs", dashboardUrl).href);
     expect(locales.status()).toBe(200);
     expect(locales.headers()["content-type"]).toContain("text/javascript");
-    const statusStore = await request.get(`${dashboardUrl}/assets/dashboard_status_store.mjs`);
+    const statusStore = await request.get(new URL("/assets/dashboard_status_store.mjs", dashboardUrl).href);
     expect(statusStore.status()).toBe(200);
     expect(statusStore.headers()["content-type"]).toContain("text/javascript");
   });
@@ -6895,7 +6896,9 @@ test.describe("Engineering Status browser smoke", () => {
     };
     await page.route("**/health", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(projection) }));
     for (const language of SUPPORTED_LOCALES) {
-      await page.goto(`${dashboardUrl}/?localizationStrict=1`, { waitUntil: "domcontentloaded" });
+      const strictUrl = new URL(dashboardUrl);
+      strictUrl.searchParams.set("localizationStrict", "1");
+      await page.goto(strictUrl.href, { waitUntil: "domcontentloaded" });
       await waitForDashboardReady(page);
       await selectDashboardLocale(page, language);
       await page.evaluate((health) => renderPlatformHealth(health), projection);
@@ -7669,10 +7672,10 @@ test.describe("Engineering Status browser smoke", () => {
 
   test("refreshes uptime and memory while component details remain open", async ({ page }) => {
     let detailsRequest = 0;
-    await page.route("**/api/components/dashboard/details", (route) => {
+    await page.route("**/api/components/ep_server/details", (route) => {
       detailsRequest += 1;
       return route.fulfill({ json: {
-        component: "dashboard",
+        component: "ep_server",
         healthy: true,
         detail: "HTTP-dashboard reageert",
         version: "1.2.87",
@@ -7684,7 +7687,7 @@ test.describe("Engineering Status browser smoke", () => {
     });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#platformHealth").evaluate((element) => { element.open = true; });
-    await dispatchDashboardPointerClick(page.locator(".component-info").first());
+    await dispatchDashboardPointerClick(page.locator(".platform-health__component").filter({ hasText: "EP-server" }));
 
     await expect(page.locator("#componentModalContent")).toContainText("Uptime10s");
     await expect(page.locator("#componentModalContent")).toContainText("PID 42: 1.0 MiB");
