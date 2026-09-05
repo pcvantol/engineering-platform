@@ -154,6 +154,15 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             with open_storage(root) as connection:
                 self.assertEqual(connection.execute("SELECT state FROM terminal_telemetry_outbox WHERE run_id='broken-telemetry'").fetchone()[0], "FAILED_RETRYABLE")
 
+    def test_terminal_recovery_limits_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("limit-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
+            with self.assertRaises(ValueError):
+                materialize_pending_terminal_telemetry(root, limit=0)
+            with self.assertRaises(ValueError):
+                recover_missing_terminal_telemetry(root, limit=251)
+
     def test_recovery_uses_structured_terminal_evidence_and_canonical_date(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
