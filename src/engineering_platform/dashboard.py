@@ -1844,8 +1844,11 @@ def _report_analysis_for_run(root: Path, run_id: str | None) -> bytes:
     """Return advisory analysis only when it belongs to the displayed terminal run."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
         return b""
+    safe_run_id = os.path.basename(run_id)
+    if safe_run_id != run_id:
+        return b""
     try:
-        return (root / ".engineering" / "report-analysis" / f"{run_id}.md").read_bytes()
+        return (root / ".engineering" / "report-analysis" / f"{safe_run_id}.md").read_bytes()
     except OSError:
         return b""
 
@@ -1854,7 +1857,8 @@ def _report_analysis_available_for_run(root: Path, run_id: str | None) -> bool:
     """Return whether the displayed terminal run has an advisory analysis."""
     if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
         return False
-    return (root / ".engineering" / "report-analysis" / f"{run_id}.md").is_file()
+    safe_run_id = os.path.basename(run_id)
+    return safe_run_id == run_id and (root / ".engineering" / "report-analysis" / f"{safe_run_id}.md").is_file()
 
 
 def _report_analysis_processing_status(root: Path, run_id: str | None) -> str | None:
