@@ -1397,6 +1397,7 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "unknown"]), 2)
         records = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(records[0]["worker_eligible"], True)
+        self.assertEqual(records[0]["transport_provenance"], "COMPLETE")
         self.assertEqual(records[0]["early_failure"], {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"})
         checkout = root.parent / "declared-checkout"; checkout.mkdir()
         provision = io.StringIO()
