@@ -157,10 +157,13 @@ class CentralStoreMigrationTests(unittest.TestCase):
         directory_target.mkdir()
         self.assertEqual(migration.classify_target(directory_target)["state"], "UNKNOWN")
         empty_database = Path(self.temporary.name) / "empty.db"
-        sqlite3.connect(empty_database).close()
+        with sqlite3.connect(empty_database) as connection:
+            connection.execute("PRAGMA user_version=1")
         self.assertEqual(migration.classify_target(empty_database)["state"], "EMPTY_NEW")
         malformed_lock = Path(self.temporary.name) / "malformed.lock"
         malformed_lock.write_text("not-json", encoding="utf-8")
+        self.assertIsNone(migration._lock_owner(malformed_lock))
+        malformed_lock.write_text(json.dumps({"component": 7, "pid": "invalid"}), encoding="utf-8")
         self.assertIsNone(migration._lock_owner(malformed_lock))
         with self.assertRaisesRegex(migration.CutoverError, "ADMISSION_FREEZE_FAILED"):
             migration.set_admission_freeze(self.root, reason="")
