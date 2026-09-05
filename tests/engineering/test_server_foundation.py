@@ -84,6 +84,10 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertTrue(all(item["id"] == item["log_component"] for item in model))
         self.assertTrue(all({"name_key", "kind", "group", "restart_supported"} <= item.keys() for item in model))
 
+    def test_server_has_no_unlocalized_parallel_console_document(self) -> None:
+        """The installed Console has one localized document composition path."""
+        self.assertFalse(hasattr(server, "_operations_console_document"))
+
     def test_console_document_has_one_central_log_table_and_no_legacy_inbox_configuration(self) -> None:
         """Historical dashboard markup cannot re-enable retired Console controls."""
         server.initialize(self.root)
