@@ -1642,6 +1642,19 @@ class LocalAgentRunnerTest(unittest.TestCase):
         audit = runner._audit_record(iteration=1, failed_checks="suite", proposed_action="repair", result=None, outcome="planned", empty_summary="none")
         self.assertEqual(audit["agent_summary"], "none")
 
+    def test_provider_readiness_blocks_and_restores_the_original_action_without_provider_work(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("readiness-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", next_action="invoke_agent")
+        with patch("engineering_platform.execution_host.provider_readiness_failures", return_value=("CODEX", "GITHUB")):
+            blocked = runner._provider_readiness_gate(state, require_codex=True, require_github=True)
+        self.assertEqual(blocked.next_action, "provider_auth_repair_required")
+        self.assertEqual(blocked.auth_recovery_providers, ("CODEX", "GITHUB"))
+        self.assertEqual(self.store.load(state.run_id).next_action, "provider_auth_repair_required")
+        with patch("engineering_platform.execution_host.provider_readiness_failures", return_value=()):
+            restored = runner._provider_readiness_gate(blocked, require_codex=True, require_github=True)
+        self.assertEqual(restored.next_action, "invoke_agent")
+        self.assertIsNone(restored.auth_recovery_phase)
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
