@@ -37,11 +37,38 @@ from engineering_platform.storage import (
     store_projection,
     verify_artifact_integrity,
 )
-from engineering_platform.agent_state import StateStore, TransactionState
+from engineering_platform.agent_state import StateError, StateStore, TransactionState
 from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_checkpoint_decode_rejects_corrupt_identity_admission_and_recovery_ledgers(self) -> None:
+        raw = TransactionState("safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT").to_dict()
+        cases = (
+            {**raw, "schema_version": 0},
+            {**raw, "run_id": "Unsafe Run"},
+            {**raw, "owner_authorized": "yes"},
+            {**raw, "admission_decision": "PASS", "admission_completed_at": None},
+            {**raw, "provider_recovery_attempts": ({"bad": "ledger"},)},
+            {**raw, "commit_evidence": ({"phase": "EXECUTE_AGENT"},)},
+        )
+        for checkpoint in cases:
+            with self.assertRaises(StateError):
+                TransactionState.from_dict(checkpoint)
+
+    def test_central_checkpoint_has_no_checkout_shadow_and_missing_database_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "central.db"
+            open_storage(root).backup(sqlite3.connect(database))
+            store = StateStore(root / ".engineering" / "engineering-runs", central_database=database)
+            state = TransactionState("central-safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            path = store.save(state)
+            self.assertFalse(path.exists())
+            self.assertEqual(store.load(state.run_id), state)
+            missing = StateStore(root / "other" / "runs", central_database=root / "missing.db")
+            with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
+                missing.run_ids()
     def test_schema_39_adds_verifier_only_local_api_credential_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
