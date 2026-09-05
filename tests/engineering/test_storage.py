@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from engineering_platform import storage
 from engineering_platform.storage import (
     DATABASE_FILENAME,
     ENGINEERING_STORAGE_SCHEMA_VERSION,
@@ -42,6 +43,25 @@ from engineering_platform.platform_version import EngineeringPlatformManifest
 
 
 class EngineeringStorageTest(unittest.TestCase):
+    def test_storage_admission_context_is_complete_valid_and_root_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.dict(os.environ, {storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root)}, clear=False):
+                with self.assertRaisesRegex(EngineeringStorageError, "admission context is incomplete"):
+                    storage._admitted_migration_ceiling(root)
+            with patch.dict(os.environ, {
+                storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root),
+                storage.ADMITTED_STORAGE_SCHEMA_ENVIRONMENT: "not-a-number",
+            }, clear=False):
+                with self.assertRaisesRegex(EngineeringStorageError, "admission schema is invalid"):
+                    storage._admitted_migration_ceiling(root)
+            with patch.dict(os.environ, {
+                storage.ADMITTED_STORAGE_ROOT_ENVIRONMENT: str(root),
+                storage.ADMITTED_STORAGE_SCHEMA_ENVIRONMENT: "17",
+            }, clear=False):
+                self.assertEqual(storage._admitted_migration_ceiling(root), 17)
+                self.assertIsNone(storage._admitted_migration_ceiling(root / "other"))
+
     def test_checkpoint_decode_rejects_corrupt_identity_admission_and_recovery_ledgers(self) -> None:
         raw = TransactionState("safe-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT").to_dict()
         cases = (
