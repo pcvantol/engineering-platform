@@ -100,6 +100,7 @@ _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _PROVIDER_LOGIN_LOCK = Lock()
+_PROVIDER_INSTALL_LOCK = Lock()
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -214,6 +215,47 @@ def _logout_provider(data_root: Path, provider: str) -> None:
         raise ValueError("Unsupported provider logout request.")
     if completed.returncode:
         raise ValueError("Provider logout did not complete.")
+
+
+def _central_execution_active(data_root: Path) -> bool:
+    """Read active lifecycle state from CENTRAL, never a checkout status file."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE "
+            "state IN ('CLAIMED','RUNNING') OR (state IN ('BLOCKED','FAILED') "
+            "AND operator_resolution='OPEN') LIMIT 1"
+        ).fetchone()
+    return row is not None
+
+
+def _install_provider(data_root: Path, provider: str) -> None:
+    """Install one provider only through the Server installation boundary."""
+    if not _PROVIDER_INSTALL_LOCK.acquire(blocking=False):
+        raise ValueError("Another provider installation is already in progress.")
+    try:
+        if _central_execution_active(data_root):
+            raise ValueError("Provider installation is unavailable while an execution is active.")
+        if provider == "CODEX":
+            try:
+                managed_codex_runtime.provision(data_root)
+            except managed_codex_runtime.ManagedCodexRuntimeError as error:
+                raise ValueError(str(error)) from error
+            key = "codex"
+        elif provider == "GITHUB":
+            brew = shutil.which("brew")
+            if brew is None:
+                raise ValueError("GitHub CLI installation requires Homebrew on this host.")
+            completed = LocalProcessProvider().execute(data_root, (brew, "install", "gh"))
+            verification = LocalProcessProvider().execute(data_root, ("gh", "--version"))
+            if completed.returncode or verification.returncode:
+                raise ValueError("Provider installation could not be verified.")
+            key = "github"
+        else:
+            raise ValueError("Unsupported provider installation request.")
+        if _central_provider_readiness(data_root).get(key, {}).get("state") == "UNAVAILABLE":
+            raise ValueError("Provider installation could not be verified.")
+    finally:
+        _PROVIDER_INSTALL_LOCK.release()
 
 
 class ServerConfigurationError(ValueError):
@@ -1459,7 +1501,7 @@ def _central_provider_repair(data_root: Path, payload: object) -> None:
     if action == "login":
         _start_provider_login(data_root, provider)
     else:
-        dashboard._install_provider(data_root, provider)  # type: ignore[attr-defined]
+        _install_provider(data_root, provider)
 
 
 def _central_provider_logout(data_root: Path, payload: object) -> None:
