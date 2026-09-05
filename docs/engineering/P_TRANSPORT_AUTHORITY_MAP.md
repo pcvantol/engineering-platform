@@ -17,6 +17,28 @@ authority. The only operational database is the installation-owned
 `engineering.db`; File Inbox uses durable filesystem acknowledgement, not a
 second operational store.
 
+## Host Admin and relay boundary decision
+
+The remaining host-local diagnostics are classified separately from Console
+and project authority.  A future `HOST_ADMIN_DIAGNOSTIC` or
+`HOST_ADMIN_ACTION` service is installed and owned by the EP Server; it may
+inspect an explicit installation root, but may not infer project/repository
+identity from CWD, a checkout, Git remote, directory name, selected project or
+a default.  It has no submission, queue, lifecycle or execution authority.
+Until that dedicated surface has its own authorization and qualification,
+Git-lock recovery, worktree operations, disk/runtime/Codex diagnostics and
+local report/chat/workspace diagnostics remain quarantined legacy inputs, not
+Console features to delete blindly.
+
+`dashboard_relay` is an installation-owned Server access adapter.  Its binary
+belongs under the Server data root and its LaunchAgent lifecycle is invoked
+only through Server installation administration.  It forwards Tailnet access
+to the Server loopback Console and owns no File Inbox, project, Action, run,
+queue, database or execution state.  The historical `dashboard`/`inbox`
+identifiers are temporary read/route compatibility aliases for the residual
+direct wrapper only; canonical writers and selectable components use
+`PLATFORM_COMPONENTS`.
+
 ## Console platform projection and operator interaction
 
 The installed Console reads all three ingress states from the Server/CENTRAL

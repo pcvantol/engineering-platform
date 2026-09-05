@@ -54,6 +54,57 @@ No removal is authorized from this register while its classification is
 the permitted terminal classifications with exact callers and installed-wheel
 evidence.
 
+## Closure decisions: host boundary, data and configuration
+
+These decisions are normative for the remaining LR-02/LR-03/LR-04/LR-12
+work.  They prevent the direct wrapper from being retired by either silently
+retaining a checkout authority or deleting a useful host capability without a
+replacement decision.
+
+### Host Admin classification
+
+The following root-local capabilities are **not** Console, CENTRAL or Project
+authority.  They are classified pending a dedicated Server-installed Host
+Admin surface.  They have no supported direct-dashboard route or mutation
+until that surface, its authorization model and qualification exist.
+
+| Capability | Classification | Target owner | Removal rule |
+| --- | --- | --- | --- |
+| Git index-lock diagnosis and proven-stale lock recovery | `HOST_ADMIN_DIAGNOSTIC` / `HOST_ADMIN_ACTION` | installation-owned Server Host Admin service | retain source only while explicitly quarantined; do not expose through the Console wrapper |
+| Local worktree inventory and safe worktree removal | `HOST_ADMIN_DIAGNOSTIC` / `HOST_ADMIN_ACTION` | installation-owned Server Host Admin service | no deletion until a target contract proves root allowlisting and non-project authority |
+| Disk, runtime and Codex-installation diagnostics | `HOST_ADMIN_DIAGNOSTIC` | installation-owned Server Host Admin service | no checkout/CWD/default-project inference in the successor |
+| Local report, chat and workspace diagnostics | `HOST_ADMIN_DIAGNOSTIC` | installation-owned Server Host Admin service or `HISTORICAL_EVIDENCE_KEEP` per dataset | classify every input dataset before extraction/removal |
+
+`HOST_ADMIN_*` is deliberately not an execution authority: it cannot admit a
+submission, select a project/repository, access CENTRAL lifecycle state as a
+writer, or infer a project from a root, checkout, Git remote, directory name,
+selected project or default project.
+
+### Local dataset inventory
+
+| Dataset family | Classification | Authoritative owner / disposition |
+| --- | --- | --- |
+| `engineering.db`, component logs, submissions, Actions, runs, retries and lifecycle records | `SERVER` | installation-owned CENTRAL database; no repository-local fallback or second store |
+| File Inbox `incoming`, `processing`, `accepted`, `quarantine` and heartbeat | `INSTALLATION` | Server-owned transport durability evidence, not a queue or lifecycle store |
+| Server `server.json`, runtime identity/runtime files and relay binary | `INSTALLATION` | Server data root only |
+| Explicitly registered project/repository bindings and project reports/history | `PROJECT` | CENTRAL registration and project projection; never discovered from a local root |
+| Legacy root `.engineering` reports, chats, workspace snapshots and run JSON | `HISTORICAL` | read-only migration/forensic evidence until each reader is replaced or retired |
+| Git-lock, worktree, disk and installed-runtime observations | `INSTALLATION` | Host Admin diagnostic inputs; no implicit project scope |
+
+### Configuration ownership
+
+| Configuration family | Owner | Constraint |
+| --- | --- | --- |
+| listener host/port, managed Codex executable prefix, relay lifecycle and File Inbox location | `INSTALLATION` | Server data root; installation administration only |
+| scan, health, details and provider-readiness intervals; log level/retention; Codex capacity reserve | `SERVER` | stored in CENTRAL installation metadata; never root/dashboard preferences |
+| project/repository bindings and project execution policy | `PROJECT` | explicit CENTRAL registration only |
+| former root `dashboard_configuration.*` keys and legacy root configuration files | `HISTORICAL` | compatibility read only during wrapper extraction; no new root-local write authority |
+
+The names `dashboard` and `inbox` remain temporary read/route compatibility
+aliases solely for the direct-wrapper extraction.  They are neither selectable
+components nor log writers; their retirement condition is removal of that
+wrapper plus an installed-wheel absence check.
+
 ## LR-02 direct-route consequence map
 
 The historical direct handler is not a supported route owner.  The following

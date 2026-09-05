@@ -1951,6 +1951,20 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertTrue(_report_analysis_available_for_run(root, "inbox-last"))
             self.assertFalse(_report_analysis_available_for_run(root, "inbox-missing"))
 
+    def test_report_analysis_defence_in_depth_rejects_a_normalized_path_change(self) -> None:
+        """The filesystem guard remains effective independently of the id grammar.
+
+        The allowlisted run-id grammar makes a basename change unreachable in
+        normal operation.  Cover the second boundary explicitly so a future
+        grammar widening cannot turn the report reader into path traversal.
+        """
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "engineering_platform.dashboard.os.path.basename", return_value="other-run",
+        ):
+            root = Path(temporary)
+            self.assertEqual(_report_analysis_for_run(root, "run-1"), b"")
+            self.assertFalse(_report_analysis_available_for_run(root, "run-1"))
+
     def test_report_analysis_retry_is_limited_to_temporary_processing_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
