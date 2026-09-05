@@ -38,6 +38,10 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "launch_agent_path",
         "target_component",
         "shutdown_signal",
+        "configuration_scope",
+        "configuration_key",
+        "previous_value",
+        "new_value",
     }
 )
 

@@ -1097,6 +1097,32 @@ def _restart_platform_component(data_root: Path, component_id: str) -> dict[str,
     return {"restarting": definition.id, "scope": "PLATFORM"}
 
 
+def _audit_configuration_change(
+    data_root: Path,
+    *,
+    scope: str,
+    key: str,
+    previous: object,
+    value: object,
+) -> None:
+    """Persist a bounded CENTRAL audit event for a successful setting change."""
+    log_event(
+        component_logger(
+            data_root,
+            "operations_console",
+            central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
+        logging.INFO,
+        "configuration_changed",
+        context={
+            "configuration_scope": scope,
+            "configuration_key": key,
+            "previous_value": previous,
+            "new_value": value,
+        },
+    )
+
+
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
@@ -2068,6 +2094,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             self._send(400, {"error": "CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID"})
             return True
+        _audit_configuration_change(
+            self.server.data_root,  # type: ignore[attr-defined]
+            scope="CENTRAL_DATABASE",
+            key="maintenance_interval_seconds",
+            previous=result.get("previous", "UNAVAILABLE"),
+            value=result.get("interval_seconds", "UNAVAILABLE"),
+        )
         self._send(200, result)
         return True
 
@@ -2344,7 +2377,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 remaining = _remaining_rate_limit_capacity(live["rate_limits"])
                 if not isinstance(reserve, int) or isinstance(reserve, bool) or (reserve and (remaining is None or reserve > remaining)):
                     raise ValueError
-                self._send(200, central_database.update_capacity_configuration(self.server.data_root, reserve))  # type: ignore[attr-defined]
+                result = central_database.update_capacity_configuration(self.server.data_root, reserve)  # type: ignore[attr-defined]
+                _audit_configuration_change(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    scope="PROVIDER_CAPACITY",
+                    key="codex_capacity_reserve_percent",
+                    previous=result.get("previous", "UNAVAILABLE"),
+                    value=result.get("codex_capacity_reserve_percent", "UNAVAILABLE"),
+                )
+                self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
             return
@@ -2358,6 +2399,13 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 result = central_database.update_console_interval_configuration(
                     self.server.data_root, payload["key"], payload["value"],
                 )  # type: ignore[attr-defined]
+                _audit_configuration_change(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    scope="OPERATIONS_CONSOLE",
+                    key=str(result["key"]),
+                    previous=result.get("previous", "UNAVAILABLE"),
+                    value=result.get("value", "UNAVAILABLE"),
+                )
                 self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(409, {"error": "CONSOLE_CONFIGURATION_INVALID"})

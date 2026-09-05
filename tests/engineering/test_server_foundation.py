@@ -522,6 +522,55 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             persisted = json.loads(response.read())
         self.assertEqual({key: persisted[key] for key in expected}, expected)
 
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [
+                json.loads(row[0]) for row in connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='operations_console' "
+                    "AND json_extract(payload, '$.event')='configuration_changed'"
+                )
+            ]
+        self.assertEqual(len(events), len(expected))
+        self.assertEqual(
+            {(event["configuration_scope"], event["configuration_key"]) for event in events},
+            {("OPERATIONS_CONSOLE", key) for key in expected},
+        )
+        log_level = next(event for event in events if event["configuration_key"] == "log_level")
+        self.assertEqual(log_level["previous_value"], "INFO")
+        self.assertEqual(log_level["new_value"], "DEBUG")
+
+    def test_server_configuration_mutation_routes_are_audited_in_central_logs(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        requests = (
+            ("/api/central-database/configuration", {"interval_seconds": 86400}),
+            ("/api/provider-capacity/configuration", {"codex_capacity_reserve_percent": 0}),
+        )
+        for route, payload in requests:
+            request = Request(
+                f"http://127.0.0.1:{port}{route}", data=json.dumps(payload).encode(), method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(request) as response:
+                self.assertEqual(response.status, 200)
+        with sqlite3.connect(self.root / server.SERVER_DATABASE_FILENAME) as connection:
+            events = [
+                json.loads(row[0]) for row in connection.execute(
+                    "SELECT payload FROM engineering_component_logs "
+                    "WHERE component='operations_console' "
+                    "AND json_extract(payload, '$.event')='configuration_changed'"
+                )
+            ]
+        self.assertEqual(
+            {(event["configuration_scope"], event["configuration_key"]) for event in events},
+            {
+                ("CENTRAL_DATABASE", "maintenance_interval_seconds"),
+                ("PROVIDER_CAPACITY", "codex_capacity_reserve_percent"),
+            },
+        )
+
     def test_download_attachment_headers_reject_request_control_characters(self) -> None:
         self.assertEqual(
             server._report_content_disposition("dj-run-01"),
