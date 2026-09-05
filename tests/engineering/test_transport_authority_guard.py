@@ -93,3 +93,14 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         dashboard = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
         self.assertNotIn('fetch("/api/open-local-directory"', dashboard)
         self.assertNotIn('fetch("/api/runtime-directory/open"', dashboard)
+
+    def test_retired_local_branch_cleanup_is_absent_from_supported_console(self) -> None:
+        """The Console must not own destructive checkout-local branch cleanup."""
+        root = Path(__file__).resolve().parents[2]
+        dashboard = (root / "src" / "engineering_platform" / "dashboard.py").read_text(encoding="utf-8")
+        asset = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
+        stylesheet = (root / "src" / "engineering_platform" / "assets" / "dashboard.css").read_text(encoding="utf-8")
+        for source in (dashboard, asset, stylesheet):
+            self.assertNotIn("stale-local-branch-cleanup", source)
+            self.assertNotIn("workspaceBranchCleanup", source)
+            self.assertNotIn("workspace-branch-cleanup", source)

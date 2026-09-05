@@ -621,62 +621,6 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertFalse(lock.exists())
 
-    @patch("engineering_platform.dashboard._branch_is_verified_merged_into_main", return_value=False)
-    @patch("engineering_platform.dashboard._stale_local_branch_pull_request", return_value=None)
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_stale_local_branch_cleanup_removes_only_reviewed_patch_equivalent_branches(
-        self, git_provider: object, _: object, __: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t0\n", ""),
-            completed(("git",), 0, "worktree /workspace\nHEAD a\nbranch refs/heads/main\n", ""),
-            completed(("git",), 0, "codex/different\ncodex/remote\ncodex/stale\nmain\n", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "", ""),
-        ]
-
-        preview = dashboard._stale_local_branch_preview(root)
-        self.assertEqual(preview, {
-            "branches": [
-                {"name": "codex/different", "reason": "content_differs_from_main", "removable": False},
-                {"name": "codex/remote", "reason": "remote_branch_exists", "removable": False},
-                {"name": "codex/stale", "reason": "remote_absent_and_matches_main", "removable": True},
-            ],
-            "removable_branches": ["codex/stale"],
-        })
-
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t0\n", ""),
-            completed(("git",), 0, "worktree /workspace\nHEAD a\nbranch refs/heads/main\n", ""),
-            completed(("git",), 0, "codex/different\ncodex/remote\ncodex/stale\nmain\n", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "", ""),
-        ]
-        self.assertEqual(
-            dashboard._cleanup_stale_local_branches(root, ["codex/stale"]),
-            {"removed": ["codex/stale"], "removed_count": 1},
-        )
-        self.assertEqual(
-            git_provider.return_value.execute.call_args_list[-1],
-            call(root, "git", "branch", "-D", "--", "codex/stale"),
-        )
-
     @patch("engineering_platform.dashboard.GitProvider")
     @patch("engineering_platform.dashboard._safe_worktree_removal_candidates")
     def test_safe_worktree_removal_removes_only_the_reviewed_worktree(
@@ -916,97 +860,6 @@ class DashboardStatusTest(unittest.TestCase):
             [{"path": "/worktrees/detached", "head": "a0496fea7ef1"}],
         )
 
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_stale_branch_scan_accepts_an_older_head_in_a_verified_merged_pull_request(
-        self, git_provider: object, github_provider: object, configuration: object
-    ) -> None:
-        root = Path("/repository")
-        configuration.return_value.workspace.default_branch = "main"
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t0\n", ""),
-            completed(("git",), 0, "worktree /repository\nHEAD main-head\nbranch refs/heads/main\n", ""),
-            completed(("git",), 0, "codex/squash\nmain\n", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
-            completed(("git",), 0, "older-source-head\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "", ""),
-        ]
-        github_provider.return_value.github.side_effect = [
-            json.dumps([{
-                "number": 123, "headRefName": "codex/squash", "headRefOid": "source-head", "mergeCommit": {"oid": "squash-commit"},
-            }]),
-            json.dumps({"commits": [{"oid": "older-source-head"}]}),
-        ]
-
-        self.assertEqual(dashboard._stale_local_branch_candidates(root), ["codex/squash"])
-
-    @patch("engineering_platform.dashboard._stale_local_branch_pull_request", return_value=None)
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_stale_local_branch_preview_excludes_branches_used_by_active_worktrees(
-        self, git_provider: object, _: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t0\n", ""),
-            completed(("git",), 0, "worktree /workspace\nHEAD a\nbranch refs/heads/main\n\nworktree /tmp/review\nHEAD b\nbranch refs/heads/codex/in-use\n", ""),
-            completed(("git",), 0, "codex/in-use\ncodex/stale\nmain\n", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-        ]
-
-        self.assertEqual(
-            dashboard._stale_local_branch_preview(root),
-            {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main", "removable": True}], "removable_branches": ["codex/stale"]},
-        )
-        self.assertNotIn(
-            call(root, "git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/codex/in-use"),
-            git_provider.return_value.execute.call_args_list,
-        )
-
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_stale_local_branch_preview_adds_an_exact_merged_pull_request_link_when_available(
-        self, git_provider: object, github_provider: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.side_effect = [
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "main\n", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "0\t0\n", ""),
-            completed(("git",), 0, "worktree /workspace\nHEAD a\nbranch refs/heads/main\n", ""),
-            completed(("git",), 0, "codex/stale\nmain\n", ""),
-            completed(("git",), 1, "", ""),
-            completed(("git",), 0, "", ""),
-            completed(("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""),
-        ]
-        github_provider.return_value.github.return_value = json.dumps([
-            {"number": 847, "url": "https://github.com/pcvantol/djconnect/pull/847", "headRefName": "codex/stale"},
-        ])
-
-        self.assertEqual(
-            dashboard._stale_local_branch_preview(root),
-            {"branches": [{
-                "name": "codex/stale",
-                "reason": "remote_absent_and_matches_main",
-                "removable": True,
-                "pull_request": {"number": 847, "url": "https://github.com/pcvantol/djconnect/pull/847"},
-            }], "removable_branches": ["codex/stale"]},
-        )
-
     @patch("engineering_platform.dashboard._workspace_worktrees")
     def test_registered_worktree_path_rejects_invalid_and_ambiguous_selectors(self, worktrees: object) -> None:
         root = Path("/repository")
@@ -1057,7 +910,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('PR #849 — Cleanup &lt;safe&gt;', page)
         self.assertIn("codex/cleanup", page)
         self.assertNotIn('id="workspaceBranchMain" type="button" hidden', page)
-        self.assertIn('id="workspaceBranchCleanup" type="button" hidden', page)
+        self.assertNotIn('workspaceBranchCleanup', page)
 
         github_provider.return_value.github.side_effect = RuntimeError("offline")
         self.assertIsNone(dashboard._workspace_open_pull_requests(root))
@@ -1218,27 +1071,6 @@ class DashboardStatusTest(unittest.TestCase):
         github_provider.return_value.github.side_effect = [json.dumps(qualified), RuntimeError("dispatch failed")]
         with self.assertRaisesRegex(dashboard.OwnerAuthorizationRequestError, "dispatch_failed"):
             dashboard._request_owner_authorization(root, 940)
-
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
-    def test_stale_branch_pull_request_context_never_affects_cleanup_safety(
-        self, git_provider: object, github_provider: object
-    ) -> None:
-        root = Path(__file__).parents[2]
-        completed = __import__("subprocess").CompletedProcess
-        git_provider.return_value.execute.return_value = completed(("git",), 1, "", "")
-        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
-
-        git_provider.return_value.execute.return_value = completed(
-            ("git",), 0, "https://example.invalid/repository.git\n", ""
-        )
-        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
-
-        git_provider.return_value.execute.return_value = completed(
-            ("git",), 0, "git@github.com:pcvantol/djconnect.git\n", ""
-        )
-        github_provider.return_value.github.return_value = "not-json"
-        self.assertIsNone(dashboard._stale_local_branch_pull_request(root, "codex/stale"))
 
     def test_rate_limit_helpers_cover_generic_windows_and_unavailable_provider_version(self) -> None:
         self.assertEqual(dashboard._rate_limit_window_label(1_440), "1-daags venster")
@@ -3261,19 +3093,6 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(status, 202)
                 self.assertEqual(payload, {"recovered": True})
 
-            preview = {"branches": [{"name": "codex/stale"}]}
-            with patch("engineering_platform.dashboard._stale_local_branch_preview", return_value=preview):
-                status, payload = post("/api/stale-local-branch-cleanup-preview")
-                self.assertEqual(status, 200)
-                self.assertEqual(payload, preview)
-
-            cleanup = {"removed": ["codex/stale"], "removed_count": 1}
-            with patch("engineering_platform.dashboard._cleanup_stale_local_branches", return_value=cleanup) as clean:
-                status, payload = post("/api/stale-local-branch-cleanup", '{"branches":["codex/stale"]}')
-                self.assertEqual(status, 202)
-                self.assertEqual(payload, cleanup)
-                clean.assert_called_once_with(root, ["codex/stale"])
-
             removal = {"removed_worktree": "/worktrees/stale", "branch": "codex/stale"}
             with patch("engineering_platform.dashboard._remove_safe_worktree", return_value=removal) as remove:
                 status, payload = post(
@@ -3409,24 +3228,6 @@ class DashboardStatusTest(unittest.TestCase):
                 response = connection.getresponse()
                 self.assertEqual(response.status, 409)
                 self.assertEqual(json.loads(response.read()), {"error": "De Git-vergrendeling is niet veilig herstelbaar."})
-            branch_preview = {"branches": [{"name": "codex/stale", "reason": "remote_absent_and_matches_main"}]}
-            with patch("engineering_platform.dashboard._stale_local_branch_preview", return_value=branch_preview):
-                connection.request("POST", "/api/stale-local-branch-cleanup-preview", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), branch_preview)
-            cleanup_outcome = {"removed": ["codex/stale"], "removed_count": 1}
-            with patch("engineering_platform.dashboard._cleanup_stale_local_branches", return_value=cleanup_outcome) as cleanup:
-                connection.request("POST", "/api/stale-local-branch-cleanup", body='{"branches":["codex/stale"]}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), cleanup_outcome)
-                cleanup.assert_called_once_with(root, ["codex/stale"])
-            with patch("engineering_platform.dashboard._cleanup_stale_local_branches", side_effect=RuntimeError("changed")):
-                connection.request("POST", "/api/stale-local-branch-cleanup", body='{"branches":["codex/stale"]}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Lokale branches konden niet veilig worden opgeruimd."})
             with patch("engineering_platform.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}) as remove:
                 connection.request("POST", "/api/safe-worktree-removal", body='{"worktree_path":"/worktrees/stale","branch":"codex/stale"}', headers={"Content-Type": "application/json"})
                 response = connection.getresponse()
