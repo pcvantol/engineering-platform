@@ -1759,6 +1759,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
                  patch.object(runner, "_managed_action"):
                 runner._execute_required_validation_controls(state)
         self.assertEqual(terminal.call_count, 5)
+        unavailable_control = {"validation_id": "suite", "category": "test", "control_identity": "unavailable", "command": []}
+        with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": (unavailable_control,)}), \
+             patch.object(runner.store, "save"), patch.object(runner, "_managed_action"), \
+             patch("engineering_platform.execution_host.write_live_status"), \
+             patch("engineering_platform.execution_host.record_validation_control_result") as recorded:
+            result = runner._execute_required_validation_controls(state)
+        self.assertEqual(result.phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(recorded.call_args.kwargs["execution_status"], "NOT_EXECUTED")
+        self.assertEqual(recorded.call_args.kwargs["result"], "UNAVAILABLE")
 
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
