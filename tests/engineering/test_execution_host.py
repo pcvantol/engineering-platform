@@ -1691,6 +1691,32 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(accepted.admission_evidence_source, "WATCHER")
 
+    def test_host_auxiliary_evidence_paths_preserve_lifecycle_authority(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("auxiliary-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch.object(self.store, "save") as save:
+            runner._project_durable_recovery(state, {"state": "UNKNOWN"})
+            save.assert_not_called()
+            runner._project_durable_recovery(state, {"state": "RECOVERED", "triggering_invocation_id": "old", "replacement_invocation_id": "new"})
+            self.assertEqual(save.call_args.args[0].provider_recovery_attempts[0]["result"], "RECOVERED")
+        runner._dispatch_guard_enforced = True
+        with self.assertRaisesRegex(RunnerError, "deterministic admission"):
+            runner._require_provider_dispatch_admission(state)
+        runner._dispatch_guard_enforced = False
+        runner._require_provider_dispatch_admission(state)
+        with patch("engineering_platform.execution_host.write_codex_usage") as usage:
+            runner.agent.last_usage = "invalid"
+            runner._persist_agent_usage(state.run_id)
+            usage.assert_not_called()
+            runner.agent.last_usage = {"input_tokens": 3}
+            runner._persist_agent_usage(state.run_id)
+            usage.assert_called_once()
+        self.assertEqual(runner._validation_summary_status("not applicable"), "NOT_APPLICABLE")
+        self.assertEqual(runner._validation_summary_status("not recorded"), "UNAVAILABLE")
+        self.assertEqual(runner._validation_summary_status("ERROR: failure"), "FAIL")
+        self.assertEqual(runner._validation_summary_status("passed with no whitespace errors"), "PASS")
+        self.assertEqual(runner._validation_summary_status("ambiguous"), "UNAVAILABLE")
+
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
         repository = FakeRepository(branch="feature/verified")
