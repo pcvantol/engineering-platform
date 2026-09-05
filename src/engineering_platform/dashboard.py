@@ -76,16 +76,13 @@ from .platform_components import PLATFORM_COMPONENT_BY_ID
 from . import dashboard_state
 from . import managed_codex_runtime
 from . import server_relay
+from .console_presentation import APP_ICON_DARK, APP_ICON_LIGHT, ASSET_DIRECTORY, WEB_MANIFEST
 
 LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
 DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()
 DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
-ASSET_DIRECTORY = Path(__file__).with_name("assets")
-APP_ICON_DARK = "operations-console/apple-touch-icon-dark.png"
-APP_ICON_LIGHT = "operations-console/apple-touch-icon-light.png"
-WEB_MANIFEST = "operations-console/manifest.webmanifest"
 LOOPBACK_ADDRESS = "127.0.0.1"
 CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
 RATE_LIMIT_CACHE_SECONDS = 60

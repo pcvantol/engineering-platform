@@ -32,6 +32,7 @@ from uuid import uuid4
 from . import agent_trust
 from . import central_database
 from . import console_route_ownership
+from . import console_presentation
 from . import dashboard
 from . import dashboard_translation
 from . import dependabot_producer
@@ -1643,12 +1644,12 @@ _CONSOLE_STATIC_ASSETS = {
     "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
     "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
     "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),
-    "/assets/operations-console/apple-touch-icon-dark.png": (dashboard.APP_ICON_DARK, "image/png"),
-    "/assets/operations-console/apple-touch-icon-light.png": (dashboard.APP_ICON_LIGHT, "image/png"),
-    "/assets/operations-console/manifest.webmanifest": (dashboard.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
-    "/favicon.ico": (dashboard.APP_ICON_DARK, "image/png"),
-    "/apple-touch-icon.png": (dashboard.APP_ICON_DARK, "image/png"),
-    "/apple-touch-icon-precomposed.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-dark.png": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-light.png": (console_presentation.APP_ICON_LIGHT, "image/png"),
+    "/assets/operations-console/manifest.webmanifest": (console_presentation.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
+    "/favicon.ico": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon.png": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon-precomposed.png": (console_presentation.APP_ICON_DARK, "image/png"),
 }
 
 
@@ -1753,7 +1754,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return False
         name, content_type = asset
         try:
-            content = (dashboard.ASSET_DIRECTORY / name).read_bytes()
+            content = (console_presentation.ASSET_DIRECTORY / name).read_bytes()
         except OSError:
             self.send_error(404)
             return True
