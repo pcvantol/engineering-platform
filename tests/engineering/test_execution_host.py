@@ -1621,6 +1621,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(runner._validation_kind("python -m unittest discover"), "tests")
         self.assertEqual(runner._validation_kind("echo harmless"), None)
 
+    def test_validation_classification_and_verified_commit_records_are_bounded(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        classifications = {
+            "markdown-link-check": "documentation_contract",
+            "ruff check": "static_analysis",
+            "semgrep scan": "security",
+            "git diff --check": "format_or_diff",
+            "playwright test": "browser_e2e",
+        }
+        for command, expected in classifications.items():
+            self.assertEqual(runner._validation_kind(command), expected)
+        self.assertEqual(runner._validation_id("playwright test", "browser_e2e"), "validation_browser_e2e")
+        self.assertEqual(runner._validation_id("npm run test:engineering-dashboard", "browser_e2e"), "dashboard_browser")
+        state = TransactionState("verified-commit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        sha = "a" * 40
+        recorded = runner._append_verified_commit_evidence(state, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified")
+        self.assertEqual(len(recorded.commit_evidence), 1)
+        self.assertEqual(runner._append_verified_commit_evidence(recorded, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified"), recorded)
+        audit = runner._audit_record(iteration=1, failed_checks="suite", proposed_action="repair", result=None, outcome="planned", empty_summary="none")
+        self.assertEqual(audit["agent_summary"], "none")
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
