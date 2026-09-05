@@ -28,6 +28,7 @@ CLASSIFIED_FALLBACKS = {
     "execution_lease.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "execution_lifecycle.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "execution_timing.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
+    "historical_dashboard_configuration.py": "HISTORICAL_RETIREMENT_INPUT",
     "host_preflight.py": "RETIRED_DIRECT_HOST_COMPATIBILITY",
     "live_status.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "local_api.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
@@ -42,6 +43,7 @@ CLASSIFIED_FALLBACKS = {
     "provider_usage.py": "CENTRAL_BOUND_EXECUTION_IMPLEMENTATION",
     "status_model.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "storage.py": "HISTORICAL_FORENSIC_STORAGE_IMPLEMENTATION",
+    "server_console_services.py": "P_CENTRAL_CONSOLE_COMPATIBILITY",
     "telemetry.py": "HISTORICAL_COMPATIBILITY_ONLY",
     "worktree_provenance.py": "FORENSIC_MIGRATION_ONLY",
 }

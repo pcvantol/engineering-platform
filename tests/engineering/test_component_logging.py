@@ -26,7 +26,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 logger,
                 logging.INFO,
                 "job_finished access_token=do-not-persist",
-                run_id="inbox-example",
+                run_id="operations_console-example",
                 diagnostic="authorization: secret-value",
             )
             with sqlite3.connect(data_root / "engineering.db") as connection:
@@ -36,7 +36,7 @@ class ComponentLoggingTest(unittest.TestCase):
             record = json.loads(payload)
             self.assertEqual(record["level"], "INFO")
             self.assertEqual(record["component"], "file_inbox_ingress")
-            self.assertEqual(record["run_id"], "inbox-example")
+            self.assertEqual(record["run_id"], "operations_console-example")
             self.assertIn("timestamp", record)
             self.assertIn("[REDACTED]", record["event"])
             self.assertIn("[REDACTED]", record["diagnostic"])
@@ -130,18 +130,18 @@ class ComponentLoggingTest(unittest.TestCase):
     def test_read_and_clear_never_use_a_repository_local_component_log_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            legacy_log = root / ".engineering" / "logs" / "inbox.log"
+            legacy_log = root / ".engineering" / "logs" / "operations_console.log"
             legacy_log.parent.mkdir(parents=True)
             legacy_log.write_text("legacy local authority", encoding="utf-8")
             unavailable = component_logging.EngineeringStorageError("CENTRAL unavailable")
             with patch.object(component_logging, "open_storage", side_effect=unavailable):
                 self.assertEqual(
-                    component_logging.component_log(root, "inbox"),
+                    component_logging.component_log(root, "operations_console"),
                     b"CENTRAL componentlog is tijdelijk niet beschikbaar.",
                 )
-                self.assertEqual(component_logging.component_log_version(root, "inbox"), "central-unavailable")
+                self.assertEqual(component_logging.component_log_version(root, "operations_console"), "central-unavailable")
                 with self.assertRaisesRegex(OSError, "CENTRAL componentlog kon niet worden gewist"):
-                    component_logging.clear_component_log(root, "inbox")
+                    component_logging.clear_component_log(root, "operations_console")
             self.assertEqual(legacy_log.read_text(encoding="utf-8"), "legacy local authority")
 
     def test_component_log_page_filters_full_history_before_paginating(self) -> None:
@@ -180,7 +180,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 ):
                     connection.execute(
                         "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                        ("inbox", json.dumps(payload), created_at),
+                        ("operations_console", json.dumps(payload), created_at),
                     )
                 # These newer records would have hidden the historical
                 # warning in the former client-side latest-100 sample.
@@ -188,7 +188,7 @@ class ComponentLoggingTest(unittest.TestCase):
                     connection.execute(
                         "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
                         (
-                            "inbox",
+                            "operations_console",
                             json.dumps({
                                 "timestamp": f"2026-08-27T10:{index // 60:02d}:{index % 60:02d}+00:00",
                                 "level": "INFO",
@@ -201,7 +201,7 @@ class ComponentLoggingTest(unittest.TestCase):
 
             page = component_logging.component_log_page(
                 root,
-                "inbox",
+                "operations_console",
                 page=1,
                 page_size=1,
                 start_at="2026-08-26T00:00:00+00:00",
@@ -228,7 +228,7 @@ class ComponentLoggingTest(unittest.TestCase):
                 for index, level in enumerate(("DEBUG", "INFO", "WARNING", "ERROR"), start=1):
                     connection.execute(
                         "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
-                        ("inbox", json.dumps({"level": level, "event": level.lower()}), f"2026-08-29T07:00:0{index}+00:00"),
+                        ("operations_console", json.dumps({"level": level, "event": level.lower()}), f"2026-08-29T07:00:0{index}+00:00"),
                     )
 
             for minimum, expected in {
@@ -237,5 +237,5 @@ class ComponentLoggingTest(unittest.TestCase):
                 "WARNING": ["WARNING", "ERROR"],
                 "ERROR": ["ERROR"],
             }.items():
-                page = component_logging.component_log_page(root, "inbox", level=minimum, direction="asc")
+                page = component_logging.component_log_page(root, "operations_console", level=minimum, direction="asc")
                 self.assertEqual([entry["level"] for entry in page["entries"]], expected)

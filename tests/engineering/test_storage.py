@@ -468,7 +468,7 @@ class EngineeringStorageTest(unittest.TestCase):
                         "UPDATE execution_run_qualification_snapshots SET payload='{}'"
                     )
 
-    def test_schema_four_imports_legacy_redacted_component_logs_once(self) -> None:
+    def test_schema_four_does_not_restore_legacy_component_log_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             logs = root / WORKSPACE_DIRECTORY / "logs"
@@ -478,18 +478,17 @@ class EngineeringStorageTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with activate_storage_schema(root) as connection:
-                self.assertEqual(
+                self.assertIsNone(
                     connection.execute(
                         "SELECT payload FROM engineering_component_logs WHERE component='inbox'"
-                    ).fetchone()[0],
-                    '{"event":"watcher_started","timestamp":"2026-08-02T12:00:00+00:00"}',
+                    ).fetchone()
                 )
             with open_storage(root) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM engineering_component_logs WHERE component='inbox'"
                     ).fetchone()[0],
-                    1,
+                    0,
                 )
 
     def test_refuses_unknown_non_versioned_database(self) -> None:
@@ -695,13 +694,9 @@ class EngineeringStorageTest(unittest.TestCase):
                     connection.execute(
                         "UPDATE engineering_transactions SET phase='COMPLETE' WHERE run_id='inbox-schema-activation'"
                     )
-                lock = root / WORKSPACE_DIRECTORY / "locks" / "dashboard.lock"
-                lock.parent.mkdir(parents=True)
-                with lock.open("a+", encoding="utf-8") as handle:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                    with self.assertRaisesRegex(EngineeringStorageError, "dashboard to stop first"):
-                        activate_storage_schema(root)
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                # Legacy Dashboard/Inbox watcher locks are no longer lifecycle
+                # authority and cannot block CENTRAL schema activation.
+                activate_storage_schema(root)
 
     def test_storage_activation_command_reports_the_activated_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

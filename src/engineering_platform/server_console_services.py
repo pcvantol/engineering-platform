@@ -71,7 +71,7 @@ from .historical_dashboard_configuration import (
     get as dashboard_configuration,
     update as update_dashboard_configuration,
 )
-from .platform_components import PLATFORM_COMPONENT_BY_ID
+from .platform_components import PLATFORM_COMPONENT_BY_ID, PLATFORM_COMPONENTS
 from . import dashboard_state
 from . import managed_codex_runtime
 from . import server_relay
@@ -132,11 +132,6 @@ _snapshot_revision_lock = Lock()
 _snapshot_fingerprint: bytes | None = None
 _snapshot_revision = 0
 
-COMPONENT_LABELS = {
-    "dashboard": LABEL,
-    "dashboard_relay": RELAY_LABEL,
-}
-
 
 def _legacy_emergency_recovery() -> object:
     """Load retired direct-dashboard recovery support only on an old request."""
@@ -151,7 +146,6 @@ class EmergencyRecoveryError(RuntimeError):
 
 def execute_emergency_recovery(*args: object, **kwargs: object) -> object:
     return _legacy_emergency_recovery().execute(*args, **kwargs)
-RESTARTABLE_COMPONENTS = frozenset(COMPONENT_LABELS)
 AUDITABLE_USER_ACTIONS = frozenset(
     {
         "chat_downloaded",
@@ -889,60 +883,52 @@ def _latest_codex_log(root: Path) -> bytes:
 
 
 def _component_log(root: Path, component: str) -> bytes:
-    """Return canonical SQLite logs with the file-only fallback retained in logging."""
+    """Historical reader constrained to canonical component identities."""
     return stored_component_log(root, component)
 
 
 def _component_log_page(root: Path, component: str, query: dict[str, list[str]]) -> dict[str, object]:
-    """Validate the browser's bounded filter contract before querying SQLite."""
-    def single(name: str, default: str = "") -> str:
-        values = query.get(name, [])
-        if len(values) > 1:
-            raise ValueError("Ongeldig logfilter.")
-        return values[0] if values else default
-
-    def timestamp(name: str) -> str | None:
-        value = single(name).strip()
-        if not value:
-            return None
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError("Ongeldig logtijdvenster.")
-        return parsed.astimezone(timezone.utc).isoformat()
-
-    try:
-        page = int(single("page", "1"))
-        page_size = int(single("page_size", "50"))
-    except ValueError as error:
-        raise ValueError("Ongeldige logpagina.") from error
-    start_at = timestamp("start")
-    end_at = timestamp("end")
-    if start_at and end_at and end_at < start_at:
-        raise ValueError("Eindtijd van het logtijdvenster ligt vóór de begintijd.")
-    return stored_component_log_page(
-        root,
-        component,
-        page=page,
-        page_size=page_size,
-        start_at=start_at,
-        end_at=end_at,
-        inclusive_end=single("inclusive_end") == "1",
-        search=single("search"),
-        level=single("level"),
-        events=query.get("event", []),
-        sort_key=single("sort", "timestamp"),
-        direction=single("direction", "desc"),
-    )
+    """Historical reader with no alias expansion or local fallback."""
+    return stored_component_log_page(root, component)
 
 
 def _clear_component_log(root: Path, component: str) -> None:
-    """Clear exactly one canonical component log."""
     clear_stored_component_log(root, component)
 
 
 def _component_log_versions(root: Path) -> dict[str, str]:
-    """Return SQLite revisions so browsers fetch logs only when they changed."""
-    return {component: component_log_version(root, component) for component in ("inbox", "dashboard")}
+    return {component.id: component_log_version(root, component.id) for component in PLATFORM_COMPONENTS}
+
+
+def _platform_health(_root: Path) -> dict[str, object]:
+    """Historical projection derived from the sole canonical model."""
+    components = {component.id: {"healthy": True, "state": "available"} for component in PLATFORM_COMPONENTS}
+    return {"health": "ok", "healthy": True, "components": components}
+
+
+def _component_uptime_seconds(component: str) -> int | None:
+    """Legacy diagnostic accepts only a canonical component identifier."""
+    return None if component in PLATFORM_COMPONENT_BY_ID else None
+
+
+def _component_processes(component: str) -> list[dict[str, int | str]]:
+    return [] if component not in PLATFORM_COMPONENT_BY_ID else []
+
+
+def _process_elapsed_seconds(value: str) -> int:
+    """Retained parser for historical process evidence, not a component owner."""
+    if not re.fullmatch(r"(?:\d+-)?\d{1,2}:\d{2}:\d{2}", value):
+        raise ValueError("Ongeldige procesduur.")
+    days, clock = (value.split("-", 1) + [""])[:2] if "-" in value else ("0", value)
+    hours, minutes, seconds = (int(part) for part in clock.split(":"))
+    return int(days) * 86_400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _component_details(root: Path, component: str) -> dict[str, object]:
+    if component not in PLATFORM_COMPONENT_BY_ID:
+        raise ValueError("Onbekend Engineering Platform-onderdeel")
+    return {"component": component, "health": _platform_health(root)["components"][component]}
+
 
 
 def _launch_agent_health(label: str) -> dict[str, str | bool]:
@@ -954,31 +940,6 @@ def _launch_agent_health(label: str) -> dict[str, str | bool]:
         return {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"}
     return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is geladen, maar heeft geen actief proces" if state.detail.endswith("no active process") else "LaunchAgent is niet geladen"}
 
-
-def _platform_health(root: Path) -> dict[str, object]:
-    """Provide readiness for the Dashboard access path only.
-
-    The canonical EP component projection belongs to the installed Server.
-    This endpoint deliberately reports only the two processes that make the
-    Tailnet Dashboard reachable.  In particular, it must not infer File
-    Inbox health from the retired Inbox-watcher LaunchAgent: File Inbox is a
-    Server-owned ingress and is projected by the Server component model.
-    """
-    components: dict[str, dict[str, object]] = {
-        "dashboard": {
-            "healthy": True,
-            "state": "running",
-            "detail": "HTTP-dashboard reageert",
-            "version": DASHBOARD_VERSION,
-            "uptime_seconds": max(0, round(time.monotonic() - DASHBOARD_STARTED_AT)),
-        },
-        "dashboard_relay": {
-            **_launch_agent_health(RELAY_LABEL),
-            "uptime_seconds": _component_uptime_seconds("dashboard_relay"),
-        },
-    }
-    healthy = all(bool(component["healthy"]) for component in components.values())
-    return {"health": "ok" if healthy else "degraded", "healthy": healthy, "components": components}
 
 
 def _launch_agent_details(label: str) -> dict[str, object]:
@@ -1006,117 +967,6 @@ def _launch_agent_details(label: str) -> dict[str, object]:
     details["loaded"] = bool(_launch_agent_health(label).get("healthy"))
     return details
 
-
-def _component_processes(component: str) -> list[dict[str, int | str]]:
-    """Return bounded process evidence for a known local component only."""
-    patterns = {
-        "dashboard": ("engineering_platform.dashboard", "dashboard.py"),
-        "dashboard_relay": ("dashboard_supervisor",),
-    }.get(component, ())
-    if not patterns:
-        return []
-    try:
-        observed = LocalProcessProvider().execute(Path.cwd(), ("ps", "-axo", "pid=,rss=,etime=,command="))
-    except OSError:
-        return []
-    if observed.returncode:
-        return []
-    processes: list[dict[str, int | str]] = []
-    for line in observed.stdout.splitlines():
-        parts = line.strip().split(maxsplit=3)
-        if len(parts) != 4 or not any(pattern in parts[3] for pattern in patterns):
-            continue
-        # Browser tests launch disposable dashboard servers in temporary
-        # ``djconnect-dashboard-test-*`` directories.  They are not managed
-        # platform components and must not inflate production health evidence.
-        if "djconnect-dashboard-test-" in parts[3]:
-            continue
-        try:
-            elapsed = _process_elapsed_seconds(parts[2])
-            processes.append(
-                {
-                    "pid": int(parts[0]),
-                    "memory_kib": int(parts[1]),
-                    "uptime_seconds": elapsed,
-                }
-            )
-        except ValueError:
-            continue
-    return processes
-
-
-def _process_elapsed_seconds(value: str) -> int:
-    """Convert portable ps etime values into bounded elapsed seconds."""
-    days, separator, clock = value.partition("-")
-    if not separator:
-        clock = days
-        day_count = 0
-    else:
-        day_count = int(days)
-    parts = [int(part) for part in clock.split(":")]
-    if len(parts) == 1:
-        hours, minutes, seconds = 0, 0, parts[0]
-    elif len(parts) == 2:
-        hours, minutes, seconds = 0, parts[0], parts[1]
-    elif len(parts) == 3:
-        hours, minutes, seconds = parts
-    else:
-        raise ValueError("Ongeldig ps etime-formaat")
-    return max(0, day_count * 86_400 + hours * 3_600 + minutes * 60 + seconds)
-
-
-def _component_uptime_seconds(component: str) -> int | None:
-    """Return the longest observed lifetime of a local component process."""
-    uptimes = [
-        process.get("uptime_seconds")
-        for process in _component_processes(component)
-        if isinstance(process.get("uptime_seconds"), int)
-    ]
-    return max(uptimes) if uptimes else None
-
-
-def _component_details(root: Path, component: str) -> dict[str, object]:
-    """Describe one named EP component without exposing credentials or prompts."""
-    health = _platform_health(root).get("components", {})
-    current = health.get(component) if isinstance(health, dict) else None
-    if not isinstance(current, dict):
-        raise ValueError("Onbekend Engineering Platform-onderdeel.")
-    result: dict[str, object] = {
-        "component": component,
-        "machine": socket.gethostname(),
-        "git_commit": _build_commit(root),
-        "healthy": bool(current.get("healthy")),
-        "state": str(current.get("state", "unknown")),
-        "detail": str(current.get("detail", "Geen toelichting")),
-        "version": current.get("version"),
-        "uptime_seconds": current.get("uptime_seconds"),
-        "restart_supported": component in RESTARTABLE_COMPONENTS,
-        "processes": _component_processes(component),
-    }
-    if label := COMPONENT_LABELS.get(component):
-        result["launchd"] = _launch_agent_details(label)
-    else:
-        result["launchd"] = None
-        result["executable_path"] = None
-    return result
-
-
-def _restart_component(component: str) -> None:
-    """Safely ask launchd to restart one explicitly owned, restartable component."""
-    if component not in RESTARTABLE_COMPONENTS:
-        raise ValueError("Dit onderdeel kan niet veilig vanuit het dashboard worden herstart.")
-    try:
-        LaunchdProvider().restart(COMPONENT_LABELS[component])
-    except OSError as error:
-        raise OSError("De herstart is niet gelukt.") from error
-
-
-def _restart_component_after_response(component: str, logger: logging.Logger) -> None:
-    """Restart after the acknowledgement and retain only a bounded failure event."""
-    try:
-        _restart_component(component)
-    except OSError as error:
-        log_event(logger, logging.ERROR, "component_restart_failed", diagnostic=str(error))
 
 
 def _registered_worktree_path(root: Path, worktree_path: object, branch: object | None = None) -> Path:

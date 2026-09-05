@@ -146,7 +146,7 @@ def component_logger(
 
 def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
     """Read component logs from CENTRAL, never from a repository-local fallback."""
-    if component not in {"inbox", "dashboard"}:
+    if component not in PLATFORM_COMPONENT_IDS:
         return b""
     try:
         connection = open_storage(root)
@@ -184,7 +184,7 @@ def component_log_page(
     search never disappears merely because newer rows filled an arbitrary
     client-side sample.
     """
-    if component not in {"inbox", "dashboard"}:
+    if component not in PLATFORM_COMPONENT_IDS:
         raise ValueError("Onbekende componentlog.")
     if not isinstance(page, int) or page < 1:
         raise ValueError("Ongeldige logpagina.")
@@ -289,7 +289,7 @@ def component_log_page(
 
 def component_log_version(root: Path, component: str) -> str:
     """Return a lightweight CENTRAL SQLite revision."""
-    if component not in {"inbox", "dashboard"}:
+    if component not in PLATFORM_COMPONENT_IDS:
         return "missing"
     try:
         connection = open_storage(root)
@@ -307,7 +307,7 @@ def component_log_version(root: Path, component: str) -> str:
 
 def clear_component_log(root: Path, component: str) -> None:
     """Clear one CENTRAL component log without creating local log state."""
-    if component not in {"inbox", "dashboard"}:
+    if component not in PLATFORM_COMPONENT_IDS:
         raise ValueError("Onbekende componentlog.")
     try:
         connection = open_storage(root)

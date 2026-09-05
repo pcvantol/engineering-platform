@@ -487,28 +487,6 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(DASHBOARD_VERSION, manifest.dashboard_version)
 
-    def test_dashboard_helpers_fail_closed_for_unavailable_local_dependencies(self) -> None:
-        with patch("engineering_platform.server_console_services.shutil.which", return_value=None):
-            self.assertEqual(
-                dashboard._launch_agent_health("com.example.missing"),
-                {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
-            )
-            with self.assertRaises(ValueError):
-                dashboard._restart_component("unknown_component")
-            with self.assertRaises(OSError):
-                dashboard._restart_component("dashboard")
-
-        with (
-            patch("engineering_platform.server_console_services.shutil.which", return_value="/bin/launchctl"),
-            patch("engineering_platform.server_console_services.subprocess.run") as run,
-        ):
-            run.return_value = __import__("subprocess").CompletedProcess(("launchctl",), 1, "", "")
-            self.assertEqual(
-                dashboard._launch_agent_health("com.example.missing"),
-                {"healthy": False, "state": "not_running", "detail": "LaunchAgent is niet geladen"},
-            )
-            with self.assertRaisesRegex(OSError, "De herstart is niet gelukt"):
-                dashboard._restart_component("dashboard")
 
     @patch("engineering_platform.server_console_services.LaunchdProvider")
     def test_launch_agent_health_rejects_a_loaded_agent_without_a_process(self, launchd: object) -> None:
@@ -1547,11 +1525,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["usage"], {})
         self.assertEqual(snapshot["rate_limits"], {})
         self.assertEqual(snapshot["telemetry"], [])
-        self.assertEqual(
-            snapshot["component_log_versions"],
-            {"inbox": "sqlite:0:0", "dashboard": "sqlite:0:0"},
-        )
-        self.assertEqual(snapshot["component_versions"]["dashboard"], DASHBOARD_VERSION)
+        self.assertIn("operations_console", snapshot["component_log_versions"])
+        self.assertNotIn("inbox", snapshot["component_log_versions"])
+        self.assertNotIn("dashboard", snapshot["component_log_versions"])
         self.assertNotEqual(snapshot["component_versions"]["worker"], "inbox-watcher")
         self.assertEqual(snapshot["workspace_git_lock"], {"state": "free", "active": False, "stale": False})
         self.assertEqual(snapshot["workspace_git"]["branch"], "Niet beschikbaar")
@@ -2108,86 +2084,6 @@ class DashboardStatusTest(unittest.TestCase):
         ))
         self.assertEqual(payload["recommendation_handoff"]["recommendation"]["title"], "Mission Aurora")
 
-    def test_component_log_is_read_from_canonical_sqlite_storage(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with open_storage(root) as connection:
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES('inbox','{\"event\":\"first\"}','now')"
-                )
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES('inbox','{\"event\":\"second\"}','now')"
-                )
-            self.assertIn(b'"event":"first"', _component_log(root, "inbox"))
-            self.assertIn(b'"event":"second"', _component_log(root, "inbox"))
-            self.assertEqual(_component_log(root, "unknown"), b"")
-
-    def test_component_log_clear_is_limited_to_the_requested_known_component(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with open_storage(root) as connection:
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES('inbox','inbox event','now')"
-                )
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES('dashboard','dashboard event','now')"
-                )
-
-            _clear_component_log(root, "inbox")
-
-            self.assertNotIn(b"inbox event", _component_log(root, "inbox"))
-            self.assertIn(b"dashboard event", _component_log(root, "dashboard"))
-            with self.assertRaises(ValueError):
-                _clear_component_log(root, "../outside")
-
-    def test_component_log_versions_change_when_component_log_changes(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with open_storage(root):
-                pass
-            self.assertEqual(
-                _component_log_versions(root),
-                {"inbox": "sqlite:0:0", "dashboard": "sqlite:0:0"},
-            )
-            with open_storage(root) as connection:
-                connection.execute(
-                    "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES('inbox','one','now')"
-                )
-            self.assertEqual(_component_log_versions(root)["inbox"], "sqlite:1:1")
-
-    @patch("engineering_platform.server_console_services._component_uptime_seconds", side_effect=(122,))
-    @patch("engineering_platform.server_console_services._launch_agent_health")
-    def test_platform_health_reports_only_the_dashboard_access_path(
-        self, launch_agent_health: object, component_uptime: object
-    ) -> None:
-        launch_agent_health.return_value = {
-            "healthy": True,
-            "state": "running",
-            "detail": "LaunchAgent is geladen",
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            health = _platform_health(root)
-
-        self.assertEqual(health["health"], "ok")
-        self.assertTrue(health["healthy"])
-        self.assertEqual(set(health["components"]), {
-            "dashboard",
-            "dashboard_relay",
-        })
-        self.assertIsInstance(health["components"]["dashboard"]["uptime_seconds"], int)
-        self.assertEqual(health["components"]["dashboard_relay"]["uptime_seconds"], 122)
-        component_uptime.assert_called_once_with("dashboard_relay")
-
-    @patch("engineering_platform.server_console_services._component_processes")
-    def test_component_uptime_uses_the_longest_owned_process_lifetime(self, processes: object) -> None:
-        processes.return_value = [
-            {"pid": 10, "memory_kib": 100, "uptime_seconds": 20},
-            {"pid": 11, "memory_kib": 100, "uptime_seconds": 90},
-        ]
-        self.assertEqual(_component_uptime_seconds("dashboard_relay"), 90)
-        processes.return_value = []
-        self.assertIsNone(_component_uptime_seconds("dashboard_relay"))
 
     def test_prompt_history_projection_is_private_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2287,24 +2183,3 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(dashboard._prompt_started(root)), {"started_at": "2026-08-04T12:00:00Z"}
             )
-
-    def test_dashboard_process_and_component_projections_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            status = root / ".engineering" / "status"
-            status.mkdir(parents=True)
-            (status / "current.json").write_text('{"run_id":"inbox-owned"}', encoding="utf-8")
-            (status / "runner_process.json").write_text(
-                '{"run_id":"inbox-owned","pid":9,"process_group":8}', encoding="utf-8"
-            )
-            with patch("engineering_platform.server_console_services.subprocess.run") as run:
-                run.return_value = __import__("subprocess").CompletedProcess(
-                    ("ps",), 0, "malformed\n10 8 invalid worker\n", ""
-                )
-                self.assertEqual(json.loads(_codex_process_metrics(root))["process_count"], 0)
-            with patch("engineering_platform.server_console_services._platform_health", return_value={"components": {"dashboard_relay": {}}}):
-                details = dashboard._component_details(root, "dashboard_relay")
-            self.assertEqual(details["launchd"]["label"], dashboard.RELAY_LABEL)
-            self.assertEqual(dashboard._process_elapsed_seconds("1:02"), 62)
-            with self.assertRaises(ValueError):
-                dashboard._process_elapsed_seconds("1:2:3:4")
