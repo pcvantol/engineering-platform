@@ -795,7 +795,7 @@ test.describe("Engineering Status browser smoke", () => {
       windows: [], reset_credits: 0,
     }));
     const installationPath = page.locator("#rateLimitProviderPath");
-    await expect(installationPath).toBeDisabled();
+    await expect(installationPath).toHaveAttribute("href", "file:///Users/example/.local/share/engineering-platform/codex-cli");
     await expect(installationPath).toHaveText("/Users/example/.local/share/engineering-platform/codex-cli");
 
     await page.evaluate(() => r({
@@ -809,7 +809,7 @@ test.describe("Engineering Status browser smoke", () => {
     }, {}));
     const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("span").last();
     await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
-    await expect(page.locator("#workspaceCard .local-folder-link, #rateLimitProviderPath.local-folder-link, #executionContext .local-folder-link")).toHaveCount(0);
+    await expect(page.locator("#workspaceCard .local-folder-link, #executionContext .local-folder-link")).toHaveCount(0);
     await expect.poll(() => requestedDirectories).toEqual([]);
   });
 

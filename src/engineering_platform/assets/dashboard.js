@@ -596,10 +596,10 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
     !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
   let providerPathElement = $("rateLimitProviderPath");
-  if (!(providerPathElement instanceof HTMLButtonElement)) {
-    providerPathElement = replaceWithReadOnlyLocation(providerPathElement);
+  if (!(providerPathElement instanceof HTMLAnchorElement)) {
+    providerPathElement = replaceWithManagedInstallationLink(providerPathElement);
   }
-  configureReadOnlyLocation(providerPathElement, providerPath);
+  configureManagedInstallationLink(providerPathElement, providerPath);
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -1494,6 +1494,30 @@ function replaceWithReadOnlyLocation(element) {
   if (element.id) button.id = element.id;
   element.replaceWith(button);
   return button;
+}
+function configureManagedInstallationLink(link, value) {
+  const path = typeof value === "string" ? value.trim() : "";
+  link.classList.add("local-folder-link");
+  link.textContent = path || t("format.not_available");
+  link.removeAttribute("href");
+  link.removeAttribute("target");
+  link.removeAttribute("rel");
+  link.removeAttribute("aria-disabled");
+  if (!path.startsWith("/")) {
+    link.setAttribute("aria-disabled", "true");
+    return;
+  }
+  link.href = new URL(path, "file:///").href;
+  link.target = "_blank";
+  link.rel = "noopener";
+}
+function replaceWithManagedInstallationLink(element) {
+  if (!element) return null;
+  const link = document.createElement("a");
+  configureManagedInstallationLink(link, element.textContent.trim());
+  if (element.id) link.id = element.id;
+  element.replaceWith(link);
+  return link;
 }
 function executionContextField(label, value, badge = false, folder = false) {
   const field = document.createElement("p"), caption = document.createElement("span"), content = document.createElement("span");
@@ -5744,7 +5768,7 @@ document.addEventListener("pointerdown", (event) => {
 });
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
 replaceWithReadOnlyLocation(workspaceLocation);
-replaceWithReadOnlyLocation($("rateLimitProviderPath"));
+replaceWithManagedInstallationLink($("rateLimitProviderPath"));
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
