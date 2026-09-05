@@ -87,7 +87,7 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 51
+SERVER_STORE_SCHEMA_VERSION = 52
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
 FILE_INBOX_DIRECTORY = "file-inbox"
 _CENTRAL_LOG_SORT_COLUMNS = {
@@ -371,6 +371,7 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submission_events",
         "ep_submission_prompt_history",
         "ep_parity_lifecycle_dispatches",
+        "ep_receipt_run_provenance",
         "ep_external_producer_bindings",
         "ep_external_producer_binding_audit",
         "engineering_transactions",
@@ -390,6 +391,7 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
         "ep_parity_lifecycle_dispatches_run_lookup",
+        "ep_receipt_run_provenance_project_lookup",
         "ep_external_producer_bindings_active_key",
     }
 )
@@ -812,6 +814,51 @@ def _migrate_schema_51(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=51")
 
 
+def _migrate_schema_52(connection: sqlite3.Connection) -> None:
+    """Add the sole immutable CENTRAL receipt-to-run provenance authority."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema51")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,52 FROM ep_installations_schema51")
+    connection.execute("DROP TABLE ep_installations_schema51")
+    connection.execute("""CREATE TABLE ep_receipt_run_provenance (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        installation_id TEXT NOT NULL REFERENCES ep_installations(instance_id),
+        created_at TEXT NOT NULL
+    )""")
+    connection.execute("CREATE INDEX ep_receipt_run_provenance_project_lookup ON ep_receipt_run_provenance(project_id,created_at DESC)")
+    connection.execute("""CREATE TRIGGER ep_receipt_run_provenance_scope_insert
+        BEFORE INSERT ON ep_receipt_run_provenance BEGIN
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_submissions s WHERE s.submission_id=NEW.submission_id AND s.project_id=NEW.project_id AND s.repository_id=NEW.repository_id) THEN RAISE(ABORT,'PROVENANCE_SUBMISSION_SCOPE_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_execution_runs r WHERE r.run_id=NEW.run_id AND r.project_id=NEW.project_id) THEN RAISE(ABORT,'PROVENANCE_RUN_PROJECT_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches d WHERE d.run_id=NEW.run_id AND d.submission_id=NEW.submission_id AND d.project_id=NEW.project_id AND d.repository_id=NEW.repository_id) THEN RAISE(ABORT,'PROVENANCE_DISPATCH_SCOPE_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM engineering_metadata WHERE key='installation.instance_id' AND value=NEW.installation_id) THEN RAISE(ABORT,'PROVENANCE_INSTALLATION_MISMATCH') END;
+    END""")
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(f"CREATE TRIGGER ep_receipt_run_provenance_immutable_{operation.casefold()} BEFORE {operation} ON ep_receipt_run_provenance BEGIN SELECT RAISE(ABORT,'PROVENANCE_IMMUTABLE'); END")
+    # Backfill only rows whose canonical dispatch already proves every scope.
+    connection.execute("""INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at)
+        SELECT d.submission_id,d.run_id,d.project_id,d.repository_id,m.value,d.claimed_at
+        FROM ep_parity_lifecycle_dispatches d JOIN ep_submissions s ON s.submission_id=d.submission_id AND s.project_id=d.project_id AND s.repository_id=d.repository_id
+        JOIN ep_execution_runs r ON r.run_id=d.run_id AND r.project_id=d.project_id
+        JOIN engineering_metadata m ON m.key='installation.instance_id'""")
+    missing = connection.execute(
+        """SELECT 1 FROM ep_parity_lifecycle_dispatches d
+           WHERE NOT EXISTS (
+               SELECT 1 FROM ep_receipt_run_provenance p
+               WHERE p.submission_id=d.submission_id AND p.run_id=d.run_id
+                 AND p.project_id=d.project_id AND p.repository_id=d.repository_id
+           ) LIMIT 1"""
+    ).fetchone()
+    if missing is not None:
+        raise ServerConfigurationError("CENTRAL receipt-to-run provenance migration is incomplete.")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(52)")
+    connection.execute("UPDATE engineering_metadata SET value='52' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=52")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -876,14 +923,14 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
                         with sqlite3.connect(database_path) as connection:
                             # Schema-49 rebuilds the submission parent table
                             # to widen its immutable transport constraint.
@@ -905,7 +952,9 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_49(connection)
                             if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
                                 _migrate_schema_50(connection)
-                            _migrate_schema_51(connection)
+                            if current_schema != 51:
+                                _migrate_schema_51(connection)
+                            _migrate_schema_52(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -925,6 +974,7 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_49(connection)
         _migrate_schema_50(connection)
         _migrate_schema_51(connection)
+        _migrate_schema_52(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -2938,12 +2988,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise ServerConfigurationError("--submission-id is required for submission diagnostics.")
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
-                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,d.run_id,d.state,d.operator_resolution,d.project_id,d.repository_id FROM ep_submissions s LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
+                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,p.run_id,d.state,d.operator_resolution,p.project_id,p.repository_id FROM ep_submissions s LEFT JOIN ep_receipt_run_provenance p ON p.submission_id=s.submission_id LEFT JOIN ep_parity_lifecycle_dispatches d ON d.run_id=p.run_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
                 if row is None:
                     raise ServerConfigurationError("UNKNOWN_SUBMISSION")
                 project_id, repository_id, state, admission, transport, receipt_id, received_at, run_id, dispatch_state, resolution, dispatch_project, dispatch_repository = row
-                blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, run_id or "")).fetchone()
-                execution_receipt = connection.execute("SELECT 1 FROM execution_receipts WHERE run_id=?", (run_id,)).fetchone() if run_id else None
+                blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND submission_id!=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, args.submission_id, run_id or "")).fetchone()
                 admission_audit = connection.execute("SELECT 1 FROM ep_submission_events WHERE submission_id=? AND event_kind='ADMISSION_GRANTED'", (args.submission_id,)).fetchone()
             early = None
             if run_id:
@@ -2954,8 +3003,8 @@ def main(argv: list[str] | None = None) -> int:
                     except (OSError, json.JSONDecodeError):
                         early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
             receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
-            scope_complete = run_id is None or (dispatch_project, dispatch_repository) == (project_id, repository_id)
-            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "execution_receipt_provenance": "PRESENT" if execution_receipt else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "CONFLICT", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+            scope_complete = run_id is not None and (dispatch_project, dispatch_repository) == (project_id, repository_id)
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")

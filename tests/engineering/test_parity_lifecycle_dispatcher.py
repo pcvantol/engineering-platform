@@ -143,7 +143,10 @@ class ParityLifecycleDispatcherTests(unittest.TestCase):
         self.assertTrue(_Runner.calls[0][3])
         with sqlite3.connect(self.data / server.SERVER_DATABASE_FILENAME) as connection:
             row = connection.execute("SELECT project_id,repository_id,run_id,state FROM ep_parity_lifecycle_dispatches").fetchone()
+            provenance = connection.execute("SELECT submission_id,run_id,project_id,repository_id,installation_id FROM ep_receipt_run_provenance").fetchone()
+            installation = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()
         self.assertEqual(row, ("alpha", "alpha", first.run_id, "COMPLETE"))
+        self.assertEqual(provenance, (submission, first.run_id, "alpha", "alpha", installation[0]))
         self.assertTrue((self.data / "artifacts" / "projects" / "alpha" / "runs" / first.run_id / "submission.md").is_file())
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering.db").exists())
         self.assertFalse((self.roots["alpha"] / ".engineering" / "engineering-runs").exists())

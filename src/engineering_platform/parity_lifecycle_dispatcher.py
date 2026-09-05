@@ -254,6 +254,17 @@ class ParityLifecycleDispatcher:
                 (submission_id,),
             ).fetchone()
             if existing is not None:
+                provenance = connection.execute(
+                    """SELECT 1 FROM ep_receipt_run_provenance p
+                       JOIN engineering_metadata m ON m.key='installation.instance_id'
+                       WHERE p.submission_id=? AND p.run_id=?
+                         AND p.project_id=? AND p.repository_id=?
+                         AND p.installation_id=m.value""",
+                    (submission_id, str(existing[2]), str(existing[0]), str(existing[1])),
+                ).fetchone()
+                if provenance is None:
+                    connection.execute("ROLLBACK")
+                    raise ParityLifecycleDispatchError("PROVENANCE_REPLAY_INVALID")
                 context = project_context(connection, data_root=self.data_root, project_id=str(existing[0]), repository_id=str(existing[1]))
                 candidate = historical_candidate(connection, context=context, submission_id=submission_id)
                 connection.execute("COMMIT")
@@ -286,6 +297,14 @@ class ParityLifecycleDispatcher:
             connection.execute(
                 "INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?, 'CLAIMED', ?,?,?)",
                 (submission_id, context.project_id, context.repository_id, run_id, str(prompt), now, now),
+            )
+            installation = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()
+            if installation is None:
+                connection.execute("ROLLBACK")
+                raise ParityLifecycleDispatchError("PROVENANCE_INSTALLATION_UNAVAILABLE")
+            connection.execute(
+                "INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at) VALUES(?,?,?,?,?,?)",
+                (submission_id, run_id, context.project_id, context.repository_id, str(installation[0]), now),
             )
             connection.execute("COMMIT")
             return context, candidate, run_id, prompt, False

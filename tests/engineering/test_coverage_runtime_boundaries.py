@@ -1406,8 +1406,8 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(records[0]["worker_eligible"], True)
         self.assertEqual(records[0]["transport_provenance"], "COMPLETE")
         self.assertEqual(records[0]["admission_audit_provenance"], "UNAVAILABLE")
-        self.assertEqual(records[0]["execution_receipt_provenance"], "UNAVAILABLE")
-        self.assertEqual(records[0]["dispatch_scope_provenance"], "COMPLETE")
+        self.assertEqual(records[0]["receipt_run_provenance"], "UNAVAILABLE")
+        self.assertEqual(records[0]["dispatch_scope_provenance"], "UNAVAILABLE")
         with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_submission_events(submission_id,event_kind,payload,recorded_at) VALUES(?,?,?,?)", ("sub-a", "ADMISSION_GRANTED", "{}", "now"))
         output = io.StringIO()
@@ -1415,12 +1415,15 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-a"]), 0)
         self.assertEqual(json.loads(output.getvalue())["admission_audit_provenance"], "PRESENT")
         with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
-            connection.execute("INSERT INTO execution_receipts(run_id,producer_id,producer_type,execution_host,execution_host_version,receipt_timestamp,execution_outcome) VALUES(?,?,?,?,?,?,?)", ("run-a", "test", "TEST", "Engineering Platform", "2.0", "now", "COMPLETE"))
+            installation_id = connection.execute("SELECT value FROM engineering_metadata WHERE key='installation.instance_id'").fetchone()[0]
+            connection.execute("INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at) VALUES(?,?,?,?,?,?)", ("sub-a", "run-a", "project-a", "repo-a", installation_id, "now"))
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-a"]), 0)
-        self.assertEqual(json.loads(output.getvalue())["execution_receipt_provenance"], "PRESENT")
-        self.assertEqual(records[0]["early_failure"], {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"})
+        diagnosed = json.loads(output.getvalue())
+        self.assertEqual(diagnosed["receipt_run_provenance"], "PRESENT")
+        self.assertEqual(diagnosed["early_failure"], {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"})
+        self.assertIsNone(records[0]["early_failure"])
         with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-incomplete", "project-a", "repo-a", "test", "TEST", "FILE_INBOX", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
         output = io.StringIO()
@@ -1436,7 +1439,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-conflict"]), 0)
-        self.assertEqual(json.loads(output.getvalue())["dispatch_scope_provenance"], "CONFLICT")
+        self.assertEqual(json.loads(output.getvalue())["dispatch_scope_provenance"], "UNAVAILABLE")
         checkout = root.parent / "declared-checkout"; checkout.mkdir()
         provision = io.StringIO()
         with redirect_stdout(provision):
