@@ -747,11 +747,6 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertIn('id="noProjectSelected"', unscoped)
         self.assertNotIn('data-project-id="djconnect"', unscoped)
         self.assertNotIn(str(roots[0]), unscoped)
-        self.assertEqual(server._historical_dashboard_path(server.urlsplit("/api/events?project=djconnect")), "/api/events")
-        self.assertEqual(
-            server._historical_dashboard_path(server.urlsplit("/api/prompt-history/run/report?project=djconnect&audit=download")),
-            "/api/prompt-history/run/report?audit=download",
-        )
         self.assertIn('/assets/dashboard.js', first)
         self.assertIn(b"fetch", asset)
         self.assertNotIn(str(roots[0]), first)

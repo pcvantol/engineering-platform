@@ -26,7 +26,7 @@ import time
 from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
-from urllib.parse import SplitResult, parse_qs, parse_qsl, urlencode, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
@@ -1417,16 +1417,6 @@ def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
         "scope": "EP",
         "configuration": central_database.capacity_configuration(data_root),
     }
-
-
-def _historical_dashboard_path(request: SplitResult) -> str:
-    """Remove the Server-only project selector before historical routing."""
-    retained = [
-        (key, value)
-        for key, value in parse_qsl(request.query, keep_blank_values=True)
-        if key != "project"
-    ]
-    return request.path if not retained else f"{request.path}?{urlencode(retained, doseq=True)}"
 
 
 def _console_project_options(project_id: str | None, projects: list[dict[str, str]]) -> str:
