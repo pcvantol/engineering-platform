@@ -10007,7 +10007,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(axisLabels.first()).toHaveCSS("fill", "rgb(24, 34, 48)");
   });
 
-  test("keeps dashboard view preferences in the browser", async ({ page }) => {
+  test("keeps supported dashboard view preferences while retired technical details stay hidden", async ({ page }) => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     const autoRefresh = page.locator("#autoRefresh");
     await expect(autoRefresh).toBeChecked();
@@ -10016,12 +10016,13 @@ test.describe("Engineering Status browser smoke", () => {
       current_phase: "INITIALIZE",
       diagnostic: "Host preflight failed",
     }, { host_preflight: { outcome: "FAILED" } }));
-    await page.locator("#technicalDetails").evaluate((element) => { element.open = false; });
-    await dispatchDashboardPointerClick(page.locator("#technicalDetails > summary"));
+    await page.locator("#configuration").evaluate((element) => { element.open = true; });
     await page.locator("#autoRefresh").uncheck();
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(autoRefresh).not.toBeChecked();
-    await expect(page.locator("#technicalDetails")).toHaveAttribute("open", "");
+    await expect(page.locator("#configuration")).toHaveAttribute("open", "");
+    await expect(page.locator("#technicalDetails")).toHaveAttribute("hidden", "");
+    await expect(page.locator("#technicalDetails")).not.toHaveAttribute("open", "");
   });
 
   test("uses an in-app confirmation modal before clearing the selected CENTRAL component projection", async ({ page }) => {
