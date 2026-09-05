@@ -507,7 +507,7 @@ class DashboardStatusTest(unittest.TestCase):
             ):
                 dashboard.run(root)
 
-            logger.assert_called_once_with(root, "dashboard")
+            logger.assert_called_once_with(root, "operations_console")
             self.assertEqual(log_event.call_args_list[0].args[2], "dashboard_started")
             self.assertEqual(log_event.call_args_list[-1].args[2], "dashboard_shutdown_completed")
             self.assertEqual(log_event.call_args_list[-1].kwargs["context"], lifecycle_context)

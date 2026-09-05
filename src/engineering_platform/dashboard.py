@@ -2627,7 +2627,10 @@ def handler(
     platform_version = EngineeringPlatformManifest.load(
         package_path("ENGINEERING_PLATFORM_VERSION.json")
     ).platform_version
-    logger = logger or component_logger(root, "dashboard")
+    # This compatibility handler has no independent component identity.  Its
+    # bounded access events belong to the canonical Operations Console rather
+    # than to the retired checkout-local Dashboard log stream.
+    logger = logger or component_logger(root, "operations_console")
     class DashboardHandler(BaseHTTPRequestHandler):
         def _send(self, content: bytes, content_type: str, status_code: int = 200) -> None:
             self.send_response(status_code)
@@ -3347,7 +3350,9 @@ def create_servers(
 def run(root: Path, port: int = 8765, provider: TailscaleProvider | None = None) -> None:
     """Serve the read-only dashboard on loopback; the relay handles Tailnet ingress."""
     provision_workspace(root)
-    logger = component_logger(root, "dashboard")
+    # The historical direct listener is an Operations Console access adapter,
+    # not a separate log authority.
+    logger = component_logger(root, "operations_console")
     lifecycle_context = component_lifecycle_context(
         root,
         version=DASHBOARD_VERSION,
