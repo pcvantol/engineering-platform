@@ -10270,6 +10270,23 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(page.locator("#componentModalContent")).toContainText("Niet beschikbaar");
   });
 
+  test("renders current transport detail fields without raw machine codes", async ({ page }) => {
+    const components = canonicalPlatformComponents();
+    await page.route("**/api/components/http_ingress/details", (route) => route.fulfill({ json: {
+      component: "http_ingress", kind: "TRANSPORT", healthy: true,
+      status_code: "HTTP_INGRESS_HEALTHY", detail_code: "CENTRAL_LISTENER_ENDPOINT",
+    } }));
+    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));
+    await page.evaluate(({ components, component_model }) => renderPlatformHealth({ components, component_model }), {
+      components, component_model: canonicalPlatformComponentModel(),
+    });
+    await page.locator("#platformHealth > summary").click({ force: true });
+    await page.locator(".platform-health__component[aria-label='Meer informatie over HTTP/API-ingang']").click();
+    await expect(page.locator("#componentModalContent")).toContainText("Gezond");
+    await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
+  });
+
   test("keeps the titlebar health tooltip inside a narrow viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });

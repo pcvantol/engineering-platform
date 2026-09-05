@@ -3482,9 +3482,9 @@ function showComponentModal(payload) {
   componentDetailField(
     fields,
     t("component.status"),
-    (payload.kind === "TRANSPORT" ? transportState(payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+    (payload.kind === "TRANSPORT" ? transportState(payload.status_code || payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
       " · " +
-      (transportDetail(payload.detail || payload.state || t("ui.no_component_explanation"))),
+      (transportDetail(payload.detail_code || payload.detail || payload.state)),
   );
   componentDetailField(fields, t("component.version"), payload.version);
   if (payload.kind === "TRANSPORT") {
