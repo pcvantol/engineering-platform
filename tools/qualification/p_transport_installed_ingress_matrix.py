@@ -340,7 +340,12 @@ def main(argv: list[str] | None = None) -> int:
         crash_environment = {**os.environ, "EP_CONSUMER_TOKEN": credential, "EP_QUALIFICATION_INITIALIZE_ONLY": "1", "EP_FILE_INBOX_QUALIFICATION_FAULT": "AFTER_CLAIM_BEFORE_SUBMIT"}
         process = subprocess.Popen([str(server), "serve", "--data-root", str(data_root)], env=crash_environment)  # nosec B603
         try:
-            deadline = time.monotonic() + 15
+            # The producer is a real Server child and two independent CENTRAL
+            # bindings are admitted asynchronously.  Keep the qualification
+            # bounded, but allow the same contention/retry window used below
+            # for lifecycle initialization instead of treating a slow runner
+            # as a false multi-project-authority failure.
+            deadline = time.monotonic() + 30
             processing = data_root / "file-inbox" / "processing" / source.name
             while process.poll() is None and time.monotonic() < deadline:
                 time.sleep(.1)
@@ -513,8 +518,17 @@ def main(argv: list[str] | None = None) -> int:
                 if len(rows) == 2 and heartbeat.exists():
                     break
                 time.sleep(.1)
-            if not heartbeat.exists() or len(rows) != 2 or {(row[1], row[2]) for row in rows} != {("dependabot-a", "dependabot-repository-a"), ("dependabot-b", "dependabot-repository-b")}:
-                raise RuntimeError("DEPENDABOT_MULTI_PROJECT_BINDING_FAILED")
+            expected_bindings = {
+                ("dependabot-a", "dependabot-repository-a"),
+                ("dependabot-b", "dependabot-repository-b"),
+            }
+            observed_bindings = {(row[1], row[2]) for row in rows}
+            if not heartbeat.exists() or len(rows) != 2 or observed_bindings != expected_bindings:
+                raise RuntimeError(
+                    "DEPENDABOT_MULTI_PROJECT_BINDING_FAILED: "
+                    f"heartbeat={heartbeat.exists()} rows={len(rows)} "
+                    f"bindings={sorted(observed_bindings)}"
+                )
             heartbeat_payload = json.loads(heartbeat.read_text())
             if heartbeat_payload.get("state") != "READY" or heartbeat_payload.get("readiness") != "DISCOVERY_CAPABLE":
                 raise RuntimeError("DEPENDABOT_READY_IMPLIES_OPERATIONAL_FAILED")
