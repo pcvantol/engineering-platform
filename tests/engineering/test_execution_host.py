@@ -25,6 +25,7 @@ from engineering_platform.storage import (
 )
 from engineering_platform.execution_errors import CodexHandoffTimeout, CodexInvocationError
 from engineering_platform.execution_reporting import _target_repository_name
+from engineering_platform import execution_host
 from engineering_platform.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -1583,6 +1584,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertFalse(process.exists())
         terminal = TransactionState("terminal-recovery", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         self.assertEqual(runner._provider_recovery_preflight(terminal), "CANCELLED")
+
+    def test_optional_phase_telemetry_and_agent_timing_never_change_run_authority(self) -> None:
+        with patch("engineering_platform.execution_host._complete_phase") as complete:
+            execution_host.complete_phase(self.root, None)
+            complete.assert_not_called()
+        with patch("engineering_platform.execution_host._complete_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            execution_host.complete_phase(self.root, SimpleNamespace())
+        agent = FakeAgent(AgentResult("WAITING"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("timing-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        for measured in (True, "unknown", -1, 86_401):
+            agent.last_execution_seconds = measured
+            self.assertEqual(runner._record_agent_execution_time(state), state)
+        agent.last_execution_seconds = 1.2345
+        self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
 
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
