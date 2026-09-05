@@ -26,6 +26,17 @@ This register is therefore not evidence for human UI review or Owner
 Authorization: remaining installed qualification and retirement items are
 listed below.
 
+### Installed UI review follow-up — pending exact-head evidence
+
+The installed Console review at `0574188` found that the HTTP/API component
+modal rendered a raw `dashboard.health` fallback and user-visible `CENTRAL`
+transport terminology.  The bounded repair reads the current closed
+`status_code`/`detail_code` contract and presents localized Server terminology
+instead.  Browser regression coverage asserts both the absence of the raw code
+and the absence of `CENTRAL` in the normal-user detail.  This remains **pending
+exact-head hosted and installed-wheel requalification** at `e2bee2b`; it is not
+human-review, Owner Authorization, or merge evidence.
+
 ## Coverage-contract handoff — 2026-09-05
 
 The agreed quality contract is **every production module at least 80.20% branch

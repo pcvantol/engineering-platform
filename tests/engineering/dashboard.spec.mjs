@@ -10285,6 +10285,8 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator(".platform-health__component[aria-label='Meer informatie over HTTP/API-ingang']").click();
     await expect(page.locator("#componentModalContent")).toContainText("Gezond");
     await expect(page.locator("#componentModalContent")).not.toContainText("dashboard.health");
+    await expect(page.locator("#componentModalContent")).toContainText("Server-luisterendpoint");
+    await expect(page.locator("#componentModalContent")).not.toContainText("CENTRAL");
   });
 
   test("keeps the titlebar health tooltip inside a narrow viewport", async ({ page }) => {
