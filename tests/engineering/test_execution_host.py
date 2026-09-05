@@ -1732,6 +1732,28 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(projected["status"], "completed")
         self.assertEqual(projected["codex_commands_executed"], 0)
 
+    def test_heartbeat_and_required_validation_profile_fail_closed_before_provider_work(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        runner.lease_heartbeat = SimpleNamespace(error=OSError("lost"), lease=None)
+        with self.assertRaisesRegex(RunnerError, "heartbeat was lost"):
+            runner._heartbeat()
+        runner.lease_heartbeat = SimpleNamespace(error=None, lease=None)
+        runner.active_lease = SimpleNamespace(run_id="lease-run")
+        replacement = SimpleNamespace(run_id="lease-run")
+        with patch("engineering_platform.execution_host.heartbeat_lease", return_value=replacement):
+            runner._heartbeat()
+        self.assertIs(runner.active_lease, replacement)
+        self.assertIs(runner.lease_heartbeat.lease, replacement)
+        state = TransactionState("profile-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch.object(runner, "_save_terminal", side_effect=lambda *_args: _args[0]) as terminal:
+            with patch("engineering_platform.execution_host.load_validation_context", return_value=None):
+                self.assertIs(runner._execute_required_validation_controls(state), state)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": (), "control_bindings": ()}):
+                runner._execute_required_validation_controls(state)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": ()}):
+                runner._execute_required_validation_controls(state)
+        self.assertEqual(terminal.call_count, 3)
+
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
         repository = FakeRepository(branch="feature/verified")
