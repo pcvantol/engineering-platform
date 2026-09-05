@@ -3398,6 +3398,11 @@ const LEGACY_TRANSPORT_DETAIL_CODES = Object.freeze({
   "File Inbox adapter heartbeat": "FILE_INBOX_HEARTBEAT",
   "File Inbox adapter heartbeat unavailable": "FILE_INBOX_HEARTBEAT_MISSING",
 });
+const TRANSPORT_DETAIL_CODES = new Set([
+  "CENTRAL_LISTENER_ENDPOINT", "CENTRAL_LISTENER_UNAVAILABLE",
+  "CANONICAL_SUBMISSION_COMPATIBILITY", "CENTRAL_ENDPOINT_UNAVAILABLE",
+  "FILE_INBOX_HEARTBEAT", "FILE_INBOX_HEARTBEAT_MISSING",
+]);
 function transportState(code) {
   const raw = String(code || ""), normalized = LEGACY_TRANSPORT_STATUS_CODES[raw] || raw;
   return normalized.startsWith("HTTP_INGRESS_") || normalized.startsWith("CLI_INGRESS_") || normalized.startsWith("FILE_INGRESS_")
@@ -3409,9 +3414,14 @@ function transportDetail(code) {
   const key = "transport.detail." + normalized;
   // Detail codes are a closed Server contract. Never turn an arbitrary
   // diagnostic string into a localization key (or leak it into the UI).
-  return new Set(["CENTRAL_LISTENER_ENDPOINT", "CENTRAL_LISTENER_UNAVAILABLE", "CANONICAL_SUBMISSION_COMPATIBILITY", "CENTRAL_ENDPOINT_UNAVAILABLE", "FILE_INBOX_HEARTBEAT", "FILE_INBOX_HEARTBEAT_MISSING"]).has(normalized)
+  return TRANSPORT_DETAIL_CODES.has(normalized)
     ? t(key)
     : t("ui.no_component_explanation");
+}
+function transportComponentStatus(payload) {
+  const state = transportState(payload.status_code || payload.state);
+  const detail = transportDetail(payload.detail_code || payload.detail || payload.state);
+  return state + " · " + detail;
 }
 const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
   "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",
@@ -3482,9 +3492,8 @@ function showComponentModal(payload) {
   componentDetailField(
     fields,
     t("component.status"),
-    (payload.kind === "TRANSPORT" ? transportState(payload.status_code || payload.state) : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
-      " · " +
-      (transportDetail(payload.detail_code || payload.detail || payload.state)),
+    payload.kind === "TRANSPORT" ? transportComponentStatus(payload) :
+      payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy"),
   );
   componentDetailField(fields, t("component.version"), payload.version);
   if (payload.kind === "TRANSPORT") {
