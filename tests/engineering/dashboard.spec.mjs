@@ -787,7 +787,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
     const workspace = page.locator("#workspaceCard pre").first();
     const workspacePath = await workspace.textContent();
-    expect(workspacePath).toBe("Physical binding is not Console authority.");
+    // This is translated by the active Console locale.  The retirement
+    // invariant is that it is explanatory text, never a browseable path.
+    expect(workspacePath?.trim()).toBeTruthy();
+    expect(workspacePath).not.toMatch(/[\\/]/);
 
     await page.evaluate(() => rateLimits({
       provider: "Codex CLI", provider_version: "0.150.1",
