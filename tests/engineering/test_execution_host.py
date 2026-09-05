@@ -1569,6 +1569,8 @@ class LocalAgentRunnerTest(unittest.TestCase):
             self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
             runner.active_lease = SimpleNamespace(run_id=state.run_id)
             self.assertIsNone(runner._provider_recovery_preflight(state))
+            with patch.object(repository, "inspect", side_effect=RuntimeError("unavailable")):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
             repository.evidence = RepositoryEvidence("pcvantol/djconnect", "other", "a" * 40, True, True)
             self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
             repository.evidence = RepositoryEvidence("pcvantol/djconnect", "recovery", "a" * 40, True, True)
@@ -1582,6 +1584,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
             with patch("engineering_platform.execution_host.os.kill", side_effect=ProcessLookupError):
                 self.assertIsNone(runner._provider_recovery_preflight(state))
             self.assertFalse(process.exists())
+            process.write_text("{", encoding="utf-8")
+            self.assertIsNone(runner._provider_recovery_preflight(state))
+        with patch("engineering_platform.execution_host.dismissal_for_run", return_value=True):
+            self.assertEqual(runner._provider_recovery_preflight(state), "CANCELLED")
         terminal = TransactionState("terminal-recovery", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
         self.assertEqual(runner._provider_recovery_preflight(terminal), "CANCELLED")
 
