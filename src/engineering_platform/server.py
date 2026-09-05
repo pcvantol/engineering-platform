@@ -199,6 +199,23 @@ def _start_provider_login(data_root: Path, provider: str) -> None:
         raise ValueError("Provider login window could not be opened.")
 
 
+def _logout_provider(data_root: Path, provider: str) -> None:
+    """Remove one locally stored provider session without exposing credentials."""
+    if provider == "CODEX":
+        completed = CodexCliProvider().command("logout")
+    elif provider == "GITHUB":
+        process = LocalProcessProvider()
+        account = process.execute(data_root, ("gh", "api", "user", "--jq", ".login"))
+        username = account.stdout.strip()
+        if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
+            raise ValueError("GitHub session cannot be safely identified for logout.")
+        completed = process.execute(data_root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+    else:
+        raise ValueError("Unsupported provider logout request.")
+    if completed.returncode:
+        raise ValueError("Provider logout did not complete.")
+
+
 class ServerConfigurationError(ValueError):
     """Raised when an installation-owned server configuration is invalid."""
 
@@ -1461,7 +1478,7 @@ def _central_provider_logout(data_root: Path, payload: object) -> None:
     readiness = _central_provider_readiness(data_root)
     if str(readiness[provider.lower()]["state"]) != "READY":
         raise ValueError("Provider is not ready for logout.")
-    dashboard._logout_provider(data_root, provider)  # type: ignore[attr-defined]
+    _logout_provider(data_root, provider)
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:

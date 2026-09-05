@@ -354,7 +354,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         start_login.assert_called_once_with(self.root, "CODEX")
         self.assertEqual(readiness()["codex"]["state"], "AUTH_REQUIRED")
 
-    @patch("engineering_platform.server.dashboard._logout_provider")
+    @patch("engineering_platform.server._logout_provider")
     @patch("engineering_platform.server._central_provider_readiness")
     def test_provider_logout_is_central_and_never_requires_a_project(
         self, readiness: object, logout: object,
