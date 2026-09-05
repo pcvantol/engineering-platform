@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -92,6 +93,39 @@ class CentralStoreMigrationTests(unittest.TestCase):
     def test_data_root_is_portable_and_central_path_is_deterministic(self) -> None:
         self.assertEqual(migration.installation_data_root().name, "Engineering Platform")
         self.assertEqual(migration.central_store_path().name, "engineering.db")
+
+    def test_platform_data_roots_honor_xdg_contract(self) -> None:
+        with patch.object(migration.sys, "platform", "linux"), \
+             patch.dict(os.environ, {"XDG_DATA_HOME": "/portable/data"}, clear=False):
+            self.assertEqual(migration.user_data_dir("EP"), Path("/portable/data/EP"))
+
+    def test_launchagent_control_fails_closed_when_launchd_cannot_confirm_state(self) -> None:
+        control = migration.LaunchAgentServiceControl(uid=501)
+        label = "com.example.engineering"
+        with patch.object(control._launchd, "quiesce", side_effect=OSError("offline")):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_STOP_FAILED"):
+                control.stop(label)
+        with patch.object(control._launchd, "quiesce"), patch.object(control, "stopped", return_value=False):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_STOP_FAILED"):
+                control.stop(label)
+        with patch.object(control._launchd, "resume", side_effect=OSError("offline")):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_RESTART_FAILED"):
+                control.start(label)
+        with patch.object(control._launchd, "resume"), patch.object(control, "running", return_value=False):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_RESTART_FAILED"):
+                control.start(label)
+        with patch("engineering_platform.central_store_migration.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "state = running", "")):
+            self.assertTrue(control.running(label))
+        with patch("engineering_platform.central_store_migration.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "state = stopped", "")):
+            self.assertFalse(control.running(label))
+
+    def test_corrupt_source_and_target_are_never_accepted_as_migratable(self) -> None:
+        corrupt = Path(self.temporary.name) / "corrupt.db"
+        corrupt.write_text("not a sqlite database", encoding="utf-8")
+        candidate = migration.StoreCandidate(str(corrupt), str(corrupt.resolve()), ("test",))
+        inspected = migration.inspect_source(candidate)
+        self.assertIn("SOURCE_INTEGRITY_FAILED", inspected["blocking_codes"])
+        self.assertEqual(migration.classify_target(corrupt)["state"], "CORRUPT_UNREADABLE")
 
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
