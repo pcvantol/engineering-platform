@@ -54,7 +54,7 @@ changes execution semantics.
 - Capability-aware generic reviewers and product capability specialists.
 - Deterministic Engineering Qualification and local evidence reports.
 - Engineering Platform CI enforces at least **80.20%** branch coverage for its
-  protected dashboard, bootstrap, provider and Inbox watcher modules.
+  protected dashboard, bootstrap, provider and Server-owned File Inbox modules.
 - Provider-neutral runtime, repository, service, submission and private-access
   configuration, with Codex CLI, GitHub, launchd, iCloud Inbox and Tailscale as
   current configured providers.
