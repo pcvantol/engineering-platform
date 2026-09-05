@@ -1646,8 +1646,8 @@ def _build_commit(root: Path) -> str:
     try:
         observed = GitProvider().execute(root, "git", "rev-parse", "--short=12", "HEAD")
     except OSError:
-        return "onbekend"
-    return observed.stdout.strip() if observed.returncode == 0 else "onbekend"
+        return ""
+    return observed.stdout.strip() if observed.returncode == 0 else ""
 
 
 def _tracked_file_count(root: Path) -> str:
@@ -1655,9 +1655,9 @@ def _tracked_file_count(root: Path) -> str:
     try:
         observed = GitProvider().execute(root, "git", "ls-files", "-z")
     except OSError:
-        return "Niet beschikbaar"
+        return ""
     if observed.returncode != 0:
-        return "Niet beschikbaar"
+        return ""
     separator = b"\0" if isinstance(observed.stdout, bytes) else "\0"
     return str(sum(1 for path in observed.stdout.split(separator) if path))
 
@@ -1667,7 +1667,7 @@ def _workspace_free_disk_space(root: Path) -> str:
     try:
         free_gigabytes = shutil.disk_usage(root).free / (1024**3)
     except OSError:
-        return "Niet beschikbaar"
+        return ""
     return f"{free_gigabytes:.1f} GB"
 
 
@@ -1879,17 +1879,17 @@ def render_console_document(
     workspace_id: str = "onbekend",
     project_name: str = "Project",
     workspace_location: str = ".",
-    workspace_free_disk_space: str = "Niet beschikbaar",
-    tracked_files: str = "Niet beschikbaar",
-    workspace_branch: str = "Niet beschikbaar",
-    workspace_commit: str = "Niet beschikbaar",
-    origin_main_commit: str = "Niet beschikbaar",
+    workspace_free_disk_space: str = "",
+    tracked_files: str = "",
+    workspace_branch: str = "",
+    workspace_commit: str = "",
+    origin_main_commit: str = "",
     origin_main_available: bool = False,
     workspace_open_pull_requests: list[dict[str, object]] | None = None,
     workspace_main_action_hidden: bool = True,
     workspace_branch_cleanup_hidden: bool = True,
     platform_version: str = "2.0.0",
-    configuration_inbox: str = "Niet beschikbaar",
+    configuration_inbox: str = "",
 ) -> bytes:
     """Render the private dashboard with a server-pushed status stream."""
     page = r"""<!doctype html>

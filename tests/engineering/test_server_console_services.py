@@ -2109,7 +2109,7 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertIn(b"retired", dashboard._current_codex_log(root))
             self.assertIn(b"retired", dashboard._last_executed_codex_log(root))
             self.assertEqual(dashboard._prompt_started(root), b"{}")
-            self.assertEqual(dashboard._tracked_file_count(root), "Niet beschikbaar")
+            self.assertEqual(dashboard._tracked_file_count(root), "")
 
             (status / "status.json").write_text('{"run_id":"inbox-current"}', encoding="utf-8")
             jobs = root / ".engineering" / "inbox-processing" / "one"
