@@ -65,6 +65,7 @@ from engineering_platform.platform_version import (
 )
 from engineering_platform.capability_review import (
     ReviewerResult,
+    ReviewerSelection,
     reconciled_recommendations,
     records_for_storage,
     run_reviews,
@@ -1716,6 +1717,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(runner._validation_summary_status("ERROR: failure"), "FAIL")
         self.assertEqual(runner._validation_summary_status("passed with no whitespace errors"), "PASS")
         self.assertEqual(runner._validation_summary_status("ambiguous"), "UNAVAILABLE")
+
+    def test_reviewer_progress_ignores_unknown_events_and_projects_only_safe_counts(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("review-progress", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        selection = ReviewerSelection("validation", "bounded", 1.0)
+        runner.reviewer_runtime = [{"reviewer": "validation", "status": "queued"}]
+        with patch("engineering_platform.execution_host.write_live_status") as status:
+            runner._publish_reviewer_progress(state, selection, "unknown")
+            status.assert_not_called()
+            runner._publish_reviewer_progress(state, selection, "started")
+            runner._publish_reviewer_progress(state, selection, "completed", ReviewerResult("validation", "done", churn={"tool_loop_operations": True}))
+        projected = runner.reviewer_runtime[0]
+        self.assertEqual(projected["status"], "completed")
+        self.assertEqual(projected["codex_commands_executed"], 0)
 
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
