@@ -15,7 +15,7 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertEqual(profile.tier, "DOCUMENTATION")
 
     def test_dashboard_requires_browser_validation(self) -> None:
-        profile = classify(["src/engineering_platform/dashboard.py"])
+        profile = classify(["src/engineering_platform/server.py"])
         self.assertEqual(profile.tier, "DASHBOARD")
         self.assertTrue(browser_dashboard_required(profile))
 
@@ -28,7 +28,7 @@ class ValidationProfileTests(unittest.TestCase):
 
     def test_console_and_unrelated_runtime_branches_retain_browser_requirement(self) -> None:
         self.assertIsNone(phase_for_branch("codex/phase-p-central-console"))
-        self.assertTrue(browser_dashboard_required(classify(["src/engineering_platform/dashboard.py"])))
+        self.assertTrue(browser_dashboard_required(classify(["src/engineering_platform/server.py"])))
         self.assertTrue(browser_dashboard_required(classify(["src/engineering_platform/execution_host.py"])))
 
     def test_console_assets_and_server_projection_require_localization_gate(self) -> None:

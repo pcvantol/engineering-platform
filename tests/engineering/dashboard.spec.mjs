@@ -775,23 +775,6 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).not.toContainText("codex/polish");
   });
 
-  test("opens a current worktree folder in Finder from its path", async ({ page }) => {
-    const projection = { available: true, worktrees: [
-      { path: "/tmp/finder-worktree", branch: "codex/finder", commit: "abcdef123456" },
-    ] };
-    let requestedPath = null;
-    await page.route("**/api/dashboard-snapshot", (route) => route.fulfill({ json: { workspace_worktrees: projection } }));
-    await page.route("**/api/open-worktree-folder", async (route) => {
-      requestedPath = JSON.parse(route.request().postData()).worktree_path;
-      await route.fulfill({ status: 202, json: { opened_worktree: requestedPath } });
-    });
-    await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
-    await page.locator("#autoRefresh").uncheck();
-    await page.evaluate((fixture) => window.renderWorkspaceWorktrees(fixture), projection);
-    await dispatchDashboardPointerClick(page.locator(".workspace-worktrees__path--open"));
-    await expect.poll(() => requestedPath).toBe("/tmp/finder-worktree");
-  });
-
   test("keeps displayed local paths read-only without a Finder route", async ({ page }) => {
     const requestedDirectories = [];
     await page.route("**/api/open-local-directory", async (route) => {
@@ -830,13 +813,11 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => requestedDirectories).toEqual([]);
   });
 
-  test("uses the CENTRAL-only Finder route for the EP database location", () => {
+  test("keeps the EP database location read-only", () => {
     const script = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.js"), "utf8");
     const stylesheet = readFileSync(path.join(repository, "src/engineering_platform/assets/dashboard.css"), "utf8");
-    expect(script).toContain('fetch("/api/central-database/open-directory"');
-    expect(script).toContain('event.target.closest("#centralDatabaseLocation")');
-    expect(stylesheet).toContain(".configuration-central-database__location-link{");
-    expect(stylesheet).toContain("text-decoration:underline");
+    expect(script).not.toContain("/api/central-database/open-directory");
+    expect(script).not.toContain("centralDatabaseLocation");
     expect(stylesheet).toContain(".configuration-central-database{border:");
     expect(stylesheet).not.toContain(".configuration-central-database{background:");
     expect(stylesheet).toContain(".configuration-central-database__header .dashboard-action{justify-self:start;width:32px}");

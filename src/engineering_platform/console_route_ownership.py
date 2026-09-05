@@ -53,7 +53,6 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET",), r"/api/(?:process-metrics|usage)", PLATFORM, "platform_components", "Platform diagnostics", True),
     ConsoleRoute(("GET",), r"/api/host-admin/diagnostics", HOST_ADMIN, "host_admin", "Bounded installation diagnostics", True),
     ConsoleRoute(("GET",), r"/api/central-database/download", PLATFORM, "server_settings", "Central database backup", True),
-    ConsoleRoute(("POST",), r"/api/central-database/open-directory", PLATFORM, "server_settings", "Central database action", True),
     ConsoleRoute(("GET", "POST"), r"/api/central-database/configuration", PLATFORM, "server_settings", "Central database maintenance settings", True),
     ConsoleRoute(("GET",), r"/v1/operations/projects", PLATFORM, "operations", "Operations project listing"),
     ConsoleRoute(("GET",), r"/api/prompt-history", PROJECT, "project_history", "Project run history"),

@@ -1475,19 +1475,6 @@ function executionContextValue(value) {
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
   return "";
 }
-async function openCentralDatabaseDirectory() {
-  try {
-    const response = await fetch("/api/central-database/open-directory", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-    });
-    if (!response.ok) throw Error();
-  } catch {
-    showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
-  }
-}
-document.addEventListener("click", (event) => {
-  if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
-});
 function configureRuntimeDirectoryButton(button, value, runtime) {
   configureReadOnlyLocation(button, value || "—");
 }
@@ -2469,14 +2456,7 @@ function renderWorkspaceWorktrees(projection) {
   heading.className = "workspace-worktrees__header";
   const headingText = document.createElement("strong");
   headingText.textContent = t("workspace.local_worktrees");
-  const analyze = document.createElement("button");
-  analyze.className = "workspace-worktrees__refresh";
-  analyze.type = "button";
-  analyze.title = t("workspace.worktree_analysis_refresh");
-  analyze.setAttribute("aria-label", t("workspace.worktree_analysis_refresh"));
-  analyze.textContent = "↻";
-  analyze.addEventListener("click", () => void refreshWorktreeRemovalAnalysis(analyze));
-  heading.append(headingText, analyze);
+  heading.append(headingText);
   section.append(heading);
   const available = projection?.available === true;
   const worktrees = Array.isArray(projection?.worktrees) ? projection.worktrees : [];
@@ -2491,16 +2471,13 @@ function renderWorkspaceWorktrees(projection) {
     return;
   }
   const list = document.createElement("ul");
-  const analyses = new Map(Array.isArray(worktreeRemovalAnalysis?.worktrees)
-    ? worktreeRemovalAnalysis.worktrees.map((item) => [worktreeAnalysisKey(item), item]) : []);
   worktrees.forEach((worktree) => {
     const item = document.createElement("li");
     const branch = document.createElement("code");
-    const path = document.createElement("button");
+    const path = document.createElement("span");
     const commit = document.createElement("code");
     branch.className = "workspace-worktrees__branch";
-    path.className = "workspace-worktrees__path workspace-worktrees__path--open";
-    path.type = "button";
+    path.className = "workspace-worktrees__path";
     commit.className = "workspace-worktrees__commit";
     branch.textContent = worktree?.branch || t("workspace.detached_head");
     if (worktree?.active === true) {
@@ -2515,93 +2492,12 @@ function renderWorkspaceWorktrees(projection) {
     path.textContent = worktree?.checked_out === false
       ? t("workspace.not_checked_out")
       : String(worktree?.path || t("format.not_available"));
-    if (typeof worktree?.path === "string" && worktree.path) {
-      path.title = t("workspace.open_worktree_folder", { path: worktree.path });
-      path.setAttribute("aria-label", t("workspace.open_worktree_folder", { path: worktree.path }));
-      path.addEventListener("click", () => void openWorktreeFolder(worktree.path));
-    } else {
-      path.disabled = true;
-    }
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
-    const analysis = analyses.get(worktreeAnalysisKey(worktree));
-    if (analysis && worktree?.branch !== "main") {
-      const conclusion = document.createElement("p");
-      conclusion.className = `workspace-worktrees__analysis workspace-worktrees__analysis--${analysis.removable === true ? "removable" : "keep"}`;
-      conclusion.textContent = t(`workspace.worktree_analysis_reason.${String(analysis.reason || "pull_request_unverified")}`);
-      item.append(conclusion);
-      if (analysis.pull_request?.url && Number.isInteger(analysis.pull_request?.number)) {
-        const pr = document.createElement("a");
-        pr.className = "workspace-worktrees__pr";
-        pr.href = analysis.pull_request.url;
-        pr.target = "_blank";
-        pr.rel = "noreferrer";
-        pr.textContent = `${t("workspace.worktree_analysis_pr", { number: analysis.pull_request.number, state: String(analysis.pull_request.state || "") })} ↗`;
-        item.append(pr);
-      }
-    } else if (worktree?.branch !== "main") {
-      const conclusion = document.createElement("p");
-      conclusion.className = "workspace-worktrees__analysis";
-      conclusion.textContent = t("workspace.worktree_analysis_not_run");
-      item.append(conclusion);
-    }
-    if (
-      worktree?.branch !== "main"
-      && worktree?.active !== true
-      && typeof worktree?.path === "string" && worktree.path
-      && typeof worktree?.branch === "string" && worktree.branch
-    ) {
-      const switchWorktree = document.createElement("button");
-      switchWorktree.className = "workspace-worktrees__switch";
-      switchWorktree.type = "button";
-      switchWorktree.textContent = t("workspace.worktree_switch_action");
-      switchWorktree.addEventListener("click", () => void switchEngineeringPlatformToWorktree(worktree));
-      item.append(switchWorktree);
-    }
-    if (analysis?.removable === true && typeof worktree?.path === "string" && (typeof worktree?.branch === "string" || typeof analysis?.head === "string")) {
-      const remove = document.createElement("button");
-      remove.className = "workspace-worktrees__remove";
-      remove.type = "button";
-      remove.textContent = t("workspace.worktree_remove_action");
-      remove.addEventListener("click", () => removeSafeWorktree(worktree, analysis));
-      item.append(remove);
-    }
     list.append(item);
   });
   section.append(list);
   if (branchActions) section.append(branchActions);
-}
-async function openWorktreeFolder(worktreePath) {
-  try {
-    const response = await fetch("/api/open-worktree-folder", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ worktree_path: worktreePath }),
-    });
-    const outcome = await response.json();
-    if (!response.ok) throw Error(outcome?.error || t("workspace.open_worktree_folder_failed"));
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.open_worktree_folder_failed"), t("workspace.open_worktree_folder_failed"));
-  }
-}
-async function refreshWorktreeRemovalAnalysis(button) {
-  showDashboardToast(t("workspace.worktree_analysis_refreshing"));
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/worktree-removal-analysis", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-    });
-    const outcome = await response.json();
-    if (!response.ok || outcome?.available !== true || !Array.isArray(outcome?.worktrees)) {
-      throw Error(outcome?.error || t("workspace.worktree_analysis_failed"));
-    }
-    worktreeRemovalAnalysis = outcome;
-    const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" }).then((result) => result.ok ? result.json() : null);
-    if (snapshot?.workspace_worktrees) renderWorkspaceWorktrees(snapshot.workspace_worktrees);
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.worktree_analysis_failed"), t("workspace.worktree_analysis_failed"));
-  } finally {
-    button.disabled = false;
-  }
 }
 let openPullRequestMonitorIntervalMs = 30_000;
 let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;
@@ -7955,33 +7851,6 @@ async function switchEngineeringPlatformToWorktree(worktree) {
       error.message || t("workspace.worktree_switch_failed"),
       "workspace.worktree_switch_result_title",
     );
-  }
-}
-async function removeSafeWorktree(worktree, analysis = null) {
-  const path = String(worktree?.path || ""), branch = String(worktree?.branch || ""), head = String(analysis?.head || "");
-  if (!path || (!branch && !head)) return;
-  const target = branch || `${t("workspace.detached_head")} ${head.slice(0, 12)}`;
-  const confirmed = await confirmDashboardAction(
-    t("workspace.worktree_remove_title"),
-    t("workspace.worktree_remove_confirmation", { branch: target, path }),
-    t("workspace.worktree_remove_action"),
-    { destructive: true },
-  );
-  if (!confirmed) return;
-  try {
-    const response = await fetch("/api/safe-worktree-removal", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(branch ? { worktree_path: path, branch } : { worktree_path: path, head }),
-    });
-    const outcome = await response.json();
-    if (!response.ok) throw Error(outcome.error || t("workspace.worktree_remove_failed"));
-    showWorkspaceBranchMainResult(
-      t("workspace.worktree_remove_success", { branch: target }),
-      "workspace.worktree_remove_result_title",
-    );
-    void refreshAfterOperatorAction();
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.worktree_remove_failed"), t("workspace.worktree_remove_failed"));
   }
 }
 function submitExecutionRetry(entry) {

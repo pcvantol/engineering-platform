@@ -165,7 +165,7 @@ def _default_check(
         "Engineering Memory": source_file("execution_host.py"),
         "Capability-aware Reviewers": source_file("capability_review.py"),
         "Remote Status Model": source_file("status_model.py"),
-        "Private Dashboard": source_file("dashboard.py"),
+        "Private Dashboard": source_file("server.py") and source_file("console_presentation.py"),
         "Repository Handoff": source_file("repository_handoff.py"),
         "Remote Engineering Readiness": source_file("execution_readiness.py"),
         "Platform Identity": configuration_is_compatible(),

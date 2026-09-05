@@ -40,11 +40,11 @@ class PromptAuthoringContractTest(unittest.TestCase):
             self.assertIn(section, template)
 
     def test_operations_console_has_no_prompt_template_export(self) -> None:
-        dashboard = (ROOT / "src/engineering_platform/dashboard.py").read_text(encoding="utf-8")
+        console = (ROOT / "src/engineering_platform/server.py").read_text(encoding="utf-8")
         locales = (ROOT / "src/engineering_platform/assets/dashboard_locales.mjs").read_text(encoding="utf-8")
         stylesheet = (ROOT / "src/engineering_platform/assets/dashboard.css").read_text(encoding="utf-8")
 
-        self.assertNotIn("/api/prompt-template", dashboard)
-        self.assertNotIn("downloadPromptTemplate", dashboard)
+        self.assertNotIn("/api/prompt-template", console)
+        self.assertNotIn("downloadPromptTemplate", console)
         self.assertNotIn("prompt_authoring.", locales)
         self.assertNotIn("prompt-authoring__download", stylesheet)
