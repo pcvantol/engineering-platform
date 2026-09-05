@@ -127,6 +127,31 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertIn("SOURCE_INTEGRITY_FAILED", inspected["blocking_codes"])
         self.assertEqual(migration.classify_target(corrupt)["state"], "CORRUPT_UNREADABLE")
 
+    def test_forensic_value_normalization_is_type_stable_and_never_parses_scalar_text_as_json(self) -> None:
+        cases = (
+            (None, {"type": "null"}),
+            (b"\x01", {"type": "bytes", "hex": "01"}),
+            ('{"key":1}', {"type": "json", "value": {"key": 1}}),
+            ("[1,2]", {"type": "json", "value": [1, 2]}),
+            ("42", {"type": "text", "value": "42"}),
+            (True, {"type": "boolean", "value": True}),
+            (3, {"type": "integer", "value": 3}),
+            (1.5, {"type": "real", "value": 1.5}),
+        )
+        for value, expected in cases:
+            self.assertEqual(migration._normalized_value(value), expected)
+
+    def test_forensic_table_key_requires_a_declared_deterministic_identity(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE primary_keyed(identifier TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("CREATE TABLE uniquely_keyed(left_key TEXT, right_key TEXT, UNIQUE(left_key,right_key))")
+        connection.execute("CREATE TABLE unkeyed(value TEXT)")
+        self.assertEqual(migration._table_key(connection, "primary_keyed"), ("identifier",))
+        self.assertEqual(migration._table_key(connection, "uniquely_keyed"), ("left_key", "right_key"))
+        with self.assertRaisesRegex(migration.CutoverError, "no deterministic key"):
+            migration._table_key(connection, "unkeyed")
+        connection.close()
+
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
         absent = migration.preflight(self.root.parent / "missing")
