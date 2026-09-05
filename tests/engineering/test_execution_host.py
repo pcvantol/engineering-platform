@@ -1670,6 +1670,27 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(restored.next_action, "invoke_agent")
         self.assertIsNone(restored.auth_recovery_phase)
 
+    def test_deterministic_admission_reuses_pass_and_fails_closed_without_watcher_evidence(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        admitted = TransactionState("admission-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", admission_decision="PASS", admission_completed_at="2026-01-01T00:00:00+00:00")
+        self.assertEqual(runner._confirm_deterministic_admission(admitted), (admitted, None))
+        pending = TransactionState("watcher-admission", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        environment = {
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": "40",
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+        }
+        with patch.dict(os.environ, environment, clear=False), \
+             patch("engineering_platform.execution_host.load_admission_decision", side_effect=execution_host.EngineeringStorageError("offline")):
+            blocked, reason = runner._confirm_deterministic_admission(pending)
+        self.assertEqual(blocked.admission_decision, "BLOCKED")
+        self.assertIn("not a persisted PASS", str(reason))
+        watcher_pass = {"run_id": pending.run_id, "submission_id": "submission-1", "decision": "PASS", "execution_mode": "MANAGED"}
+        with patch.dict(os.environ, environment, clear=False), \
+             patch("engineering_platform.execution_host.load_admission_decision", return_value=watcher_pass):
+            accepted, reason = runner._confirm_deterministic_admission(pending)
+        self.assertIsNone(reason)
+        self.assertEqual(accepted.admission_evidence_source, "WATCHER")
+
     def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
         sha = "b" * 40
         repository = FakeRepository(branch="feature/verified")
