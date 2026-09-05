@@ -3311,7 +3311,3 @@ def main(argv: list[str] | None = None) -> int:
         f"Actie: {action} Er is geen netwerkconfiguratie gewijzigd."
     )
     return 0 if state == "READY" else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -94,6 +94,14 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         self.assertNotIn('fetch("/api/open-local-directory"', dashboard)
         self.assertNotIn('fetch("/api/runtime-directory/open"', dashboard)
 
+    def test_direct_dashboard_module_has_no_runtime_entrypoint(self) -> None:
+        """The historical wrapper cannot become an installed listener again."""
+        root = Path(__file__).resolve().parents[2]
+        dashboard = (root / "src" / "engineering_platform" / "dashboard.py").read_text(encoding="utf-8")
+        packaging = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn('if __name__ == "__main__"', dashboard)
+        self.assertNotIn("engineering_platform.dashboard:main", packaging)
+
     def test_retired_local_branch_cleanup_is_absent_from_supported_console(self) -> None:
         """The Console must not own destructive checkout-local branch cleanup."""
         root = Path(__file__).resolve().parents[2]
