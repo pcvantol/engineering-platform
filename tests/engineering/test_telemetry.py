@@ -30,6 +30,7 @@ from engineering_platform.telemetry import (
 from engineering_platform.producer import ProducerMetadata
 from engineering_platform.execution_timing import record_phase
 from engineering_platform import server
+from engineering_platform import telemetry
 
 
 class ExecutionHostTelemetryTest(unittest.TestCase):
@@ -162,6 +163,11 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
                 materialize_pending_terminal_telemetry(root, limit=0)
             with self.assertRaises(ValueError):
                 recover_missing_terminal_telemetry(root, limit=251)
+
+    def test_terminal_payload_decoder_rejects_missing_identity_lifecycle_and_timestamp(self) -> None:
+        for payload in (None, {}, {"producer": {}}, {"producer": {}, "run_id": "run", "terminal_state": "UNKNOWN", "execution_mode": "MANAGED", "workspace": "w", "repository": "r", "execution_host_version": "v"}):
+            with self.assertRaises(ValueError):
+                telemetry._from_payload(payload)
 
     def test_recovery_uses_structured_terminal_evidence_and_canonical_date(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
