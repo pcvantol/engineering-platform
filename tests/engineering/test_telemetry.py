@@ -141,6 +141,19 @@ class ExecutionHostTelemetryTest(unittest.TestCase):
             row = next(item for item in daily_statistics(root) if item["date"] == "2026-08-25")
             self.assertEqual(row["prompt_count"], 1)
 
+    def test_terminal_outbox_marks_malformed_or_mismatched_evidence_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            persist_execution(root, self._record("telemetry-bootstrap", "COMPLETE", datetime.now(timezone.utc)))
+            with open_storage(root) as connection:
+                connection.execute(
+                    "INSERT INTO terminal_telemetry_outbox(run_id,payload,source,state,created_at) VALUES(?,?,?,'PENDING',?)",
+                    ("broken-telemetry", "{", "RECOVERY", "2026-09-05T00:00:00+00:00"),
+                )
+            self.assertEqual(materialize_pending_terminal_telemetry(root), {"processed": 0, "failed": 1, "pending": 1})
+            with open_storage(root) as connection:
+                self.assertEqual(connection.execute("SELECT state FROM terminal_telemetry_outbox WHERE run_id='broken-telemetry'").fetchone()[0], "FAILED_RETRYABLE")
+
     def test_recovery_uses_structured_terminal_evidence_and_canonical_date(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
