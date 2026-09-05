@@ -192,6 +192,21 @@ class CentralStoreMigrationTests(unittest.TestCase):
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             self.assertEqual(migration._classify_lock(lock, pre_stop=False, services=None), "UNKNOWN_LOCK")
 
+    def test_forensic_contaminated_target_remains_non_authoritative(self) -> None:
+        target = Path(self.temporary.name) / "forensic.db"
+        with sqlite3.connect(target) as connection:
+            connection.execute("PRAGMA user_version=1")
+        data_root = Path(self.temporary.name) / "installation"
+        receipt = data_root / "migration" / "forensic.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({"central_forensic": {
+            "path": str(target.resolve()), "classification": "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE",
+        }}), encoding="utf-8")
+        with patch.object(migration, "installation_data_root", return_value=data_root):
+            result = migration.classify_target(target)
+        self.assertEqual(result["state"], "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE")
+        self.assertEqual(result["blocking_code"], "TARGET_STORE_CONFLICT")
+
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
         absent = migration.preflight(self.root.parent / "missing")
