@@ -110,3 +110,22 @@ class LocalApiTests(unittest.TestCase):
             {"Content-Type": "application/json", "Authorization": f"Bearer {SECRET}"},
         )
         self.assertEqual(status, 413)
+
+    def test_routes_payload_and_readiness_reject_before_any_capability_projection(self) -> None:
+        status, _ = self.request("GET", "/unsupported")
+        self.assertEqual(status, 404)
+        status, _ = self.request("POST", "/unsupported", self.envelope(), {"Content-Type": "application/json"})
+        self.assertEqual(status, 404)
+        status, _ = self.request("POST", "/v1/capabilities", self.envelope(), {"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+        payload = self.envelope(); payload["payload"] = {"attempt": "write"}
+        status, body = self.request("POST", "/v1/capabilities", payload, {"Content-Type": "application/json", "Authorization": f"Bearer {SECRET}"})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "MALFORMED_REQUEST")
+        self.server.ready = lambda: False  # type: ignore[method-assign]
+        status, body = self.request("POST", "/v1/capabilities", self.envelope(), {"Content-Type": "application/json", "Authorization": f"Bearer {SECRET}"})
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"]["code"], "SERVICE_NOT_READY")
+        for method in ("PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"):
+            status, _ = self.request(method, "/v1/capabilities")
+            self.assertEqual(status, 405)

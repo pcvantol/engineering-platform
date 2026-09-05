@@ -15,7 +15,7 @@ from engineering_platform.platform_api import (
     capabilities,
     provider_registry,
 )
-from engineering_platform.dashboard_configuration import update_inbox_root
+from engineering_platform.historical_dashboard_configuration import update_inbox_root
 from engineering_platform.platform_version import EngineeringPlatformManifest
 from engineering_platform.resources import PackageResourceError, package_path, package_text
 from unittest.mock import patch
@@ -77,16 +77,17 @@ class PlatformProductizationTest(unittest.TestCase):
                 identity = resolver.resolve_execution_host_identity()
                 self.assertEqual((identity.name, identity.runtime, identity.runtime_prompt_transport), ("Engineering Platform", "codex_cli", "icloud_inbox"))
 
-    def test_execution_host_uses_validated_local_inbox_override(self) -> None:
+    def test_execution_host_ignores_retired_local_inbox_override(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             transport = root / "transport"
             (transport / "Inbox").mkdir(parents=True)
             update_inbox_root(root, str(transport))
-            self.assertEqual(
-                execution_host_configuration(root).resolve_runtime_prompt_transport().inbox,
-                (transport / "Inbox").resolve(),
-            )
+            with patch("engineering_platform.platform_api.Path.home", return_value=root / "home"):
+                self.assertEqual(
+                    execution_host_configuration(root).resolve_runtime_prompt_transport().inbox,
+                    root / "home" / "Library/Mobile Documents/com~apple~CloudDocs/Engineering Platform/Inbox",
+                )
 
     def test_execution_host_default_inbox_uses_engineering_platform_icloud_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

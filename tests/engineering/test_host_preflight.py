@@ -44,6 +44,12 @@ class HostPreflightTest(unittest.TestCase):
         self.assertEqual(evidence["runtime_path"], str(self.root / "managed-codex-cli" / "bin" / "codex"))
         self.assertEqual(evidence["runtime_version"], "1.0")
 
+    def test_preflight_uses_the_canonical_file_inbox_log_identity(self) -> None:
+        with patch("engineering_platform.host_preflight.component_logger") as logger:
+            result = self._execute()
+        self.assertEqual(result.outcome, "PASS")
+        logger.assert_called_once_with(self.root, "file_inbox_ingress")
+
     def test_missing_runtime_executable_fails_closed(self) -> None:
         with patch(
             "engineering_platform.platform_api.engineering_platform_codex_cli_prefix",

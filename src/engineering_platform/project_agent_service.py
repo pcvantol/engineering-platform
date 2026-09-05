@@ -45,11 +45,15 @@ class AgentPaths:
 
     @property
     def stdout_log(self) -> Path:
-        return self.log_dir / "agent.stdout.log"
+        # Launchd output is a bounded process diagnostic, never a second EP
+        # operational log authority.  The unpaired Project Agent has no
+        # CENTRAL writer of its own, so discard its idle-loop output instead
+        # of retaining a persistent per-agent logfile.
+        return Path("/dev/null")
 
     @property
     def stderr_log(self) -> Path:
-        return self.log_dir / "agent.stderr.log"
+        return Path("/dev/null")
 
 
 @dataclass(frozen=True)
@@ -213,8 +217,6 @@ def uninstall(paths: AgentPaths | None = None, *, runner: Runner | None = None) 
         locations.plist_path.unlink(missing_ok=True)
     # State is installation-owned and transient.  Config/identity (and any future
     # credential reference) are intentionally preserved for explicit reset only.
-    for log in (locations.stdout_log, locations.stderr_log):
-        log.unlink(missing_ok=True)
     if locations.state_dir.exists():
         shutil.rmtree(locations.state_dir)
 

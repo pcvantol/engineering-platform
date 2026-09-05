@@ -186,7 +186,9 @@ def execute(root: Path, *, run_id: str | None = None) -> HostPreflightResult:
             checks.append(_check("telemetry_storage", False, "Telemetry SQLite storage is unavailable.", "Restore local SQLite evidence storage before accepting work."))
 
     try:
-        component_logger(root, "inbox")
+        # Preflight has no legacy watcher logger.  File Inbox is the canonical
+        # transport identity when the Server publishes a CENTRAL log binding.
+        component_logger(root, "file_inbox_ingress")
         checks.append(_check("structured_logging", True, "Structured logging initializes successfully.", "No action required."))
     except Exception:
         checks.append(_check("structured_logging", False, "Structured logging cannot initialize.", "Restore the local logging destination before accepting work."))

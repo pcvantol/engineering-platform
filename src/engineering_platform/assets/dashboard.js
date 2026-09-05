@@ -8,7 +8,10 @@ function initialDashboardLocale() {
     return preferredLocale({});
   }
 }
-let dashboardLocale = initialDashboardLocale(), locale = createLocaleService(dashboardLocale);
+const strictLocalizationMode = new URLSearchParams(window.location.search).get("localizationStrict") === "1";
+let dashboardLocale = initialDashboardLocale(), locale = createLocaleService(dashboardLocale, {
+  strict: strictLocalizationMode, surface: "Operations Console",
+});
 const localizationCalls = new Map();
 function t(key, values = {}, fallback = key) {
   const text = locale.t(key, values, fallback);
@@ -24,6 +27,9 @@ function t(key, values = {}, fallback = key) {
 // every dashboard copy lookup auditable without adding a second translation
 // path or relying on a hand-maintained list of visible labels.
 window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.values()];
+// Server-owned enhancement scripts may request a catalog value, but never
+// provide their own user-visible fallback copy.
+window.__djconnectDashboardTranslate = (key) => t(key);
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
@@ -167,6 +173,16 @@ document
     element.addEventListener("input", () => sanitizeDeclaredFreeInput(element)),
   );
 const OPERATIONAL_PRESENTATION_KEYS = {
+  none_active: "dashboard.health.none_active",
+  queue_empty: "dashboard.health.queue_empty",
+  queue_waiting: "dashboard.health.queue_waiting",
+  running: "dashboard.health.running",
+  not_running: "dashboard.health.not_running",
+  unknown: "dashboard.health.unknown",
+  ready: "dashboard.health.ready",
+  active: "dashboard.health.active",
+  blocked: "dashboard.health.blocked",
+  error: "dashboard.health.error",
   ENGINEERING_RUN_STALE: "operational.stale_run",
   CAPABILITY_REVIEW: "telemetry.phase.capability_review",
   invoke_agent: "operational.activity_invoke_agent",
@@ -351,59 +367,19 @@ function hasVisibleStaleLifecycle(x = {}) {
   return x.watcher_state === "ENGINEERING_RUN_STALE" && Boolean(x.run_id) &&
     x.current_phase !== "COMPLETE" && x.current_phase !== "BLOCKED" && x.current_phase !== "FAILED";
 }
-function watcherDelegatedToActiveHost(component, status = latestStatus) {
-  return component?.component === "inbox_watcher" && component?.healthy !== true && isActiveRun(status || {});
-}
 function dashboardHealthPresentation(status = latestStatus, platformHealth = latestPlatformHealth) {
-  const current = status && typeof status === "object" ? status : null,
-    components = platformHealth?.components && typeof platformHealth.components === "object"
-      ? platformHealth.components
-      : null,
-    dashboardHealthy = components?.dashboard?.healthy === true,
-    watcherHealthy = components?.inbox_watcher?.healthy === true,
-    relayHealthy = components?.dashboard_relay?.healthy === true,
-    queueDepth = Math.max(0, Number(current?.queue_depth) || 0),
-    watcherState = String(current?.watcher_state || ""),
-    workspaceState = String(current?.workspace_state || ""),
-    phase = String(current?.current_phase || "").toUpperCase(),
-    watcherStateUpper = watcherState.toUpperCase(),
-    active = isActiveRun(current || {}),
-    watcherDelegatedToActiveHost = active && components && !watcherHealthy,
-    workspaceActive = active && workspaceState === "ACTIVE",
-    blocked = phase === "BLOCKED" || watcherStateUpper.includes("WAITING") || watcherStateUpper.includes("BLOCKED"),
-    failed = phase === "FAILED" || watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ||
-      (components && (!dashboardHealthy || !relayHealthy || (!watcherHealthy && !watcherDelegatedToActiveHost)));
-  let state = "unknown";
-  if (failed) state = "error";
-  else if (blocked || queueDepth > 0) state = "blocked";
-  else if (active) state = "active";
-  else if (dashboardHealthy && watcherHealthy && relayHealthy && watcherState === "WATCHER_IDLE" && workspaceState === "WORKSPACE_READY") state = "ready";
-  const componentCheck = (name, componentKey, healthy, delegatedToActiveHost = false) => {
-    const component = components?.[componentKey];
-    const unavailable = components ? "not_running" : "unknown";
-    const reasonCode = !healthy && components && typeof component?.reason_code === "string"
-      ? component.reason_code
-      : "";
-    const reason = !healthy && components
-      ? (reasonCode ? t("component.reason." + reasonCode) : String(component?.detail || component?.state || "").trim())
-      : "";
-    return [
-      name,
-      delegatedToActiveHost ? "execution_host_active" : healthy ? "running" : unavailable,
-      delegatedToActiveHost ? "warning" : healthy ? "good" : components ? "bad" : "unknown",
-      {},
-      { component: components ? componentKey : null, reason: delegatedToActiveHost ? "" : reason },
-    ];
-  };
-  const checks = [
-    componentCheck("dashboard", "dashboard", dashboardHealthy),
-    componentCheck("watcher", "inbox_watcher", watcherHealthy, watcherDelegatedToActiveHost),
-    componentCheck("relay", "dashboard_relay", relayHealthy),
-    ["execution", active ? "active" : phase === "BLOCKED" ? "blocked" : phase === "FAILED" ? "error" : "none_active", active ? "good" : phase === "BLOCKED" ? "warning" : phase === "FAILED" ? "bad" : "good"],
-    ["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }],
-    ["watcher_state", watcherState || "unknown", watcherState === "WATCHER_IDLE" ? "good" : watcherStateUpper.includes("FAILED") || watcherStateUpper.includes("DEGRADED") ? "bad" : watcherState ? "warning" : "unknown"],
-    ["workspace", workspaceState || "unknown", workspaceState === "WORKSPACE_READY" || workspaceActive ? "good" : workspaceState ? "bad" : "unknown"],
-  ];
+  const current = status && typeof status === "object" ? status : {}, components = platformHealth?.components || {};
+  const model = Array.isArray(platformHealth?.component_model) ? platformHealth.component_model : [];
+  const critical = new Set(model.filter((component) => component.critical).map((component) => component.id));
+  const unhealthy = Object.entries(components).filter(([, value]) => value?.healthy !== true);
+  const state = !Object.keys(components).length ? "unknown" : unhealthy.some(([key]) => critical.has(key)) ? "error" : unhealthy.length ? "blocked" : "ready";
+  const checks = model.filter(({ id }) => components[id]).map(({ id, group }) => {
+    const component = components[id];
+    return [healthComponentLabel(id), String(component?.status_code || "unknown"), component?.healthy === true ? "good" : "bad", {}, { component: id, transport: true, section: t("dashboard.health.section." + group) }];
+  });
+  const queueDepth = Math.max(0, Number(current.queue_depth) || 0), active = Array.isArray(current.runs) ? current.runs.filter((run) => ["CLAIMED", "RUNNING"].includes(run?.state)).length : Number(Boolean(current.active_run));
+  checks.push(["execution", active ? "active" : "none_active", "good", { count: active }, { section: t("dashboard.health.section.execution") }]);
+  checks.push(["queue", queueDepth ? "queue_waiting" : "queue_empty", queueDepth ? "warning" : "good", { count: queueDepth }, { section: t("dashboard.health.section.execution") }]);
   return { state, checks };
 }
 function renderDashboardHealth(status = latestStatus, platformHealth = latestPlatformHealth) {
@@ -415,12 +391,20 @@ function renderDashboardHealth(status = latestStatus, platformHealth = latestPla
   accessibleLabel.textContent = t("dashboard.health.title") + ": " + title;
   tooltipTitle.textContent = t("dashboard.health.title") + " · " + title;
   checks.replaceChildren();
+  let previousSection = "";
   for (const [name, value, tone, values = {}, metadata = {}] of presentation.checks) {
+    if (metadata.section && metadata.section !== previousSection) {
+      const heading = document.createElement("li");
+      heading.className = "dashboard-health__section";
+      heading.textContent = metadata.section;
+      checks.append(heading);
+      previousSection = metadata.section;
+    }
     const item = document.createElement("li"), label = document.createElement("span"), result = document.createElement("span");
     item.dataset.health = tone;
     item.className = "dashboard-health__check";
-    label.textContent = t("dashboard.health." + name);
-    result.textContent = t("dashboard.health." + value, values, translate(value));
+    label.textContent = metadata.transport ? name : t("dashboard.health." + name);
+    result.textContent = metadata.transport ? (value.includes("INGRESS_") ? transportState(value) : (tone === "good" ? t("component.health_healthy") : t("component.health_unhealthy"))) : dashboardHealthValue(value, values);
     result.className = "dashboard-health__value";
     item.append(label, result);
     if (metadata.reason) {
@@ -615,10 +599,10 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
     !windows.length && credits === null && provider === t("format.not_available");
   $("rateLimitProvider").textContent = provider + " · " + version;
   let providerPathElement = $("rateLimitProviderPath");
-  if (!(providerPathElement instanceof HTMLButtonElement)) {
-    providerPathElement = replaceWithLocalFolderButton(providerPathElement);
+  if (!(providerPathElement instanceof HTMLAnchorElement)) {
+    providerPathElement = replaceWithLocalFilesystemLink(providerPathElement, providerPath);
   }
-  configureLocalFolderButton(providerPathElement, providerPath);
+  configureLocalFilesystemLink(providerPathElement, providerPath);
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -641,7 +625,11 @@ async function refreshPlatformProviderCapacity() {
   try {
     const response = await fetch("/api/provider-capacity", { cache: "no-store" });
     const payload = response.ok ? await response.json() : null;
-    if (!payload || typeof payload.rate_limits !== "object") return;
+    // A Server that cannot currently observe provider capacity returns a
+    // bounded empty projection.  That observation must not erase a valid
+    // snapshot already rendered by the Console; accept only a complete
+    // capacity shape before replacing the current presentation.
+    if (!payload || !Array.isArray(payload.rate_limits?.windows) || payload.rate_limits.windows.length === 0) return;
     latestDashboardSnapshot = {
       ...(latestDashboardSnapshot || {}), rate_limits: payload.rate_limits,
       ai_capacity_history: Array.isArray(payload.ai_capacity_history) ? payload.ai_capacity_history : [],
@@ -788,7 +776,12 @@ function processMetrics(active, x) {
   $("codexCpu").textContent =
     locale.number(Number(x?.cpu_percent || 0), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
   $("codexProcesses").textContent = x?.process_count ?? 0;
-  $("codexGpu").textContent = x?.gpu_status || t("format.not_available");
+  const gpuStatus = String(x?.gpu_status || "");
+  $("codexGpu").textContent = gpuStatus === "NO_ACTIVE_EXECUTION_HOST"
+    ? t("metrics.gpu_status.no_active_execution_host")
+    : gpuStatus === "EXECUTION_HOST_EXTERNAL"
+      ? t("metrics.gpu_status.execution_host_external")
+      : gpuStatus || t("format.not_available");
 }
 function reviewerPresentationState(status = {}) {
   const watcherState = String(status?.watcher_state || "").toUpperCase();
@@ -877,7 +870,6 @@ function queueItems(x, queueDepth) {
       Number.isInteger(queueDepth) && queueDepth >= 0
         ? queueDepth
         : items.length;
-  syncInboxLocationChangeAvailability(depth);
   $("queueSummary").textContent =
     depth === 0
       ? t("queue.summary_zero")
@@ -1028,7 +1020,7 @@ function renderMarkdownDocument(target, value) {
   renderMarkdownAnswer(target, value);
 }
 let componentLogsLoaded = false,
-  componentLogEntries = { inbox: [], dashboard: [] };
+  componentLogEntries = { platform: [] };
 function isUnhelpfulHttpServerDebugLog(entry) {
   return (
     String(entry?.level || "").toUpperCase() === "DEBUG" &&
@@ -1067,8 +1059,10 @@ function structuredLogEntries(text) {
             )
             .join(" · ");
         return {
+          ...entry,
           line: index + 1,
           timestamp: String(entry.timestamp || ""),
+          component: String(entry.component || ""),
           level: String(entry.level || t("logs.unknown_level")).toUpperCase(),
           event: String(entry.event || t("logs.unknown_event")),
           runId: entry.run_id == null ? "" : String(entry.run_id),
@@ -1489,107 +1483,38 @@ function executionContextValue(value) {
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
   return "";
 }
-function localFolderPath(value) {
-  return typeof value === "string" && value.startsWith("/") ? value.trim() : "";
+function configureRuntimeDirectoryLink(link, value) {
+  configureLocalFilesystemLink(link, value || "—");
 }
-async function openLocalFolder(directoryPath) {
-  const path = localFolderPath(directoryPath);
-  if (!path) {
-    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
+function configureLocalFilesystemLink(link, value) {
+  const path = typeof value === "string" ? value.trim() : "";
+  link.classList.add("local-folder-link");
+  link.textContent = path || t("format.not_available");
+  link.removeAttribute("href");
+  link.removeAttribute("target");
+  link.removeAttribute("rel");
+  link.removeAttribute("aria-disabled");
+  if (!path.startsWith("/")) {
+    link.setAttribute("aria-disabled", "true");
     return;
   }
-  try {
-    const response = await fetch("/api/open-local-directory", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ directory_path: path }),
-    });
-    // A reverse proxy or a temporarily restarting dashboard can return a
-    // non-JSON error page.  Do not surface a browser parser exception to the
-    // operator; the route has one clear, actionable fallback instead.
-    const outcome = await response.json().catch(() => ({}));
-    if (!response.ok) throw Error(outcome?.error || t("workspace.open_local_folder_failed"));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    showDashboardError(
-      message === "The string did not match the expected pattern."
-        ? t("workspace.open_local_folder_failed")
-        : message || t("workspace.open_local_folder_failed"),
-      t("workspace.open_local_folder_failed"),
-    );
-  }
+  link.href = new URL(path, "file:///").href;
+  link.target = "_blank";
+  link.rel = "noopener";
 }
-async function openCentralDatabaseDirectory() {
-  try {
-    const response = await fetch("/api/central-database/open-directory", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-    });
-    if (!response.ok) throw Error();
-  } catch {
-    showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
-  }
+function localFilesystemLink(value) {
+  const link = document.createElement("a");
+  configureLocalFilesystemLink(link, value);
+  return link;
 }
-async function openRuntimeDirectory(runtime) {
-  if (!new Set(["codex", "github", "python"]).has(runtime)) return;
-  try {
-    const response = await fetch("/api/runtime-directory/open", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runtime }),
-    });
-    if (!response.ok) throw Error();
-  } catch {
-    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
-  }
-}
-document.addEventListener("click", (event) => {
-  if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
-});
-function configureLocalFolderButton(button, value, { containingFolder = false } = {}) {
-  const path = localFolderPath(value);
-  button.classList.add("local-folder-link");
-  button.type = "button";
-  button.textContent = String(value || t("format.not_available"));
-  button.disabled = !path;
-  button.onclick = null;
-  button.removeAttribute("title");
-  button.removeAttribute("aria-label");
-  if (!path) {
-    return;
-  }
-  const directoryPath = containingFolder ? path.replace(/\/[^/]+$/, "") : path;
-  const label = t(
-    containingFolder ? "workspace.open_containing_folder" : "workspace.open_local_folder",
-    { path },
-  );
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.onclick = () => void openLocalFolder(directoryPath);
-}
-function localFolderButton(value, options = {}) {
-  const button = document.createElement("button");
-  configureLocalFolderButton(button, value, options);
-  return button;
-}
-function configureRuntimeDirectoryButton(button, value, runtime) {
-  const path = localFolderPath(value);
-  button.classList.add("local-folder-link", "runtime-directory-link");
-  button.type = "button";
-  button.textContent = String(value || "—");
-  button.disabled = !path;
-  button.onclick = null;
-  button.removeAttribute("title");
-  button.removeAttribute("aria-label");
-  if (!path) return;
-  const label = t("workspace.open_containing_folder", { path });
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.onclick = () => void openRuntimeDirectory(runtime);
-}
-function replaceWithLocalFolderButton(element, options = {}) {
+function replaceWithLocalFilesystemLink(element, replacementValue = element?.textContent.trim()) {
   if (!element) return null;
-  const button = localFolderButton(element.textContent.trim(), options);
-  if (element.id) button.id = element.id;
-  element.replaceWith(button);
-  return button;
+  if (!String(replacementValue || "").trim().startsWith("/")) return element;
+  const link = document.createElement("a");
+  configureLocalFilesystemLink(link, replacementValue);
+  if (element.id) link.id = element.id;
+  element.replaceWith(link);
+  return link;
 }
 function executionContextField(label, value, badge = false, folder = false) {
   const field = document.createElement("p"), caption = document.createElement("span"), content = document.createElement("span");
@@ -1597,9 +1522,7 @@ function executionContextField(label, value, badge = false, folder = false) {
   caption.className = "label";
   caption.textContent = label;
   const supplied = executionContextValue(value);
-  const output = folder && localFolderPath(supplied)
-    ? localFolderButton(supplied)
-    : content;
+  const output = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : content;
   if (output === content) content.textContent = supplied || t("execution_context.not_supplied");
   if (badge) output.classList.add("execution-context__phase");
   field.append(caption, output);
@@ -2554,14 +2477,7 @@ function renderWorkspaceWorktrees(projection) {
   heading.className = "workspace-worktrees__header";
   const headingText = document.createElement("strong");
   headingText.textContent = t("workspace.local_worktrees");
-  const analyze = document.createElement("button");
-  analyze.className = "workspace-worktrees__refresh";
-  analyze.type = "button";
-  analyze.title = t("workspace.worktree_analysis_refresh");
-  analyze.setAttribute("aria-label", t("workspace.worktree_analysis_refresh"));
-  analyze.textContent = "↻";
-  analyze.addEventListener("click", () => void refreshWorktreeRemovalAnalysis(analyze));
-  heading.append(headingText, analyze);
+  heading.append(headingText);
   section.append(heading);
   const available = projection?.available === true;
   const worktrees = Array.isArray(projection?.worktrees) ? projection.worktrees : [];
@@ -2576,16 +2492,15 @@ function renderWorkspaceWorktrees(projection) {
     return;
   }
   const list = document.createElement("ul");
-  const analyses = new Map(Array.isArray(worktreeRemovalAnalysis?.worktrees)
-    ? worktreeRemovalAnalysis.worktrees.map((item) => [worktreeAnalysisKey(item), item]) : []);
   worktrees.forEach((worktree) => {
     const item = document.createElement("li");
     const branch = document.createElement("code");
-    const path = document.createElement("button");
+    const path = typeof worktree?.path === "string" && worktree.path.startsWith("/")
+      ? localFilesystemLink(worktree.path)
+      : document.createElement("span");
     const commit = document.createElement("code");
     branch.className = "workspace-worktrees__branch";
-    path.className = "workspace-worktrees__path workspace-worktrees__path--open";
-    path.type = "button";
+    path.className = "workspace-worktrees__path";
     commit.className = "workspace-worktrees__commit";
     branch.textContent = worktree?.branch || t("workspace.detached_head");
     if (worktree?.active === true) {
@@ -2597,96 +2512,15 @@ function renderWorkspaceWorktrees(projection) {
       active.title = t("workspace.active_worktree");
       branch.prepend(active);
     }
-    path.textContent = worktree?.checked_out === false
+    if (!(path instanceof HTMLAnchorElement)) path.textContent = worktree?.checked_out === false
       ? t("workspace.not_checked_out")
       : String(worktree?.path || t("format.not_available"));
-    if (typeof worktree?.path === "string" && worktree.path) {
-      path.title = t("workspace.open_worktree_folder", { path: worktree.path });
-      path.setAttribute("aria-label", t("workspace.open_worktree_folder", { path: worktree.path }));
-      path.addEventListener("click", () => void openWorktreeFolder(worktree.path));
-    } else {
-      path.disabled = true;
-    }
     commit.textContent = String(worktree?.commit || t("format.not_available"));
     item.append(branch, path, commit);
-    const analysis = analyses.get(worktreeAnalysisKey(worktree));
-    if (analysis && worktree?.branch !== "main") {
-      const conclusion = document.createElement("p");
-      conclusion.className = `workspace-worktrees__analysis workspace-worktrees__analysis--${analysis.removable === true ? "removable" : "keep"}`;
-      conclusion.textContent = t(`workspace.worktree_analysis_reason.${String(analysis.reason || "pull_request_unverified")}`);
-      item.append(conclusion);
-      if (analysis.pull_request?.url && Number.isInteger(analysis.pull_request?.number)) {
-        const pr = document.createElement("a");
-        pr.className = "workspace-worktrees__pr";
-        pr.href = analysis.pull_request.url;
-        pr.target = "_blank";
-        pr.rel = "noreferrer";
-        pr.textContent = `${t("workspace.worktree_analysis_pr", { number: analysis.pull_request.number, state: String(analysis.pull_request.state || "") })} ↗`;
-        item.append(pr);
-      }
-    } else if (worktree?.branch !== "main") {
-      const conclusion = document.createElement("p");
-      conclusion.className = "workspace-worktrees__analysis";
-      conclusion.textContent = t("workspace.worktree_analysis_not_run");
-      item.append(conclusion);
-    }
-    if (
-      worktree?.branch !== "main"
-      && worktree?.active !== true
-      && typeof worktree?.path === "string" && worktree.path
-      && typeof worktree?.branch === "string" && worktree.branch
-    ) {
-      const switchWorktree = document.createElement("button");
-      switchWorktree.className = "workspace-worktrees__switch";
-      switchWorktree.type = "button";
-      switchWorktree.textContent = t("workspace.worktree_switch_action");
-      switchWorktree.addEventListener("click", () => void switchEngineeringPlatformToWorktree(worktree));
-      item.append(switchWorktree);
-    }
-    if (analysis?.removable === true && typeof worktree?.path === "string" && (typeof worktree?.branch === "string" || typeof analysis?.head === "string")) {
-      const remove = document.createElement("button");
-      remove.className = "workspace-worktrees__remove";
-      remove.type = "button";
-      remove.textContent = t("workspace.worktree_remove_action");
-      remove.addEventListener("click", () => removeSafeWorktree(worktree, analysis));
-      item.append(remove);
-    }
     list.append(item);
   });
   section.append(list);
   if (branchActions) section.append(branchActions);
-}
-async function openWorktreeFolder(worktreePath) {
-  try {
-    const response = await fetch("/api/open-worktree-folder", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ worktree_path: worktreePath }),
-    });
-    const outcome = await response.json();
-    if (!response.ok) throw Error(outcome?.error || t("workspace.open_worktree_folder_failed"));
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.open_worktree_folder_failed"), t("workspace.open_worktree_folder_failed"));
-  }
-}
-async function refreshWorktreeRemovalAnalysis(button) {
-  showDashboardToast(t("workspace.worktree_analysis_refreshing"));
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/worktree-removal-analysis", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-    });
-    const outcome = await response.json();
-    if (!response.ok || outcome?.available !== true || !Array.isArray(outcome?.worktrees)) {
-      throw Error(outcome?.error || t("workspace.worktree_analysis_failed"));
-    }
-    worktreeRemovalAnalysis = outcome;
-    const snapshot = await fetch("/api/dashboard-snapshot", { cache: "no-store" }).then((result) => result.ok ? result.json() : null);
-    if (snapshot?.workspace_worktrees) renderWorkspaceWorktrees(snapshot.workspace_worktrees);
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.worktree_analysis_failed"), t("workspace.worktree_analysis_failed"));
-  } finally {
-    button.disabled = false;
-  }
 }
 let openPullRequestMonitorIntervalMs = 30_000;
 let openPullRequestMonitorTimer = null, openPullRequestMonitorInFlight = false;
@@ -2921,7 +2755,9 @@ document.addEventListener("click", (event) => {
   else if (event.target.closest("[data-open-pull-request-check-repair]")) void requestOpenPullRequestCheckRepair(event.target.closest("[data-open-pull-request-check-repair]"));
   else if (event.target.closest("#workspaceOpenPullRequestsRefresh")) void refreshOpenPullRequests({ announce: true });
 });
-let receivedDashboardServerPush = false, updateModeKey = "refresh.connecting";
+let receivedDashboardServerPush = false,
+  initialDashboardStatusLoaded = false,
+  updateModeKey = "refresh.connecting";
 function setUpdateMode(key) {
   updateModeKey = key;
   $("updateMode").textContent = t(key);
@@ -2947,6 +2783,12 @@ async function loadInitialDashboardStatus() {
     dashboardStatusStore.update(fallback);
     humanize();
     setUpdateMode("refresh.failed_reconnecting");
+  } finally {
+    // Readiness means that the first authoritative status projection has
+    // settled (including its bounded fallback), not merely that the HTML has
+    // loaded.  Tests and operators can safely act on the visible state.
+    initialDashboardStatusLoaded = true;
+    hideDashboardSplash();
   }
 }
 let promptHistoryTerminalRun = null;
@@ -3082,7 +2924,7 @@ function localizeLogControls() {
     const option = document.querySelector(`#logLevelFilter option[value="${value}"]`);
     if (option) option.textContent = t(key);
   });
-  const cardTitles = ["logs.inbox_watcher", "logs.status_dashboard"];
+  const cardTitles = ["section.logs"];
   document.querySelectorAll("#componentLogs .log-card-header strong").forEach((title, index) => {
     if (cardTitles[index]) title.textContent = t(cardTitles[index]);
   });
@@ -3277,10 +3119,10 @@ function applyAccessibility() {
   chatStatus.setAttribute("aria-live", "polite");
   messages.setAttribute("role", "log");
   messages.setAttribute("aria-relevant", "additions text");
-  document.querySelectorAll("#componentLogs .log-table").forEach((table, index) => {
+  document.querySelectorAll("#componentLogs .log-table").forEach((table) => {
     table.setAttribute(
       "aria-label",
-        index === 0 ? t("logs.inbox_entries") : t("logs.dashboard_entries"),
+      t("logs.platform_entries"),
     );
     table.querySelectorAll("th.log-sortable").forEach((header) => {
       header.setAttribute("role", "button");
@@ -3460,15 +3302,14 @@ chatMessage = (role, text, createdAt) => {
 renderChatHistory();
 $("chatSend").querySelector("span").textContent = "↑";
 const LOG_PAGE_SIZE = 50,
-  independentLogPageStates = { inbox: 1, dashboard: 1 },
+  independentLogPageStates = { platform: 1 },
   independentLogSortStates = {
-    inbox: { key: "timestamp", direction: "desc" },
-    dashboard: { key: "timestamp", direction: "desc" },
+    platform: { key: "timestamp", direction: "desc" },
   },
-  componentLogTotals = { inbox: 0, dashboard: 0 },
-  componentLogAvailableEvents = { inbox: [], dashboard: [] },
-  selectedComponentLogRows = { inbox: new Set(), dashboard: new Set() },
-  componentLogSelectionAnchor = { inbox: null, dashboard: null };
+  componentLogTotals = { platform: 0 },
+  componentLogAvailableEvents = { platform: [] },
+  selectedComponentLogRows = { platform: new Set() },
+  componentLogSelectionAnchor = { platform: null };
 let componentLogVersion = "",
   componentLogServerPaged = false,
   componentLogRequestId = 0;
@@ -3490,7 +3331,10 @@ function componentLogRequestUrl(component) {
   if (search) query.set("search", search);
   if (level) query.set("level", level);
   [...($("logEventFilter")?.selectedOptions || [])].forEach((option) => query.append("event", option.value));
-  return "/api/logs/" + encodeURIComponent(component) + "?" + query;
+  // This filter changes the CENTRAL query itself, so it is applied before
+  // the server counts, sorts and selects the requested page.
+  const selectedComponent = $("logComponentFilter")?.value || "all";
+  return "/api/logs/" + encodeURIComponent(selectedComponent) + "?" + query;
 }
 function normalizedComponentLogEntries(records) {
   return structuredLogEntries((Array.isArray(records) ? records : []).map((record) => JSON.stringify(record)).join("\n"))
@@ -3501,18 +3345,13 @@ function refreshComponentLogs(versions = {}, force = false) {
   if (!force && componentLogsLoaded && version === componentLogVersion) return Promise.resolve();
   componentLogVersion = version;
   const requestId = ++componentLogRequestId;
-  return Promise.all([
-    fetch(componentLogRequestUrl("inbox")).then((response) => response.ok ? response.json() : Promise.reject(Error("inbox logs unavailable"))),
-    fetch(componentLogRequestUrl("dashboard")).then((response) => response.ok ? response.json() : Promise.reject(Error("dashboard logs unavailable"))),
-  ])
-    .then(([inbox, dashboard]) => {
+  return fetch(componentLogRequestUrl("platform"))
+    .then((response) => response.ok ? response.json() : Promise.reject(Error("platform logs unavailable")))
+    .then((platform) => {
       if (requestId !== componentLogRequestId) return;
-      componentLogEntries.inbox = normalizedComponentLogEntries(inbox.entries);
-      componentLogEntries.dashboard = normalizedComponentLogEntries(dashboard.entries);
-      componentLogTotals.inbox = Number(inbox.total) || 0;
-      componentLogTotals.dashboard = Number(dashboard.total) || 0;
-      componentLogAvailableEvents.inbox = Array.isArray(inbox.events) ? inbox.events : [];
-      componentLogAvailableEvents.dashboard = Array.isArray(dashboard.events) ? dashboard.events : [];
+      componentLogEntries.platform = normalizedComponentLogEntries(platform.entries);
+      componentLogTotals.platform = Number(platform.total) || 0;
+      componentLogAvailableEvents.platform = Array.isArray(platform.events) ? platform.events : [];
       componentLogServerPaged = true;
       componentLogsLoaded = true;
       $("componentLogControls").hidden = false;
@@ -3522,11 +3361,8 @@ function refreshComponentLogs(versions = {}, force = false) {
       if (requestId !== componentLogRequestId) return;
       componentLogServerPaged = false;
       componentLogsLoaded = true;
-      componentLogEntries.inbox = structuredLogEntries(JSON.stringify({
-        level: "ERROR", event: "inbox_log_unavailable", diagnostic: t("logs.inbox_unavailable"),
-      }));
-      componentLogEntries.dashboard = structuredLogEntries(JSON.stringify({
-        level: "ERROR", event: "dashboard_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
+      componentLogEntries.platform = structuredLogEntries(JSON.stringify({
+        level: "ERROR", event: "platform_log_unavailable", diagnostic: t("logs.dashboard_unavailable"),
       }));
       $("componentLogControls").hidden = false;
       renderComponentLogs();
@@ -3545,11 +3381,55 @@ function renderLogsForSnapshot(snapshot) {
 }
 enableLiveComponentLogs();
 function healthComponentLabel(component) {
-  return {
-    dashboard: t("logs.status_dashboard"),
-    inbox_watcher: t("component.execution_host"),
-    dashboard_relay: t("component.dashboard_relay"),
-  }[component] || component;
+  const definition = latestPlatformHealth?.component_model?.find(
+    (candidate) => candidate?.id === component,
+  );
+  return definition?.name_key ? t(definition.name_key) : component;
+}
+const LEGACY_TRANSPORT_STATUS_CODES = Object.freeze({
+  HEALTHY: "HTTP_INGRESS_HEALTHY", DOWN: "HTTP_INGRESS_DOWN", AVAILABLE: "CLI_INGRESS_AVAILABLE",
+  DEGRADED: "FILE_INGRESS_DEGRADED", RUNNING: "FILE_INGRESS_RUNNING", NOT_READY: "FILE_INGRESS_NOT_READY", STOPPED: "FILE_INGRESS_STOPPED",
+});
+const LEGACY_TRANSPORT_DETAIL_CODES = Object.freeze({
+  "CENTRAL listener endpoint": "CENTRAL_LISTENER_ENDPOINT",
+  "CENTRAL listener unavailable": "CENTRAL_LISTENER_UNAVAILABLE",
+  "Canonical submission compatibility": "CANONICAL_SUBMISSION_COMPATIBILITY",
+  "CENTRAL endpoint unavailable": "CENTRAL_ENDPOINT_UNAVAILABLE",
+  "File Inbox adapter heartbeat": "FILE_INBOX_HEARTBEAT",
+  "File Inbox adapter heartbeat unavailable": "FILE_INBOX_HEARTBEAT_MISSING",
+});
+const TRANSPORT_DETAIL_CODES = new Set([
+  "CENTRAL_LISTENER_ENDPOINT", "CENTRAL_LISTENER_UNAVAILABLE",
+  "CANONICAL_SUBMISSION_COMPATIBILITY", "CENTRAL_ENDPOINT_UNAVAILABLE",
+  "FILE_INBOX_HEARTBEAT", "FILE_INBOX_HEARTBEAT_MISSING",
+]);
+function transportState(code) {
+  const raw = String(code || ""), normalized = LEGACY_TRANSPORT_STATUS_CODES[raw] || raw;
+  return normalized.startsWith("HTTP_INGRESS_") || normalized.startsWith("CLI_INGRESS_") || normalized.startsWith("FILE_INGRESS_")
+    ? t("transport.status." + normalized)
+    : t("dashboard.health." + normalized);
+}
+function transportDetail(code) {
+  const normalized = LEGACY_TRANSPORT_DETAIL_CODES[String(code)] || String(code || "");
+  const key = "transport.detail." + normalized;
+  // Detail codes are a closed Server contract. Never turn an arbitrary
+  // diagnostic string into a localization key (or leak it into the UI).
+  return TRANSPORT_DETAIL_CODES.has(normalized)
+    ? t(key)
+    : t("ui.no_component_explanation");
+}
+function transportComponentStatus(payload) {
+  const state = transportState(payload.status_code || payload.state);
+  const detail = transportDetail(payload.detail_code || payload.detail || payload.state);
+  return state + " · " + detail;
+}
+const DASHBOARD_HEALTH_VALUE_KEYS = new Set([
+  "active", "blocked", "error", "none_active", "not_running", "queue_empty", "queue_waiting", "ready", "running", "unknown",
+]);
+function dashboardHealthValue(value, values) {
+  if (value === "active") return t("dashboard.health.active_count", values);
+  if (value === "queue_waiting") return t("dashboard.health.queue_waiting_count", values);
+  return DASHBOARD_HEALTH_VALUE_KEYS.has(value) ? t("dashboard.health." + value, values) : translate(value);
 }
 let healthRequestInFlight = false, platformHealthRefreshIntervalMs = 15e3, platformHealthRefreshTimer = null;
 let componentDetailsRefreshIntervalMs = 5e3;
@@ -3609,15 +3489,22 @@ function showComponentModal(payload) {
   content.replaceChildren();
   const fields = document.createElement("dl");
   componentDetailField(fields, t("component.machine"), payload.machine);
-  const delegatedToActiveHost = watcherDelegatedToActiveHost(payload);
   componentDetailField(
     fields,
     t("component.status"),
-    (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
-      " · " +
-      (payload.detail || payload.state || t("ui.no_component_explanation")),
+    payload.kind === "TRANSPORT" ? transportComponentStatus(payload) :
+      payload.healthy ? t("component.health_healthy") : t("component.health_unhealthy"),
   );
   componentDetailField(fields, t("component.version"), payload.version);
+  if (payload.kind === "TRANSPORT") {
+    const transportTimestamp = (value) => value ? formatTimestamp(value) : null;
+    componentDetailField(fields, t("transport.last_submission"), transportTimestamp(payload.last_successful_submission));
+    componentDetailField(fields, t("transport.location"), payload.watched_location);
+    componentDetailField(fields, t("transport.heartbeat"), transportTimestamp(payload.heartbeat));
+    componentDetailField(fields, t("transport.delivery_retry"), payload.delivery_retry ? t("transport.retry." + payload.delivery_retry, {}, String(payload.delivery_retry)) : null);
+    componentDetailField(fields, t("transport.quarantine"), payload.quarantine_count);
+    componentDetailField(fields, t("transport.recent_error"), payload.recent_error);
+  }
   componentDetailField(
     fields,
     t("component.uptime"),
@@ -3736,8 +3623,25 @@ async function restartDashboardComponent() {
 $("componentModalClose").addEventListener("click", () =>
   $("componentModal").close(),
 );
+// Every modal offers an explicit primary exit.  A component without restart
+// capability otherwise has only its compact header glyph, which is an
+// insufficient initial focus target for keyboard and touch-assistive users.
+const componentModalDismiss = document.createElement("button");
+componentModalDismiss.id = "componentModalDismiss";
+componentModalDismiss.type = "button";
+componentModalDismiss.className = "dashboard-modal-shell__action dashboard-modal-shell__action--primary";
+componentModalDismiss.textContent = t("action.close");
+componentModalDismiss.addEventListener("click", () => $("componentModal").close());
+$("componentModalStatus").before(componentModalDismiss);
 $("componentModal").addEventListener("click", (event) => {
   if (event.target === $("componentModal")) $("componentModal").close();
+});
+$("componentModal").addEventListener("toggle", () => {
+  const modal = $("componentModal");
+  if (!modal.open) return;
+  const restart = $("componentModalRestart");
+  (restart && !restart.hidden && !restart.disabled ? restart : componentModalDismiss)
+    .focus({ preventScroll: true });
 });
 $("componentModal").addEventListener("close", stopComponentDetailsRefresh);
 $("executionModeModalClose").addEventListener("click", () =>
@@ -3756,6 +3660,7 @@ function renderPlatformHealth(payload) {
   const container = $("platformHealthComponents");
   if (!container) return;
   latestPlatformHealth = payload && typeof payload === "object" ? payload : null;
+  populateLogComponentFilter(latestPlatformHealth?.component_model);
   renderDashboardHealth(latestStatus, latestPlatformHealth);
   const components =
     payload && typeof payload.components === "object"
@@ -3776,25 +3681,24 @@ function renderPlatformHealth(payload) {
       detail = document.createElement("span"),
       info = document.createElement("span"),
       componentHealthy = Boolean(component?.healthy),
-      delegatedToActiveHost = watcherDelegatedToActiveHost({ component: key, healthy: componentHealthy }),
       version =
         typeof component?.version === "string"
-          ? " · Versie " + component.version
+          ? " · " + t("component.version") + " " + component.version
           : "",
       uptime = formatComponentUptime(component?.uptime_seconds);
     item.className = "platform-health__component";
-    item.dataset.health = delegatedToActiveHost ? "delegated" : String(componentHealthy);
+    item.dataset.health = String(componentHealthy);
     item.tabIndex = 0;
     item.setAttribute("role", "button");
     item.setAttribute(
       "aria-label",
       t("component.more_information", { component: healthComponentLabel(key) }),
     );
-    indicator.className = healthIndicatorClass(delegatedToActiveHost || componentHealthy);
+    indicator.className = healthIndicatorClass(componentHealthy);
     indicator.setAttribute("aria-hidden", "true");
     name.className = "platform-health__component-name";
     name.textContent = healthComponentLabel(key);
-    if (["dashboard", "inbox_watcher", "dashboard_relay"].includes(key)) {
+    if (key === "dashboard_relay") {
       const linkIcon = document.createElement("span");
       linkIcon.className = "platform-health__component-link-icon";
       linkIcon.dataset.testid = "component-details-link-icon";
@@ -3803,12 +3707,20 @@ function renderPlatformHealth(payload) {
       name.append(linkIcon);
     }
     detail.className = "platform-health__component-detail";
+    const transportFacts = [
+      component?.last_successful_submission ? t("transport.last_submission") + " " + component.last_successful_submission : "",
+      component?.watched_location ? t("transport.location") + " " + component.watched_location : "",
+      (component?.delivery_retry_code || component?.delivery_retry) ? t("transport.delivery_retry") + " " + t("transport.retry." + (component.delivery_retry_code || `FILE_INGRESS_DELIVERY_RETRY_${component.delivery_retry}`)) : "",
+      Number.isFinite(Number(component?.quarantine_count)) ? t("transport.quarantine") + " " + component.quarantine_count : "",
+      (component?.reason_code || component?.recent_error) ? t("transport.recent_error") + " " + t("transport.reason." + (component.reason_code || "FILE_INBOX_DIAGNOSTIC")) : "",
+    ].filter(Boolean).join(" · ");
     detail.textContent =
-      (delegatedToActiveHost ? t("dashboard.health.execution_host_active") : componentHealthy ? t("component.health_healthy") : t("component.health_unhealthy")) +
+      transportState(component?.status_code || component?.state || (componentHealthy ? "HTTP_INGRESS_HEALTHY" : "HTTP_INGRESS_DOWN")) +
       " · " +
-      String(component?.detail || component?.state || t("ui.no_component_explanation")) +
+      transportDetail(component?.detail_code || component?.detail || (componentHealthy ? "CENTRAL_LISTENER_ENDPOINT" : "CENTRAL_LISTENER_UNAVAILABLE")) +
       version +
-      (uptime ? " · " + t("component.uptime") + " " + uptime : "");
+      (uptime ? " · " + t("component.uptime") + " " + uptime : "") +
+      (transportFacts ? " · " + transportFacts : "");
     info.className = "component-info";
     info.textContent = "i";
     info.setAttribute("aria-hidden", "true");
@@ -4510,7 +4422,7 @@ function renderDashboardTelemetry(snapshot) {
 }
 updateFavicon();
 function logComponentForTable(table) {
-  return table.querySelector("#inboxComponentLog") ? "inbox" : "dashboard";
+  return "platform";
 }
 function updateIndependentLogSortHeaders() {
   document.querySelectorAll(".log-table").forEach((table) => {
@@ -4566,7 +4478,7 @@ document.querySelectorAll(".log-table").forEach((table) => {
 });
 updateIndependentLogSortHeaders();
 function componentLogRowKey(entry) {
-  return [entry.line, entry.timestamp, entry.level, entry.event, entry.runId, entry.details]
+  return [entry.line, entry.timestamp, entry.component, entry.level, entry.event, entry.runId, entry.details]
     .map((value) => String(value ?? ""))
     .join("\u001f");
 }
@@ -4574,18 +4486,22 @@ function componentLogText(entries) {
   const header = [
       t("table.number"),
       t("table.timestamp"),
+      t("filter.ep_component"),
       t("table.level"),
       t("table.event"),
       t("table.run_id"),
       t("table.details"),
+      "raw_json",
     ].join("\t"),
     rows = entries.map((entry) => [
       entry.line,
       logTimestampText(entry.timestamp),
+      entry.component || "—",
       entry.level,
       entry.event,
       entry.runId || "—",
       entry.details || "—",
+      JSON.stringify(entry),
     ].join("\t"));
   return [header, ...rows].join("\n");
 }
@@ -4598,8 +4514,7 @@ function clearComponentLogSelection(component) {
   componentLogSelectionAnchor[component] = null;
 }
 function clearAllComponentLogSelections() {
-  clearComponentLogSelection("inbox");
-  clearComponentLogSelection("dashboard");
+  clearComponentLogSelection("platform");
 }
 function selectComponentLogRow(component, key, event) {
   const selected = selectedComponentLogRows[component], visible = visibleComponentLogEntries(component),
@@ -4635,7 +4550,7 @@ document.querySelectorAll(".log-table tbody").forEach((body) => {
 });
 document.addEventListener("copy", (event) => {
   if (window.getSelection()?.toString()) return;
-  const entries = ["inbox", "dashboard"].flatMap((component) => selectedComponentLogEntries(component));
+  const entries = selectedComponentLogEntries("platform");
   if (!entries.length || !event.clipboardData) return;
   event.clipboardData.setData("text/plain", componentLogText(entries));
   event.preventDefault();
@@ -4651,7 +4566,10 @@ function filteredComponentLogEntries(component) {
       ),
     ),
     state = independentLogSortStates[component];
-  return componentLogEntries[component]
+  const selectedComponent = $("logComponentFilter")?.value || "";
+  const sourceEntries = componentLogEntries[component];
+  return sourceEntries
+    .filter((entry) => !selectedComponent || entry.component === selectedComponent)
     .filter((entry) => logMeetsMinimumLevel(entry, level))
     .filter((entry) => !events.size || events.has(String(entry.event || "")))
     .filter(entryMatchesLogTimeRange)
@@ -4686,8 +4604,8 @@ function visibleComponentLogEntries(component) {
 }
 function updateLogValueFilters() {
   const entries = componentLogServerPaged
-    ? [...componentLogAvailableEvents.inbox, ...componentLogAvailableEvents.dashboard].map((event) => ({ event }))
-    : [...componentLogEntries.inbox, ...componentLogEntries.dashboard];
+    ? componentLogAvailableEvents.platform.map((event) => ({ event }))
+    : componentLogEntries.platform;
   for (const [id, key] of [["logEventFilter", "event"]]) {
     const select = $(id);
     if (!select) continue;
@@ -4699,7 +4617,7 @@ function updateLogValueFilters() {
   }
 }
 function renderLogPagination(component, total, pageCount) {
-  const navigation = $(component + "LogPagination");
+  const navigation = $(component + "LogPagination") || $("inboxLogPagination");
   navigation.replaceChildren();
   const summary = document.createElement("span"),
     previous = document.createElement("button"),
@@ -4735,9 +4653,9 @@ function renderLogPagination(component, total, pageCount) {
 function renderComponentLogs() {
   localizeLogControls();
   updateLogValueFilters();
-  for (const component of ["inbox", "dashboard"]) {
+  for (const component of ["platform"]) {
     const rows = filteredComponentLogEntries(component),
-      body = $(component + "ComponentLog"),
+      body = $("platformComponentLog"),
       total = componentLogServerPaged ? componentLogTotals[component] : rows.length,
       pageCount = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE)),
       visible = visibleComponentLogEntries(component);
@@ -4749,9 +4667,7 @@ function renderComponentLogs() {
         row = document.createElement("tr");
       cell.className = "log-empty";
       cell.colSpan = 6;
-      cell.textContent = componentLogEntries[component].length
-        ? t("logs.empty")
-        : t("logs.not_available");
+      cell.textContent = componentLogEntries[component].length ? t("logs.empty") : t("logs.not_available");
       row.append(cell);
       body.append(row);
     } else
@@ -4785,14 +4701,27 @@ function renderComponentLogs() {
   }
   updateIndependentLogSortHeaders();
 }
-for (const [id, label] of [["logEventFilter", t("table.event")]]) {
+for (const [id, label] of [["logComponentFilter", t("filter.ep_component")], ["logEventFilter", t("table.event")]]) {
   const control = document.createElement("label"), select = document.createElement("select");
-  select.id = id; select.multiple = true; select.setAttribute("aria-label", label);
+  select.id = id;
+  if (id === "logEventFilter") select.multiple = true;
+  if (id === "logComponentFilter") {
+    select.append(new Option(t("filter.all_ep_components"), ""));
+  }
+  select.setAttribute("aria-label", label);
   control.htmlFor = id; control.append(label, select); $("componentLogControls").append(control);
   select.addEventListener("change", () => refreshComponentLogsForFilters());
 }
+function populateLogComponentFilter(model = latestPlatformHealth?.component_model) {
+  const select = $("logComponentFilter");
+  if (!select || !Array.isArray(model)) return;
+  const selected = select.value;
+  select.replaceChildren(new Option(t("filter.all_ep_components"), ""));
+  model.forEach((component) => select.append(new Option(t(component.name_key), component.id)));
+  select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
+}
 function refreshComponentLogsForFilters() {
-  independentLogPageStates.inbox = independentLogPageStates.dashboard = 1;
+  independentLogPageStates.platform = 1;
   clearAllComponentLogSelections();
   if (componentLogServerPaged) void refreshComponentLogs({}, true);
   else renderComponentLogs();
@@ -4811,8 +4740,12 @@ resetLogFiltersButton.addEventListener("click", () => {
   $("logSpecificDate").value = "";
   $("logDateFrom").value = "";
   $("logDateTo").value = "";
+  $("logComponentFilter").value = "";
   syncDashboardSelectPicker($("logLevelFilter"));
   syncDashboardSelectPicker($("logTimePreset"));
+  // The component picker is an enhanced select. Keep its visible label in
+  // sync with the native value just like the other single-select filters.
+  syncDashboardSelectPicker($("logComponentFilter"));
   [...($("logEventFilter")?.options || [])].forEach((option) => { option.selected = false; });
   updateLogTimeFilterControls();
   refreshComponentLogsForFilters();
@@ -4835,8 +4768,8 @@ installLogDateClearButtons();
 updateLogTimeFilterControls();
 renderComponentLogs();
 function clearComponentLog(component, button) {
-  const name =
-    component === "inbox" ? t("component.execution_host") : t("logs.status_dashboard");
+  const selected = $("logComponentFilter")?.value || "all";
+  const name = selected === "all" ? t("section.platform_components") : healthComponentLabel(selected);
   confirmDashboardAction(
     t("action.clear_logs"),
     t("logs.clear_description", { component: name }),
@@ -4847,24 +4780,19 @@ function clearComponentLog(component, button) {
     button.disabled = true;
     try {
       const response = await fetch(
-        "/api/logs/" + encodeURIComponent(component),
+        "/api/logs/all",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({ component: selected }),
         },
       );
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw Error(payload.error || t("logs.clear_failed"));
       }
-      componentLogEntries[component] = structuredLogEntries(
-        await fetch("/api/logs/" + encodeURIComponent(component)).then(
-          (response) => response.text(),
-        ),
-      );
       componentLogVersion = "";
-      renderComponentLogs();
+      await refreshComponentLogs({}, true);
     } catch {
       button.title = t("logs.clear_failed");
     } finally {
@@ -4880,10 +4808,15 @@ document
     ),
   );
 function downloadComponentLog(component) {
-  const names = { inbox: "inbox-watcher", dashboard: "statusdashboard" },
-    name = names[component];
+  const name = component === "platform" ? "engineering-platform" : null;
   if (!name) return Promise.reject(Error(t("logs.unknown_component")));
-  return fetch("/api/logs/" + encodeURIComponent(component), {
+  const selected = $("logComponentFilter")?.value || "all";
+  const request = new URL(componentLogRequestUrl(component), window.location.origin);
+  request.pathname = "/api/logs/" + encodeURIComponent(selected);
+  request.searchParams.set("format", "ndjson");
+  request.searchParams.delete("page");
+  request.searchParams.delete("page_size");
+  return fetch(request.pathname + request.search, {
     cache: "no-store",
   })
     .then((response) =>
@@ -4922,8 +4855,10 @@ function addComponentLogCopyButtons() {
     if (download.parentElement.querySelector(".component-log-copy")) return;
     const button = document.createElement("button");
     button.className = "dashboard-action dashboard-action--copy component-log-copy";
-    button.dataset.component = download.dataset.component;
-    button.dataset.testid = "copy-" + download.dataset.component + "-visible-log";
+    button.dataset.component = "platform";
+    // Preserve the stable test hook while the visible table moves from the
+    // historical Inbox source to the combined Platform projection.
+    button.dataset.testid = "copy-inbox-visible-log";
     button.type = "button";
     button.textContent = "⧉";
     button.disabled = !visibleComponentLogEntries(button.dataset.component).length;
@@ -4938,6 +4873,9 @@ function addComponentLogCopyButtons() {
   });
 }
 addComponentLogCopyButtons();
+document.querySelectorAll(".clear-component-log").forEach((button) => {
+  button.dataset.component = "platform";
+});
 document.querySelectorAll(".clear-component-log").forEach((button) => {
   button.classList.add("dashboard-action", "dashboard-action--destructive");
   button.textContent = "⌧";
@@ -5075,7 +5013,10 @@ document.addEventListener("touchend", endPullRefresh, { passive: true });
 document.addEventListener("touchcancel", endPullRefresh, { passive: true });
 function hideDashboardSplash() {
   const splash = $("dashboardSplash");
-  if (!splash || document.body.classList.contains("dashboard-ready")) return;
+  // Provider readiness is asynchronous platform observation. The visible
+  // Console becomes actionable once its configuration and first authoritative
+  // status projection have settled; a provider probe must not hold it hostage.
+  if (!splash || !dashboardConfigurationLoaded || !initialDashboardStatusLoaded || document.body.classList.contains("dashboard-ready")) return;
   document.body.classList.add("dashboard-ready");
   splash.setAttribute("aria-hidden", "true");
   setTimeout(() => {
@@ -5728,7 +5669,7 @@ function updateLocalePicker() {
 }
 function changeDashboardLocale(value) {
   dashboardLocale = normalizeLocale(value);
-  locale = createLocaleService(dashboardLocale);
+  locale = createLocaleService(dashboardLocale, { strict: strictLocalizationMode, surface: "Operations Console" });
   dashboardClientState.locale = dashboardLocale;
   saveDashboardClientState();
   window.location.reload();
@@ -5834,8 +5775,8 @@ document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
-replaceWithLocalFolderButton(workspaceLocation);
-replaceWithLocalFolderButton($("rateLimitProviderPath"));
+replaceWithLocalFilesystemLink(workspaceLocation);
+replaceWithLocalFilesystemLink($("rateLimitProviderPath"));
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
@@ -5939,26 +5880,6 @@ function enhanceDashboardSelectPicker(select) {
   });
   refresh();
 }
-function syncInboxLocationChangeAvailability(queueDepth) {
-  const button = $("configurationInboxOpen");
-  if (!button) return;
-  const field = button.closest(".configuration-field");
-  let notice = $("configurationInboxUnavailable");
-  if (!notice && field) {
-    notice = document.createElement("p");
-    notice.id = "configurationInboxUnavailable";
-    notice.className = "configuration-inbox-unavailable";
-    notice.setAttribute("role", "status");
-    button.after(notice);
-  }
-  const inboxIsEmpty = Number.isInteger(queueDepth) && queueDepth === 0;
-  button.disabled = !inboxIsEmpty;
-  if (notice) {
-    notice.hidden = inboxIsEmpty;
-    notice.textContent = inboxIsEmpty ? "" : t("configuration.inbox_location_queue_not_empty");
-    button.setAttribute("aria-describedby", notice.id);
-  }
-}
 function enhanceDashboardSelectPickers() {
   document.querySelectorAll("select:not([multiple]):not(#dashboardLocale)").forEach(enhanceDashboardSelectPicker);
 }
@@ -5979,7 +5900,6 @@ function addConfigurationControlInfo() {
     ["configurationLogRetention", "configuration.log_retention_help"],
     ["configurationTelemetryRetention", "configuration.telemetry_retention_help"],
     ["configurationLogLevel", "configuration.log_level_help"],
-    ["configurationInboxScanInterval", "configuration.inbox_scan_interval_help"],
     ["configurationOpenPrInterval", "configuration.open_pr_interval_help"],
     ["configurationDashboardStreamInterval", "configuration.dashboard_stream_interval_help"],
     ["configurationProviderReadinessInterval", "configuration.provider_readiness_interval_help"],
@@ -6003,29 +5923,6 @@ function addConfigurationControlInfo() {
     info.title = help;
     info.setAttribute("aria-label", help);
   }
-}
-function renderConfigurationInboxLocation() {
-  const button = $("configurationInboxOpen"), location = $("configurationInbox")?.textContent.trim();
-  const field = button?.closest(".configuration-field"), label = field?.querySelector(".label");
-  if (!field || !label) return;
-  field.classList.add("configuration-inbox-field");
-  let value = $("configurationInboxLocation");
-  if (!value) {
-    value = document.createElement("button");
-    value.id = "configurationInboxLocation";
-    value.className = "configuration-inbox-location local-folder-link";
-    value.type = "button";
-    label.after(value);
-  }
-  value.textContent = location || "—";
-  const path = localFolderPath(location);
-  value.disabled = !path;
-  if (path) {
-    const labelText = t("workspace.open_local_folder", { path });
-    value.title = labelText;
-    value.setAttribute("aria-label", labelText);
-    value.onclick = () => void openLocalFolder(path);
-  } else value.onclick = null;
 }
 function providerLoginStatusBlock() {
   const configuration = $("configuration");
@@ -6072,7 +5969,7 @@ function providerLoginStatusBlock() {
 function validationEnvironmentDetail(label, attribute, runtime = null) {
   const detail = document.createElement("span");
   detail.className = "configuration-validation-environment__detail";
-  const value = document.createElement(runtime ? "button" : "code");
+  const value = document.createElement(runtime ? "a" : "code");
   value.dataset[attribute] = "true";
   if (runtime) value.dataset.runtimeDirectory = runtime;
   value.textContent = "—";
@@ -6149,6 +6046,22 @@ function providerDisplayName(provider) {
 function providerReadinessState(providers, provider) {
   return String(providers?.[provider]?.state || "CHECK_FAILED");
 }
+function syncPlatformAttentionBanner() {
+  const panel = $("platformAttentionBanner"), title = $("platformAttentionTitle"), summary = $("platformAttentionSummary");
+  if (!panel || !title || !summary) return;
+  const items = [
+    $("codexProviderReadinessBanner"), $("githubProviderReadinessBanner"), $("executionRuntimeBanner"),
+  ].filter((item) => item && !item.hidden);
+  const wasHidden = panel.hidden;
+  panel.hidden = items.length === 0;
+  if (!items.length) return;
+  const labels = items.map((item) => item.querySelector("strong")?.textContent?.trim()).filter(Boolean);
+  title.textContent = labels.join(" · ");
+  summary.textContent = String(items.length);
+  // Keep the operator's expanded state across periodic readiness refreshes.
+  // Only a newly surfaced attention group starts collapsed.
+  if (wasHidden) panel.open = false;
+}
 function renderProviderLoginStatus(block, providers) {
   renderProviderReadinessBanner(providers);
   block.querySelectorAll("[data-provider]").forEach((row) => {
@@ -6161,7 +6074,7 @@ function renderProviderLoginStatus(block, providers) {
     row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
     const path = row.querySelector("[data-provider-cli-path]");
     const providerVersion = row.querySelector("[data-provider-cli-version]");
-    if (path) configureRuntimeDirectoryButton(path, executable, provider);
+    if (path) configureRuntimeDirectoryLink(path, executable);
     if (providerVersion) providerVersion.textContent = version || "—";
     logout.hidden = state !== "READY";
     logout.disabled = state !== "READY";
@@ -6187,7 +6100,7 @@ function renderExecutionRuntimeStatus(runtime) {
   row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
   const path = validation?.querySelector("[data-execution-runtime-path]");
   const runtimeVersion = validation?.querySelector("[data-execution-runtime-version]");
-  if (path) configureRuntimeDirectoryButton(path, executable, "python");
+  if (path) configureRuntimeDirectoryLink(path, executable);
   if (runtimeVersion) runtimeVersion.textContent = version || "—";
   const needsRepair = state !== "READY";
   repair.hidden = !needsRepair;
@@ -6201,22 +6114,33 @@ function renderExecutionRuntimeStatus(runtime) {
     bannerRepair.disabled = providerInteractiveRepairInProgress;
     bannerRepair.textContent = t("configuration.execution_runtime_repair");
   }
+  syncPlatformAttentionBanner();
   syncStickyHeaderOffset();
 }
 async function refreshProviderLoginStatus() {
   const block = providerLoginStatusBlock();
   if (!block) return;
-  try {
-    const [response, runtimeResponse] = await Promise.all([
-      fetch("/api/provider-login-status", { cache: "no-store" }),
-      fetch("/api/execution-runtime-status", { cache: "no-store" }),
+  // Provider/runtime probes are observational platform status. They must not
+  // hold the complete Console bootstrap hostage when a local executable or
+  // host probe is unavailable.
+  const probeOptions = { cache: "no-store", signal: AbortSignal.timeout(5_000) };
+  const [providerResult, runtimeResult] = await Promise.allSettled([
+      fetch("/api/provider-login-status", probeOptions),
+      fetch("/api/execution-runtime-status", probeOptions),
     ]);
-    const [payload, runtime] = await Promise.all([response.json(), runtimeResponse.json()]);
+  try {
+    if (providerResult.status !== "fulfilled") throw Error();
+    const response = providerResult.value, payload = await response.json();
     if (!response.ok || !payload || typeof payload.providers !== "object") throw Error();
     renderProviderLoginStatus(block, payload.providers);
-    renderExecutionRuntimeStatus(runtimeResponse.ok ? runtime : { state: "CHECK_FAILED" });
   } catch {
     renderProviderLoginStatus(block, CHECK_FAILED_PROVIDERS);
+  }
+  try {
+    if (runtimeResult.status !== "fulfilled") throw Error();
+    const response = runtimeResult.value, runtime = await response.json();
+    renderExecutionRuntimeStatus(response.ok ? runtime : { state: "CHECK_FAILED" });
+  } catch {
     renderExecutionRuntimeStatus({ state: "CHECK_FAILED" });
   }
 }
@@ -6251,6 +6175,7 @@ function renderProviderReadinessBanner(providers) {
     button.disabled = providerInteractiveRepairInProgress;
     button.textContent = action ? t(`notification.provider_readiness.${action}`, { provider }) : "";
   });
+  syncPlatformAttentionBanner();
   syncStickyHeaderOffset();
 }
 document.addEventListener("click", async (event) => {
@@ -6311,12 +6236,6 @@ document.addEventListener("click", async (event) => {
 });
 const CONFIGURATION_CONTROL_SCOPES = Object.freeze([
   {
-    containerClass: "queue-project-settings",
-    fieldIds: ["configurationInboxScanInterval", "configurationOpenPrInterval"],
-    parentId: "queueItems",
-    statusId: "queueProjectSettingsStatus",
-  },
-  {
     containerClass: "log-settings",
     fieldIds: ["configurationLogRetention", "configurationLogLevel"],
     parentId: "componentLogs",
@@ -6348,13 +6267,6 @@ function moveConfigurationControls({ beforeId, containerClass, fieldIds, parentI
     const label = $(id)?.closest("label");
     if (label) controls.insertBefore(label, status);
   });
-}
-function moveProjectScopedConfiguration() {
-  const queue = $("queueItems");
-  const inboxField = $("configurationInboxOpen")?.closest(".configuration-field");
-  if (!queue || !inboxField) return;
-  queue.append(inboxField);
-  moveConfigurationControls(CONFIGURATION_CONTROL_SCOPES[0]);
 }
 function groupHostComponentConfiguration() {
   const configuration = $("configuration"), controls = configuration?.querySelector(":scope > .configuration-controls");
@@ -6423,15 +6335,13 @@ function localizeConfigurationOptions() {
   const providerReadinessLabel = $("configurationProviderReadinessInterval")?.closest("label")?.querySelector(":scope > span");
   if (providerReadinessLabel) providerReadinessLabel.textContent = t("configuration.provider_readiness_interval");
   groupHostComponentConfiguration();
-  moveProjectScopedConfiguration();
-  CONFIGURATION_CONTROL_SCOPES.slice(1).forEach(moveConfigurationControls);
+  CONFIGURATION_CONTROL_SCOPES.forEach(moveConfigurationControls);
   // Every original control has now been placed in its scoped section. Remove
   // the empty source grid: its vertical margins otherwise remain between the
   // dashboard settings and fixed platform settings cards.
   const residualControls = $("configuration")?.querySelector(":scope > .configuration-controls");
   if (residualControls && !residualControls.childElementCount) residualControls.remove();
   addConfigurationControlInfo();
-  renderConfigurationInboxLocation();
   providerLoginStatusBlock();
   document.querySelectorAll("#configurationLogRetention option, #configurationTelemetryRetention option").forEach((option) => {
     option.textContent = t("configuration.days", { days: option.value });
@@ -6590,7 +6500,7 @@ async function saveDashboardConfiguration(control) {
 }
 async function initializeDashboardConfiguration() {
   localizeConfigurationOptions();
-  void refreshProviderLoginStatus();
+  const initialProviderReadiness = refreshProviderLoginStatus();
   setDashboardConfigurationControlsDisabled(true);
   try {
     const response = await fetch("/api/configuration", { cache: "no-store" });
@@ -6623,91 +6533,17 @@ async function initializeDashboardConfiguration() {
   } finally {
     dashboardConfigurationLoaded = true;
     setDashboardConfigurationControlsDisabled(false);
+    hideDashboardSplash();
+    // Provider readiness is platform observation, not a configuration or
+    // dashboard-bootstrap prerequisite. Its result updates the card when it
+    // arrives, but cannot hold the complete Console in splash state.
+    void initialProviderReadiness;
   }
 }
 ensureProviderReadinessConfigurationControl();
 ensureCodexCapacityReserveConfigurationControl();
 Object.keys(configurationFields).forEach((id) => {
   $(id)?.addEventListener("change", (event) => void saveDashboardConfiguration(event.currentTarget));
-});
-$("configurationInboxOpen")?.addEventListener("click", () => {
-  const modal = $("configurationInboxModal");
-  const inbox = $("configurationInbox").textContent.trim();
-  $("configurationInboxRoot").value = inbox.endsWith("/Inbox") ? inbox.slice(0, -"/Inbox".length) : inbox;
-  $("configurationInboxStatus").textContent = "";
-  if (!modal.open) modal.showModal();
-  resetDashboardModalInitialFocus(modal);
-});
-syncInboxLocationChangeAvailability();
-$("configurationInboxModalClose")?.addEventListener("click", () => $("configurationInboxModal").close());
-$("configurationInboxModalCloseAction")?.addEventListener("click", () => $("configurationInboxModal").close());
-$("configurationInboxModal")?.addEventListener("click", (event) => {
-  if (event.target === event.currentTarget) event.currentTarget.close();
-});
-$("configurationInboxBrowse")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  $("configurationInboxStatus").textContent = "";
-  try {
-    const response = await fetch("/api/configuration/inbox-location/browse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const payload = await response.json();
-    if (!response.ok) throw Error(payload.error || t("configuration.inbox_location_failed"));
-    if (!payload.cancelled && typeof payload.value === "string")
-      $("configurationInboxRoot").value = payload.value;
-  } catch (error) {
-    $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
-  } finally {
-    button.disabled = false;
-  }
-});
-$("configurationInboxSave")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  const root = $("configurationInboxRoot").value.trim();
-  const confirmed = await confirmDashboardAction(
-    t("configuration.inbox_location"),
-    t("configuration.inbox_location_confirm", { path: root }),
-    t("configuration.inbox_location_save"),
-  );
-  if (!confirmed) return;
-  button.disabled = true;
-  const browse = $("configurationInboxBrowse"), close = $("configurationInboxModalCloseAction");
-  browse.disabled = true;
-  close.disabled = true;
-  $("configurationInboxRoot").readOnly = true;
-  $("configurationInboxStatus").classList.remove("configuration-status--saved");
-  $("configurationInboxStatus").textContent = t("configuration.inbox_location_restarting");
-  try {
-    const response = await fetch("/api/configuration/inbox-location", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inbox_root: root }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw Error(
-      payload.error_code === "inbox_not_empty"
-        ? t("configuration.inbox_location_queue_not_empty")
-        : payload.error_code === "inbox_watcher_restart_failed"
-          ? t("configuration.inbox_location_restart_failed")
-        : payload.error || t("configuration.inbox_location_failed"),
-    );
-    $("configurationInbox").textContent = `${payload.value}/Inbox`;
-    renderConfigurationInboxLocation();
-    $("configurationInboxStatus").textContent = t("configuration.inbox_location_saved");
-    $("configurationInboxStatus").classList.add("configuration-status--saved");
-    setTimeout(() => $("configurationInboxModal").close(), 700);
-  } catch (error) {
-    $("configurationInboxStatus").textContent = error.message || t("configuration.inbox_location_failed");
-    $("configurationInboxStatus").classList.remove("configuration-status--saved");
-  } finally {
-    button.disabled = false;
-    browse.disabled = false;
-    close.disabled = false;
-    $("configurationInboxRoot").readOnly = false;
-  }
 });
 enhanceDashboardSelectPickers();
 initializeDashboardConfiguration();
@@ -6837,7 +6673,7 @@ document.addEventListener("keydown", (event) => {
     clearAllSectionsIntentFromManualToggle(event);
 });
 
-for (const component of ["inbox", "dashboard"]) {
+for (const component of ["platform"]) {
   const saved = dashboardClientState.logSorts?.[component];
   if (
     saved &&
@@ -7246,9 +7082,7 @@ function detailField(label, value, preformatted = false, folder = false) {
   name.className = "label";
   name.textContent = label;
   const supplied = String(value ?? "—");
-  const content = folder && localFolderPath(supplied)
-    ? localFolderButton(supplied)
-    : output;
+  const content = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : output;
   if (content === output) output.textContent = supplied;
   field.append(name, content);
   return field;
@@ -7971,32 +7805,6 @@ function submitStaleGitLockRecovery() {
       });
   });
 }
-function showWorkspaceBranchCleanupResult(outcome) {
-  const modal = $("workspaceBranchCleanupResultModal"), content = $("workspaceBranchCleanupResultContent"),
-    close = $("workspaceBranchCleanupResultClose"), dismiss = $("workspaceBranchCleanupResultDismiss"),
-    removed = Array.isArray(outcome?.removed) ? outcome.removed.map(String) : [];
-  modal.style.setProperty("--modal-parent-accent", workspaceModalAccent());
-  content.replaceChildren(Object.assign(document.createElement("p"), {
-    textContent: removed.length
-      ? t("workspace.branch_cleanup_result_removed", { count: removed.length })
-      : t("workspace.branch_cleanup_result_empty"),
-  }));
-  if (removed.length) {
-    const branches = document.createElement("ul");
-    branches.className = "workspace-branch-cleanup__result-list";
-    for (const branch of removed) branches.append(Object.assign(document.createElement("li"), { textContent: branch }));
-    content.append(branches);
-  }
-  const finish = () => {
-    if (modal.open) modal.close();
-    modal.style.removeProperty("--modal-parent-accent");
-    close.onclick = dismiss.onclick = null;
-  };
-  close.onclick = dismiss.onclick = finish;
-  modal.addEventListener("cancel", (event) => { event.preventDefault(); finish(); }, { once: true });
-  modal.showModal();
-  resetDashboardModalInitialFocus(modal);
-}
 function workspaceModalAccent() {
   return getComputedStyle($("workspaceCard")).getPropertyValue("--category-color").trim() || "#f3d36a";
 }
@@ -8075,114 +7883,6 @@ async function switchEngineeringPlatformToWorktree(worktree) {
       error.message || t("workspace.worktree_switch_failed"),
       "workspace.worktree_switch_result_title",
     );
-  }
-}
-async function cleanupStaleLocalBranches() {
-  const button = $("workspaceBranchCleanup");
-  if (!button || button.disabled) return;
-  button.disabled = true;
-  const confirmation = confirmDashboardAction(
-    t("workspace.branch_cleanup_title"),
-    t("workspace.branch_cleanup_scanning"),
-    t("workspace.branch_cleanup_confirm_action"),
-    { destructive: true, accent: workspaceModalAccent(), loading: true },
-  );
-  const modal = $("confirmationModal"), body = $("confirmationModalText"), confirm = $("confirmationModalConfirm");
-  try {
-    const previewResponse = await fetch("/api/stale-local-branch-cleanup-preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const preview = await previewResponse.json();
-    if (!previewResponse.ok) throw Error(preview.error || t("workspace.branch_cleanup_failed"));
-    const branches = Array.isArray(preview?.branches) ? preview.branches : [];
-    const removableBranches = Array.isArray(preview?.removable_branches)
-      ? preview.removable_branches.map(String).filter(Boolean)
-      : branches.filter((branch) => branch?.removable === true).map((branch) => String(branch?.name || "")).filter(Boolean);
-    if (!branches.length) {
-      if (modal.open) {
-        body.replaceChildren(Object.assign(document.createElement("p"), {
-          textContent: t("workspace.branch_cleanup_empty_in_modal"),
-        }));
-        confirm.textContent = t("action.close");
-        confirm.disabled = false;
-        $("confirmationModalCancel").hidden = true;
-        confirm.classList.remove("dashboard-modal-shell__action--destructive");
-        confirm.classList.add("dashboard-modal-shell__action--primary");
-      }
-      await confirmation;
-      return;
-    }
-    if (!modal.open) {
-      await confirmation;
-      return;
-    }
-    const details = branches.map((branch) => ({
-      name: String(branch?.name || ""),
-      reason: t("workspace.branch_cleanup_reason." + String(branch?.reason || "")),
-      pull_request: branch?.pull_request,
-    }));
-    body.replaceChildren(
-      Object.assign(document.createElement("p"), {
-        textContent: removableBranches.length
-          ? t("workspace.branch_cleanup_confirmation")
-          : t("workspace.branch_cleanup_no_safe_in_modal"),
-      }),
-      workspaceBranchCleanupDetails(details),
-    );
-    if (!removableBranches.length) {
-      confirm.textContent = t("action.close");
-      confirm.disabled = false;
-      $("confirmationModalCancel").hidden = true;
-      confirm.classList.remove("dashboard-modal-shell__action--destructive");
-      confirm.classList.add("dashboard-modal-shell__action--primary");
-      await confirmation;
-      return;
-    }
-    confirm.disabled = false;
-    const confirmed = await confirmation;
-    if (!confirmed) return;
-    const response = await fetch("/api/stale-local-branch-cleanup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ branches: removableBranches }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw Error(result.error || t("workspace.branch_cleanup_failed"));
-    showWorkspaceBranchCleanupResult(result);
-  } catch (error) {
-    if (modal.open) modal.close();
-    showDashboardError(error.message, t("workspace.branch_cleanup_failed"));
-  } finally {
-    button.disabled = false;
-  }
-}
-async function removeSafeWorktree(worktree, analysis = null) {
-  const path = String(worktree?.path || ""), branch = String(worktree?.branch || ""), head = String(analysis?.head || "");
-  if (!path || (!branch && !head)) return;
-  const target = branch || `${t("workspace.detached_head")} ${head.slice(0, 12)}`;
-  const confirmed = await confirmDashboardAction(
-    t("workspace.worktree_remove_title"),
-    t("workspace.worktree_remove_confirmation", { branch: target, path }),
-    t("workspace.worktree_remove_action"),
-    { destructive: true },
-  );
-  if (!confirmed) return;
-  try {
-    const response = await fetch("/api/safe-worktree-removal", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(branch ? { worktree_path: path, branch } : { worktree_path: path, head }),
-    });
-    const outcome = await response.json();
-    if (!response.ok) throw Error(outcome.error || t("workspace.worktree_remove_failed"));
-    showWorkspaceBranchMainResult(
-      t("workspace.worktree_remove_success", { branch: target }),
-      "workspace.worktree_remove_result_title",
-    );
-    void refreshAfterOperatorAction();
-  } catch (error) {
-    showDashboardError(error.message || t("workspace.worktree_remove_failed"), t("workspace.worktree_remove_failed"));
   }
 }
 function submitExecutionRetry(entry) {
@@ -8297,11 +7997,10 @@ $("operatorMergeWaitModalAbort").addEventListener("click", abortOperatorMergeWai
 $("operatorMergeStatusCheck").addEventListener("click", (event) => checkOperatorMergeStatus(event.currentTarget));
 $("operatorMergeWaitModalStatusCheck").addEventListener("click", (event) => checkOperatorMergeStatus(event.currentTarget));
 $("statusReconciliationStart")?.addEventListener("click", requestStatusReconciliation);
-$("workspaceBranchCleanup")?.addEventListener("click", cleanupStaleLocalBranches);
 $("workspaceBranchMain")?.addEventListener("click", switchToFastForwardMain);
-function workspaceBranchCleanupDetails(details) {
+function confirmationDetails(details) {
   const list = document.createElement("ul");
-  list.className = "workspace-branch-cleanup__preview-list";
+  list.className = "confirmation-modal__details";
   for (const detail of details) {
     const item = document.createElement("li");
     item.append(
@@ -8331,12 +8030,12 @@ function confirmDashboardAction(title, text, confirmLabel, { destructive = false
   heading.dataset.modalGlyph = destructive ? "warning" : "question";
   body.replaceChildren(Object.assign(document.createElement("p"), { textContent: text }));
   if (loading) body.append(Object.assign(document.createElement("span"), {
-    className: "workspace-branch-cleanup__spinner",
+    className: "confirmation-modal__spinner",
     role: "status",
     ariaLabel: text,
   }));
   if (details.length) {
-    body.append(workspaceBranchCleanupDetails(details));
+    body.append(confirmationDetails(details));
   }
   if (items.length) {
     const label = document.createElement("strong"), list = document.createElement("ul");
@@ -8657,4 +8356,8 @@ if (NO_PROJECT_SELECTED) {
   window.setInterval(() => {
     if ($("autoRefresh")?.checked) void refreshPlatformProviderCapacity();
   }, 60_000);
-} else startDashboardUpdates();
+}
+// The Server supplies a minimal CENTRAL-only status document for `<geen>`.
+// Hydrate that same shared shell so footer facts are factual rather than
+// permanently displaying loading placeholders; it contains no project state.
+startDashboardUpdates();

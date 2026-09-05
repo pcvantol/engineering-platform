@@ -1,18 +1,16 @@
-# Local Dashboard Supervisor
+# Historical Dashboard Supervisor
 
-The repository-owned Engineering Dashboard is the supported macOS service for
-the private status page. Its per-user LaunchAgent starts the dashboard on
-loopback only. A separate repository-owned relay binds port `8765` only on the
-workstation's explicit Tailscale IPv4 address and forwards it to that loopback
-listener. Neither component uses a wildcard, LAN or public listener.
+This document is retained as historical migration evidence for the former
+checkout-owned Dashboard service. The supported runtime is the EP Server
+Console plus its optional Server-owned Dashboard Relay; neither uses a project
+checkout as runtime authority.
 
-`dashboard_supervisor.swift` is compiled locally as the relay during the
-canonical dashboard installation. Use the repository-owned dashboard commands
-instead:
+`dashboard_supervisor.swift` remains the package-owned relay source. Install
+it through the Server instead:
 
 ```sh
-./tools/engineering/dj-engineering-dashboard doctor
-./tools/engineering/dj-engineering-dashboard install
+engineering-platform-server health --data-root "/secure/ep-server"
+engineering-platform-server relay-install --data-root "/secure/ep-server"
 ```
 
 The dashboard never creates public listeners, Funnel configuration, ACLs,
@@ -503,6 +501,18 @@ authority.
 
 ## Browser validation
 
+### Enforced five-language localization
+
+`dashboard_locales.mjs` is the canonical Console catalog and English owns its
+key set. Every supported locale (`en`, `nl`, `de`, `fr`, `es`) must have exactly
+the same non-empty, non-placeholder keys. `UI-GOLDEN-LOCALIZATION` enforces
+that parity, a strict runtime mode that throws on a missing lookup rather than
+falling back to English, semantic CENTRAL status-code rendering, and the
+classified user-visible-literal source guard. A Console asset, template, or
+CENTRAL Console-projection change automatically selects this gate in the
+validation profile and hosted CI. This is shared Console engineering policy for
+Agent View, Installer, Forge, and Workspace surfaces that use these assets.
+
 The Engineering Platform validation workflow runs a Playwright Chromium smoke
 test against a locally started dashboard. It uses an iPhone-sized viewport and
 checks the private status surface, workspace category and collapsed completed
@@ -615,15 +625,18 @@ CI keeps one clean retry per browser interaction, but stops after three final
 test failures. This fail-closed limit preserves actionable diagnostics without
 letting one shared layout regression consume the full job timeout.
 
-The same workflow also runs the Engineering Python suite under branch coverage.
-The required core files are `dashboard.py`, `platform_bootstrap.py`,
-`providers.py` and `inbox_watcher.py`. Each must remain
-strictly above 80%; an exactly 80.00% result fails the quality gate. To
-reproduce the measurement locally:
+The Engineering Platform workflow runs the Python suite under branch coverage
+against the installed `engineering_platform` package. Every shipped Python
+module participates in the aggregate production measurement, which must be at
+least 80.00%. The protected runtime modules are `platform_bootstrap.py`,
+`providers.py`, and Server-owned `file_inbox.py`; each must be at least
+80.20%. Retired `dashboard.py` and `inbox_watcher.py` are not coverage
+targets and must not be reintroduced to satisfy a metric. To reproduce the
+measurement locally from a clean installed candidate:
 
 ```sh
-coverage run --branch -m unittest discover -s tests/engineering
-coverage report --include='tools/engineering/dashboard.py,tools/engineering/platform_bootstrap.py,tools/engineering/providers.py,tools/engineering/inbox_watcher.py'
+coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering
+coverage json -o engineering-platform-coverage.json
 ```
 
 ## Dashboard interpretation and interaction

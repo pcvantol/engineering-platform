@@ -16,7 +16,7 @@ from engineering_platform.execution_activity import (
     terminal_activity_summary,
     build_terminal_activity_summary,
 )
-from engineering_platform import dashboard
+from engineering_platform import server_console_services as dashboard
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_models import AgentResult
 from engineering_platform.prompt_history import record_prompt_execution

@@ -574,8 +574,8 @@ operator-visible contract rather than on accidental header/viewport geometry.
 
 The current regression layers are deliberately complementary:
 
-- `tests/engineering/test_inbox_watcher.py` verifies the safe filesystem and
-  queue projection contract, including collision-safe deferral.
+- `tests/engineering/test_file_inbox.py` verifies the Server-owned filesystem
+  transport and durable disposition contract.
 - `tests/engineering/test_dashboard.py` verifies dashboard HTTP validation,
   response codes and audit-log payloads.
 - `tests/engineering/dashboard.spec.mjs` verifies the rendered interaction:

@@ -34,6 +34,7 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.blocked": "Blocked",
     "dashboard.health.error": "Attention required",
     "dashboard.health.unknown": "Checking platform status",
+    "dashboard.health.unavailable": "Platform status unavailable",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox watcher",
     "dashboard.health.relay": "Dashboard relay",
@@ -104,7 +105,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.operator_merge_interval_help": "How often the watcher verifies whether a pull request that is waiting for an operator merge has changed state.",
     "configuration.required_checks_interval": "Required GitHub checks interval",
     "configuration.required_checks_interval_help": "How often an active execution polls GitHub while its required pull-request checks are still running.",
-    "configuration.open_pr_interval_help": "How often the dashboard refreshes open pull requests, but only while their checks are still running.",
+    "configuration.open_pr_interval_help": "How often Engineering Platform checks open pull-request status while an execution is waiting for pull-request progress.",
     "configuration.dashboard_stream_interval_help": "How often the server checks for a changed dashboard status and sends an update only when the status changed.",
     "configuration.platform_health_interval": "Platform health refresh interval",
     "configuration.platform_health_interval_help": "How often the dashboard refreshes the health projection for local platform components.",
@@ -351,7 +352,6 @@ export const DASHBOARD_MESSAGES = {
     "logs.unknown_level": "UNKNOWN",
     "logs.empty": "No log entries for this selection.",
     "logs.inbox_unavailable": "Inbox log is unavailable.",
-    "logs.inbox_watcher": "Inbox watcher",
     "logs.invalid_json": "INVALID JSON",
     "logs.loaded": "Logs loaded",
     "logs.loading": "Loading logs…",
@@ -372,7 +372,7 @@ export const DASHBOARD_MESSAGES = {
     "queue_recovery.preparing": "Preparing queue recovery…",
     "queue_recovery.ready": "Queue recovery is ready; the watcher resumes after the replacement execution.",
     "queue_recovery.title": "Resume queue",
-    "queue.empty": "No Inbox executions are waiting for execution.",
+    "queue.empty": "No assignments are waiting for execution.",
     "queue.defer_action": "Defer",
     "queue.defer_description": "Move {title} out of the active queue? It is retained in Inbox/_deferred and will not be executed until it is returned manually.",
     "queue.defer_failed": "The Inbox item could not be deferred safely.",
@@ -670,6 +670,7 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.blocked": "Geblokkeerd",
     "dashboard.health.error": "Aandacht vereist",
     "dashboard.health.unknown": "Platformstatus wordt gecontroleerd",
+    "dashboard.health.unavailable": "Platformstatus niet beschikbaar",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox-watcher",
     "dashboard.health.relay": "Dashboard-relay",
@@ -740,7 +741,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.operator_merge_interval_help": "Hoe vaak de watcher controleert of een pull request dat op een operator-merge wacht, van status is veranderd.",
     "configuration.required_checks_interval": "Interval voor verplichte GitHub-controles",
     "configuration.required_checks_interval_help": "Hoe vaak een actieve uitvoering GitHub controleert zolang verplichte pull-requestcontroles nog lopen.",
-    "configuration.open_pr_interval_help": "Hoe vaak het dashboard open pull requests ververst, maar alleen zolang de controles nog lopen.",
+    "configuration.open_pr_interval_help": "Hoe vaak Engineering Platform de status van open pull requests controleert terwijl een uitvoering op voortgang wacht.",
     "configuration.dashboard_stream_interval_help": "Hoe vaak de server op een gewijzigde dashboardstatus controleert en alleen bij wijziging een update stuurt.",
     "configuration.platform_health_interval": "Verversingsinterval platformgezondheid",
     "configuration.platform_health_interval_help": "Hoe vaak het dashboard de gezondheidsprojectie van lokale platformonderdelen ververst.",
@@ -987,7 +988,6 @@ export const DASHBOARD_MESSAGES = {
     "logs.unknown_level": "ONBEKEND",
     "logs.empty": "Geen logregels voor deze selectie.",
     "logs.inbox_unavailable": "Inbox-log is niet beschikbaar.",
-    "logs.inbox_watcher": "Inbox-watcher",
     "logs.invalid_json": "ONGELDIGE JSON",
     "logs.loaded": "Logs geladen",
     "logs.loading": "Logs laden…",
@@ -1008,7 +1008,7 @@ export const DASHBOARD_MESSAGES = {
     "queue_recovery.preparing": "Wachtrijherstel wordt voorbereid…",
     "queue_recovery.ready": "Wachtrijherstel staat klaar; de watcher hervat na de vervangende uitvoering.",
     "queue_recovery.title": "Wachtrij hervatten",
-    "queue.empty": "Geen Inbox-uitvoeringen wachten op uitvoering.",
+    "queue.empty": "Geen opdrachten wachten op uitvoering.",
     "queue.defer_action": "Stel uit",
     "queue.defer_description": "{title} uit de actieve wachtrij halen? Het bestand blijft bewaard in Inbox/_deferred en wordt pas weer uitgevoerd wanneer het handmatig wordt teruggezet.",
     "queue.defer_failed": "De Inbox-opdracht kon niet veilig worden uitgesteld.",
@@ -1306,6 +1306,7 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.blocked": "Blockiert",
     "dashboard.health.error": "Aktion erforderlich",
     "dashboard.health.unknown": "Plattformstatus wird geprüft",
+    "dashboard.health.unavailable": "Plattformstatus nicht verfügbar",
     "dashboard.health.dashboard": "Dashboard",
     "dashboard.health.watcher": "Inbox-Wächter",
     "dashboard.health.relay": "Dashboard-Relay",
@@ -1376,7 +1377,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.operator_merge_interval_help": "Wie oft der Watcher prüft, ob sich der Status eines Pull Requests geändert hat, der auf einen Operator-Merge wartet.",
     "configuration.required_checks_interval": "Intervall für erforderliche GitHub-Prüfungen",
     "configuration.required_checks_interval_help": "Wie oft eine aktive Ausführung GitHub abfragt, solange erforderliche Pull-Request-Prüfungen noch laufen.",
-    "configuration.open_pr_interval_help": "Wie oft das Dashboard offene Pull Requests aktualisiert, jedoch nur während deren Prüfungen laufen.",
+    "configuration.open_pr_interval_help": "Wie oft Engineering Platform den Status offener Pull Requests prüft, während eine Ausführung auf Fortschritt wartet.",
     "configuration.dashboard_stream_interval_help": "Wie oft der Server auf einen geänderten Dashboardstatus prüft und nur bei Änderungen ein Update sendet.",
     "configuration.platform_health_interval": "Aktualisierungsintervall Plattformzustand",
     "configuration.platform_health_interval_help": "Wie oft das Dashboard den Gesundheitsstatus lokaler Plattformkomponenten aktualisiert.",
@@ -1623,7 +1624,6 @@ export const DASHBOARD_MESSAGES = {
     "logs.unknown_level": "UNBEKANNT",
     "logs.empty": "Keine Protokolleinträge für diese Auswahl.",
     "logs.inbox_unavailable": "Inbox-Protokoll ist nicht verfügbar.",
-    "logs.inbox_watcher": "Inbox-Watcher",
     "logs.invalid_json": "UNGÜLTIGES JSON",
     "logs.loaded": "Protokolle geladen",
     "logs.loading": "Protokolle werden geladen…",
@@ -1644,7 +1644,7 @@ export const DASHBOARD_MESSAGES = {
     "queue_recovery.preparing": "Warteschlangenwiederherstellung wird vorbereitet…",
     "queue_recovery.ready": "Die Warteschlangenwiederherstellung ist bereit; der Watcher setzt nach der Ersatzausführung fort.",
     "queue_recovery.title": "Warteschlange fortsetzen",
-    "queue.empty": "Keine Inbox-Ausführungen warten auf die Ausführung.",
+    "queue.empty": "Keine Aufträge warten auf die Ausführung.",
     "queue.defer_action": "Zurückstellen",
     "queue.defer_description": "{title} aus der aktiven Warteschlange verschieben? Die Datei bleibt in Inbox/_deferred erhalten und wird erst nach einer manuellen Rückgabe ausgeführt.",
     "queue.defer_failed": "Der Inbox-Auftrag konnte nicht sicher zurückgestellt werden.",
@@ -1876,6 +1876,7 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.blocked": "Bloquée",
     "dashboard.health.error": "Attention requise",
     "dashboard.health.unknown": "Vérification de l’état de la plateforme",
+    "dashboard.health.unavailable": "État de la plateforme indisponible",
     "dashboard.health.dashboard": "Tableau de bord",
     "dashboard.health.watcher": "Surveillant de l’Inbox",
     "dashboard.health.relay": "Relais du tableau de bord",
@@ -1946,7 +1947,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.operator_merge_interval_help": "Fréquence à laquelle le watcher vérifie si une pull request en attente de fusion par l’opérateur a changé d’état.",
     "configuration.required_checks_interval": "Intervalle des vérifications GitHub requises",
     "configuration.required_checks_interval_help": "Fréquence à laquelle une exécution active interroge GitHub tant que les vérifications requises de la pull request sont en cours.",
-    "configuration.open_pr_interval_help": "Fréquence à laquelle le tableau de bord actualise les pull requests ouvertes, uniquement lorsque leurs vérifications sont en cours.",
+    "configuration.open_pr_interval_help": "Fréquence à laquelle Engineering Platform vérifie les pull requests ouvertes pendant qu’une exécution attend leur progression.",
     "configuration.dashboard_stream_interval_help": "Fréquence à laquelle le serveur vérifie si l’état du tableau de bord a changé et n’envoie une mise à jour qu’en cas de changement.",
     "configuration.platform_health_interval": "Intervalle d’actualisation de la santé de la plateforme",
     "configuration.platform_health_interval_help": "Fréquence à laquelle le tableau de bord actualise l’état des composants locaux de la plateforme.",
@@ -2193,7 +2194,6 @@ export const DASHBOARD_MESSAGES = {
     "logs.unknown_level": "INCONNU",
     "logs.empty": "Aucune entrée de journal pour cette sélection.",
     "logs.inbox_unavailable": "Le journal Inbox n’est pas disponible.",
-    "logs.inbox_watcher": "Surveillant de la boîte de réception",
     "logs.invalid_json": "JSON NON VALIDE",
     "logs.loaded": "Journaux chargés",
     "logs.loading": "Chargement des journaux…",
@@ -2214,7 +2214,7 @@ export const DASHBOARD_MESSAGES = {
     "queue_recovery.preparing": "Préparation de la récupération de la file…",
     "queue_recovery.ready": "La récupération de la file est prête ; le surveillant reprendra après l’exécution de remplacement.",
     "queue_recovery.title": "Reprendre la file",
-    "queue.empty": "Aucune exécution Inbox n’attend d’exécution.",
+    "queue.empty": "Aucune tâche n’attend d’exécution.",
     "queue.defer_action": "Reporter",
     "queue.defer_description": "Retirer {title} de la file active ? Le fichier reste conservé dans Inbox/_deferred et ne sera exécuté qu’après un retour manuel.",
     "queue.defer_failed": "L’élément Inbox n’a pas pu être reporté en toute sécurité.",
@@ -2446,6 +2446,7 @@ export const DASHBOARD_MESSAGES = {
     "dashboard.health.blocked": "Bloqueada",
     "dashboard.health.error": "Requiere atención",
     "dashboard.health.unknown": "Comprobando el estado de la plataforma",
+    "dashboard.health.unavailable": "Estado de la plataforma no disponible",
     "dashboard.health.dashboard": "Panel",
     "dashboard.health.watcher": "Vigilante de Inbox",
     "dashboard.health.relay": "Relé del panel",
@@ -2516,7 +2517,7 @@ export const DASHBOARD_MESSAGES = {
     "configuration.operator_merge_interval_help": "Con qué frecuencia el watcher comprueba si ha cambiado el estado de una pull request que espera una fusión del operador.",
     "configuration.required_checks_interval": "Intervalo de comprobaciones requeridas de GitHub",
     "configuration.required_checks_interval_help": "Con qué frecuencia una ejecución activa consulta GitHub mientras las comprobaciones requeridas de la pull request siguen en curso.",
-    "configuration.open_pr_interval_help": "Con qué frecuencia el panel actualiza las pull requests abiertas, pero solo mientras sus comprobaciones siguen en curso.",
+    "configuration.open_pr_interval_help": "Con qué frecuencia Engineering Platform comprueba el estado de las pull requests abiertas mientras una ejecución espera su progreso.",
     "configuration.dashboard_stream_interval_help": "Con qué frecuencia el servidor comprueba si cambió el estado del panel y solo envía una actualización cuando cambia.",
     "configuration.platform_health_interval": "Intervalo de actualización de salud de la plataforma",
     "configuration.platform_health_interval_help": "Con qué frecuencia el panel actualiza la proyección de salud de los componentes locales de la plataforma.",
@@ -2763,7 +2764,6 @@ export const DASHBOARD_MESSAGES = {
     "logs.unknown_level": "DESCONOCIDO",
     "logs.empty": "No hay entradas de registro para esta selección.",
     "logs.inbox_unavailable": "El registro de Inbox no está disponible.",
-    "logs.inbox_watcher": "Monitor de bandeja de entrada",
     "logs.invalid_json": "JSON NO VÁLIDO",
     "logs.loaded": "Registros cargados",
     "logs.loading": "Cargando registros…",
@@ -2784,7 +2784,7 @@ export const DASHBOARD_MESSAGES = {
     "queue_recovery.preparing": "Preparando la recuperación de la cola…",
     "queue_recovery.ready": "La recuperación de la cola está lista; el monitor se reanudará después de la ejecución de reemplazo.",
     "queue_recovery.title": "Reanudar cola",
-    "queue.empty": "No hay ejecuciones de Inbox esperando ejecución.",
+    "queue.empty": "No hay tareas esperando ejecución.",
     "queue.defer_action": "Aplazar",
     "queue.defer_description": "¿Quitar {title} de la cola activa? El archivo se conserva en Inbox/_deferred y no se ejecutará hasta que se devuelva manualmente.",
     "queue.defer_failed": "El elemento de Inbox no se pudo aplazar de forma segura.",
@@ -3502,10 +3502,6 @@ Object.assign(DASHBOARD_MESSAGES.es, {
   "lifecycle.detail_local_validation_evidence": "Iteraciones de validación local",
 });
 
-for (const locale of ["nl", "de", "fr", "es"]) for (const [key, value] of Object.entries(DASHBOARD_MESSAGES.en)) {
-  if (key.startsWith("telemetry.phase.") && !Object.hasOwn(DASHBOARD_MESSAGES[locale], key)) DASHBOARD_MESSAGES[locale][key] = value;
-}
-
 // Dynamic operational copy is not discoverable from static dashboard markup.
 // Keep its CI inventory next to the catalogs so renderers and tests share one
 // source of truth when a lifecycle phase or watcher state is added.
@@ -3683,6 +3679,12 @@ Object.assign(DASHBOARD_MESSAGES.de, {"configuration.dashboard_settings":"Dashbo
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.dashboard_settings":"Paramètres du tableau de bord"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.dashboard_settings":"Ajustes del panel"});
 
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.server_settings":"Server settings"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.server_settings":"Serverinstellingen"});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.server_settings":"Servereinstellungen"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.server_settings":"Paramètres du serveur"});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.server_settings":"Configuración del servidor"});
+
 Object.assign(DASHBOARD_MESSAGES.en, {"configuration.codex_capacity_reserve":"Codex capacity reserve for new work","configuration.codex_capacity_reserve_help":"EP does not claim new Inbox work below this remaining Codex capacity. An execution that is already running may finish.","configuration.capacity_reserve_none":"No reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});
 Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.codex_capacity_reserve":"Codex-capaciteitsreserve voor nieuw werk","configuration.codex_capacity_reserve_help":"EP claimt geen nieuw Inbox-werk onder deze resterende Codex-capaciteit. Een al lopende uitvoering mag afronden.","configuration.capacity_reserve_none":"Geen reserve (0%)","configuration.capacity_reserve_percent":"{percent}% reserve"});
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.codex_capacity_reserve":"Codex-Kapazitätsreserve für neue Arbeit","configuration.codex_capacity_reserve_help":"EP übernimmt keine neue Inbox-Arbeit unter dieser verbleibenden Codex-Kapazität. Eine bereits laufende Ausführung darf beendet werden.","configuration.capacity_reserve_none":"Keine Reserve (0%)","configuration.capacity_reserve_percent":"{percent}% Reserve"});
@@ -3717,10 +3719,123 @@ Object.assign(DASHBOARD_MESSAGES.de, {"detail.commit_type.implementation":"Imple
 Object.assign(DASHBOARD_MESSAGES.fr, {"detail.commit_type.implementation":"Commit d’implémentation","detail.commit_type.validation":"Commit de validation","detail.commit_type.quality":"Commit de qualité","detail.commit_type.repair":"Commit de réparation","detail.commit_type.finalization":"Commit de finalisation","detail.commit_type.reconciliation":"Commit de rapprochement","detail.commit_type.implementation_merge":"Fusion d’implémentation","detail.commit_type.finalization_merge":"Fusion de finalisation","detail.commit_type.reconciliation_merge":"Fusion de rapprochement","detail.commit_type.other":"Commit vérifié"});
 Object.assign(DASHBOARD_MESSAGES.es, {"detail.commit_type.implementation":"Commit de implementación","detail.commit_type.validation":"Commit de validación","detail.commit_type.quality":"Commit de calidad","detail.commit_type.repair":"Commit de reparación","detail.commit_type.finalization":"Commit de finalización","detail.commit_type.reconciliation":"Commit de conciliación","detail.commit_type.implementation_merge":"Fusión de implementación","detail.commit_type.finalization_merge":"Fusión de finalización","detail.commit_type.reconciliation_merge":"Fusión de conciliación","detail.commit_type.other":"Commit verificado"});
 
-export function createTranslator(locale) {
+Object.assign(DASHBOARD_MESSAGES.en, {"transport.http":"HTTP/API ingress","transport.cli":"CLI ingress","transport.file":"File Inbox ingress","transport.state.HEALTHY":"Healthy","transport.state.DOWN":"Down","transport.state.AVAILABLE":"Available","transport.state.DEGRADED":"Degraded","transport.state.RUNNING":"Running","transport.state.STOPPED":"Stopped","transport.detail.listener":"CENTRAL listener endpoint","transport.detail.compatibility":"Canonical submission compatibility","transport.detail.heartbeat":"File Inbox adapter heartbeat","transport.detail.heartbeat_unavailable":"File Inbox adapter heartbeat unavailable","transport.last_submission":"Last successful submission","transport.location":"Watched location","transport.heartbeat":"Heartbeat","transport.delivery_retry":"Delivery retry","transport.quarantine":"Quarantined items","transport.recent_error":"Recent diagnostic","transport.retry.NONE":"None","transport.retry.PENDING":"Pending"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"transport.http":"HTTP/API-ingang","transport.cli":"CLI-ingang","transport.file":"Bestandsinbox-ingang","transport.state.HEALTHY":"Gezond","transport.state.DOWN":"Niet beschikbaar","transport.state.AVAILABLE":"Beschikbaar","transport.state.DEGRADED":"Gedegradeerd","transport.state.RUNNING":"Actief","transport.state.STOPPED":"Gestopt","transport.detail.listener":"CENTRAL-luisterendpoint","transport.detail.compatibility":"Compatibel met canonieke indiening","transport.detail.heartbeat":"Heartbeat van Bestandsinbox-adapter","transport.detail.heartbeat_unavailable":"Heartbeat van Bestandsinbox-adapter niet beschikbaar","transport.last_submission":"Laatste geslaagde indiening","transport.location":"Bewaakte locatie","transport.heartbeat":"Heartbeat","transport.delivery_retry":"Bezorgingspoging","transport.quarantine":"In quarantaine","transport.recent_error":"Recente diagnose","transport.retry.NONE":"Geen","transport.retry.PENDING":"In behandeling"});
+Object.assign(DASHBOARD_MESSAGES.de, {"transport.http":"HTTP/API-Eingang","transport.cli":"CLI-Eingang","transport.file":"Datei-Inbox-Eingang","transport.state.HEALTHY":"Fehlerfrei","transport.state.DOWN":"Nicht verfügbar","transport.state.AVAILABLE":"Verfügbar","transport.state.DEGRADED":"Beeinträchtigt","transport.state.RUNNING":"Aktiv","transport.state.STOPPED":"Gestoppt","transport.detail.listener":"CENTRAL-Listener-Endpunkt","transport.detail.compatibility":"Kompatibilität mit kanonischer Übermittlung","transport.detail.heartbeat":"Heartbeat des Datei-Inbox-Adapters","transport.detail.heartbeat_unavailable":"Heartbeat des Datei-Inbox-Adapters nicht verfügbar","transport.last_submission":"Letzte erfolgreiche Übermittlung","transport.location":"Überwachter Speicherort","transport.heartbeat":"Heartbeat","transport.delivery_retry":"Zustellversuch","transport.quarantine":"Quarantänisierte Elemente","transport.recent_error":"Aktuelle Diagnose","transport.retry.NONE":"Keine","transport.retry.PENDING":"Ausstehend"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"transport.http":"Entrée HTTP/API","transport.cli":"Entrée CLI","transport.file":"Entrée Boîte de réception de fichiers","transport.state.HEALTHY":"Sain","transport.state.DOWN":"Indisponible","transport.state.AVAILABLE":"Disponible","transport.state.DEGRADED":"Dégradé","transport.state.RUNNING":"Actif","transport.state.STOPPED":"Arrêté","transport.detail.listener":"Point d’écoute CENTRAL","transport.detail.compatibility":"Compatibilité avec la soumission canonique","transport.detail.heartbeat":"Signal de vie de l’adaptateur de fichiers","transport.detail.heartbeat_unavailable":"Signal de vie de l’adaptateur de fichiers indisponible","transport.last_submission":"Dernière soumission réussie","transport.location":"Emplacement surveillé","transport.heartbeat":"Signal de vie","transport.delivery_retry":"Nouvelle tentative de livraison","transport.quarantine":"Éléments en quarantaine","transport.recent_error":"Diagnostic récent","transport.retry.NONE":"Aucune","transport.retry.PENDING":"En attente"});
+Object.assign(DASHBOARD_MESSAGES.es, {"transport.http":"Entrada HTTP/API","transport.cli":"Entrada CLI","transport.file":"Entrada de bandeja de archivos","transport.state.HEALTHY":"Saludable","transport.state.DOWN":"No disponible","transport.state.AVAILABLE":"Disponible","transport.state.DEGRADED":"Degradado","transport.state.RUNNING":"Activo","transport.state.STOPPED":"Detenido","transport.detail.listener":"Punto de escucha CENTRAL","transport.detail.compatibility":"Compatibilidad con envío canónico","transport.detail.heartbeat":"Señal de vida del adaptador de archivos","transport.detail.heartbeat_unavailable":"Señal de vida del adaptador de archivos no disponible","transport.last_submission":"Último envío correcto","transport.location":"Ubicación supervisada","transport.heartbeat":"Señal de vida","transport.delivery_retry":"Reintento de entrega","transport.quarantine":"Elementos en cuarentena","transport.recent_error":"Diagnóstico reciente","transport.retry.NONE":"Ninguno","transport.retry.PENDING":"Pendiente"});
+Object.assign(DASHBOARD_MESSAGES.en, {"description.logs":"Redacted, rotating logs from Server-owned platform components."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"description.logs":"Geredigeerde, roterende logs van Server-eigen platformonderdelen."});
+Object.assign(DASHBOARD_MESSAGES.de, {"description.logs":"Bereinigte, rotierende Logs von Server-eigenen Plattformkomponenten."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"description.logs":"Journaux expurgés et rotatifs des composants de plateforme gérés par le serveur."});
+Object.assign(DASHBOARD_MESSAGES.es, {"description.logs":"Registros redactados y rotativos de componentes de plataforma propiedad del servidor."});
+Object.assign(DASHBOARD_MESSAGES.en, {"component.ep_server":"EP Server","component.platform_database":"Platform database","component.lifecycle_worker":"Lifecycle Worker","component.operations_console":"Operations Console","component.dashboard_relay":"Dashboard Relay"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"component.ep_server":"EP-server","component.platform_database":"Platformdatabase","component.lifecycle_worker":"Lifecycle Worker","component.operations_console":"Operations Console","component.dashboard_relay":"Dashboard Relay"});
+Object.assign(DASHBOARD_MESSAGES.de, {"component.ep_server":"EP-Server","component.platform_database":"Plattformdatenbank","component.lifecycle_worker":"Lebenszyklus-Worker","component.operations_console":"Operations-Konsole","component.dashboard_relay":"Dashboard-Relay"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"component.ep_server":"Serveur EP","component.platform_database":"Base de données de plateforme","component.lifecycle_worker":"Worker de cycle de vie","component.operations_console":"Console des opérations","component.dashboard_relay":"Relais du tableau de bord"});
+Object.assign(DASHBOARD_MESSAGES.es, {"component.ep_server":"Servidor EP","component.platform_database":"Base de datos de plataforma","component.lifecycle_worker":"Trabajador de ciclo de vida","component.operations_console":"Consola de operaciones","component.dashboard_relay":"Relé del panel"});
+Object.assign(DASHBOARD_MESSAGES.en, {"dashboard.health.section.platform":"Platform","dashboard.health.section.access":"Access","dashboard.health.section.ingress":"Ingress","dashboard.health.section.execution":"Execution"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"dashboard.health.section.platform":"Platform","dashboard.health.section.access":"Toegang","dashboard.health.section.ingress":"Ingangen","dashboard.health.section.execution":"Uitvoering"});
+Object.assign(DASHBOARD_MESSAGES.de, {"dashboard.health.section.platform":"Plattform","dashboard.health.section.access":"Zugang","dashboard.health.section.ingress":"Eingänge","dashboard.health.section.execution":"Ausführung"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"dashboard.health.section.platform":"Plateforme","dashboard.health.section.access":"Accès","dashboard.health.section.ingress":"Entrées","dashboard.health.section.execution":"Exécution"});
+Object.assign(DASHBOARD_MESSAGES.es, {"dashboard.health.section.platform":"Plataforma","dashboard.health.section.access":"Acceso","dashboard.health.section.ingress":"Entradas","dashboard.health.section.execution":"Ejecución"});
+Object.assign(DASHBOARD_MESSAGES.en, {"dashboard.health.active_count":"{count} execution active","dashboard.health.queue_waiting_count":"{count} submissions queued"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"dashboard.health.active_count":"{count} uitvoering actief","dashboard.health.queue_waiting_count":"{count} opdrachten in wachtrij"});
+Object.assign(DASHBOARD_MESSAGES.de, {"dashboard.health.active_count":"{count} Ausführung aktiv","dashboard.health.queue_waiting_count":"{count} Übermittlungen in Warteschlange"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"dashboard.health.active_count":"{count} exécution active","dashboard.health.queue_waiting_count":"{count} soumissions en attente"});
+Object.assign(DASHBOARD_MESSAGES.es, {"dashboard.health.active_count":"{count} ejecución activa","dashboard.health.queue_waiting_count":"{count} envíos en cola"});
+// CENTRAL projects semantic codes only. The Console remains the sole owner of
+// human language; aliases preserve old installed projections during upgrade.
+Object.assign(DASHBOARD_MESSAGES.en, {"transport.status.HTTP_INGRESS_HEALTHY":"Healthy","transport.status.HTTP_INGRESS_DOWN":"Down","transport.status.CLI_INGRESS_AVAILABLE":"Available","transport.status.CLI_INGRESS_DEGRADED":"Degraded","transport.status.FILE_INGRESS_RUNNING":"Running","transport.status.FILE_INGRESS_DEGRADED":"Degraded","transport.status.FILE_INGRESS_STOPPED":"Stopped","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Server listener endpoint","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Server listener unavailable","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Canonical submission compatibility","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Server endpoint unavailable","transport.detail.FILE_INBOX_HEARTBEAT":"File Inbox adapter heartbeat","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"File Inbox adapter heartbeat unavailable","transport.reason.FILE_INBOX_DIAGNOSTIC":"A bounded File Inbox diagnostic is available","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"None","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Pending"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"transport.status.HTTP_INGRESS_HEALTHY":"Gezond","transport.status.HTTP_INGRESS_DOWN":"Niet beschikbaar","transport.status.CLI_INGRESS_AVAILABLE":"Beschikbaar","transport.status.CLI_INGRESS_DEGRADED":"Gedegradeerd","transport.status.FILE_INGRESS_RUNNING":"Actief","transport.status.FILE_INGRESS_DEGRADED":"Gedegradeerd","transport.status.FILE_INGRESS_STOPPED":"Gestopt","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Server-luisterendpoint","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Server-luisterendpoint niet beschikbaar","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibel met canonieke indiening","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Server-endpoint niet beschikbaar","transport.detail.FILE_INBOX_HEARTBEAT":"Heartbeat van Bestandsinbox-adapter","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Heartbeat van Bestandsinbox-adapter niet beschikbaar","transport.reason.FILE_INBOX_DIAGNOSTIC":"Een begrensde Bestandsinbox-diagnose is beschikbaar","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Geen","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"In behandeling"});
+Object.assign(DASHBOARD_MESSAGES.de, {"transport.status.HTTP_INGRESS_HEALTHY":"Fehlerfrei","transport.status.HTTP_INGRESS_DOWN":"Nicht verfügbar","transport.status.CLI_INGRESS_AVAILABLE":"Verfügbar","transport.status.CLI_INGRESS_DEGRADED":"Beeinträchtigt","transport.status.FILE_INGRESS_RUNNING":"Aktiv","transport.status.FILE_INGRESS_DEGRADED":"Beeinträchtigt","transport.status.FILE_INGRESS_STOPPED":"Gestoppt","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Server-Listener-Endpunkt","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Server-Listener-Endpunkt nicht verfügbar","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Kompatibilität mit kanonischer Übermittlung","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Server-Endpunkt nicht verfügbar","transport.detail.FILE_INBOX_HEARTBEAT":"Heartbeat des Datei-Inbox-Adapters","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Heartbeat des Datei-Inbox-Adapters nicht verfügbar","transport.reason.FILE_INBOX_DIAGNOSTIC":"Eine begrenzte Datei-Inbox-Diagnose ist verfügbar","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Keine","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Ausstehend"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"transport.status.HTTP_INGRESS_HEALTHY":"Sain","transport.status.HTTP_INGRESS_DOWN":"Indisponible","transport.status.CLI_INGRESS_AVAILABLE":"Disponible","transport.status.CLI_INGRESS_DEGRADED":"Dégradé","transport.status.FILE_INGRESS_RUNNING":"Actif","transport.status.FILE_INGRESS_DEGRADED":"Dégradé","transport.status.FILE_INGRESS_STOPPED":"Arrêté","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Point d’écoute du serveur","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Point d’écoute du serveur indisponible","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibilité avec la soumission canonique","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Point de terminaison du serveur indisponible","transport.detail.FILE_INBOX_HEARTBEAT":"Signal de vie de l’adaptateur de fichiers","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Signal de vie de l’adaptateur de fichiers indisponible","transport.reason.FILE_INBOX_DIAGNOSTIC":"Un diagnostic limité de la boîte de réception est disponible","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Aucune","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"En attente"});
+Object.assign(DASHBOARD_MESSAGES.es, {"transport.status.HTTP_INGRESS_HEALTHY":"Saludable","transport.status.HTTP_INGRESS_DOWN":"No disponible","transport.status.CLI_INGRESS_AVAILABLE":"Disponible","transport.status.CLI_INGRESS_DEGRADED":"Degradado","transport.status.FILE_INGRESS_RUNNING":"Activo","transport.status.FILE_INGRESS_DEGRADED":"Degradado","transport.status.FILE_INGRESS_STOPPED":"Detenido","transport.detail.CENTRAL_LISTENER_ENDPOINT":"Punto de escucha del servidor","transport.detail.CENTRAL_LISTENER_UNAVAILABLE":"Punto de escucha del servidor no disponible","transport.detail.CANONICAL_SUBMISSION_COMPATIBILITY":"Compatibilidad con envío canónico","transport.detail.CENTRAL_ENDPOINT_UNAVAILABLE":"Extremo del servidor no disponible","transport.detail.FILE_INBOX_HEARTBEAT":"Señal de vida del adaptador de archivos","transport.detail.FILE_INBOX_HEARTBEAT_MISSING":"Señal de vida del adaptador de archivos no disponible","transport.reason.FILE_INBOX_DIAGNOSTIC":"Hay disponible un diagnóstico limitado de la bandeja de archivos","transport.retry.FILE_INGRESS_DELIVERY_RETRY_NONE":"Ninguno","transport.retry.FILE_INGRESS_DELIVERY_RETRY_PENDING":"Pendiente"});
+Object.assign(DASHBOARD_MESSAGES.en, {"transport.status.FILE_INGRESS_NOT_READY":"Not ready"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"transport.status.FILE_INGRESS_NOT_READY":"Niet gereed"});
+Object.assign(DASHBOARD_MESSAGES.de, {"transport.status.FILE_INGRESS_NOT_READY":"Nicht bereit"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"transport.status.FILE_INGRESS_NOT_READY":"Non prêt"});
+Object.assign(DASHBOARD_MESSAGES.es, {"transport.status.FILE_INGRESS_NOT_READY":"No preparado"});
+Object.assign(DASHBOARD_MESSAGES.en, {"component.reason.FILE_INBOX_DIAGNOSTIC":"A bounded File Inbox diagnostic is available"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Een begrensde Bestandsinbox-diagnose is beschikbaar"});
+Object.assign(DASHBOARD_MESSAGES.de, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Eine begrenzte Datei-Inbox-Diagnose ist verfügbar"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Un diagnostic limité de la boîte de réception est disponible"});
+Object.assign(DASHBOARD_MESSAGES.es, {"component.reason.FILE_INBOX_DIAGNOSTIC":"Hay disponible un diagnóstico limitado de la bandeja de archivos"});
+// Canonical platform-component status codes are rendered by the shared health
+// projection.  Keep them in the same five-locale catalog as every other
+// user-facing health state; raw Server codes are never Console copy.
+Object.assign(DASHBOARD_MESSAGES.en, {"dashboard.health.EP_SERVER_ACTIVE":"EP Server active","dashboard.health.EP_SERVER_UNAVAILABLE":"EP Server unavailable","dashboard.health.PLATFORM_DATABASE_HEALTHY":"Platform database healthy","dashboard.health.PLATFORM_DATABASE_UNAVAILABLE":"Platform database unavailable","dashboard.health.LIFECYCLE_WORKER_ACTIVE":"Lifecycle Worker active","dashboard.health.LIFECYCLE_WORKER_UNAVAILABLE":"Lifecycle Worker unavailable","dashboard.health.OPERATIONS_CONSOLE_AVAILABLE":"Operations Console available","dashboard.health.OPERATIONS_CONSOLE_UNAVAILABLE":"Operations Console unavailable","dashboard.health.DASHBOARD_RELAY_ACTIVE":"Dashboard Relay active","dashboard.health.DASHBOARD_RELAY_UNAVAILABLE":"Dashboard Relay unavailable","dashboard.health.DEPENDABOT_READY":"Dependabot ready","dashboard.health.DEPENDABOT_DEGRADED":"Dependabot degraded"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"dashboard.health.EP_SERVER_ACTIVE":"EP-server actief","dashboard.health.EP_SERVER_UNAVAILABLE":"EP-server niet beschikbaar","dashboard.health.PLATFORM_DATABASE_HEALTHY":"Platformdatabase gezond","dashboard.health.PLATFORM_DATABASE_UNAVAILABLE":"Platformdatabase niet beschikbaar","dashboard.health.LIFECYCLE_WORKER_ACTIVE":"Lifecycle Worker actief","dashboard.health.LIFECYCLE_WORKER_UNAVAILABLE":"Lifecycle Worker niet beschikbaar","dashboard.health.OPERATIONS_CONSOLE_AVAILABLE":"Operations Console beschikbaar","dashboard.health.OPERATIONS_CONSOLE_UNAVAILABLE":"Operations Console niet beschikbaar","dashboard.health.DASHBOARD_RELAY_ACTIVE":"Dashboard Relay actief","dashboard.health.DASHBOARD_RELAY_UNAVAILABLE":"Dashboard Relay niet beschikbaar","dashboard.health.DEPENDABOT_READY":"Dependabot gereed","dashboard.health.DEPENDABOT_DEGRADED":"Dependabot gedegradeerd"});
+Object.assign(DASHBOARD_MESSAGES.de, {"dashboard.health.EP_SERVER_ACTIVE":"EP-Server aktiv","dashboard.health.EP_SERVER_UNAVAILABLE":"EP-Server nicht verfügbar","dashboard.health.PLATFORM_DATABASE_HEALTHY":"Plattformdatenbank fehlerfrei","dashboard.health.PLATFORM_DATABASE_UNAVAILABLE":"Plattformdatenbank nicht verfügbar","dashboard.health.LIFECYCLE_WORKER_ACTIVE":"Lebenszyklus-Worker aktiv","dashboard.health.LIFECYCLE_WORKER_UNAVAILABLE":"Lebenszyklus-Worker nicht verfügbar","dashboard.health.OPERATIONS_CONSOLE_AVAILABLE":"Operations-Konsole verfügbar","dashboard.health.OPERATIONS_CONSOLE_UNAVAILABLE":"Operations-Konsole nicht verfügbar","dashboard.health.DASHBOARD_RELAY_ACTIVE":"Dashboard-Relay aktiv","dashboard.health.DASHBOARD_RELAY_UNAVAILABLE":"Dashboard-Relay nicht verfügbar","dashboard.health.DEPENDABOT_READY":"Dependabot bereit","dashboard.health.DEPENDABOT_DEGRADED":"Dependabot beeinträchtigt"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"dashboard.health.EP_SERVER_ACTIVE":"Serveur EP actif","dashboard.health.EP_SERVER_UNAVAILABLE":"Serveur EP indisponible","dashboard.health.PLATFORM_DATABASE_HEALTHY":"Base de données de plateforme saine","dashboard.health.PLATFORM_DATABASE_UNAVAILABLE":"Base de données de plateforme indisponible","dashboard.health.LIFECYCLE_WORKER_ACTIVE":"Worker de cycle de vie actif","dashboard.health.LIFECYCLE_WORKER_UNAVAILABLE":"Worker de cycle de vie indisponible","dashboard.health.OPERATIONS_CONSOLE_AVAILABLE":"Console des opérations disponible","dashboard.health.OPERATIONS_CONSOLE_UNAVAILABLE":"Console des opérations indisponible","dashboard.health.DASHBOARD_RELAY_ACTIVE":"Relais du tableau de bord actif","dashboard.health.DASHBOARD_RELAY_UNAVAILABLE":"Relais du tableau de bord indisponible","dashboard.health.DEPENDABOT_READY":"Dependabot prêt","dashboard.health.DEPENDABOT_DEGRADED":"Dependabot dégradé"});
+Object.assign(DASHBOARD_MESSAGES.es, {"dashboard.health.EP_SERVER_ACTIVE":"Servidor EP activo","dashboard.health.EP_SERVER_UNAVAILABLE":"Servidor EP no disponible","dashboard.health.PLATFORM_DATABASE_HEALTHY":"Base de datos de plataforma saludable","dashboard.health.PLATFORM_DATABASE_UNAVAILABLE":"Base de datos de plataforma no disponible","dashboard.health.LIFECYCLE_WORKER_ACTIVE":"Trabajador de ciclo de vida activo","dashboard.health.LIFECYCLE_WORKER_UNAVAILABLE":"Trabajador de ciclo de vida no disponible","dashboard.health.OPERATIONS_CONSOLE_AVAILABLE":"Consola de operaciones disponible","dashboard.health.OPERATIONS_CONSOLE_UNAVAILABLE":"Consola de operaciones no disponible","dashboard.health.DASHBOARD_RELAY_ACTIVE":"Relé del panel activo","dashboard.health.DASHBOARD_RELAY_UNAVAILABLE":"Relé del panel no disponible","dashboard.health.DEPENDABOT_READY":"Dependabot preparado","dashboard.health.DEPENDABOT_DEGRADED":"Dependabot degradado"});
+
+// Current Console terminology.  Legacy keys remain stable internal lookup
+// identifiers while supported operator copy describes the Server-owned
+// Console, Lifecycle Worker, Server Relay, and File Inbox ingress.
+Object.assign(DASHBOARD_MESSAGES.en, {
+  "ui.execution_status": "Execution status", "configuration.dashboard_settings": "Operations Console settings", "configuration.dashboard_stream_interval": "Operations Console status update interval", "configuration.inbox_scan_interval": "File Inbox ingress scan interval", "configuration.operator_merge_interval_help": "How often the Lifecycle Worker verifies whether a pull request waiting for operator merge changed state.", "configuration.timeout_policy_description": "Fixed host-owned limits for each provider action. These limits are not editable in the Operations Console.", "dashboard.status_invalid": "Operations Console status is invalid.", "dashboard.status_unavailable": "Operations Console status is unavailable.", "header.skip": "Skip to Operations Console content", "logs.dashboard_unavailable": "Platform log is unavailable.", "queue.defer_description": "Move {title} out of the active queue? It is retained as a deferred File Inbox ingress submission and is not executed until it is explicitly returned.", "queue.defer_failed": "The File Inbox ingress submission could not be deferred safely.", "queue.managed_branch_blocked": "File Inbox ingress is paused because this workspace is on a working branch. The Execution Host may only claim work from main.", "queue.managed_branch_recovery": "Restore returns a clean workspace to main and restarts the Lifecycle Worker. No queue item is changed.", "queue.managed_branch_recovery_ready": "Workspace restored to main; the Lifecycle Worker is active again.", "queue.managed_branch_recovery_title": "Restore File Inbox ingress workspace", "queue.runtime_invocation_blocked": "File Inbox ingress is waiting because the local Codex CLI cannot start. Repair the managed Codex CLI installation before retrying.", "recovery.details": "Retry this terminal execution through the normal File Inbox ingress route? Engineering Platform runs the current preflight again before creating a replacement. The failed execution and its evidence remain unchanged.", "recovery.ready": "Recovery is queued; the Lifecycle Worker will claim the replacement execution.", "refresh.refreshing": "Refreshing Operations Console…", "status_reconciliation.confirmation": "A dedicated Finalization reconciliation will be placed in the Engineering Platform submission queue. It changes no product or execution behavior.", "ui.codex_cli_update_confirmation": "Install the available Codex CLI update on this machine? The Operations Console verifies the installed version afterwards.", "workspace.worktree_switch_confirmation": "Switch Engineering Platform to {branch} at {path}?\n\nEngineering Platform checks again:\n• no execution is active;\n• the File Inbox ingress queue is empty;\n• this registered worktree is clean and exactly on {branch}.\n\nIt then restarts the Operations Console, Lifecycle Worker, and Server Relay from this worktree.", "component.dashboard_relay": "Server Relay", "dashboard.health.DASHBOARD_RELAY_ACTIVE": "Server Relay active", "dashboard.health.DASHBOARD_RELAY_UNAVAILABLE": "Server Relay unavailable", "dashboard.health.watcher": "File Inbox ingress", "dashboard.health.watcher_state": "Lifecycle Worker status", "state.WATCHER_IDLE": "No active execution",
+});
+Object.assign(DASHBOARD_MESSAGES.nl, {
+  "ui.execution_status": "Uitvoeringsstatus", "configuration.dashboard_settings": "Instellingen Operations Console", "configuration.dashboard_stream_interval": "Interval statusupdates Operations Console", "configuration.inbox_scan_interval": "Scaninterval File Inbox-ingress", "configuration.operator_merge_interval_help": "Hoe vaak de Lifecycle Worker controleert of een pull request dat op een operator-merge wacht van status is veranderd.", "configuration.timeout_policy_description": "Vaste hostbeheerde limieten per provideractie. Deze limieten zijn niet wijzigbaar in de Operations Console.", "dashboard.status_invalid": "Status van Operations Console is ongeldig.", "dashboard.status_unavailable": "Operations Console is niet beschikbaar.", "header.skip": "Ga naar inhoud van Operations Console", "logs.dashboard_unavailable": "Platformlog is niet beschikbaar.", "queue.defer_description": "{title} uit de actieve wachtrij halen? De inzending blijft als uitgestelde File Inbox-ingress bewaard en wordt pas uitgevoerd wanneer die expliciet wordt teruggezet.", "queue.defer_failed": "De File Inbox-ingressinzending kon niet veilig worden uitgesteld.", "queue.managed_branch_blocked": "File Inbox-ingress is gepauzeerd omdat deze werkruimte op een werkbranch staat. De Execution Host mag alleen werk vanaf main claimen.", "queue.managed_branch_recovery": "Herstel zet een schone werkruimte terug op main en herstart de Lifecycle Worker. Er verandert geen wachtrij-item.", "queue.managed_branch_recovery_ready": "Werkruimte hersteld naar main; de Lifecycle Worker is weer actief.", "queue.managed_branch_recovery_title": "Werkruimte voor File Inbox-ingress herstellen", "queue.runtime_invocation_blocked": "File Inbox-ingress wacht omdat de lokale Codex CLI niet kan starten. Herstel de beheerde Codex CLI-installatie voordat u opnieuw probeert.", "recovery.details": "Deze terminale uitvoering via de normale File Inbox-ingressroute opnieuw proberen? Engineering Platform voert eerst de actuele preflight opnieuw uit voordat een vervangende uitvoering wordt aangemaakt. De mislukte uitvoering en de evidence blijven ongewijzigd.", "recovery.ready": "Herstel staat in de wachtrij; de Lifecycle Worker claimt de vervangende uitvoering.", "refresh.refreshing": "Operations Console wordt vernieuwd…", "status_reconciliation.confirmation": "Een afzonderlijke Finalization-reconciliatie wordt in de inzendwachtrij van Engineering Platform geplaatst. Dit verandert geen product- of uitvoeringsgedrag.", "ui.codex_cli_update_confirmation": "De beschikbare Codex CLI-update op deze machine installeren? Operations Console controleert daarna de geïnstalleerde versie.", "workspace.worktree_switch_confirmation": "Engineering Platform naar {branch} in {path} schakelen?\n\nEngineering Platform controleert opnieuw:\n• er is geen uitvoering actief;\n• de File Inbox-ingresswachtrij is leeg;\n• deze geregistreerde worktree is schoon en staat exact op {branch}.\n\nDaarna starten Operations Console, Lifecycle Worker en Server Relay opnieuw vanuit deze worktree.", "component.dashboard_relay": "Server Relay", "dashboard.health.DASHBOARD_RELAY_ACTIVE": "Server Relay actief", "dashboard.health.DASHBOARD_RELAY_UNAVAILABLE": "Server Relay niet beschikbaar", "dashboard.health.watcher": "File Inbox-ingress", "dashboard.health.watcher_state": "Status Lifecycle Worker", "state.WATCHER_IDLE": "Geen actieve uitvoering",
+});
+Object.assign(DASHBOARD_MESSAGES.de, {
+  "ui.execution_status": "Ausführungsstatus", "configuration.dashboard_settings": "Einstellungen der Operations-Konsole", "configuration.dashboard_stream_interval": "Statusaktualisierungsintervall der Operations-Konsole", "configuration.inbox_scan_interval": "Prüfintervall für File-Inbox-Eingang", "configuration.operator_merge_interval_help": "Wie oft der Lifecycle Worker prüft, ob sich der Status eines auf Operator-Merge wartenden Pull Requests geändert hat.", "configuration.timeout_policy_description": "Feste hostverwaltete Grenzen für jede Provider-Aktion. Diese Grenzen sind in der Operations-Konsole nicht bearbeitbar.", "dashboard.status_invalid": "Status der Operations-Konsole ist ungültig.", "dashboard.status_unavailable": "Operations-Konsole ist nicht verfügbar.", "header.skip": "Zum Inhalt der Operations-Konsole springen", "logs.dashboard_unavailable": "Plattformprotokoll ist nicht verfügbar.", "queue.defer_description": "{title} aus der aktiven Warteschlange verschieben? Die Übermittlung bleibt als zurückgestellter File-Inbox-Eingang erhalten und wird erst nach ausdrücklicher Rückgabe ausgeführt.", "queue.defer_failed": "Die File-Inbox-Eingangsübermittlung konnte nicht sicher zurückgestellt werden.", "queue.managed_branch_blocked": "File-Inbox-Eingang ist pausiert, weil sich dieser Arbeitsbereich auf einem Arbeitsbranch befindet. Der Execution Host darf nur Arbeit von main übernehmen.", "queue.managed_branch_recovery": "Wiederherstellen setzt einen sauberen Arbeitsbereich auf main zurück und startet den Lifecycle Worker neu. Kein Warteschlangeneintrag wird geändert.", "queue.managed_branch_recovery_ready": "Arbeitsbereich auf main wiederhergestellt; der Lifecycle Worker ist wieder aktiv.", "queue.managed_branch_recovery_title": "Arbeitsbereich für File-Inbox-Eingang wiederherstellen", "queue.runtime_invocation_blocked": "File-Inbox-Eingang wartet, weil die lokale Codex CLI nicht starten kann. Reparieren Sie die verwaltete Codex-CLI-Installation, bevor Sie erneut versuchen.", "recovery.details": "Diese terminale Ausführung über den normalen File-Inbox-Eingang erneut versuchen? Engineering Platform führt die aktuelle Vorprüfung erneut aus, bevor eine Ersatzausführung erstellt wird. Die fehlgeschlagene Ausführung und ihre Nachweise bleiben unverändert.", "recovery.ready": "Die Wiederherstellung ist eingeplant; der Lifecycle Worker übernimmt die Ersatzausführung.", "refresh.refreshing": "Operations-Konsole wird aktualisiert…", "status_reconciliation.confirmation": "Eine eigene Finalization-Abstimmung wird in die Engineering-Platform-Übermittlungswarteschlange gestellt. Produkt- oder Ausführungsverhalten wird nicht geändert.", "ui.codex_cli_update_confirmation": "Das verfügbare Codex-CLI-Update auf diesem Computer installieren? Die Operations-Konsole überprüft anschließend die installierte Version.", "workspace.worktree_switch_confirmation": "Engineering Platform zu {branch} unter {path} wechseln?\n\nEngineering Platform prüft erneut:\n• keine Ausführung ist aktiv;\n• die Warteschlange für File-Inbox-Eingang ist leer;\n• dieser registrierte Worktree ist sauber und genau auf {branch}.\n\nAnschließend starten Operations-Konsole, Lifecycle Worker und Server Relay aus diesem Worktree neu.", "component.dashboard_relay": "Server Relay", "dashboard.health.DASHBOARD_RELAY_ACTIVE": "Server Relay aktiv", "dashboard.health.DASHBOARD_RELAY_UNAVAILABLE": "Server Relay nicht verfügbar", "dashboard.health.watcher": "File-Inbox-Eingang", "dashboard.health.watcher_state": "Status des Lifecycle Workers", "state.WATCHER_IDLE": "Keine aktive Ausführung",
+});
+Object.assign(DASHBOARD_MESSAGES.fr, {
+  "ui.execution_status": "État de l’exécution", "configuration.dashboard_settings": "Paramètres de la console des opérations", "configuration.dashboard_stream_interval": "Intervalle de mise à jour de la console des opérations", "configuration.inbox_scan_interval": "Intervalle d’analyse de l’entrée File Inbox", "configuration.operator_merge_interval_help": "Fréquence à laquelle le Lifecycle Worker vérifie si l’état d’une pull request en attente de fusion par l’opérateur a changé.", "configuration.timeout_policy_description": "Limites fixes gérées par l’hôte pour chaque action du fournisseur. Ces limites ne sont pas modifiables dans la console des opérations.", "dashboard.status_invalid": "L’état de la console des opérations n’est pas valide.", "dashboard.status_unavailable": "La console des opérations est indisponible.", "header.skip": "Accéder au contenu de la console des opérations", "logs.dashboard_unavailable": "Le journal de la plateforme est indisponible.", "queue.defer_description": "Retirer {title} de la file active ? La soumission est conservée comme entrée File Inbox différée et ne sera exécutée qu’après son retour explicite.", "queue.defer_failed": "La soumission de l’entrée File Inbox n’a pas pu être différée en toute sécurité.", "queue.managed_branch_blocked": "L’entrée File Inbox est suspendue car cet espace de travail se trouve sur une branche de travail. L’Execution Host ne peut réclamer que le travail de main.", "queue.managed_branch_recovery": "La restauration remet un espace de travail propre sur main et redémarre le Lifecycle Worker. Aucun élément de file n’est modifié.", "queue.managed_branch_recovery_ready": "Espace de travail restauré sur main ; le Lifecycle Worker est de nouveau actif.", "queue.managed_branch_recovery_title": "Restaurer l’espace de travail de l’entrée File Inbox", "queue.runtime_invocation_blocked": "L’entrée File Inbox attend car la CLI Codex locale ne peut pas démarrer. Réparez l’installation gérée de la CLI Codex avant de réessayer.", "recovery.details": "Réessayer cette exécution terminale via la route normale d’entrée File Inbox ? Engineering Platform exécute à nouveau le précontrôle actuel avant de créer une exécution de remplacement. L’exécution échouée et ses preuves restent inchangées.", "recovery.ready": "La récupération est en file d’attente ; le Lifecycle Worker prendra en charge l’exécution de remplacement.", "refresh.refreshing": "Actualisation de la console des opérations…", "status_reconciliation.confirmation": "Une réconciliation Finalization dédiée sera placée dans la file de soumission Engineering Platform. Cela ne modifie aucun comportement de produit ou d’exécution.", "ui.codex_cli_update_confirmation": "Installer la mise à jour disponible de la CLI Codex sur cette machine ? La console des opérations vérifiera ensuite la version installée.", "workspace.worktree_switch_confirmation": "Basculer Engineering Platform vers {branch} dans {path} ?\n\nEngineering Platform vérifie à nouveau :\n• aucune exécution n’est active ;\n• la file de l’entrée File Inbox est vide ;\n• cette arborescence enregistrée est propre et se trouve exactement sur {branch}.\n\nLa console des opérations, le Lifecycle Worker et le Server Relay redémarrent ensuite depuis cette arborescence.", "component.dashboard_relay": "Server Relay", "dashboard.health.DASHBOARD_RELAY_ACTIVE": "Server Relay actif", "dashboard.health.DASHBOARD_RELAY_UNAVAILABLE": "Server Relay indisponible", "dashboard.health.watcher": "Entrée File Inbox", "dashboard.health.watcher_state": "État du Lifecycle Worker", "state.WATCHER_IDLE": "Aucune exécution active",
+});
+Object.assign(DASHBOARD_MESSAGES.es, {
+  "ui.execution_status": "Estado de ejecución", "configuration.dashboard_settings": "Configuración de la consola de operaciones", "configuration.dashboard_stream_interval": "Intervalo de actualización de la consola de operaciones", "configuration.inbox_scan_interval": "Intervalo de exploración de entrada File Inbox", "configuration.operator_merge_interval_help": "Con qué frecuencia el Lifecycle Worker comprueba si ha cambiado el estado de una pull request que espera una fusión del operador.", "configuration.timeout_policy_description": "Límites fijos administrados por el host para cada acción del proveedor. Estos límites no se pueden editar en la consola de operaciones.", "dashboard.status_invalid": "El estado de la consola de operaciones no es válido.", "dashboard.status_unavailable": "La consola de operaciones no está disponible.", "header.skip": "Ir al contenido de la consola de operaciones", "logs.dashboard_unavailable": "El registro de la plataforma no está disponible.", "queue.defer_description": "¿Mover {title} fuera de la cola activa? El envío se conserva como entrada File Inbox diferida y no se ejecuta hasta que se devuelva explícitamente.", "queue.defer_failed": "El envío de entrada File Inbox no se pudo diferir de forma segura.", "queue.managed_branch_blocked": "La entrada File Inbox está en pausa porque este espacio de trabajo está en una rama de trabajo. El Execution Host solo puede reclamar trabajo desde main.", "queue.managed_branch_recovery": "La restauración devuelve un espacio de trabajo limpio a main y reinicia el Lifecycle Worker. No cambia ningún elemento de la cola.", "queue.managed_branch_recovery_ready": "Espacio de trabajo restaurado a main; el Lifecycle Worker vuelve a estar activo.", "queue.managed_branch_recovery_title": "Restaurar el espacio de trabajo de entrada File Inbox", "queue.runtime_invocation_blocked": "La entrada File Inbox está esperando porque la CLI local de Codex no puede iniciarse. Repare la instalación administrada de la CLI de Codex antes de volver a intentarlo.", "recovery.details": "¿Reintentar esta ejecución terminal mediante la ruta normal de entrada File Inbox? Engineering Platform vuelve a realizar la comprobación previa actual antes de crear una ejecución de sustitución. La ejecución fallida y sus evidencias no cambian.", "recovery.ready": "La recuperación está en cola; el Lifecycle Worker reclamará la ejecución de sustitución.", "refresh.refreshing": "Actualizando la consola de operaciones…", "status_reconciliation.confirmation": "Se colocará una conciliación Finalization específica en la cola de envíos de Engineering Platform. No cambia ningún comportamiento de producto ni de ejecución.", "ui.codex_cli_update_confirmation": "¿Instalar la actualización disponible de la CLI de Codex en esta máquina? La consola de operaciones verificará después la versión instalada.", "workspace.worktree_switch_confirmation": "¿Cambiar Engineering Platform a {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• no hay ninguna ejecución activa;\n• la cola de entrada File Inbox está vacía;\n• este árbol de trabajo registrado está limpio y exactamente en {branch}.\n\nDespués reinicia la consola de operaciones, el Lifecycle Worker y el Server Relay desde este árbol de trabajo.", "component.dashboard_relay": "Server Relay", "dashboard.health.DASHBOARD_RELAY_ACTIVE": "Server Relay activo", "dashboard.health.DASHBOARD_RELAY_UNAVAILABLE": "Server Relay no disponible", "dashboard.health.watcher": "Entrada File Inbox", "dashboard.health.watcher_state": "Estado del Lifecycle Worker", "state.WATCHER_IDLE": "No hay ejecución activa",
+});
+
+export class LocalizationContractError extends Error {
+  constructor({ locale, key, surface = "Console" }) {
+    super(`LOCALIZATION_MISSING locale=${locale} key=${key} surface=${surface}`);
+    this.name = "LocalizationContractError";
+    this.locale = locale;
+    this.key = key;
+    this.surface = surface;
+  }
+}
+
+const PLACEHOLDER_TRANSLATION = /^\s*(?:TODO|TBD|TRANSLATE(?:\s+ME)?|MISSING)\s*$/i;
+
+/**
+ * Return deterministic catalog findings. English is the canonical key-set
+ * authority; supported locales must be exact, non-empty translations.
+ */
+export function localizationContractFindings(catalogs = DASHBOARD_MESSAGES) {
+  const canonical = new Set(Object.keys(catalogs.en || {})), findings = [];
+  for (const language of SUPPORTED_LOCALES) {
+    const messages = catalogs[language] || {}, keys = new Set(Object.keys(messages));
+    for (const key of canonical) {
+      if (!keys.has(key)) findings.push(`MISSING_KEY locale=${language} key=${key}`);
+      else if (typeof messages[key] !== "string" || !messages[key].trim()) findings.push(`EMPTY_TRANSLATION locale=${language} key=${key}`);
+      else if (PLACEHOLDER_TRANSLATION.test(messages[key])) findings.push(`PLACEHOLDER_TRANSLATION locale=${language} key=${key}`);
+    }
+    for (const key of keys) if (!canonical.has(key)) findings.push(`ORPHAN_KEY locale=${language} key=${key}`);
+  }
+  return findings;
+}
+
+export function assertLocalizationContract(catalogs = DASHBOARD_MESSAGES) {
+  const findings = localizationContractFindings(catalogs);
+  if (findings.length) throw new Error(`LOCALIZATION_KEY_PARITY_FAILED\n${findings.join("\n")}`);
+  return { supportedLocales: [...SUPPORTED_LOCALES], keyCount: Object.keys(catalogs.en).length };
+}
+
+export function createTranslator(locale, { strict = false, surface = "Console" } = {}) {
   const active = normalizeLocale(locale);
-  return (key, values = {}, fallback = key) => String(messages[active]?.[key] ?? messages.en[key] ?? fallback)
-    .replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+  return (key, values = {}, fallback = key) => {
+    const own = DASHBOARD_MESSAGES[active]?.[key];
+    if (typeof own !== "string" || !own.trim()) {
+      if (strict) throw new LocalizationContractError({ locale: active, key: String(key), surface });
+      return String(DASHBOARD_MESSAGES.en?.[key] ?? fallback)
+        .replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+    }
+    return own.replace(/\{([a-z_]+)\}/g, (_, name) => String(values[name] ?? ""));
+  };
 }
 
 const localeTags = Object.freeze({
@@ -3736,8 +3851,8 @@ const localeTags = Object.freeze({
  * this service instead of constructing their own Intl instances or choosing
  * a language for comparisons, casing and pluralisation.
  */
-export function createLocaleService(locale) {
-  const language = normalizeLocale(locale), tag = localeTags[language], translate = createTranslator(language);
+export function createLocaleService(locale, options = {}) {
+  const language = normalizeLocale(locale), tag = localeTags[language], translate = createTranslator(language, options);
   const dateTime = new Intl.DateTimeFormat(tag, {
     timeZone: "Europe/Amsterdam",
     dateStyle: "full",
@@ -3831,3 +3946,42 @@ Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.timeout_policy":"Timeoutbel
 Object.assign(DASHBOARD_MESSAGES.de, {"configuration.timeout_policy":"Timeout-Richtlinie für Anbieter","configuration.timeout_policy_description":"Feste, hosteigene Grenzen für jede Anbieteraktion. Diese Grenzen können im Dashboard nicht geändert werden.","configuration.timeout.specialist_review":"Spezialistenprüfung","configuration.timeout.implementation":"Implementierung","configuration.timeout.local_repository_validation":"Lokale Repository-Validierung","configuration.timeout.autonomous_quality_control":"Autonome Qualitätskontrolle","configuration.timeout.repair":"Reparatur","configuration.timeout.finalization":"Finalisierung","configuration.timeout.end_reconciliation":"Endabgleich","configuration.minutes_15":"15 Minuten"});
 Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.timeout_policy":"Politique de délai fournisseur","configuration.timeout_policy_description":"Limites fixes détenues par l’hôte pour chaque action fournisseur. Elles ne sont pas modifiables dans le tableau de bord.","configuration.timeout.specialist_review":"Revue spécialisée","configuration.timeout.implementation":"Implémentation","configuration.timeout.local_repository_validation":"Validation locale du dépôt","configuration.timeout.autonomous_quality_control":"Contrôle qualité autonome","configuration.timeout.repair":"Correction","configuration.timeout.finalization":"Finalisation","configuration.timeout.end_reconciliation":"Réconciliation finale","configuration.minutes_15":"15 minutes"});
 Object.assign(DASHBOARD_MESSAGES.es, {"configuration.timeout_policy":"Política de tiempo de espera del proveedor","configuration.timeout_policy_description":"Límites fijos controlados por el host para cada acción del proveedor. No se pueden modificar en el panel.","configuration.timeout.specialist_review":"Revisión especializada","configuration.timeout.implementation":"Implementación","configuration.timeout.local_repository_validation":"Validación local del repositorio","configuration.timeout.autonomous_quality_control":"Control de calidad autónomo","configuration.timeout.repair":"Reparación","configuration.timeout.finalization":"Finalización","configuration.timeout.end_reconciliation":"Reconciliación final","configuration.minutes_15":"15 minutos"});
+Object.assign(DASHBOARD_MESSAGES.en, {"filter.ep_component":"EP component", "filter.all_ep_components":"All EP components", "logs.download_platform":"Download platform log", "logs.platform_entries":"Platform log entries"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"filter.ep_component":"EP-component", "filter.all_ep_components":"Alle EP-componenten", "logs.download_platform":"Platformlog downloaden", "logs.platform_entries":"Platformlogregels"});
+Object.assign(DASHBOARD_MESSAGES.de, {"filter.ep_component":"EP-Komponente", "filter.all_ep_components":"Alle EP-Komponenten", "logs.download_platform":"Plattformprotokoll herunterladen", "logs.platform_entries":"Plattformprotokolleinträge"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"filter.ep_component":"Composant EP", "filter.all_ep_components":"Tous les composants EP", "logs.download_platform":"Télécharger le journal de la plateforme", "logs.platform_entries":"Entrées du journal de la plateforme"});
+Object.assign(DASHBOARD_MESSAGES.es, {"filter.ep_component":"Componente EP", "filter.all_ep_components":"Todos los componentes EP", "logs.download_platform":"Descargar registro de la plataforma", "logs.platform_entries":"Entradas del registro de la plataforma"});
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.ep_database_maintenance_saved":"Database maintenance updated.", "configuration.ep_database_maintenance_failed":"Database maintenance could not be updated."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.ep_database_maintenance_saved":"Databaseonderhoud bijgewerkt.", "configuration.ep_database_maintenance_failed":"Databaseonderhoud kon niet worden bijgewerkt."});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.ep_database_maintenance_saved":"Datenbankwartung aktualisiert.", "configuration.ep_database_maintenance_failed":"Datenbankwartung konnte nicht aktualisiert werden."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.ep_database_maintenance_saved":"Maintenance de la base de données mise à jour.", "configuration.ep_database_maintenance_failed":"La maintenance de la base de données n’a pas pu être mise à jour."});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.ep_database_maintenance_saved":"Mantenimiento de la base de datos actualizado.", "configuration.ep_database_maintenance_failed":"No se pudo actualizar el mantenimiento de la base de datos."});
+Object.assign(DASHBOARD_MESSAGES.en, {"metrics.gpu_status.no_active_execution_host":"Unavailable: no active Execution Host runner.", "metrics.gpu_status.execution_host_external":"Unavailable: Execution Host processing runs externally."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"metrics.gpu_status.no_active_execution_host":"Niet beschikbaar: geen actieve Execution Host-runner.", "metrics.gpu_status.execution_host_external":"Niet beschikbaar: Execution Host-verwerking draait extern."});
+Object.assign(DASHBOARD_MESSAGES.de, {"metrics.gpu_status.no_active_execution_host":"Nicht verfügbar: kein aktiver Execution-Host-Runner.", "metrics.gpu_status.execution_host_external":"Nicht verfügbar: Die Execution-Host-Verarbeitung läuft extern."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"metrics.gpu_status.no_active_execution_host":"Indisponible : aucun exécuteur Execution Host actif.", "metrics.gpu_status.execution_host_external":"Indisponible : le traitement Execution Host s’exécute à l’extérieur."});
+Object.assign(DASHBOARD_MESSAGES.es, {"metrics.gpu_status.no_active_execution_host":"No disponible: no hay un ejecutor de Execution Host activo.", "metrics.gpu_status.execution_host_external":"No disponible: el procesamiento de Execution Host se ejecuta externamente."});
+Object.assign(DASHBOARD_MESSAGES.en, {"central.no_project_selected_title":"No project selected", "central.no_project_selected_body":"Choose a project above to view only that project's queue, execution history, and configuration. Platform-wide logs and configuration remain available below."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"central.no_project_selected_title":"Geen project gekozen", "central.no_project_selected_body":"Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar."});
+Object.assign(DASHBOARD_MESSAGES.de, {"central.no_project_selected_title":"Kein Projekt ausgewählt", "central.no_project_selected_body":"Wählen Sie oben ein Projekt aus, um nur dessen Warteschlange, Ausführungsverlauf und Konfiguration anzuzeigen. Plattformweite Protokolle und Konfiguration bleiben unten verfügbar."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"central.no_project_selected_title":"Aucun projet sélectionné", "central.no_project_selected_body":"Choisissez un projet ci-dessus pour afficher uniquement sa file d’attente, son historique d’exécution et sa configuration. Les journaux et la configuration de la plateforme restent disponibles ci-dessous."});
+Object.assign(DASHBOARD_MESSAGES.es, {"central.no_project_selected_title":"No se ha seleccionado ningún proyecto", "central.no_project_selected_body":"Seleccione un proyecto arriba para ver solo su cola, historial de ejecución y configuración. Los registros y la configuración de toda la plataforma siguen disponibles a continuación."});
+Object.assign(DASHBOARD_MESSAGES.en, {"central.project_workspace_not_authority":"Physical binding is not Console authority."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"central.project_workspace_not_authority":"Fysieke binding is geen Console-authoriteit."});
+Object.assign(DASHBOARD_MESSAGES.de, {"central.project_workspace_not_authority":"Die physische Bindung ist keine Console-Autorität."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"central.project_workspace_not_authority":"La liaison physique n’est pas une autorité de la Console."});
+Object.assign(DASHBOARD_MESSAGES.es, {"central.project_workspace_not_authority":"La vinculación física no es autoridad de Console."});
+Object.assign(DASHBOARD_MESSAGES.en, {"component.dependabot_producer":"Dependabot producer","transport.status.DEPENDABOT_READY":"Ready","transport.status.DEPENDABOT_DEGRADED":"Degraded","transport.detail.DEPENDABOT_HEARTBEAT":"Dependabot producer heartbeat","transport.detail.DEPENDABOT_HEARTBEAT_MISSING":"Dependabot producer heartbeat unavailable","transport.reason.DEPENDABOT_DIAGNOSTIC":"A bounded Dependabot diagnostic is available"});
+Object.assign(DASHBOARD_MESSAGES.nl, {"component.dependabot_producer":"Dependabot-producer","transport.status.DEPENDABOT_READY":"Gereed","transport.status.DEPENDABOT_DEGRADED":"Gedegradeerd","transport.detail.DEPENDABOT_HEARTBEAT":"Heartbeat van Dependabot-producer","transport.detail.DEPENDABOT_HEARTBEAT_MISSING":"Heartbeat van Dependabot-producer niet beschikbaar","transport.reason.DEPENDABOT_DIAGNOSTIC":"Een begrensde Dependabot-diagnose is beschikbaar"});
+Object.assign(DASHBOARD_MESSAGES.de, {"component.dependabot_producer":"Dependabot-Produzent","transport.status.DEPENDABOT_READY":"Bereit","transport.status.DEPENDABOT_DEGRADED":"Beeinträchtigt","transport.detail.DEPENDABOT_HEARTBEAT":"Heartbeat des Dependabot-Produzenten","transport.detail.DEPENDABOT_HEARTBEAT_MISSING":"Heartbeat des Dependabot-Produzenten nicht verfügbar","transport.reason.DEPENDABOT_DIAGNOSTIC":"Eine begrenzte Dependabot-Diagnose ist verfügbar"});
+Object.assign(DASHBOARD_MESSAGES.fr, {"component.dependabot_producer":"Producteur Dependabot","transport.status.DEPENDABOT_READY":"Prêt","transport.status.DEPENDABOT_DEGRADED":"Dégradé","transport.detail.DEPENDABOT_HEARTBEAT":"Signal de vie du producteur Dependabot","transport.detail.DEPENDABOT_HEARTBEAT_MISSING":"Signal de vie du producteur Dependabot indisponible","transport.reason.DEPENDABOT_DIAGNOSTIC":"Un diagnostic Dependabot limité est disponible"});
+Object.assign(DASHBOARD_MESSAGES.es, {"component.dependabot_producer":"Productor Dependabot","transport.status.DEPENDABOT_READY":"Listo","transport.status.DEPENDABOT_DEGRADED":"Degradado","transport.detail.DEPENDABOT_HEARTBEAT":"Señal de vida del productor Dependabot","transport.detail.DEPENDABOT_HEARTBEAT_MISSING":"Señal de vida del productor Dependabot no disponible","transport.reason.DEPENDABOT_DIAGNOSTIC":"Hay disponible un diagnóstico limitado de Dependabot"});
+
+// These records are intentionally last: the compatibility additions above
+// historically redefined the same keys.  Runtime presentation must retain
+// the current Server-owned terminology regardless of declaration order.
+Object.assign(DASHBOARD_MESSAGES.en, {"configuration.timeout_policy_description":"Fixed host-owned limits for each provider action. These limits are not editable in the Operations Console.", "workspace.worktree_switch_confirmation":"Switch Engineering Platform to {branch} at {path}?\n\nEngineering Platform checks again:\n• no execution is active;\n• the File Inbox ingress queue is empty;\n• this registered worktree is clean and exactly on {branch}.\n\nIt then restarts the Operations Console, Lifecycle Worker, and Server Relay from this worktree.", "recovery.ready":"Recovery is queued; the Lifecycle Worker will claim the replacement execution."});
+Object.assign(DASHBOARD_MESSAGES.nl, {"configuration.timeout_policy_description":"Vaste hostbeheerde limieten per provideractie. Deze limieten zijn niet wijzigbaar in de Operations Console.", "workspace.worktree_switch_confirmation":"Engineering Platform naar {branch} in {path} schakelen?\n\nEngineering Platform controleert opnieuw:\n• er is geen uitvoering actief;\n• de File Inbox-ingresswachtrij is leeg;\n• deze geregistreerde worktree is schoon en staat exact op {branch}.\n\nDaarna starten Operations Console, Lifecycle Worker en Server Relay opnieuw vanuit deze worktree.", "recovery.ready":"Herstel staat in de wachtrij; de Lifecycle Worker claimt de vervangende uitvoering."});
+Object.assign(DASHBOARD_MESSAGES.de, {"configuration.timeout_policy_description":"Feste hostverwaltete Grenzen für jede Provider-Aktion. Diese Grenzen sind in der Operations-Konsole nicht bearbeitbar.", "workspace.worktree_switch_confirmation":"Engineering Platform zu {branch} unter {path} wechseln?\n\nEngineering Platform prüft erneut:\n• keine Ausführung ist aktiv;\n• die Warteschlange für File-Inbox-Eingang ist leer;\n• dieser registrierte Worktree ist sauber und genau auf {branch}.\n\nAnschließend starten Operations-Konsole, Lifecycle Worker und Server Relay aus diesem Worktree neu.", "recovery.ready":"Die Wiederherstellung ist eingeplant; der Lifecycle Worker übernimmt die Ersatzausführung."});
+Object.assign(DASHBOARD_MESSAGES.fr, {"configuration.timeout_policy_description":"Limites fixes gérées par l’hôte pour chaque action du fournisseur. Ces limites ne sont pas modifiables dans la console des opérations.", "workspace.worktree_switch_confirmation":"Basculer Engineering Platform vers {branch} dans {path} ?\n\nEngineering Platform vérifie à nouveau :\n• aucune exécution n’est active ;\n• la file de l’entrée File Inbox est vide ;\n• cette arborescence enregistrée est propre et se trouve exactement sur {branch}.\n\nLa console des opérations, le Lifecycle Worker et le Server Relay redémarrent ensuite depuis cette arborescence.", "recovery.ready":"La récupération est en file d’attente ; le Lifecycle Worker prendra en charge l’exécution de remplacement."});
+Object.assign(DASHBOARD_MESSAGES.es, {"configuration.timeout_policy_description":"Límites fijos administrados por el host para cada acción del proveedor. Estos límites no se pueden editar en la consola de operaciones.", "workspace.worktree_switch_confirmation":"¿Cambiar Engineering Platform a {branch} en {path}?\n\nEngineering Platform vuelve a comprobar:\n• no hay ninguna ejecución activa;\n• la cola de entrada File Inbox está vacía;\n• este árbol de trabajo registrado está limpio y exactamente en {branch}.\n\nDespués reinicia la consola de operaciones, el Lifecycle Worker y el Server Relay desde este árbol de trabajo.", "recovery.ready":"La recuperación está en cola; el Lifecycle Worker reclamará la ejecución de sustitución."});

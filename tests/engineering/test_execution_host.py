@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 from engineering_platform.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
@@ -24,6 +25,7 @@ from engineering_platform.storage import (
 )
 from engineering_platform.execution_errors import CodexHandoffTimeout, CodexInvocationError
 from engineering_platform.execution_reporting import _target_repository_name
+from engineering_platform import execution_host
 from engineering_platform.execution_host import (
     AgentResult,
     CodexCliClient,
@@ -51,7 +53,7 @@ from engineering_platform.execution_host import (
     generate_terminal_report,
     project_codex_activity,
     project_codex_live_action_name,
-    write_redacted_codex_cli_log,
+    record_redacted_codex_cli_diagnostic,
     write_codex_usage,
     write_live_status,
 )
@@ -63,6 +65,7 @@ from engineering_platform.platform_version import (
 )
 from engineering_platform.capability_review import (
     ReviewerResult,
+    ReviewerSelection,
     reconciled_recommendations,
     records_for_storage,
     run_reviews,
@@ -1558,6 +1561,238 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(state.quality_evidence, quality_evidence)
         self.assertEqual(repository.synchronize_calls, [self.root])
 
+    def test_provider_recovery_preflight_rejects_every_ambiguous_restart_condition(self) -> None:
+        repository = FakeRepository(branch="recovery")
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("recovery-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="recovery")
+        with patch("engineering_platform.execution_host.dismissal_for_run", return_value=False), \
+             patch("engineering_platform.execution_host.verify_worktree_recovery", return_value=True):
+            exhausted = runner._recovery_record(
+                state, original="old", replacement="new", eligibility="ELIGIBLE", result="EXHAUSTED",
+                requested_at="now", started_at="now", completed_at="now",
+            )
+            self.assertEqual(runner._provider_recovery_preflight(exhausted), "PRECHECK_FAILED")
+            self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            runner.active_lease = SimpleNamespace(run_id=state.run_id)
+            self.assertIsNone(runner._provider_recovery_preflight(state))
+            with patch.object(repository, "inspect", side_effect=RuntimeError("unavailable")):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            repository.evidence = RepositoryEvidence("pcvantol/djconnect", "other", "a" * 40, True, True)
+            self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            repository.evidence = RepositoryEvidence("pcvantol/djconnect", "recovery", "a" * 40, True, True)
+            with patch("engineering_platform.execution_host.verify_worktree_recovery", return_value=False):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            process = self.root / ".engineering" / "status" / "runner_process.json"
+            process.parent.mkdir(parents=True)
+            process.write_text(json.dumps({"run_id": state.run_id, "pid": 42}), encoding="utf-8")
+            with patch("engineering_platform.execution_host.os.kill"):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            with patch("engineering_platform.execution_host.os.kill", side_effect=ProcessLookupError):
+                self.assertIsNone(runner._provider_recovery_preflight(state))
+            self.assertFalse(process.exists())
+            process.write_text("{", encoding="utf-8")
+            self.assertIsNone(runner._provider_recovery_preflight(state))
+        with patch("engineering_platform.execution_host.dismissal_for_run", return_value=True):
+            self.assertEqual(runner._provider_recovery_preflight(state), "CANCELLED")
+        terminal = TransactionState("terminal-recovery", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        self.assertEqual(runner._provider_recovery_preflight(terminal), "CANCELLED")
+
+    def test_optional_phase_telemetry_and_agent_timing_never_change_run_authority(self) -> None:
+        with patch("engineering_platform.execution_host._complete_phase") as complete:
+            execution_host.complete_phase(self.root, None)
+            complete.assert_not_called()
+        with patch("engineering_platform.execution_host._complete_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            execution_host.complete_phase(self.root, SimpleNamespace())
+        agent = FakeAgent(AgentResult("WAITING"))
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
+        state = TransactionState("timing-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        for measured in (True, "unknown", -1, 86_401):
+            agent.last_execution_seconds = measured
+            self.assertEqual(runner._record_agent_execution_time(state), state)
+        agent.last_execution_seconds = 1.2345
+        self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
+
+    def test_optional_phase_wrappers_degrade_only_telemetry_storage_failures(self) -> None:
+        with patch("engineering_platform.execution_host._start_phase", return_value=SimpleNamespace()) as start:
+            self.assertIsNotNone(execution_host.start_phase(self.root, "phase-run", "VALIDATION"))
+            start.assert_called_once()
+        with patch("engineering_platform.execution_host._start_or_resume_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            self.assertIsNone(execution_host.start_or_resume_phase(self.root, "phase-run", "VALIDATION"))
+        with patch("engineering_platform.execution_host._complete_active_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            self.assertFalse(execution_host.complete_active_phase(self.root, "phase-run", "VALIDATION"))
+
+    def test_repair_plans_and_environmental_validation_require_explicit_durable_evidence(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("repair-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", repair_iterations=1)
+        self.assertIsNone(runner._repair_plan(state))
+        stale = state.__class__(**{**state.__dict__, "repair_audit": ({"iteration": "0", "outcome": "planned"},)})
+        self.assertIsNone(runner._repair_plan(stale))
+        planned = state.__class__(**{**state.__dict__, "repair_audit": ({"iteration": "1", "outcome": "planned", "failed_checks": "suite", "proposed_action": "repair"},)})
+        self.assertEqual(runner._repair_plan(planned)["failed_checks"], "suite")
+        self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED")))
+        self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed"},))))
+        self.assertTrue(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed once; timed out once"},))))
+
+    def test_validation_failure_and_commit_evidence_helpers_refuse_unverified_inputs(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED")))
+        self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=("not-a-record",))))
+        self.assertTrue(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=({"result": "timed out"},))))
+        self.assertEqual(runner._append_verified_commit_evidence(TransactionState("commit-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT"), phase="EXECUTE_AGENT", commit_sha="not-a-sha", description="bad" ).commit_evidence, ())
+        self.assertEqual(runner._validation_kind("python -m unittest discover"), "tests")
+        self.assertEqual(runner._validation_kind("echo harmless"), None)
+
+    def test_validation_classification_and_verified_commit_records_are_bounded(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        classifications = {
+            "markdown-link-check": "documentation_contract",
+            "ruff check": "static_analysis",
+            "semgrep scan": "security",
+            "git diff --check": "format_or_diff",
+            "playwright test": "browser_e2e",
+        }
+        for command, expected in classifications.items():
+            self.assertEqual(runner._validation_kind(command), expected)
+        self.assertEqual(runner._validation_id("playwright test", "browser_e2e"), "validation_browser_e2e")
+        self.assertEqual(runner._validation_id("npm run test:engineering-dashboard", "browser_e2e"), "dashboard_browser")
+        state = TransactionState("verified-commit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        sha = "a" * 40
+        recorded = runner._append_verified_commit_evidence(state, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified")
+        self.assertEqual(len(recorded.commit_evidence), 1)
+        self.assertEqual(runner._append_verified_commit_evidence(recorded, phase="EXECUTE_AGENT", commit_sha=sha, description="implementation_agent_commit_verified"), recorded)
+        audit = runner._audit_record(iteration=1, failed_checks="suite", proposed_action="repair", result=None, outcome="planned", empty_summary="none")
+        self.assertEqual(audit["agent_summary"], "none")
+
+    def test_provider_readiness_blocks_and_restores_the_original_action_without_provider_work(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("readiness-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", next_action="invoke_agent")
+        with patch("engineering_platform.execution_host.provider_readiness_failures", return_value=("CODEX", "GITHUB")):
+            blocked = runner._provider_readiness_gate(state, require_codex=True, require_github=True)
+        self.assertEqual(blocked.next_action, "provider_auth_repair_required")
+        self.assertEqual(blocked.auth_recovery_providers, ("CODEX", "GITHUB"))
+        self.assertEqual(self.store.load(state.run_id).next_action, "provider_auth_repair_required")
+        with patch("engineering_platform.execution_host.provider_readiness_failures", return_value=()):
+            restored = runner._provider_readiness_gate(blocked, require_codex=True, require_github=True)
+        self.assertEqual(restored.next_action, "invoke_agent")
+        self.assertIsNone(restored.auth_recovery_phase)
+
+    def test_deterministic_admission_reuses_pass_and_fails_closed_without_watcher_evidence(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        admitted = TransactionState("admission-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", admission_decision="PASS", admission_completed_at="2026-01-01T00:00:00+00:00")
+        self.assertEqual(runner._confirm_deterministic_admission(admitted), (admitted, None))
+        pending = TransactionState("watcher-admission", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        environment = {
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_SCHEMA": "40",
+            "DJCONNECT_ENGINEERING_ADMITTED_STORAGE_ROOT": str(self.root),
+        }
+        with patch.dict(os.environ, environment, clear=False), \
+             patch("engineering_platform.execution_host.load_admission_decision", side_effect=execution_host.EngineeringStorageError("offline")):
+            blocked, reason = runner._confirm_deterministic_admission(pending)
+        self.assertEqual(blocked.admission_decision, "BLOCKED")
+        self.assertIn("not a persisted PASS", str(reason))
+        watcher_pass = {"run_id": pending.run_id, "submission_id": "submission-1", "decision": "PASS", "execution_mode": "MANAGED"}
+        with patch.dict(os.environ, environment, clear=False), \
+             patch("engineering_platform.execution_host.load_admission_decision", return_value=watcher_pass):
+            accepted, reason = runner._confirm_deterministic_admission(pending)
+        self.assertIsNone(reason)
+        self.assertEqual(accepted.admission_evidence_source, "WATCHER")
+
+    def test_host_auxiliary_evidence_paths_preserve_lifecycle_authority(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("auxiliary-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch.object(self.store, "save") as save:
+            runner._project_durable_recovery(state, {"state": "UNKNOWN"})
+            save.assert_not_called()
+            runner._project_durable_recovery(state, {"state": "RECOVERED", "triggering_invocation_id": "old", "replacement_invocation_id": "new"})
+            self.assertEqual(save.call_args.args[0].provider_recovery_attempts[0]["result"], "RECOVERED")
+        runner._dispatch_guard_enforced = True
+        with self.assertRaisesRegex(RunnerError, "deterministic admission"):
+            runner._require_provider_dispatch_admission(state)
+        runner._dispatch_guard_enforced = False
+        runner._require_provider_dispatch_admission(state)
+        with patch("engineering_platform.execution_host.write_codex_usage") as usage:
+            runner.agent.last_usage = "invalid"
+            runner._persist_agent_usage(state.run_id)
+            usage.assert_not_called()
+            runner.agent.last_usage = {"input_tokens": 3}
+            runner._persist_agent_usage(state.run_id)
+            usage.assert_called_once()
+        self.assertEqual(runner._validation_summary_status("not applicable"), "NOT_APPLICABLE")
+        self.assertEqual(runner._validation_summary_status("not recorded"), "UNAVAILABLE")
+        self.assertEqual(runner._validation_summary_status("ERROR: failure"), "FAIL")
+        self.assertEqual(runner._validation_summary_status("passed with no whitespace errors"), "PASS")
+        self.assertEqual(runner._validation_summary_status("ambiguous"), "UNAVAILABLE")
+
+    def test_reviewer_progress_ignores_unknown_events_and_projects_only_safe_counts(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("review-progress", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        selection = ReviewerSelection("validation", "bounded", 1.0)
+        runner.reviewer_runtime = [{"reviewer": "validation", "status": "queued"}]
+        with patch("engineering_platform.execution_host.write_live_status") as status:
+            runner._publish_reviewer_progress(state, selection, "unknown")
+            status.assert_not_called()
+            runner._publish_reviewer_progress(state, selection, "started")
+            runner._publish_reviewer_progress(state, selection, "completed", ReviewerResult("validation", "done", churn={"tool_loop_operations": True}))
+        projected = runner.reviewer_runtime[0]
+        self.assertEqual(projected["status"], "completed")
+        self.assertEqual(projected["codex_commands_executed"], 0)
+        runner.reviewer_runtime = [{"reviewer": "other", "status": "queued"}]
+        with patch("engineering_platform.execution_host.write_live_status"):
+            runner._publish_reviewer_progress(state, selection, "started")
+        self.assertEqual(runner.reviewer_runtime[0]["status"], "queued")
+
+    def test_heartbeat_and_required_validation_profile_fail_closed_before_provider_work(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        runner.lease_heartbeat = SimpleNamespace(error=OSError("lost"), lease=None)
+        with self.assertRaisesRegex(RunnerError, "heartbeat was lost"):
+            runner._heartbeat()
+        runner.lease_heartbeat = SimpleNamespace(error=None, lease=None)
+        runner.active_lease = SimpleNamespace(run_id="lease-run")
+        replacement = SimpleNamespace(run_id="lease-run")
+        with patch("engineering_platform.execution_host.heartbeat_lease", return_value=replacement):
+            runner._heartbeat()
+        self.assertIs(runner.active_lease, replacement)
+        self.assertIs(runner.lease_heartbeat.lease, replacement)
+        runner.lease_heartbeat = None
+        with patch("engineering_platform.execution_host.heartbeat_lease", return_value=replacement):
+            runner._heartbeat()
+        state = TransactionState("profile-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
+        with patch.object(runner, "_save_terminal", side_effect=lambda *_args: _args[0]) as terminal:
+            with patch("engineering_platform.execution_host.load_validation_context", return_value=None):
+                self.assertIs(runner._execute_required_validation_controls(state), state)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": (), "control_bindings": ()}):
+                runner._execute_required_validation_controls(state)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": ()}):
+                runner._execute_required_validation_controls(state)
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": ({"validation_id": "other", "command": ["check"]},)}):
+                runner._execute_required_validation_controls(state)
+            invalid_command = {"validation_id": "suite", "category": "test", "control_identity": "check", "command": "not-a-command-list"}
+            with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": (invalid_command,)}), \
+                 patch.object(runner, "_managed_action"):
+                runner._execute_required_validation_controls(state)
+        self.assertEqual(terminal.call_count, 5)
+        unavailable_control = {"validation_id": "suite", "category": "test", "control_identity": "unavailable", "command": []}
+        with patch("engineering_platform.execution_host.load_validation_context", return_value={"required_validation_controls": ("suite",), "control_bindings": (unavailable_control,)}), \
+             patch.object(runner.store, "save"), patch.object(runner, "_managed_action"), \
+             patch("engineering_platform.execution_host.write_live_status"), \
+             patch("engineering_platform.execution_host.record_validation_control_result") as recorded:
+            result = runner._execute_required_validation_controls(state)
+        self.assertEqual(result.phase, "LOCAL_REPOSITORY_VALIDATION")
+        self.assertEqual(recorded.call_args.kwargs["execution_status"], "NOT_EXECUTED")
+        self.assertEqual(recorded.call_args.kwargs["result"], "UNAVAILABLE")
+
+    def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
+        sha = "b" * 40
+        repository = FakeRepository(branch="feature/verified")
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", "feature/verified", sha, True, True)
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("reported-commit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="feature/verified")
+        result = AgentResult("COMPLETE", branch="feature/verified", commit_sha=sha)
+        verified = runner._record_verified_result_commit(state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified")
+        self.assertEqual(verified.commit_evidence[0]["commit_sha"], sha)
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", "feature/verified", sha, False, True)
+        self.assertEqual(runner._record_verified_result_commit(state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified"), state)
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
@@ -1861,14 +2096,20 @@ class LocalAgentRunnerTest(unittest.TestCase):
             TransactionState("bound-validation-only", "pcvantol/djconnect", str(self.prompt), "CAPABILITY_REVIEW", action_intent="VALIDATION_ONLY"),
             {"validation_profile": {
                 "tier": "DASHBOARD", "version": "1.0",
-                "required_controls": ["git_diff_check", "engineering_python", "dashboard_browser"],
+                "required_controls": [
+                    "git_diff_check", "engineering_python", "console_route_ownership",
+                    "ui_localization", "dashboard_browser",
+                ],
             }},
         )
         self.assertFalse(state.terminal)
         context = load_validation_context(self.root, state.run_id)
         self.assertEqual(context["profile_reference"], "validation-profile-registry:DASHBOARD@1.0")
         self.assertEqual(context["profile_selection_source"], "producer_execution_context")
-        self.assertEqual(context["required_validation_controls"], ("git_diff_check", "engineering_python", "dashboard_browser"))
+        self.assertEqual(
+            context["required_validation_controls"],
+            ("git_diff_check", "engineering_python", "console_route_ownership", "ui_localization", "dashboard_browser"),
+        )
         self.assertEqual(context["control_bindings"][-1]["command"], ["npm", "run", "test:engineering-dashboard"])
         self.assertEqual(context["controls"], {})
         # The immutable run record prevents a later selection from rewriting
@@ -2966,13 +3207,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("[PROMPT_OMITTED]", detail)
         self.assertIn("ERROR: actionable failure", detail)
 
-    def test_codex_cli_log_is_private_and_redacted(self) -> None:
+    def test_codex_cli_diagnostic_is_central_and_redacted(self) -> None:
+        from engineering_platform.server import initialize
         with tempfile.TemporaryDirectory() as temporary:
-            path = write_redacted_codex_cli_log(Path(temporary), "cli-run", "Bearer private-token")
-            content = path.read_text(encoding="utf-8")
-            self.assertNotIn("private-token", content)
-            self.assertIn("[REDACTED]", content)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            root = Path(temporary)
+            central = root / "central"
+            initialize(central)
+            record_redacted_codex_cli_diagnostic(root, "cli-run", "Bearer private-token", central_database=central / "engineering.db")
+            with sqlite3.connect(central / "engineering.db") as connection:
+                component, payload = connection.execute(
+                    "SELECT component,payload FROM engineering_component_logs"
+                ).fetchone()
+            self.assertEqual(component, "lifecycle_worker")
+            self.assertNotIn("private-token", payload)
+            self.assertIn("[REDACTED]", payload)
+            self.assertFalse((root / ".engineering" / "logs").exists())
 
     def test_sensitive_diagnostic_is_redacted_before_persistence(self) -> None:
         agent = FakeAgent(AgentResult("BLOCKED", diagnostic="authorization=top-secret API_KEY=also-secret"))

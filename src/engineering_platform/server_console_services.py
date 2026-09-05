@@ -1,0 +1,2023 @@
+"""Private Engineering Status dashboard with distinct queue recovery and execution retry actions."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Callable
+from datetime import datetime, timezone
+from html import escape
+import json
+import logging
+import os
+from pathlib import Path
+import plistlib
+import re
+import select
+import shlex
+import shutil
+import sqlite3
+import socket
+import subprocess  # noqa: F401 - Compatibility mock target; process execution is provider-owned.
+import sys
+from threading import Lock, Timer
+import time
+import uuid
+from urllib.parse import parse_qs, urlsplit
+from .platform_api import PlatformConfiguration
+from . import central_database
+from .platform_bootstrap import provision_runtime_workspace as provision_workspace
+from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
+from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
+from .component_logging import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_ENVIRONMENT,
+    VALID_LEVELS,
+    clear_component_log as clear_stored_component_log,
+    component_log as stored_component_log,
+    component_log_page as stored_component_log_page,
+    component_log_version,
+    component_lifecycle_context,
+    component_logger,
+    log_event,
+    prune_component_logs,
+    shutdown_signal_logging,
+)
+from .component_lock import DuplicateComponentInstanceError, single_instance
+from .agent_state import is_valid_commit_evidence_record, redact_diagnostic
+from .pr_check_repair import PullRequestCheckRepairError, admit as admit_pr_check_repair, attempted as pr_check_repair_attempted, check_summary as pr_check_repair_check_summary, mark_dispatch_failed as mark_pr_check_repair_dispatch_failed, repair_state as pr_check_repair_state
+from .codex_chat import (
+    CodexChatError,
+    chat_model,
+    clear_history as clear_codex_chat_history,
+    history as codex_chat_history,
+    respond as codex_chat_response,
+)
+from .codex_capacity import read_remaining_percent
+from .telemetry import clear_telemetry, daily_statistics, daily_timing_detail, execution_timing, prune_telemetry
+from .prompt_history import prompt_history, report_for_prompt_history, report_path_for_prompt_history
+from .report_analysis import analyze as analyze_terminal_report
+from .recommendation_handoff import handoff_from_report
+from .storage import (
+    EngineeringStorageError,
+    load_projection,
+    open_storage,
+)
+from .provider_usage import provider_usage_summary
+from .execution_activity import terminal_activity_summary
+from .execution_lifecycle import projection as lifecycle_projection
+from .platform_version import EngineeringPlatformManifest
+from .resources import package_path
+from .platform_components import PLATFORM_COMPONENT_BY_ID, PLATFORM_COMPONENTS
+from . import dashboard_state
+from . import managed_codex_runtime
+from . import server_relay
+from .console_presentation import APP_ICON_DARK, APP_ICON_LIGHT, ASSET_DIRECTORY, WEB_MANIFEST
+
+RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
+DASHBOARD_VERSION = "2.0.0"
+DASHBOARD_STARTED_AT = time.monotonic()
+DASHBOARD_SNAPSHOT_SOURCE = str(uuid.uuid4())
+LOOPBACK_ADDRESS = "127.0.0.1"
+CODEX_PROCESS = re.compile(r"(?:^|\s)(?:\S*/)?codex(?:\s|$)")
+RATE_LIMIT_CACHE_SECONDS = 60
+RETRYABLE_REPORT_ANALYSIS_STATUSES = frozenset({
+    "provider_failed", "provider_unavailable", "invalid_structured_response",
+})
+_REPORT_ANALYSIS_RETRY_LOCK = Lock()
+_REPORT_ANALYSIS_RETRY_RUNS: set[str] = set()
+
+
+class CodexCapacityReserveConflict(ValueError):
+    """A new reserve exceeds fresh capacity or cannot be safely verified."""
+
+    def __init__(self, code: str, *, remaining_percent: float | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.remaining_percent = remaining_percent
+
+
+def _validate_codex_capacity_reserve_update(root: Path, key: object, value: object) -> None:
+    """Fail closed before a reserve increase can make future admission impossible."""
+    if key != "codex_capacity_reserve_percent" or not isinstance(value, int) or isinstance(value, bool):
+        return
+    previous = int(central_database.capacity_configuration(root)["codex_capacity_reserve_percent"])
+    if value <= previous:
+        return
+    remaining = read_remaining_percent()
+    if remaining is None:
+        raise CodexCapacityReserveConflict("codex_capacity_reserve_unavailable")
+    if value > remaining:
+        raise CodexCapacityReserveConflict(
+            "codex_capacity_reserve_exceeds_remaining", remaining_percent=remaining,
+        )
+_rate_limit_cache_lock = Lock()
+_rate_limit_cache: tuple[float, bytes] | None = None
+CODEX_IDENTITY_CACHE_SECONDS = 300
+CODEX_UPDATE_CACHE_SECONDS = 900
+CODEX_CLI_PACKAGE = "@openai/codex"
+GIT_INDEX_LOCK_STALE_SECONDS = 300
+_codex_identity_cache_lock = Lock()
+_codex_identity_cache: tuple[float, dict[str, str]] | None = None
+_codex_update_cache_lock = Lock()
+_codex_update_cache: tuple[float, dict[str, object]] | None = None
+_codex_update_install_lock = Lock()
+_provider_install_lock = Lock()
+_provider_login_lock = Lock()
+_snapshot_revision_lock = Lock()
+_snapshot_fingerprint: bytes | None = None
+_snapshot_revision = 0
+
+
+def _legacy_emergency_recovery() -> object:
+    """Load retired direct-dashboard recovery support only on an old request."""
+    from . import emergency_recovery
+
+    return emergency_recovery
+
+
+class EmergencyRecoveryError(RuntimeError):
+    """Compatibility error for the retired direct-dashboard recovery route."""
+
+
+def execute_emergency_recovery(*args: object, **kwargs: object) -> object:
+    return _legacy_emergency_recovery().execute(*args, **kwargs)
+AUDITABLE_USER_ACTIONS = frozenset(
+    {
+        "chat_downloaded",
+        "component_log_downloaded",
+        "telemetry_cleared",
+        "telemetry_copied",
+        "telemetry_downloaded",
+        "telemetry_detail_json_downloaded",
+        "telemetry_detail_markdown_downloaded",
+        "prompt_history_report_copied",
+        "prompt_history_report_downloaded",
+        "prompt_history_analysis_copied",
+        "prompt_history_analysis_downloaded",
+        "prompt_history_details_json_downloaded",
+        "prompt_history_details_markdown_downloaded",
+        "report_copied",
+        "report_analysis_copied",
+    }
+)
+
+
+def _unavailable_status() -> bytes:
+    """Compatibility façade for the dashboard state module."""
+    return dashboard_state.unavailable_status()
+
+
+def _canonical_checkpoint(root: Path, run_id: str | None) -> dict[str, object]:
+    """Read one lifecycle checkpoint from SQLite, never from its JSON copy."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return {}
+    try:
+        connection = open_storage(root)
+        try:
+            row = connection.execute(
+                "SELECT payload FROM engineering_transactions WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        payload = json.loads(row[0]) if row else {}
+    except (EngineeringStorageError, TypeError, json.JSONDecodeError):
+        return {}
+    if isinstance(payload, dict) and payload:
+        return payload
+    # Compatibility-only reader for an already-terminal legacy checkpoint.
+    try:
+        legacy = json.loads(
+            (root / ".engineering" / "engineering-runs" / f"{run_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return legacy if isinstance(legacy, dict) else {}
+
+
+def _status(root: Path) -> bytes:
+    """Compatibility façade for the stable status projection."""
+    return dashboard_state.status(root)
+
+
+def _sse_status(root: Path) -> bytes:
+    """Encode the status as a single SSE data line."""
+    return dashboard_state.sse_status(root)
+
+
+def _sse_snapshot(root: Path) -> bytes:
+    """Return the complete read-only dashboard projection for one SSE update.
+
+    The browser receives this snapshot when it connects and only when one of
+    its observable values changes.  This keeps the dashboard event-driven
+    without giving the dashboard any transaction authority.
+    """
+    snapshot = dashboard_state.snapshot(
+        root,
+        status_reader=_sse_status,
+        unavailable_reader=_unavailable_status,
+        prompt_started_reader=_prompt_started,
+        usage_reader=_codex_usage,
+        rate_limits_reader=_codex_rate_limits,
+        usage_for_run_reader=_codex_usage_for_run,
+        completion_commits_reader=_completion_commits,
+        last_executed_commits_reader=_last_executed_commits,
+        reviewer_agents_reader=_reviewer_agents_for_run,
+        execution_reader=_last_executed_agent_execution,
+        runtime_metadata_reader=_last_executed_runtime_metadata,
+        report_analysis_available_reader=_report_analysis_available_for_run,
+        telemetry_reader=lambda workspace: daily_statistics(
+            workspace,
+            days=int(central_database.console_interval_configuration(workspace)["telemetry_retention_days"]),
+        ),
+        process_metrics_reader=_codex_process_metrics,
+        build_commit_reader=_build_commit,
+        component_log_versions_reader=_component_log_versions,
+        dashboard_version=DASHBOARD_VERSION,
+        worker_version="retired-direct-dashboard",
+    )
+    try:
+        payload = json.loads(snapshot)
+    except json.JSONDecodeError:
+        return snapshot
+    if not isinstance(payload, dict):
+        return snapshot
+    payload["workspace_git_lock"] = _workspace_git_lock(root)
+    status = payload.get("status")
+    payload["emergency_recovery"] = _legacy_emergency_recovery().preview(
+        root, status.get("run_id") if isinstance(status, dict) else None
+    )
+    # Git state is deliberately projected with the SSE payload instead of
+    # being fixed in the initial HTML response. A managed execution can switch
+    # to its transaction branch after the operator opens the dashboard.
+    payload["workspace_git"] = _workspace_git_projection(root)
+    payload["workspace_worktrees"] = _workspace_worktrees(root)
+    # Provider capacity belongs to the account and EP installation, never to
+    # this repository root.  The standalone Server overlays CENTRAL capacity
+    # history onto this otherwise historical projection.
+    fingerprint = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    # HTTP refreshes and SSE delivery can complete out of order in a browser.
+    # Attach one process-scoped monotone revision to every changed projection,
+    # so the client can retain the newest coherent lifecycle snapshot.
+    global _snapshot_fingerprint, _snapshot_revision
+    with _snapshot_revision_lock:
+        if fingerprint != _snapshot_fingerprint:
+            _snapshot_fingerprint = fingerprint
+            _snapshot_revision += 1
+        payload["snapshot_source"] = DASHBOARD_SNAPSHOT_SOURCE
+        payload["snapshot_revision"] = _snapshot_revision
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def _prompt_history(root: Path) -> bytes:
+    """Return historical terminal evidence without a watcher-local queue."""
+    try:
+        runs = prompt_history(root, queued_retry_children=[])
+        for run in runs:
+            run["analysis_available"] = _report_analysis_available_for_run(
+                root, run.get("run_id")
+            )
+        payload = {"runs": runs}
+    except Exception:
+        payload = {"runs": []}
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def _project_history_evidence(history: dict[str, object], report: str) -> list[str]:
+    """Project bounded report evidence without mixing it into storage access."""
+    target_repository = re.search(
+        r"^- Target Repository: `([^`\n]+)`$", report, re.MULTILINE
+    )
+    if target_repository:
+        history["target_repository"] = target_repository.group(1)
+    evidence: list[str] = []
+    for report_label, display_label in (
+        ("Execution Host", "Execution Host"),
+        ("Target Repository", "Target repository"),
+        ("Target Commit", "Target commit"),
+        ("Producer ID", "Producer"),
+        ("Producer Type", "Producer type"),
+        ("Mission ID", "Mission"),
+        ("Engineering Action ID", "Engineering action"),
+        ("Correlation ID", "Correlation"),
+    ):
+        match = re.search(
+            rf"^- {re.escape(report_label)}: `([^`\n]+)`$", report, re.MULTILINE
+        )
+        if match:
+            evidence.append(f"{display_label}: {match.group(1)}")
+    changed = len(re.findall(r"^- Changed file: `", report, re.MULTILINE))
+    if changed:
+        evidence.append(f"Evidence Bundle: {changed} gewijzigde bestanden")
+    return evidence
+
+
+def _project_prompt_history_detail(
+    entry: dict[str, object],
+    *,
+    execution: object,
+    runtime: object,
+    reviewers: object,
+    commits: object,
+    usage: dict[str, object],
+    report: str | None,
+    lifecycle: dict[str, object] | None = None,
+    pull_requests: object = (),
+    commit_timeline: object = (),
+) -> bytes:
+    """Project one immutable history row into dashboard detail JSON.
+
+    Storage retrieval belongs to the route projection; this function owns the
+    presentation shape and the bounded evidence derived from its report.
+    """
+    history = dict(entry)
+    evidence = _project_history_evidence(history, report) if report is not None else []
+    handoff = handoff_from_report(report) if report is not None else None
+    return json.dumps(
+        {
+            "history": history,
+            "execution": execution,
+            "runtime": runtime,
+            "reviewers": reviewers,
+            "commits": commits,
+            "commit_timeline": commit_timeline,
+            "pull_requests": pull_requests,
+            "usage": usage,
+            "evidence": evidence,
+            "recommendation_handoff": handoff,
+            "lifecycle": lifecycle or {},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
+def _pull_requests_for_run(root: Path, run_id: str | None) -> list[dict[str, object]]:
+    """Project only checkpoint-owned Managed pull-request evidence as links."""
+    checkpoint = _canonical_checkpoint(root, run_id)
+    repository = checkpoint.get("repository")
+    if (
+        checkpoint.get("execution_mode") != "MANAGED"
+        or not isinstance(repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+    ):
+        return []
+    links: list[dict[str, object]] = []
+    for role, field in (
+        ("implementation", "implementation_pull_request"),
+        ("finalization", "finalization_pull_request"),
+    ):
+        number = checkpoint.get(field)
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            link: dict[str, object] = {
+                "role": role,
+                "number": number,
+                "url": f"https://github.com/{repository}/pull/{number}",
+            }
+            link.update(_pull_request_github_metrics(root, repository, number))
+            links.append(link)
+    return links
+
+
+def _pull_request_github_metrics(root: Path, repository: str, number: int) -> dict[str, int]:
+    """Read bounded, display-only GitHub counts for already-linked PR evidence.
+
+    The checkpoint remains the authority for the PR link. These metrics enrich
+    its detail view only when the local checkout still proves that it belongs
+    to the same GitHub repository; unavailable evidence is omitted rather than
+    represented as a misleading zero.
+    """
+    try:
+        remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match or f"{match.group(1)}/{match.group(2)}" != repository:
+            return {}
+        payload = GitHubProvider().github(
+            "pr", "view", str(number), "--repo", repository,
+            "--json", "number,commits,changedFiles,statusCheckRollup",
+        )
+        pull_request = json.loads(payload)
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(pull_request, dict) or pull_request.get("number") != number:
+        return {}
+    metrics: dict[str, int] = {}
+    commits = pull_request.get("commits")
+    if isinstance(commits, list):
+        metrics["commit_count"] = len(commits)
+    changed_files = pull_request.get("changedFiles")
+    if isinstance(changed_files, int) and not isinstance(changed_files, bool) and changed_files >= 0:
+        metrics["changed_file_count"] = changed_files
+    checks = pull_request.get("statusCheckRollup")
+    if isinstance(checks, list):
+        # GitHub's Checks tab counts check runs.  `statusCheckRollup` also
+        # contains legacy status contexts such as Owner Authorization; those
+        # belong to commit status, not the visible Checks count.
+        metrics["check_count"] = sum(
+            1 for check in checks
+            if isinstance(check, dict)
+            and check.get("__typename") == "CheckRun"
+            and str(check.get("name") or "").strip()
+        )
+    return metrics
+
+
+def _terminal_run_diagnostic(root: Path, run_id: str | None) -> str | None:
+    """Return the checkpoint-owned block reason before consulting legacy logs."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return None
+    checkpoint = _canonical_checkpoint(root, run_id)
+    if (
+        checkpoint.get("phase") in {"BLOCKED", "FAILED"}
+        and checkpoint.get("terminal") is True
+        and isinstance(checkpoint.get("diagnostic"), str)
+        and checkpoint["diagnostic"].strip()
+    ):
+        return redact_diagnostic(checkpoint["diagnostic"], limit=500)
+    try:
+        connection = open_storage(root)
+        try:
+            rows = connection.execute(
+                "SELECT payload FROM engineering_component_logs "
+                "WHERE component='inbox' ORDER BY id DESC LIMIT 200"
+            ).fetchall()
+        finally:
+            connection.close()
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
+        return None
+    for row in rows:
+        try:
+            event = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("run_id") != run_id or event.get("event") != "job_failed":
+            continue
+        diagnostic = event.get("diagnostic")
+        if isinstance(diagnostic, str) and diagnostic.strip():
+            return redact_diagnostic(diagnostic, limit=500)
+    return None
+
+
+def _prompt_history_detail(root: Path, run_id: str | None) -> bytes:
+    """Return private, immutable operational evidence for one history row."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b""
+    entry = next((item for item in prompt_history(root) if item.get("run_id") == run_id), None)
+    if entry is None:
+        return b""
+    execution = json.loads(_last_executed_agent_execution(root, run_id))
+    runtime = json.loads(_last_executed_runtime_metadata(root, run_id))
+    reviewers = json.loads(_reviewer_agents_for_run(root, run_id))
+    commits = _commits_for_run(root, run_id)
+    pull_requests = _pull_requests_for_run(root, run_id)
+    commit_timeline = _commit_timeline_for_run(root, run_id)
+    usage: dict[str, object] = {}
+    try:
+        provider_summary = provider_usage_summary(root, run_id)
+        # Legacy runs have no invocation rows. Retain the historic aggregate
+        # projection without fabricating invocation detail.
+        if provider_summary.get("invocation_detail") == "UNAVAILABLE":
+            usage = provider_summary
+            connection = open_storage(root)
+            row = connection.execute(
+                "SELECT input_tokens, output_tokens, total_tokens FROM execution_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            connection.close()
+            if row:
+                usage.update(
+                    {
+                        label: value
+                        for label, value in zip(("input_tokens", "output_tokens", "total_tokens"), row)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    }
+                )
+        else:
+            usage = provider_summary
+    except Exception:
+        usage = {}
+    report: str | None = None
+    try:
+        report = _report_for_run(root, run_id).decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if diagnostic := _terminal_run_diagnostic(root, run_id):
+        entry["execution_diagnostic"] = diagnostic
+        if str(entry.get("status") or "").upper() in {"BLOCKED", "FAILED"}:
+            entry["blocking_reason"] = diagnostic
+    entry["execution_activity_summary"] = terminal_activity_summary(root, run_id)
+    return _project_prompt_history_detail(
+        entry,
+        execution=execution,
+        runtime=runtime,
+        reviewers=reviewers,
+        commits=commits,
+        pull_requests=pull_requests,
+        commit_timeline=commit_timeline,
+        usage=usage,
+        report=report,
+        lifecycle=lifecycle_projection(root, run_id),
+    )
+
+
+def _rate_limit_window_label(duration_minutes: int) -> str:
+    """Use a neutral label that reflects the window actually reported by Codex."""
+    if duration_minutes == 300:
+        return "5-uursvenster"
+    if duration_minutes == 10_080:
+        return "Weekvenster"
+    if duration_minutes % 1_440 == 0:
+        return f"{duration_minutes // 1_440}-daags venster"
+    if duration_minutes % 60 == 0:
+        return f"{duration_minutes // 60}-uursvenster"
+    return f"{duration_minutes}-minutenvenster"
+
+
+def _normalize_rate_limits(payload: object) -> dict[str, object]:
+    """Keep only safe, displayable quota values from Codex's read-only response."""
+    if not isinstance(payload, dict):
+        return {}
+    limits = payload.get("rateLimits")
+    if not isinstance(limits, dict):
+        return {}
+    windows: list[dict[str, int | str]] = []
+    for key in ("primary", "secondary"):
+        item = limits.get(key)
+        if not isinstance(item, dict):
+            continue
+        used = item.get("usedPercent")
+        duration = item.get("windowDurationMins")
+        resets_at = item.get("resetsAt")
+        if (
+            not isinstance(used, (int, float))
+            or isinstance(used, bool)
+            or not isinstance(duration, int)
+            or isinstance(duration, bool)
+            or not isinstance(resets_at, int)
+            or isinstance(resets_at, bool)
+        ):
+            continue
+        windows.append(
+            {
+                "label": _rate_limit_window_label(duration),
+                "used_percent": max(0, min(100, round(used))),
+                "window_minutes": duration,
+                "resets_at": resets_at,
+            }
+        )
+    credits = payload.get("rateLimitResetCredits")
+    available = credits.get("availableCount") if isinstance(credits, dict) else None
+    normalized: dict[str, object] = {"windows": windows}
+    if isinstance(available, int) and not isinstance(available, bool) and available >= 0:
+        normalized["reset_credits"] = available
+    return normalized if windows or "reset_credits" in normalized else {}
+
+
+def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | None:
+    """Return the most restrictive safe remaining quota percentage."""
+    windows = rate_limits.get("windows")
+    if not isinstance(windows, list):
+        return None
+    remaining_values: list[float] = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        if not isinstance(used, (int, float)) or isinstance(used, bool):
+            continue
+        remaining_values.append(max(0.0, min(100.0, 100.0 - float(used))))
+    return min(remaining_values) if remaining_values else None
+
+
+def _codex_cli_installation_path(executable: str | None) -> str | None:
+    """Return EP's managed CLI prefix, never a PATH-resolved alternative."""
+    if not executable:
+        return None
+    managed_prefix = engineering_platform_codex_cli_prefix()
+    if Path(executable).expanduser() == managed_prefix / "bin" / "codex":
+        return str(managed_prefix)
+    return None
+
+
+def _codex_provider_identity(*, refresh: bool = False) -> dict[str, str]:
+    """Return the active provider identity and its locally resolved executable path."""
+    global _codex_identity_cache
+    now = time.monotonic()
+    with _codex_identity_cache_lock:
+        if not refresh and _codex_identity_cache and now - _codex_identity_cache[0] < CODEX_IDENTITY_CACHE_SECONDS:
+            return dict(_codex_identity_cache[1])
+
+    identity = {"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"}
+    executable = codex_cli_executable()
+    if executable:
+        if installation_path := _codex_cli_installation_path(executable):
+            identity["provider_path"] = installation_path
+        try:
+            completed = LocalProcessProvider().execute(Path.cwd(), (executable, "--version"))
+        except OSError:
+            completed = None
+        if completed and completed.returncode == 0:
+            match = re.search(
+                r"(?<!\d)(\d+\.\d+\.\d+)(?!\d)",
+                (completed.stdout or completed.stderr).strip(),
+            )
+            if match:
+                identity["provider_version"] = match.group(1)
+    with _codex_identity_cache_lock:
+        _codex_identity_cache = (now, identity)
+    return dict(identity)
+
+
+def _codex_rate_limits() -> bytes:
+    """Read current Codex quota windows without persisting account or credit data."""
+    global _rate_limit_cache
+    now = time.monotonic()
+    with _rate_limit_cache_lock:
+        if _rate_limit_cache and now - _rate_limit_cache[0] < RATE_LIMIT_CACHE_SECONDS:
+            return _rate_limit_cache[1]
+    identity = _codex_provider_identity()
+    provider = CodexCliProvider()
+    process = None
+    try:
+        process = provider.app_server()
+        if process.stdin is None or process.stdout is None:
+            return json.dumps(identity, separators=(",", ":")).encode()
+        process.stdin.write(
+            json.dumps(
+                {
+                    "method": "initialize",
+                    "id": 1,
+                    "params": {
+                        "clientInfo": {
+                            "name": "djconnect_engineering_dashboard",
+                            "title": "EP Operations",
+                            "version": DASHBOARD_VERSION,
+                        }
+                    },
+                }
+            )
+            + "\n"
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 5
+        requested = False
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            line = process.stdout.readline()
+            if not line:
+                break
+            response = json.loads(line)
+            if response.get("id") == 1 and not requested:
+                process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                process.stdin.write(
+                    json.dumps({"method": "account/rateLimits/read", "id": 2, "params": {}})
+                    + "\n"
+                )
+                process.stdin.flush()
+                requested = True
+            elif response.get("id") == 2:
+                result = {**identity, **_normalize_rate_limits(response.get("result"))}
+                encoded = json.dumps(result, separators=(",", ":")).encode()
+                with _rate_limit_cache_lock:
+                    _rate_limit_cache = (time.monotonic(), encoded)
+                return encoded
+    except (OSError, ValueError, json.JSONDecodeError):
+        return json.dumps(identity, separators=(",", ":")).encode()
+    finally:
+        if process is not None:
+            provider.close_app_server(process)
+    return json.dumps(identity, separators=(",", ":")).encode()
+
+
+def _github_rate_limit_status() -> dict[str, object]:
+    """Read GitHub quota state without changing GitHub or repository state."""
+    try:
+        payload = json.loads(GitHubProvider().github("api", "rate_limit"))
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        # A rate-limit response can itself be a 403/429.  Do not show a red
+        # operator banner for unrelated authentication or network failures.
+        return {"limited": "rate limit" in str(error).lower()}
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, dict):
+        return {"limited": False}
+    exhausted: list[tuple[str, int]] = []
+    for name in ("core", "graphql", "search"):
+        resource = resources.get(name)
+        if not isinstance(resource, dict):
+            continue
+        remaining, reset = resource.get("remaining"), resource.get("reset")
+        if isinstance(remaining, int) and remaining <= 0:
+            exhausted.append((name, reset if isinstance(reset, int) else 0))
+    if not exhausted:
+        return {"limited": False}
+    reset_at = min((reset for _, reset in exhausted if reset > 0), default=None)
+    return {"limited": True, "reset_at": reset_at}
+
+
+class RateLimitResetError(RuntimeError):
+    """Raised when Codex cannot safely consume a reset credit."""
+
+
+class CodexCliUpdateError(RuntimeError):
+    """Raised when the local Codex CLI cannot be updated and verified safely."""
+
+
+_CODEX_CLI_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def _codex_cli_version(value: object) -> str | None:
+    candidate = str(value or "").strip().removeprefix("v")
+    return candidate if _CODEX_CLI_VERSION.fullmatch(candidate) else None
+
+
+def _codex_cli_version_key(value: str) -> tuple[int, int, int, int, str]:
+    """Compare normal releases above prereleases without accepting arbitrary text."""
+    base, separator, prerelease = value.partition("-")
+    major, minor, patch = (int(part) for part in base.split("."))
+    return major, minor, patch, 1 if not separator else 0, prerelease
+
+
+def _npm_executable() -> str | None:
+    """Resolve npm for managed-CLI installation without selecting another CLI."""
+    return shutil.which("npm")
+
+
+def _execution_active(root: Path) -> bool:
+    """Return whether an Execution Host lifecycle is actively using this installation."""
+    try:
+        status = json.loads(_status(root))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(status, dict)
+        and status.get("watcher_state") in {"ENGINEERING_RUN_ACTIVE", "WAITING_FOR_OPERATOR_MERGE"}
+        and isinstance(status.get("run_id"), str)
+        and bool(status["run_id"])
+    )
+
+
+def _codex_cli_update_status(root: Path, *, refresh: bool = False) -> dict[str, object]:
+    """Read the published Codex CLI version without exposing account or npm output."""
+    global _codex_update_cache
+    now = time.monotonic()
+    with _codex_update_cache_lock:
+        if not refresh and _codex_update_cache and now - _codex_update_cache[0] < CODEX_UPDATE_CACHE_SECONDS:
+            return dict(_codex_update_cache[1])
+
+    current = _codex_cli_version(_codex_provider_identity(refresh=refresh).get("provider_version"))
+    npm = _npm_executable()
+    if current is None or npm is None:
+        status: dict[str, object] = {"state": "unavailable", "update_available": False}
+    else:
+        try:
+            completed = LocalProcessProvider().execute(root, (npm, "view", CODEX_CLI_PACKAGE, "version", "--json"))
+            latest_raw = json.loads(completed.stdout) if completed.returncode == 0 else None
+            candidates = latest_raw if isinstance(latest_raw, list) else [latest_raw]
+            versions = [version for value in candidates if (version := _codex_cli_version(value)) is not None]
+            latest = max(versions, key=_codex_cli_version_key, default=None)
+        except (OSError, ValueError, json.JSONDecodeError):
+            latest = None
+        if latest is None:
+            status = {"state": "unavailable", "update_available": False, "current_version": current}
+        else:
+            update_available = _codex_cli_version_key(latest) > _codex_cli_version_key(current)
+            status = {
+                "state": "update_available" if update_available else "current",
+                "update_available": update_available,
+                "current_version": current,
+                "latest_version": latest,
+            }
+    with _codex_update_cache_lock:
+        _codex_update_cache = (now, status)
+    return dict(status)
+
+
+def _install_codex_cli_update(root: Path) -> dict[str, object]:
+    """Provision the EP-owned runtime through the canonical lifecycle."""
+    with _codex_update_install_lock:
+        if _execution_active(root):
+            raise CodexCliUpdateError("codex_cli_update_execution_active")
+        try:
+            return managed_codex_runtime.provision(root)
+        except managed_codex_runtime.ManagedCodexRuntimeError as error:
+            raise CodexCliUpdateError(str(error)) from error
+
+
+def _consume_codex_rate_limit_reset_credit() -> str:
+    """Consume exactly one available Codex reset credit through its app-server API."""
+    global _rate_limit_cache
+    provider = CodexCliProvider()
+    process = None
+    try:
+        process = provider.app_server()
+        if process.stdin is None or process.stdout is None:
+            raise RateLimitResetError("Codex-reset is niet beschikbaar.")
+        process.stdin.write(
+            json.dumps(
+                {
+                    "method": "initialize",
+                    "id": 1,
+                    "params": {
+                        "clientInfo": {
+                            "name": "djconnect_engineering_dashboard",
+                            "title": "EP Operations",
+                            "version": DASHBOARD_VERSION,
+                        }
+                    },
+                }
+            )
+            + "\n"
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 5
+        requested = False
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            line = process.stdout.readline()
+            if not line:
+                break
+            response = json.loads(line)
+            if response.get("id") == 1 and not requested:
+                process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                process.stdin.write(
+                    json.dumps(
+                        {
+                            "method": "account/rateLimitResetCredit/consume",
+                            "id": 2,
+                            "params": {"idempotencyKey": str(uuid.uuid4())},
+                        }
+                    )
+                    + "\n"
+                )
+                process.stdin.flush()
+                requested = True
+            elif response.get("id") == 2:
+                result = response.get("result")
+                outcome = result.get("outcome") if isinstance(result, dict) else None
+                if outcome not in {"reset", "nothingToReset", "noCredit", "alreadyRedeemed"}:
+                    raise RateLimitResetError("Codex-reset kon niet worden bevestigd.")
+                with _rate_limit_cache_lock:
+                    _rate_limit_cache = None
+                return outcome
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RateLimitResetError("Codex-reset is niet beschikbaar.") from error
+    finally:
+        if process is not None:
+            provider.close_app_server(process)
+    raise RateLimitResetError("Codex-reset reageerde niet op tijd.")
+
+
+def _latest_codex_log(root: Path) -> bytes:
+    """Retire the former checkout-local Codex diagnostic reader."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
+
+
+def _component_log(root: Path, component: str) -> bytes:
+    """Historical reader constrained to canonical component identities."""
+    return stored_component_log(root, component)
+
+
+def _component_log_page(root: Path, component: str, query: dict[str, list[str]]) -> dict[str, object]:
+    """Historical reader with no alias expansion or local fallback."""
+    return stored_component_log_page(root, component)
+
+
+def _clear_component_log(root: Path, component: str) -> None:
+    clear_stored_component_log(root, component)
+
+
+def _component_log_versions(root: Path) -> dict[str, str]:
+    return {component.id: component_log_version(root, component.id) for component in PLATFORM_COMPONENTS}
+
+
+def _platform_health(_root: Path) -> dict[str, object]:
+    """Historical projection derived from the sole canonical model."""
+    components = {component.id: {"healthy": True, "state": "available"} for component in PLATFORM_COMPONENTS}
+    return {"health": "ok", "healthy": True, "components": components}
+
+
+def _component_uptime_seconds(component: str) -> int | None:
+    """Legacy diagnostic accepts only a canonical component identifier."""
+    return None if component in PLATFORM_COMPONENT_BY_ID else None
+
+
+def _component_processes(component: str) -> list[dict[str, int | str]]:
+    return [] if component not in PLATFORM_COMPONENT_BY_ID else []
+
+
+def _process_elapsed_seconds(value: str) -> int:
+    """Retained parser for historical process evidence, not a component owner."""
+    if not re.fullmatch(r"(?:\d+-)?\d{1,2}:\d{2}:\d{2}", value):
+        raise ValueError("Ongeldige procesduur.")
+    days, clock = (value.split("-", 1) + [""])[:2] if "-" in value else ("0", value)
+    hours, minutes, seconds = (int(part) for part in clock.split(":"))
+    return int(days) * 86_400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _component_details(root: Path, component: str) -> dict[str, object]:
+    if component not in PLATFORM_COMPONENT_BY_ID:
+        raise ValueError("Onbekend Engineering Platform-onderdeel")
+    return {"component": component, "health": _platform_health(root)["components"][component]}
+
+
+
+def _launch_agent_health(label: str) -> dict[str, str | bool]:
+    """Inspect one owned LaunchAgent process without changing its state."""
+    state = LaunchdProvider().runtime_status(label)
+    if state.qualified:
+        return {"healthy": True, "state": "running", "detail": "LaunchAgent-proces is actief"}
+    if state.detail == "launchctl unavailable":
+        return {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"}
+    return {"healthy": False, "state": "not_running", "detail": "LaunchAgent is geladen, maar heeft geen actief proces" if state.detail.endswith("no active process") else "LaunchAgent is niet geladen"}
+
+
+
+def _launch_agent_details(label: str) -> dict[str, object]:
+    """Return the safe, owned portion of one per-user LaunchAgent contract."""
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    details: dict[str, object] = {
+        "label": label,
+        "plist_path": str(plist_path),
+        "loaded": False,
+        "program_arguments": [],
+        "keep_alive": None,
+        "run_at_load": None,
+    }
+    try:
+        payload = plistlib.loads(plist_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return details
+    if not isinstance(payload, dict):
+        return details
+    arguments = payload.get("ProgramArguments")
+    if isinstance(arguments, list):
+        details["program_arguments"] = [str(value) for value in arguments[:8]]
+    details["keep_alive"] = bool(payload.get("KeepAlive"))
+    details["run_at_load"] = bool(payload.get("RunAtLoad"))
+    details["loaded"] = bool(_launch_agent_health(label).get("healthy"))
+    return details
+
+
+
+def _registered_worktree_path(root: Path, worktree_path: object, branch: object | None = None) -> Path:
+    """Resolve one worktree from Git's current registration, never from HTTP input."""
+    if not isinstance(worktree_path, str) or not worktree_path or (branch is not None and not isinstance(branch, str)):
+        raise ValueError("De gekozen worktree is ongeldig.")
+    projection = _workspace_worktrees(root)
+    candidates = [
+        item for item in projection.get("worktrees", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and item["path"] == worktree_path
+        and (branch is None or item.get("branch") == branch)
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
+    target = Path(candidates[0]["path"]).resolve()
+    if not target.is_absolute():
+        raise RuntimeError("De gekozen worktree is niet beschikbaar voor een veilige switch.")
+    return target
+
+
+def _workspace_git_lock(root: Path, *, now: float | None = None) -> dict[str, object]:
+    """Describe the index lock without offering recovery unless it is provably stale."""
+    lock_path = root / ".git" / "index.lock"
+    try:
+        age_seconds = max(0, int((now if now is not None else time.time()) - lock_path.stat().st_mtime))
+    except OSError:
+        return {"state": "free", "active": False, "stale": False}
+
+    # lsof is the conservative ownership check: if it is unavailable or cannot
+    # determine ownership, recovery remains disabled.  Never guess that a lock
+    # is stale merely because it is old.
+    lsof = shutil.which("lsof")
+    if not lsof:
+        return {"state": "active", "active": True, "stale": False, "age_seconds": age_seconds}
+    try:
+        ownership = LocalProcessProvider().execute(root, (lsof, "-t", str(lock_path)))
+    except OSError:
+        return {"state": "active", "active": True, "stale": False, "age_seconds": age_seconds}
+    owner_pids = [line for line in ownership.stdout.splitlines() if line.strip().isdigit()]
+    stale = ownership.returncode == 1 and not owner_pids and age_seconds >= GIT_INDEX_LOCK_STALE_SECONDS
+    return {
+        "state": "stale" if stale else "active",
+        "active": not stale,
+        "stale": stale,
+        "age_seconds": age_seconds,
+    }
+
+
+
+def _branch_is_verified_merged_into_main(
+    root: Path, expected_branch: str, branch: str, provider: GitProvider
+) -> bool:
+    """Accept an older local head only when a merged PR proves it reached main."""
+    try:
+        remote = provider.execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match:
+            return False
+        payload = GitHubProvider().github(
+            "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "merged", "--head", branch,
+            "--json", "number,headRefName,headRefOid,mergeCommit", "--limit", "2",
+        )
+        pull_requests = json.loads(payload)
+        if not isinstance(pull_requests, list):
+            return False
+        pull_request = next((item for item in pull_requests if isinstance(item, dict) and item.get("headRefName") == branch), None)
+        number = pull_request.get("number") if isinstance(pull_request, dict) else None
+        merge_commit = pull_request.get("mergeCommit") if isinstance(pull_request, dict) else None
+        merge_oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        local_head = provider.execute(root, "git", "rev-parse", "--verify", branch)
+        if not isinstance(number, int) or not isinstance(merge_oid, str) or local_head.returncode or not local_head.stdout.strip():
+            return False
+        merged_into_main = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+        return (
+            merged_into_main.returncode == 0
+            and _github_pull_request_contains_commit(f"{match.group(1)}/{match.group(2)}", number, local_head.stdout.strip())
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _github_pull_request_contains_commit(repository: str, number: int, commit_sha: str) -> bool:
+    """Use GitHub's immutable PR commit record when a deleted head is not local."""
+    try:
+        payload = GitHubProvider().github("pr", "view", str(number), "--repo", repository, "--json", "commits")
+        pull_request = json.loads(payload)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return False
+    commits = pull_request.get("commits") if isinstance(pull_request, dict) else None
+    return isinstance(commits, list) and any(
+        isinstance(item, dict) and isinstance(item.get("oid"), str) and item["oid"] == commit_sha
+        for item in commits
+    )
+
+
+def _github_pull_request_for_detached_commit(
+    root: Path, repository: str, commit_sha: str, expected_branch: str, provider: GitProvider,
+) -> dict[str, object] | None:
+    """Return immutable PR evidence for one detached commit, if GitHub can prove it."""
+    try:
+        payload = json.loads(GitHubProvider().github("api", f"repos/{repository}/commits/{commit_sha}/pulls"))
+        if not isinstance(payload, list):
+            return None
+        fallback: dict[str, object] | None = None
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("number"), int) or not isinstance(item.get("html_url"), str):
+                continue
+            state = "MERGED" if item.get("merged_at") else str(item.get("state") or "").upper()
+            merge_oid = item.get("merge_commit_sha")
+            verified = False
+            if state == "MERGED" and isinstance(merge_oid, str) and merge_oid:
+                merged = provider.execute(root, "git", "merge-base", "--is-ancestor", merge_oid, expected_branch)
+                if merged.returncode not in {0, 1}:
+                    continue
+                verified = merged.returncode == 0
+            evidence = {"number": item["number"], "url": item["html_url"], "state": state, "verified": verified}
+            if verified:
+                return evidence
+            if fallback is None or (state == "OPEN" and fallback.get("state") != "OPEN"):
+                fallback = evidence
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return None
+    return fallback
+
+
+def _workspace_open_pull_requests(root: Path) -> list[dict[str, object]] | None:
+    """Return PR context, or ``None`` when GitHub cannot authoritatively answer."""
+    try:
+        remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match:
+            return None
+        payload = GitHubProvider().github(
+            "pr", "list", "--repo", f"{match.group(1)}/{match.group(2)}", "--state", "open",
+            "--json", "number,title,url,headRefOid,headRefName,isDraft,mergeStateStatus,reviewDecision,reviews,statusCheckRollup", "--limit", "20",
+        )
+        candidates = json.loads(payload)
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return None
+    if not isinstance(candidates, list):
+        return None
+    result: list[dict[str, object]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        number, title, url, branch = candidate.get("number"), candidate.get("title"), candidate.get("url"), candidate.get("headRefName")
+        if isinstance(number, int) and number > 0 and all(isinstance(value, str) for value in (title, url, branch)) and url.startswith("https://github.com/"):
+            head_sha = candidate.get("headRefOid")
+            failed_checks, checks_terminal = pr_check_repair_check_summary(candidate.get("statusCheckRollup"))
+            authorization_requested = _owner_authorization_requested(candidate)
+            repair_state = pr_check_repair_state(root, number, head_sha)
+            repair_active = repair_state in {"QUEUED", "RUNNING"} or (
+                repair_state == "SUBMITTED" and not checks_terminal
+            )
+            repair_completed_for_head = repair_state == "SUBMITTED" and checks_terminal
+            result.append({
+                "number": number,
+                "title": title,
+                "url": url,
+                "branch": branch,
+                "status": _open_pull_request_status(candidate),
+                "owner_approval": _owner_approval_status(candidate, match.group(1)),
+                "owner_authorization_requested": authorization_requested,
+                "failed_checks": failed_checks,
+                # This is an explicit, one-shot operator action for a
+                # human-authored same-repository PR.  Endpoint admission
+                # re-reads all GitHub evidence before any provider is used.
+                "check_repair_available": bool(failed_checks) and checks_terminal and not authorization_requested and not repair_active and not pr_check_repair_attempted(root, number, head_sha),
+                "check_repair_state": repair_state if repair_active else None,
+                "check_repair_completed_for_head": repair_completed_for_head,
+            })
+    return result
+
+
+def _owner_approval_status(pull_request: dict[str, object], repository_owner: str) -> str:
+    """Project owner approval, including GitHub's exact-SHA authorization check."""
+    # ``reviewDecision`` only represents GitHub reviews.  The policy gate for
+    # high-risk work is published as a legacy commit StatusContext instead, so
+    # it must take precedence over the optional-review fallback below.
+    checks = pull_request.get("statusCheckRollup")
+    if isinstance(checks, list):
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            name = str(check.get("name") or check.get("context") or "").casefold()
+            if name != "owner authorization":
+                continue
+            state = str(check.get("state") or check.get("status") or "").upper()
+            conclusion = str(check.get("conclusion") or "").upper()
+            if state not in {"SUCCESS", "COMPLETED"} or conclusion not in {"", "SUCCESS", "NEUTRAL", "SKIPPED"}:
+                return "pending"
+            # This check exists only when the HIGH_RISK owner-authorization
+            # gate applied to this exact commit.  A successful result is an
+            # affirmative owner decision, not the absence of a requirement.
+            # Do not fall through to GitHub's optional-review fallback: the
+            # owner may have authorized with the dashboard control rather
+            # than submitted a conventional PR review.
+            return "approved"
+    reviews = pull_request.get("reviews")
+    if not isinstance(reviews, list) or not repository_owner:
+        return "pending"
+    owner_reviews = [
+        review for review in reviews
+        if isinstance(review, dict) and isinstance(review.get("author"), dict)
+        and str(review["author"].get("login") or "").casefold() == repository_owner.casefold()
+    ]
+    if not owner_reviews:
+        # GitHub reports ``null`` when its branch policy does not require a
+        # review.  Preserve ``pending`` for an unavailable projection, but do
+        # not turn the absence of an optional owner review into a false wait.
+        if "reviewDecision" in pull_request and str(pull_request.get("reviewDecision") or "").upper() != "REVIEW_REQUIRED":
+            return "not_required"
+        return "pending"
+    latest = max(owner_reviews, key=lambda review: str(review.get("submittedAt") or ""))
+    state = str(latest.get("state") or "").upper()
+    if state == "APPROVED":
+        return "approved"
+    if state == "CHANGES_REQUESTED":
+        return "changes_requested"
+    return "pending"
+
+
+def _owner_authorization_requested(pull_request: dict[str, object]) -> bool:
+    """Whether GitHub has requested exact-SHA HIGH_RISK authorization."""
+    checks = pull_request.get("statusCheckRollup")
+    if not isinstance(checks, list):
+        return False
+    return any(
+        isinstance(check, dict)
+        and str(check.get("name") or check.get("context") or "").casefold() == "owner authorization"
+        and str(check.get("state") or check.get("status") or "").upper() == "FAILURE"
+        for check in checks
+    )
+
+
+class OwnerAuthorizationRequestError(RuntimeError):
+    """The exact-SHA Owner Authorization workflow cannot safely be dispatched."""
+
+
+def _request_owner_authorization(root: Path, pull_request_number: int) -> dict[str, object]:
+    """Dispatch the canonical owner workflow for the current HIGH_RISK PR SHA.
+
+    The browser supplies only a PR number. Repository, target branch and SHA
+    are read afresh from GitHub so this endpoint cannot authorize a stale or
+    caller-selected commit. The workflow remains the sole publisher of the
+    ``Owner Authorization`` status.
+    """
+    if isinstance(pull_request_number, bool) or pull_request_number < 1:
+        raise OwnerAuthorizationRequestError("owner_authorization_invalid_request")
+    try:
+        remote = GitProvider().execute(root, "git", "remote", "get-url", "origin")
+        match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
+        if not match:
+            raise OwnerAuthorizationRequestError("owner_authorization_unavailable")
+        repository = f"{match.group(1)}/{match.group(2)}"
+        payload = GitHubProvider().github(
+            "pr", "view", str(pull_request_number), "--repo", repository,
+            "--json", "number,state,headRefOid,baseRefName,statusCheckRollup",
+        )
+        pull_request = json.loads(payload)
+    except OwnerAuthorizationRequestError:
+        raise
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        raise OwnerAuthorizationRequestError("owner_authorization_unavailable") from error
+    if not isinstance(pull_request, dict) or pull_request.get("number") != pull_request_number:
+        raise OwnerAuthorizationRequestError("owner_authorization_unavailable")
+    candidate_sha = pull_request.get("headRefOid")
+    target_branch = pull_request.get("baseRefName")
+    if (
+        str(pull_request.get("state") or "").upper() != "OPEN"
+        or not isinstance(candidate_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
+        or not isinstance(target_branch, str)
+        or not target_branch
+        or not _owner_authorization_requested(pull_request)
+    ):
+        raise OwnerAuthorizationRequestError("owner_authorization_not_requested")
+    checks = pull_request.get("statusCheckRollup")
+    trusted_delivery_passed = isinstance(checks, list) and any(
+        isinstance(check, dict)
+        and str(check.get("name") or "") == "Trusted Delivery qualification / Qualify trusted delivery"
+        and str(check.get("status") or "").upper() == "COMPLETED"
+        and str(check.get("conclusion") or "").upper() == "SUCCESS"
+        for check in checks
+    )
+    if not trusted_delivery_passed:
+        raise OwnerAuthorizationRequestError("owner_authorization_qualification_pending")
+    try:
+        GitHubProvider().github(
+            "workflow", "run", "owner-authorization.yml", "--repo", repository,
+            "-f", f"repository={repository}", "-f", f"pr_number={pull_request_number}",
+            "-f", f"candidate_sha={candidate_sha}", "-f", f"branch={target_branch}",
+        )
+    except RuntimeError as error:
+        raise OwnerAuthorizationRequestError("owner_authorization_dispatch_failed") from error
+    return {"queued": True, "pull_request": pull_request_number}
+
+
+def _open_pull_request_status(pull_request: dict[str, object]) -> str:
+    """Classify GitHub's read-only PR check projection for dashboard display.
+
+    An unavailable or incomplete check projection deliberately stays
+    ``waiting_for_checks``: the dashboard must never imply that a PR is ready
+    to review or merge until GitHub has reported enough terminal evidence.
+    """
+    if pull_request.get("isDraft") is True:
+        return "draft"
+    merge_state = str(pull_request.get("mergeStateStatus") or "").upper()
+    if merge_state == "BEHIND":
+        return "branch_update_required"
+    if merge_state in {"DIRTY", "BLOCKED"}:
+        return "issues"
+    review_decision = str(pull_request.get("reviewDecision") or "").upper()
+    if review_decision == "CHANGES_REQUESTED":
+        return "issues"
+    check_rollup = pull_request.get("statusCheckRollup")
+    if not isinstance(check_rollup, list):
+        return "waiting_for_checks"
+    failed_conclusions = {"ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"}
+    successful_conclusions = {"NEUTRAL", "SKIPPED", "SUCCESS"}
+    conclusions: list[str] = []
+    for check in check_rollup:
+        if not isinstance(check, dict):
+            return "waiting_for_checks"
+        # Check runs expose ``status`` + ``conclusion``; legacy status
+        # contexts expose their terminal result only as ``state``.
+        conclusion = str(check.get("conclusion") or check.get("state") or "").upper()
+        status = str(check.get("status") or "").upper()
+        if conclusion in failed_conclusions:
+            return "issues"
+        if conclusion not in successful_conclusions or (status and status != "COMPLETED"):
+            return "waiting_for_checks"
+        conclusions.append(conclusion)
+    if review_decision == "REVIEW_REQUIRED":
+        return "ready_for_review"
+    # A repository without required checks can still be ready to merge when
+    # GitHub explicitly reports its merge state as clean. An absent/unknown
+    # state remains fail-closed rather than presented as a false green result.
+    return "ready_to_merge" if merge_state == "CLEAN" else "waiting_for_checks"
+
+
+
+def _codex_process_metrics(root: Path) -> bytes:
+    """Measure only the process group explicitly recorded by the Execution Host."""
+    try:
+        runner = json.loads((root / ".engineering" / "status" / "runner_process.json").read_text(encoding="utf-8"))
+        live = json.loads((root / ".engineering" / "status" / "current.json").read_text(encoding="utf-8"))
+        process_group = runner.get("process_group") if runner.get("run_id") == live.get("run_id") else None
+        runner_pid = runner.get("pid") if runner.get("run_id") == live.get("run_id") else None
+    except (OSError, json.JSONDecodeError):
+        process_group, runner_pid = None, None
+    if not isinstance(process_group, int) or process_group <= 0 or not isinstance(runner_pid, int) or runner_pid <= 0:
+        return json.dumps({"process_count": 0, "cpu_percent": 0, "gpu_status": "NO_ACTIVE_EXECUTION_HOST"}, separators=(",", ":")).encode()
+    try:
+        observed = LocalProcessProvider().execute(Path.cwd(), ("ps", "-axo", "pid=,pgid=,pcpu=,command="))
+    except OSError:
+        observed = None
+    processes: list[dict[str, int | float]] = []
+    owner_seen = False
+    if observed and observed.returncode == 0:
+        for line in observed.stdout.splitlines():
+            parts = line.strip().split(maxsplit=3)
+            if len(parts) != 4:
+                continue
+            try:
+                pid, group, cpu = int(parts[0]), int(parts[1]), float(parts[2])
+                owner_seen = owner_seen or (pid == runner_pid and group == process_group)
+                if group == process_group:
+                    processes.append({"pid": pid, "cpu_percent": cpu})
+            except ValueError:
+                continue
+    if not owner_seen:
+        processes = []
+    return json.dumps(
+        {
+            "process_count": len(processes),
+            "cpu_percent": round(sum(item["cpu_percent"] for item in processes), 1),
+            "gpu_status": "EXECUTION_HOST_EXTERNAL",
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def _report_for_run(root: Path, run_id: str | None) -> bytes:
+    """Return report evidence only for the exact displayed terminal run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b""
+    try:
+        indexed_report = report_for_prompt_history(root, run_id)
+        if indexed_report is not None:
+            return indexed_report
+        reports = list((root / ".engineering" / "reports").glob(f"*_{run_id}.md"))
+        report = max(reports, key=lambda path: path.stat().st_mtime) if reports else None
+        return report.read_bytes() if report else b""
+    except OSError:
+        return b""
+
+
+def _reviewer_agents_for_run(root: Path, run_id: str | None) -> bytes:
+    """Project recorded specialist reviewer agents from the exact run report.
+
+    Reviewer agents are independent, read-only advisory calls.  The dashboard
+    deliberately derives this view from the immutable terminal report instead
+    of inferring generic Codex sub-agents that the platform does not record.
+    """
+    try:
+        report = _report_for_run(root, run_id).decode("utf-8")
+    except UnicodeDecodeError:
+        return b"[]"
+    section = re.search(
+        r"^## Reviewer Findings\s*$\n(?P<body>.*?)(?=^##\s|\Z)", report, re.MULTILINE | re.DOTALL
+    )
+    if section is None:
+        return b"[]"
+
+    records: list[dict[str, object]] = []
+    for block in re.split(r"(?=^- Reviewer: )", section.group("body"), flags=re.MULTILINE):
+        reviewer = re.search(r"^- Reviewer:\s*(.+)$", block, re.MULTILINE)
+        if reviewer is None:
+            continue
+
+        def field(name: str) -> str | None:
+            match = re.search(rf"^  - {re.escape(name)}:\s*(.+)$", block, re.MULTILINE)
+            if match is None:
+                return None
+            return " ".join(match.group(1).split())[:180]
+
+        accepted = field("Accepted recommendations")
+        records.append(
+            {
+                "reviewer": " ".join(reviewer.group(1).split())[:80],
+                "capability": field("Capability") or "engineering",
+                "selected_because": field("Selected because") or "Niet vastgelegd.",
+                "accepted_recommendations": int(accepted) if accepted and accepted.isdigit() else 0,
+                "status": "Uitgevoerd",
+            }
+        )
+        if len(records) == 12:
+            break
+    return json.dumps(records, separators=(",", ":")).encode()
+
+
+def _report_analysis_for_run(root: Path, run_id: str | None) -> bytes:
+    """Return advisory analysis only when it belongs to the displayed terminal run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b""
+    safe_run_id = os.path.basename(run_id)
+    if safe_run_id != run_id:
+        return b""
+    try:
+        return (root / ".engineering" / "report-analysis" / f"{safe_run_id}.md").read_bytes()
+    except OSError:
+        return b""
+
+
+def _report_analysis_available_for_run(root: Path, run_id: str | None) -> bool:
+    """Return whether the displayed terminal run has an advisory analysis."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return False
+    safe_run_id = os.path.basename(run_id)
+    return safe_run_id == run_id and (root / ".engineering" / "report-analysis" / f"{safe_run_id}.md").is_file()
+
+
+def _report_analysis_processing_status(root: Path, run_id: str | None) -> str | None:
+    """Read the fixed advisory-processing state without exposing provider diagnostics."""
+    analysis = _report_analysis_for_run(root, run_id).decode("utf-8", errors="replace")
+    match = re.search(r"(?m)^- Status: `([a-z_]+)`$", analysis)
+    return match.group(1) if match else None
+
+
+def _retry_report_analysis(root: Path, run_id: object) -> bytes:
+    """Regenerate only a retryable advisory analysis for its exact terminal report."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        raise ValueError("Ongeldige uitvoeringsreferentie voor AI-analyse.")
+    if _report_analysis_processing_status(root, run_id) not in RETRYABLE_REPORT_ANALYSIS_STATUSES:
+        raise ValueError("Deze AI-analyse hoeft niet opnieuw te worden gegenereerd.")
+    report = report_path_for_prompt_history(root, run_id)
+    if report is None:
+        raise ValueError("Engineeringrapport is niet beschikbaar voor deze uitvoering.")
+    with _REPORT_ANALYSIS_RETRY_LOCK:
+        if run_id in _REPORT_ANALYSIS_RETRY_RUNS:
+            raise RuntimeError("AI-analyse wordt al opnieuw gegenereerd.")
+        _REPORT_ANALYSIS_RETRY_RUNS.add(run_id)
+    try:
+        return analyze_terminal_report(root, run_id, report).read_bytes()
+    finally:
+        with _REPORT_ANALYSIS_RETRY_LOCK:
+            _REPORT_ANALYSIS_RETRY_RUNS.discard(run_id)
+
+
+def _current_codex_log(root: Path) -> bytes:
+    """Retire local current-run diagnostics as an operational read source."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
+
+
+def _last_executed_codex_log(root: Path) -> bytes:
+    """Retire local terminal-run diagnostics as an operational read source."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
+
+
+def _codex_usage(root: Path) -> bytes:
+    """Return usage only when it is bound to the currently displayed run."""
+    try:
+        status = json.loads(_status(root))
+        recorded = json.loads((root / ".engineering" / "status" / "codex_usage.json").read_text(encoding="utf-8"))
+        run_id = recorded.get("run_id")
+        usage = recorded.get("usage")
+    except (OSError, json.JSONDecodeError):
+        return b"{}"
+    displayed_run = status.get("run_id") or status.get("last_executed_run")
+    if run_id != displayed_run or not isinstance(usage, dict):
+        return b"{}"
+    allowed = {key: value for key, value in usage.items() if isinstance(key, str) and isinstance(value, (int, float, str))}
+    return json.dumps(allowed, separators=(",", ":")).encode()
+
+
+def _codex_usage_for_run(root: Path, run_id: str | None) -> bytes:
+    """Return CLI usage only when it belongs to the named terminal run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b"{}"
+    try:
+        recorded = json.loads(
+            (root / ".engineering" / "status" / "codex_usage.json").read_text(encoding="utf-8")
+        )
+        usage = recorded.get("usage")
+    except (OSError, json.JSONDecodeError):
+        return b"{}"
+    if recorded.get("run_id") != run_id or not isinstance(usage, dict):
+        return b"{}"
+    allowed = {
+        key: value
+        for key, value in usage.items()
+        if isinstance(key, str) and isinstance(value, (int, float, str))
+    }
+    return json.dumps(allowed, separators=(",", ":")).encode()
+
+
+def _completion_commits(root: Path) -> bytes:
+    """Return only recorded commit evidence for a completed displayed run."""
+    try:
+        status = json.loads(_status(root))
+        if status.get("current_phase") != "COMPLETE":
+            return b"{}"
+        run_id = status.get("run_id")
+        if not isinstance(run_id, str):
+            return b"{}"
+        checkpoint = _canonical_checkpoint(root, run_id)
+    except (OSError, json.JSONDecodeError):
+        return b"{}"
+    labels = {
+        "genesis_commit_sha": "Genesis-commit",
+        "implementation_merge_commit": "Implementatie-mergecommit",
+        "finalization_merge_commit": "Finalisatie-mergecommit",
+    }
+    commits = {labels[key]: checkpoint[key] for key in labels if isinstance(checkpoint.get(key), str)}
+    return json.dumps(commits, separators=(",", ":")).encode()
+
+
+def _commits_for_run(root: Path, run_id: str | None) -> dict[str, str]:
+    """Return commit evidence owned by one exact terminal execution."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return {}
+    checkpoint = _canonical_checkpoint(root, run_id)
+    if not checkpoint:
+        return {}
+    labels = {
+        "genesis_commit_sha": "Genesis-commit",
+        "implementation_merge_commit": "Implementatie-mergecommit",
+        "finalization_merge_commit": "Finalisatie-mergecommit",
+    }
+    return {labels[key]: checkpoint[key] for key in labels if isinstance(checkpoint.get(key), str)}
+
+
+def _commit_timeline_for_run(root: Path, run_id: str | None) -> list[dict[str, str]]:
+    """Project only strict, checkpoint-owned verified commit events.
+
+    This is intentionally a read-only projection: old or malformed
+    checkpoint values never become dashboard evidence.
+    """
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return []
+    checkpoint = _canonical_checkpoint(root, run_id)
+    raw = checkpoint.get("commit_evidence")
+    if not isinstance(raw, list):
+        return []
+    events: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        phase, observed_at, commit_sha, description = (
+            item.get("phase"), item.get("observed_at"), item.get("commit_sha"), item.get("description"),
+        )
+        if not is_valid_commit_evidence_record(item):
+            continue
+        events.append({
+            "phase": phase,
+            "observed_at": observed_at,
+            "commit_sha": commit_sha,
+            "description": description,
+        })
+    return sorted(events, key=lambda item: item["observed_at"])
+
+
+def _last_executed_commits(root: Path) -> bytes:
+    """Return commit evidence bound to the most recent completed run only."""
+    try:
+        status = json.loads(_status(root))
+        run_id = status.get("last_executed_run")
+        if status.get("last_executed_phase") != "COMPLETE":
+            return b"{}"
+    except json.JSONDecodeError:
+        return b"{}"
+    return json.dumps(_commits_for_run(root, run_id), separators=(",", ":")).encode()
+
+
+def _last_executed_agent_execution(root: Path, run_id: str | None) -> bytes:
+    """Return run-bound AI timing and terminal timestamp evidence."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b"{}"
+    result: dict[str, float] = {}
+    checkpoint = _canonical_checkpoint(root, run_id)
+    seconds = checkpoint.get("agent_execution_seconds")
+    if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and 0 <= seconds <= 86_400:
+        result["seconds"] = float(seconds)
+    try:
+        timing = execution_timing(root, run_id)
+        total = timing.get("total_execution_seconds")
+        finished_at = timing.get("finished_at")
+    except Exception:
+        total = finished_at = None
+    if isinstance(total, (int, float)) and not isinstance(total, bool) and 0 <= total <= 86_400:
+        result["total_seconds"] = float(total)
+    if isinstance(finished_at, str):
+        result["finished_at"] = finished_at
+    return json.dumps(result, separators=(",", ":")).encode()
+
+
+def _last_executed_runtime_metadata(root: Path, run_id: str | None) -> bytes:
+    """Project only report-bound runtime provenance for the displayed run."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
+        return b"{}"
+    report = _report_for_run(root, run_id)
+    try:
+        text = report.decode("utf-8")
+    except UnicodeDecodeError:
+        return b"{}"
+    fields = {
+        "runtime_provider": "Runtime Provider",
+        "model": "AI Model",
+        "reasoning_profile": "Reasoning Profile",
+        "configuration_profile": "Configuration Profile",
+        "codex_cli_version": "Codex CLI Version",
+        "codex_cli_installation_path": "Codex CLI Installation Path",
+    }
+    metadata: dict[str, str] = {}
+    for key, label in fields.items():
+        match = re.search(rf"^- {re.escape(label)}: `([^`\n]{{1,120}})`$", text, re.MULTILINE)
+        if match:
+            metadata[key] = match.group(1)
+    return json.dumps(metadata, separators=(",", ":")).encode()
+
+
+def _prompt_started(root: Path) -> bytes:
+    """Return the recorded Inbox start time for the run currently displayed."""
+    try:
+        run_id = json.loads(_status(root)).get("run_id")
+    except json.JSONDecodeError:
+        run_id = None
+    if not isinstance(run_id, str):
+        return b"{}"
+    for record in (root / ".engineering" / "inbox-processing").glob("*/job.json"):
+        try:
+            job = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("run_id") == run_id and isinstance(job.get("received_at"), str):
+            return json.dumps({"started_at": job["received_at"]}, separators=(",", ":")).encode()
+    return b"{}"
+
+
+def _build_commit(root: Path) -> str:
+    """Return the local checked-out revision for read-only dashboard identification."""
+    try:
+        observed = GitProvider().execute(root, "git", "rev-parse", "--short=12", "HEAD")
+    except OSError:
+        return ""
+    return observed.stdout.strip() if observed.returncode == 0 else ""
+
+
+def _tracked_file_count(root: Path) -> str:
+    """Return the recursive count of files tracked by the workspace Git repository."""
+    try:
+        observed = GitProvider().execute(root, "git", "ls-files", "-z")
+    except OSError:
+        return ""
+    if observed.returncode != 0:
+        return ""
+    separator = b"\0" if isinstance(observed.stdout, bytes) else "\0"
+    return str(sum(1 for path in observed.stdout.split(separator) if path))
+
+
+def _workspace_free_disk_space(root: Path) -> str:
+    """Return free space on the volume that contains the workspace."""
+    try:
+        free_gigabytes = shutil.disk_usage(root).free / (1024**3)
+    except OSError:
+        return ""
+    return f"{free_gigabytes:.1f} GB"
+
+
+def _provider_login_status(root: Path) -> dict[str, dict[str, str]]:
+    """Dashboard projection of the shared token-free provider readiness check."""
+    statuses = provider_readiness_status(root)
+    runtime = provider_runtime_details(root)
+    return {
+        provider: {**value, **runtime.get(provider, {})}
+        for provider, value in statuses.items()
+    }
+
+
+def _execution_runtime_status() -> dict[str, str]:
+    """Project a token-free readiness check for the installed Server Python."""
+    executable = Path(sys.executable).resolve()
+    ready = executable.is_file() and os.access(executable, os.X_OK)
+    return {
+        "state": "READY" if ready else "UNAVAILABLE",
+        "executable": str(executable) if ready else "",
+        "version": sys.version.split()[0] if ready else "",
+    }
+
+
+def _start_provider_login(root: Path, provider: str) -> None:
+    """Open one explicit interactive login in Terminal; no credential crosses EP."""
+    commands = {
+        "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
+        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+    }
+    command = commands.get(provider)
+    if command is None:
+        raise ValueError("Unsupported provider login request.")
+    if provider == "CODEX" and not CodexCliProvider().status().qualified:
+        raise ValueError("Codex CLI is not installed.")
+    if provider == "GITHUB" and shutil.which("gh") is None:
+        raise ValueError("GitHub CLI is not installed.")
+    if sys.platform != "darwin":
+        raise ValueError("Interactive provider login is supported from the local macOS dashboard only.")
+    shell_command = "exec " + " ".join(shlex.quote(part) for part in command)
+    # `do script` can create a background tab when Terminal is not frontmost.
+    # Bring it forward first so the operator receives the interactive device or
+    # browser login prompt instead of a silent, hidden dispatch.
+    apple_script = "\n".join((
+        'tell application "Terminal"',
+        "activate",
+        f"do script {json.dumps(shell_command)}",
+        "end tell",
+    ))
+    # Serialize only the AppleScript dispatch itself.  A Terminal session can
+    # be cancelled outside EP, so retaining a five-minute "active" lock made
+    # legitimate retries and the other provider appear permanently broken.
+    with _provider_login_lock:
+        completed = LocalProcessProvider().execute(root, ("/usr/bin/osascript", "-e", apple_script))
+    if completed.returncode:
+        raise ValueError("Provider login window could not be opened.")
+
+
+def _install_provider(root: Path, provider: str) -> None:
+    """Install a missing CLI only after an explicit dashboard request."""
+    if not _provider_install_lock.acquire(blocking=False):
+        raise ValueError("Another provider installation is already in progress.")
+    try:
+        if _execution_active(root):
+            raise ValueError("Provider installation is unavailable while an execution is active.")
+        if provider == "CODEX":
+            try:
+                managed_codex_runtime.provision(root)
+            except managed_codex_runtime.ManagedCodexRuntimeError as error:
+                raise ValueError(str(error)) from error
+            key = "codex"
+        elif provider == "GITHUB":
+            brew = shutil.which("brew")
+            if brew is None:
+                raise ValueError("GitHub CLI installation requires Homebrew on this host.")
+            completed = LocalProcessProvider().execute(root, (brew, "install", "gh"))
+            verification = LocalProcessProvider().execute(root, ("gh", "--version"))
+            key = "github"
+        else:
+            raise ValueError("Unsupported provider installation request.")
+        if provider == "GITHUB" and (completed.returncode or verification.returncode):
+            raise ValueError("Provider installation could not be verified.")
+        if _provider_login_status(root).get(key, {}).get("state") == "UNAVAILABLE":
+            raise ValueError("Provider installation could not be verified.")
+    finally:
+        _provider_install_lock.release()
+
+
+def _logout_provider(root: Path, provider: str) -> None:
+    """Remove one locally stored provider session; never expose credentials."""
+    if provider == "CODEX":
+        completed = CodexCliProvider().command("logout")
+    elif provider == "GITHUB":
+        process = LocalProcessProvider()
+        account = process.execute(root, ("gh", "api", "user", "--jq", ".login"))
+        username = account.stdout.strip()
+        if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
+            raise ValueError("GitHub session cannot be safely identified for logout.")
+        completed = process.execute(root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+    else:
+        raise ValueError("Unsupported provider logout request.")
+    if completed.returncode:
+        raise ValueError("Provider logout did not complete.")
+
+
+def _workspace_git_projection(root: Path) -> dict[str, object]:
+    """Return the small, read-only Git projection shown in Workspace."""
+    # The browser owns presentation.  An empty value is rendered through its
+    # five-locale unavailable label rather than leaking Server-localized copy.
+    unavailable = ""
+    try:
+        provider = GitProvider()
+        branch = provider.execute(root, "git", "branch", "--show-current")
+        revisions = provider.execute(root, "git", "rev-parse", "HEAD", "origin/main")
+    except OSError:
+        return {
+            "branch": unavailable,
+            "commit": unavailable,
+            "origin_main_commit": unavailable,
+            "origin_main_available": False,
+            "main_action_available": False,
+            "branch_cleanup_available": False,
+        }
+    branch_name = branch.stdout.strip() if branch.returncode == 0 and branch.stdout.strip() else unavailable
+    revision_lines = revisions.stdout.splitlines() if revisions.returncode == 0 else []
+    commit = revision_lines[0][:12] if revision_lines else unavailable
+    origin_main_commit = revision_lines[1][:12] if len(revision_lines) == 2 else unavailable
+    origin_main_available = len(revision_lines) == 2
+    return {
+        "branch": branch_name,
+        "commit": commit,
+        "origin_main_commit": origin_main_commit,
+        "origin_main_available": origin_main_available,
+        "main_action_available": origin_main_available and commit != origin_main_commit,
+        "branch_cleanup_available": branch_name == "main",
+    }
+
+
+def _workspace_worktrees(root: Path) -> dict[str, object]:
+    """Project local worktrees plus the protected main branch, read-only."""
+    try:
+        provider = GitProvider()
+        observed = provider.execute(root, "git", "worktree", "list", "--porcelain")
+    except OSError:
+        return {"available": False, "worktrees": []}
+    if observed.returncode != 0:
+        return {"available": False, "worktrees": []}
+
+    worktrees: list[dict[str, object]] = []
+    record: dict[str, str | bool] = {}
+    for line in [*str(observed.stdout or "").splitlines(), ""]:
+        if line:
+            key, _, value = line.partition(" ")
+            if key in {"worktree", "HEAD", "branch"}:
+                record[key] = value
+            elif key == "detached":
+                record[key] = True
+            continue
+        path = str(record.get("worktree") or "").strip()
+        if path:
+            reference = str(record.get("branch") or "")
+            try:
+                active = Path(path).resolve() == root.resolve()
+            except OSError:
+                # A stale worktree path is diagnostic evidence only; never
+                # present it as the active checkout.
+                active = False
+            worktrees.append({
+                "path": path,
+                "branch": reference.removeprefix("refs/heads/") or None,
+                "commit": str(record.get("HEAD") or "")[:12] or None,
+                "detached": bool(record.get("detached")),
+                "active": active,
+            })
+        record = {}
+    # `main` is the repository's stable baseline even when it is not currently
+    # checked out in a worktree.  The Workspace heading promises branches as
+    # well as worktrees, so project it explicitly instead of hiding it.
+    if not any(item.get("branch") == "main" for item in worktrees):
+        try:
+            main = provider.execute(root, "git", "rev-parse", "--verify", "refs/heads/main")
+        except OSError:
+            main = None
+        if main is not None and main.returncode == 0 and main.stdout.strip():
+            worktrees.append({
+                "path": None,
+                "branch": "main",
+                "commit": main.stdout.strip()[:12],
+                "detached": False,
+                "checked_out": False,
+            })
+    # Stable sorting keeps Git's worktree order intact while pinning main as
+    # the first, recognisable baseline entry.
+    worktrees.sort(key=lambda item: item.get("branch") != "main")
+    # The action itself performs the fresh, fail-closed Git verification.
+    # Keep this projection read-only so periodic dashboard refreshes never
+    # run Git checks inside every listed worktree.
+    for item in worktrees:
+        path = item.get("path")
+        branch = item.get("branch")
+        if isinstance(path, str) and isinstance(branch, str) and branch != "main":
+            item["removable"] = True
+    return {"available": True, "worktrees": worktrees}
+
+
+def render_console_document(
+    title: str,
+    build_commit: str = "onbekend",
+    workspace_id: str = "onbekend",
+    project_name: str = "Project",
+    workspace_location: str = ".",
+    workspace_free_disk_space: str = "",
+    tracked_files: str = "",
+    workspace_branch: str = "",
+    workspace_commit: str = "",
+    origin_main_commit: str = "",
+    origin_main_available: bool = False,
+    workspace_open_pull_requests: list[dict[str, object]] | None = None,
+    workspace_main_action_hidden: bool = True,
+    workspace_branch_cleanup_hidden: bool = True,
+    platform_version: str = "2.0.0",
+    configuration_inbox: str = "",
+) -> bytes:
+    """Render the private dashboard with a server-pushed status stream."""
+    page = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta id="dashboardThemeColor" name="theme-color" content="#15151d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta id="dashboardAppleWebAppTitle" name="apple-mobile-web-app-title" content="$TITLE">
+<title>$TITLE</title>
+<link rel="manifest" href="/assets/operations-console/manifest.webmanifest">
+<link id="dashboardFavicon" rel="icon" type="image/png" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2">
+<link id="dashboardAppleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="/assets/operations-console/apple-touch-icon-dark.png?v=operations-console-2">
+<script>try{const state=JSON.parse(localStorage.getItem("engineering-dashboard-client-state-v1")||"{}");document.documentElement.dataset.theme=state.theme==="light"?"light":"dark"}catch{document.documentElement.dataset.theme="dark"}</script>
+
+
+<link rel="stylesheet" href="/assets/dashboard.css?build=$BUILD_COMMIT">
+</head>
+<body data-project-id="$WORKSPACE_ID" data-project-name="$PROJECT_NAME">
+<a class="skip-link" href="#engineering-dashboard-content" data-i18n="header.skip"></a>
+<div id="dashboardSplash" role="status" aria-live="polite" data-testid="dashboard-splash"><div class="dashboard-splash__content"><img class="dashboard-splash__icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-splash-icon"><h2 class="dashboard-splash__title" id="dashboardSplashTitle" data-i18n="dashboard.title">$TITLE</h2><span class="dashboard-splash__version" id="dashboardSplashVersion" data-platform-version="$PLATFORM_VERSION">Engineering Platform $PLATFORM_VERSION</span><span class="dashboard-splash__spinner" aria-hidden="true"></span><span class="dashboard-splash__loading" id="dashboardSplashLoading" data-i18n="dashboard.loading"></span></div></div>
+<div id="copyToast" role="status" aria-live="polite" aria-atomic="true" popover="manual" hidden data-testid="copy-toast"></div>
+<div id="pullRefresh" role="status" aria-live="polite" aria-hidden="true" data-testid="pull-refresh" data-i18n="refresh.pull_to_refresh"></div>
+<div class="dashboard-scroll-region">
+<div class="dashboard-sticky-header">
+<header class="dashboard-titlebar"><div class="dashboard-titlebar__brand"><img class="dashboard-app-icon" src="/assets/operations-console/icon-transparent.png" alt="" aria-hidden="true" data-testid="dashboard-app-icon"><h1 id="dashboardTitle" data-i18n="dashboard.title">$TITLE</h1></div><div class="dashboard-titlebar__actions"><div class="dashboard-health" id="dashboardHealth"><button class="dashboard-health__button" id="dashboardHealthIndicator" type="button" aria-expanded="false" aria-controls="dashboardHealthTooltip" data-health-state="unknown" data-testid="dashboard-health-indicator"><span class="dashboard-health__dot" aria-hidden="true"></span><span class="sr-only" id="dashboardHealthAccessibleLabel"></span></button></div><section class="dashboard-health__tooltip" id="dashboardHealthTooltip" role="tooltip"><strong id="dashboardHealthTooltipTitle"></strong><ul id="dashboardHealthChecks"></ul></section><button class="page-refresh" id="pageRefresh" type="button" data-testid="page-refresh" data-i18n-title="refresh.page" data-i18n-aria-label="refresh.page"><span aria-hidden="true">↻</span></button><div class="dashboard-titlebar__options" id="dashboardTitlebarOptions"><button class="dashboard-titlebar__options-toggle" id="dashboardTitlebarOptionsToggle" type="button" aria-expanded="false" aria-controls="dashboardTitlebarOptionsContent" data-testid="titlebar-options-toggle"><span data-i18n="header.options"></span></button><div class="dashboard-titlebar__options-content" id="dashboardTitlebarOptionsContent"><label class="dashboard-locale" for="dashboardLocale"><span data-i18n="language.label"></span><select id="dashboardLocale" class="dashboard-locale__native" data-i18n-aria-label="language.label"><option value="en" data-i18n="language.en"></option><option value="nl" data-i18n="language.nl"></option><option value="de" data-i18n="language.de"></option><option value="fr" data-i18n="language.fr"></option><option value="es" data-i18n="language.es"></option></select><span class="dashboard-locale__picker"><button class="dashboard-locale__button" id="dashboardLocaleButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="dashboardLocaleMenu"><span id="dashboardLocaleValue"></span><span aria-hidden="true">⌄</span></button><span class="dashboard-locale__menu" id="dashboardLocaleMenu" role="listbox" hidden><button type="button" role="option" data-dashboard-locale="en"></button><button type="button" role="option" data-dashboard-locale="nl"></button><button type="button" role="option" data-dashboard-locale="de"></button><button type="button" role="option" data-dashboard-locale="fr"></button><button type="button" role="option" data-dashboard-locale="es"></button></span></span></label><button class="theme-toggle" id="themeToggle" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.enable_light" data-testid="theme-toggle"><span class="theme-toggle__label" data-i18n="header.theme"></span></button><button class="section-state-toggle" id="toggleAllSections" type="button" role="switch" aria-checked="false" data-i18n-aria-label="header.open_all" data-testid="toggle-all-sections"><span class="section-state-toggle__label" data-i18n="header.expand"></span></button><label class="auto-refresh-toggle" for="autoRefresh"><input id="autoRefresh" type="checkbox" role="switch" checked><span data-i18n="header.auto_refresh"></span></label></div></div></div></header><aside class="dashboard-status-banner dashboard-status-banner--usage-limit" id="codexUsageLimitBanner" role="alert" aria-live="assertive" hidden data-testid="codex-usage-limit-banner"><strong data-i18n="notification.codex_usage_limit.title"></strong><span data-i18n="notification.codex_usage_limit.body"></span></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--capacity-reserve" id="codexCapacityReserveBanner" role="alert" aria-live="assertive" hidden data-testid="codex-capacity-reserve-banner"><strong data-i18n="notification.codex_capacity_reserve.title"></strong><span id="codexCapacityReserveMessage"></span><a class="codex-capacity-reserve-banner__action" id="codexCapacityReserveAction" href="#rateLimits" data-i18n="notification.codex_capacity_reserve.action"></a></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--github-rate-limit" id="githubRateLimitBanner" role="alert" aria-live="assertive" hidden data-testid="github-rate-limit-banner"><strong data-i18n="notification.github_rate_limit.title"></strong><span id="githubRateLimitMessage"></span><button class="github-rate-limit-banner__refresh" id="githubRateLimitRefresh" type="button" data-i18n-aria-label="notification.github_rate_limit.refresh" data-i18n-title="notification.github_rate_limit.refresh"><span aria-hidden="true">↻</span></button></aside>
+<details class="platform-attention" id="platformAttentionBanner" hidden data-testid="platform-attention-banner"><summary><strong id="platformAttentionTitle"></strong><span id="platformAttentionSummary"></span></summary><div class="platform-attention__items">
+<aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="codexProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="codex-provider-readiness-banner"><strong id="codexProviderReadinessTitle"></strong><span id="codexProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="codexProviderReadinessAction" type="button" hidden></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--provider-readiness" id="githubProviderReadinessBanner" role="alert" aria-live="assertive" hidden data-testid="github-provider-readiness-banner"><strong id="githubProviderReadinessTitle"></strong><span id="githubProviderReadinessMessage"></span><button class="provider-readiness-banner__action" id="githubProviderReadinessAction" type="button" hidden></button></aside>
+<aside class="dashboard-status-banner dashboard-status-banner--execution-runtime" id="executionRuntimeBanner" role="alert" aria-live="assertive" hidden data-testid="execution-runtime-banner"><strong id="executionRuntimeTitle"></strong><span id="executionRuntimeMessage"></span><button class="provider-readiness-banner__action" id="executionRuntimeRepair" type="button" hidden></button></aside>
+</div></details>
+</div>
+<main class="dashboard-grid" id="engineering-dashboard-content" tabindex="-1">
+<details class="inbox-queue" id="queueItems" data-testid="engineering-inbox-queue"><summary><strong data-i18n="section.inbox_queue"></strong></summary><p class="category-description" data-i18n="description.inbox_queue"></p><div class="queue-blocker" id="inboxBlocker" role="alert" hidden></div><p class="estimate-meta" id="queueSummary" data-i18n="logs.loading"></p><ol class="queue-list" id="queueList" aria-live="polite"></ol></details>
+<details class="prompt-history" id="promptHistory" data-testid="engineering-prompt-history"><summary><strong data-i18n="section.prompt_history"></strong></summary><p class="category-description" data-i18n="description.prompt_history"></p><div class="log-controls"><label for="promptHistoryFilter"><span data-i18n="filter.search"></span><input id="promptHistoryFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label></div><p class="history-scroll-hint" id="promptHistoryScrollHint" data-i18n="history.horizontal_scroll_hint"></p><div class="log-table-wrap" aria-describedby="promptHistoryScrollHint" role="region" tabindex="0"><table class="log-table" data-i18n-aria-label="history.table_label"><thead><tr><th data-history-sort-key="run_id" data-run-suffix="true" scope="col" data-i18n="table.run_suffix"></th><th data-history-sort-key="status" scope="col" data-i18n="table.status"></th><th data-history-sort-key="title" scope="col" data-i18n="table.prompt_title"></th><th data-history-sort-key="executed_at" scope="col" data-i18n="table.executed_at"></th><th scope="col" data-i18n="table.report"></th><th id="promptHistoryAnalysisHeader" scope="col" data-i18n="table.analysis"></th><th id="promptHistoryChatHeader" scope="col" data-i18n="table.chat"></th><th scope="col" data-i18n="table.action"></th><th id="promptHistoryDetailsHeader" scope="col" data-i18n="table.details"></th></tr></thead><tbody id="promptHistoryRows"><tr><td class="log-empty" colspan="9" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="promptHistoryPagination" data-i18n-aria-label="history.table_label"></nav></details>
+<details class="current-run" id="currentRun" data-i18n-aria-label="detail.execution" hidden><summary class="current-run__title"><span class="label" id="currentRunTitle" data-i18n="section.active_prompt"></span></summary><div class="current-run__grid"><div class="field"><span class="label" data-i18n="detail.prompt_title"></span><h2 id="currentPrompt" data-i18n="format.loading"></h2></div><div class="field"><span class="label" data-i18n="ui.filename"></span><pre id="currentFile" data-i18n="format.loading"></pre></div>
+<div class="card" id="executionIdentity"><strong id="executionIdentityTitle" data-i18n="detail.execution"></strong><p class="field"><span class="label" data-i18n="detail.run_id"></span><span id="runId"></span></p><p class="field" id="promptStartedField"><span class="label" data-i18n="ui.prompt_started"></span><span id="promptStarted" data-i18n="format.loading"></span></p></div>
+<div class="card"><div class="status"><span id="indicator" class="indicator" role="status" data-i18n-aria-label="status.unknown"></span><strong data-i18n="detail.prompt_status"></strong></div><p class="field"><span class="label" data-i18n="ui.execution_status"></span><span id="watcher" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.phase"></span><span id="phase" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.current_activity"></span><span id="action" data-i18n="format.loading"></span></p><p class="field" id="providerRecovery" hidden><span class="label" data-i18n="provider_recovery.label"></span><span id="providerRecoveryValue"></span></p></div>
+<div class="card execution-context" id="executionContext" hidden><strong data-i18n="ui.execution_context"></strong><p class="field"><span class="label" data-i18n="field.execution_mode"></span><span id="executionMode"></span></p><p class="field"><span class="label" data-i18n="field.repository"></span><span id="targetRepository"></span></p><div class="field"><span class="label" data-i18n="detail.target_checkout"></span><pre id="checkoutPath"></pre></div><p class="field"><span class="label" data-i18n="ui.active_branch"></span><span id="activeBranch"></span></p></div>
+<div class="card" id="processMetrics" hidden><strong data-i18n="ui.local_ai_processes"></strong><p class="field"><span class="label">CPU</span><span id="codexCpu" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.process_count"></span><span id="codexProcesses" data-i18n="format.loading"></span></p><p class="field"><span class="label" data-i18n="ui.gpu_usage"></span><span id="codexGpu" data-i18n="format.loading"></span></p></div>
+<div class="card operator-merge-wait" id="operatorMergeWait" hidden><strong id="operatorMergeWaitTitle" data-i18n="merge_wait.title"></strong><p id="operatorMergeWaitDescription"></p><p class="open-pr-status operator-merge-wait__pr-status" id="operatorMergeWaitPullRequestStatus"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></p><p class="open-pr-approval" id="operatorMergeWaitOwnerApproval"></p><p class="estimate-meta" id="operatorMergeWaitLastCheck" hidden></p><div class="operator-merge-wait__actions"><a class="dashboard-action dashboard-action--primary" id="operatorMergePullRequest" target="_blank" rel="noopener noreferrer"></a><button class="dashboard-action" id="operatorMergeStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-action dashboard-action--destructive" id="operatorMergeAbort" type="button" data-i18n="action.abort_execution"></button></div></div>
+<div class="card operator-merge-wait" id="emergencyRecovery" hidden><strong data-i18n="emergency_recovery.title"></strong><p data-i18n="emergency_recovery.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--destructive" id="emergencyRecoveryStart" type="button" data-i18n="emergency_recovery.action"></button></div></div>
+<div class="card status-reconciliation-card" id="statusReconciliation" hidden><strong data-i18n="status_reconciliation.title"></strong><p data-i18n="status_reconciliation.description"></p><div class="operator-merge-wait__actions"><button class="dashboard-action dashboard-action--primary" id="statusReconciliationStart" type="button" data-i18n="status_reconciliation.action"></button></div><p id="statusReconciliationResult" role="status" aria-live="polite"></p></div>
+<div class="card" id="workspaceProgress"><strong data-i18n="detail.workspace_changes"></strong><p class="field"><span id="workspaceProgressValue" data-i18n="format.loading"></span></p></div>
+<div class="card" id="predecessorGate" hidden><strong data-i18n="status.blocked"></strong><p class="field"><span class="label" data-i18n="detail.run_id"></span><code id="predecessorRun"></code></p><p class="field"><span class="label" data-i18n="ui.preceding_prompt"></span><span id="predecessorPrompt"></span></p><p class="field"><span class="label" data-i18n="field.terminal_state"></span><span id="predecessorPhase"></span></p><div class="field"><span class="label" data-i18n="ui.recovery_action"></span><pre id="predecessorAction"></pre></div><button class="predecessor-retry" id="predecessorRetry" type="button" data-i18n="recovery.action"></button><p class="predecessor-retry-status" id="predecessorRetryStatus" role="status" aria-live="polite"></p></div>
+<div class="card"><strong data-i18n="ui.estimated_execution_time"></strong><p class="estimate-primary" id="executionEstimate" data-i18n="estimate.not_available"></p><p class="estimate-meta" id="executionEstimateMeta" hidden></p></div>
+<div class="card" id="usage" hidden><strong>Codex CLI</strong><div class="field"><span class="label" data-i18n="ui.reported_usage"></span><pre id="usageDetails"></pre></div></div>
+<div class="card" id="currentDiagnostic" hidden><strong>Codex CLI</strong><pre id="currentLog" data-i18n="format.loading"></pre></div>
+</div></details>
+<details class="card card--resource" id="rateLimits" hidden><summary><strong data-i18n="section.remaining_usage"></strong></summary><div class="field"><span class="label" data-i18n="ui.current_ai_provider"></span><span id="rateLimitProvider" data-i18n="format.loading"></span></div><p class="rate-limit-update-status" id="codexCliUpdateStatus" role="status" aria-live="polite"></p><button class="rate-limit-reset" id="codexCliUpdate" type="button" hidden data-i18n="ui.codex_cli_update"></button><div class="field rate-limit-provider-path"><span class="label" data-i18n="ui.installation_path"></span><code id="rateLimitProviderPath" data-i18n="format.not_available"></code></div><div class="field"><span class="label" id="rateLimitLabel">Codex CLI</span><pre id="rateLimitDetails"></pre></div><button class="rate-limit-reset" id="rateLimitReset" type="button" hidden data-i18n="ui.reset_ready"></button><p class="rate-limit-reset-status" id="rateLimitResetStatus" role="status" aria-live="polite"></p></details>
+<details class="platform-health" id="platformHealth" data-testid="platform-health"><summary><strong data-i18n="section.platform_components"></strong></summary><p class="category-description" data-i18n="description.platform_components"></p><div class="platform-health__components" id="platformHealthComponents" aria-live="polite"><p class="platform-health__empty" data-i18n="ui.component_health_loading"></p></div></details>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--component component-modal" id="componentModal" aria-labelledby="componentModalTitle"><section class="dashboard-modal-shell__panel component-modal__panel"><header class="dashboard-modal-shell__header component-modal__header"><h2 id="componentModalTitle" data-i18n="ui.component_information"></h2><button class="dashboard-modal-shell__close component-modal__close" id="componentModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="componentModalContent"></div><button class="component-modal__restart" id="componentModalRestart" type="button" hidden data-i18n="ui.component_restart"></button><p class="component-modal__status" id="componentModalStatus" aria-live="polite"></p></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence telemetry-detail-modal" id="telemetryDetailModal" aria-labelledby="telemetryDetailTitle"><section class="dashboard-modal-shell__panel telemetry-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="telemetryDetailTitle"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="telemetryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="telemetryDetailDownloadJson" type="button" hidden>{}</button><button class="dashboard-modal-shell__close" id="telemetryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p id="telemetryDetailDescription" class="prompt-detail-modal__description"></p><div id="telemetryDetailContent" class="telemetry-detail-modal__content" aria-live="polite"></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence lifecycle-detail-modal" id="lifecycleDetailModal" aria-labelledby="lifecycleDetailTitle"><section class="dashboard-modal-shell__panel lifecycle-detail-modal__panel"><header class="dashboard-modal-shell__header"><h2 id="lifecycleDetailTitle"></h2><button class="dashboard-modal-shell__close" id="lifecycleDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="lifecycleDetailContent" class="lifecycle-detail-modal__content" aria-live="polite"></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence execution-mode-modal" id="executionModeModal" aria-labelledby="executionModeModalTitle"><section class="dashboard-modal-shell__panel execution-mode-modal__panel"><header class="dashboard-modal-shell__header execution-mode-modal__header"><h2 id="executionModeModalTitle" data-i18n="execution_mode_info.title"></h2><button class="dashboard-modal-shell__close execution-mode-modal__close" id="executionModeModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div class="execution-mode-modal__content"><p data-i18n="execution_mode_info.intro"></p><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.managed_title"></h3><p data-i18n="execution_mode_info.managed_body"></p></section><section class="execution-mode-modal__definition"><h3 data-i18n="execution_mode_info.genesis_title"></h3><p data-i18n="execution_mode_info.genesis_body"></p></section></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence confirmation-modal" id="operatorMergeWaitModal" aria-labelledby="operatorMergeWaitModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="operatorMergeWaitModalTitle" data-i18n="merge_wait.title"></h2><button class="dashboard-modal-shell__close" id="operatorMergeWaitModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><p id="operatorMergeWaitModalDescription"></p><p class="estimate-meta" id="operatorMergeWaitModalLastCheck" hidden></p><section class="merge-wait-context" data-i18n-aria-label="merge_wait.context_label"><p id="operatorMergeWaitModalContextIntro"></p><dl><div><dt data-i18n="merge_wait.context_run"></dt><dd id="operatorMergeWaitModalRunId"></dd></div><div><dt data-i18n="merge_wait.context_prompt"></dt><dd id="operatorMergeWaitModalPrompt"></dd></div><div><dt data-i18n="merge_wait.pull_request_status"></dt><dd><span class="open-pr-status" id="operatorMergeWaitModalPullRequestStatus"><span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span></dd></div><div><dt data-i18n="merge_wait.owner_approval"></dt><dd><span class="open-pr-approval" id="operatorMergeWaitModalOwnerApproval"></span></dd></div></dl></section><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="operatorMergeWaitModalStatusCheck" type="button" data-i18n="merge_wait.check_status"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--destructive" id="operatorMergeWaitModalAbort" type="button" data-i18n="action.abort_execution"></button><a class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="operatorMergeWaitModalPullRequest" target="_blank" rel="noopener noreferrer"></a></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="confirmationModal" aria-labelledby="confirmationModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="confirmationModalTitle" data-i18n="ui.confirm_action"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="confirmationModalClose" type="button" data-i18n-aria-label="sections.close">×</button></header><div id="confirmationModalText"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="confirmationModalCancel" type="button" data-i18n="action.cancel"></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="confirmationModalConfirm" type="button" data-i18n="action.confirm"></button></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="dashboardErrorModal" aria-labelledby="dashboardErrorModalTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="dashboardErrorModalTitle" data-i18n="ui.action_failed"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="dashboardErrorModalClose" type="button" data-i18n-aria-label="action.close">×</button></header><p id="dashboardErrorModalText" aria-live="assertive"></p><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action" id="dashboardErrorModalRecover" type="button" hidden></button><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="dashboardErrorModalDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--confirmation confirmation-modal" id="workspaceBranchMainResultModal" aria-labelledby="workspaceBranchMainResultTitle"><section class="dashboard-modal-shell__panel confirmation-modal__panel"><header class="dashboard-modal-shell__header confirmation-modal__header"><h2 id="workspaceBranchMainResultTitle" data-i18n="workspace.branch_main_result_title"></h2><button class="dashboard-modal-shell__close confirmation-modal__close" id="workspaceBranchMainResultClose" type="button" data-i18n-aria-label="action.close">×</button></header><div id="workspaceBranchMainResultContent" aria-live="polite"></div><div class="dashboard-modal-shell__actions confirmation-modal__actions"><button class="dashboard-modal-shell__action dashboard-modal-shell__action--primary" id="workspaceBranchMainResultDismiss" type="button" data-i18n="action.close"></button></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence report-view-modal" id="promptHistoryReportModal" aria-labelledby="promptHistoryReportModalTitle"><section class="dashboard-modal-shell__panel report-view-modal__panel"><header class="dashboard-modal-shell__header report-view-modal__header"><h2 class="report-view-modal__title" id="promptHistoryReportModalTitle" data-modal-glyph="report" data-i18n="history.report_title"></h2><div class="report-view-modal__actions"><button class="dashboard-action dashboard-action--primary report-analysis-retry" id="promptHistoryReportRetry" type="button" hidden data-i18n="history.retry_analysis">↻</button><button class="dashboard-action dashboard-action--download download download--glyph" id="promptHistoryReportDownload" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy copy copy--glyph" id="promptHistoryReportCopy" type="button" hidden>⧉</button><button class="dashboard-modal-shell__close report-view-modal__close" id="promptHistoryReportClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><article class="markdown-document report-view-modal__content" id="promptHistoryReportContent" data-i18n="history.report_loading"></article></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--evidence prompt-detail-modal" id="promptHistoryDetailModal" aria-labelledby="promptHistoryDetailTitle"><section class="dashboard-modal-shell__panel prompt-detail-modal__panel"><header class="dashboard-modal-shell__header prompt-detail-modal__header"><h2 id="promptHistoryDetailTitle" data-i18n="history.details_loading"></h2><div class="prompt-detail-modal__actions"><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadMarkdown" type="button" hidden>↓</button><button class="dashboard-action dashboard-action--download prompt-detail-download" id="promptHistoryDetailDownloadJson" type="button" hidden>{}</button><button class="dashboard-modal-shell__close prompt-detail-modal__close" id="promptHistoryDetailClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-detail-modal__description" id="promptHistoryDetailDescription"></p><div class="prompt-detail-modal__content" id="promptHistoryDetailContent" data-i18n="history.details_loading"></div></section></dialog>
+<dialog class="dashboard-modal-shell dashboard-modal-shell--chat prompt-chat-modal" id="promptHistoryChatModal" aria-labelledby="promptHistoryChatTitle"><section class="dashboard-modal-shell__panel prompt-chat-modal__panel"><header class="dashboard-modal-shell__header prompt-chat-modal__header"><h2 id="promptHistoryChatTitle" data-i18n="section.ai_conversation"></h2><div class="prompt-detail-modal__actions prompt-chat-modal__actions"><button class="dashboard-action dashboard-action--download download download--glyph" id="downloadChat" type="button" hidden>⇩</button><button class="dashboard-action dashboard-action--copy" id="copyChat" type="button" hidden data-i18n-title="chat.copy_title" data-i18n-aria-label="chat.copy_title">⧉</button><button class="dashboard-action dashboard-action--destructive" id="clearChat" type="button" hidden>⌫</button><button class="dashboard-modal-shell__close prompt-chat-modal__close" id="promptHistoryChatClose" type="button" data-i18n-aria-label="sections.close">×</button></div></header><p class="prompt-chat-modal__description" id="promptHistoryChatDescription"></p><section class="codex-chat" id="codexChat"><div class="codex-chat__details"><div class="chat-messages" id="chatMessages" aria-live="polite" data-i18n-aria-label="section.ai_conversation"></div><label class="label chat-question-label" for="chatInput" data-i18n="section.new_ai_question"></label><div class="chat-compose"><textarea id="chatInput" class="chat-input" rows="5" maxlength="2000" autocomplete="off" data-sanitize="multiline" data-i18n-placeholder="history.chat_placeholder"></textarea><button class="chat-send" id="chatSend" type="button" data-i18n-aria-label="action.confirm"><span aria-hidden="true">➤</span></button></div><div class="chat-meta"><p class="field"><span class="label" data-i18n="detail.model"></span><span id="chatModel">$CHAT_MODEL</span></p><p class="chat-status" id="chatStatus"></p></div></div></section></section></dialog>
+<button id="loadComponentLogs" type="button" hidden data-i18n="logs.loading"></button>
+<details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="logTimePreset"><span data-i18n="filter.time_period"></span><select id="logTimePreset"><option value="" data-i18n="filter.all_time"></option><option value="today" data-i18n="filter.today"></option><option value="yesterday" data-i18n="filter.yesterday"></option><option value="day" data-i18n="filter.specific_day"></option><option value="range" data-i18n="filter.custom_range"></option></select></label><label for="logSpecificDate" id="logSpecificDateControl" hidden><span data-i18n="filter.specific_day"></span><input id="logSpecificDate" type="date"></label><label for="logDateFrom" id="logDateFromControl" hidden><span data-i18n="filter.from"></span><input id="logDateFrom" type="datetime-local"></label><label for="logDateTo" id="logDateToControl" hidden><span data-i18n="filter.to"></span><input id="logDateTo" type="datetime-local"></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="section.logs"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="platform" data-testid="download-platform-log" type="button" data-i18n-title="logs.download_platform" data-i18n-aria-label="logs.download_platform">⇩</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="platform" data-testid="clear-platform-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">⌫</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="logs.platform_entries"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="platformComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="platformLogPagination" data-i18n-aria-label="section.logs"></nav></div></div></details>
+<details class="technical-details" id="technicalDetails" hidden><summary><strong data-i18n="section.technical_details"></strong></summary><p class="category-description" id="technicalDetailsDescription" data-i18n="description.technical_details"></p><p class="technical-diagnosis-summary" id="technicalHealthySummary" hidden></p><div class="technical-grid" id="technicalDiagnosisDetails">
+<div class="card"><strong id="technicalRepositoryTitle" data-i18n="technical.repository"></strong><p class="field"><span class="label" id="technicalRepositoryStateLabel" data-i18n="technical.repository_status"></span><span id="repositoryState"></span></p><p class="field"><span class="label technical-repository-label" id="technicalWorkspaceStateLabel"><span data-i18n="technical.workspace_status"></span><span class="technical-info" id="technicalWorkspaceStateInfo" role="img" tabindex="0" data-i18n-title="technical.workspace_status_help" data-i18n-aria-label="technical.workspace_status_help">i</span></span><span id="workspaceState"></span></p><div class="technical-git-lock" id="technicalGitLock"><p class="field"><span class="label technical-repository-label" id="technicalGitLockLabel"><span data-i18n="technical.git_lock"></span><span class="technical-info" id="technicalGitLockInfo" role="img" tabindex="0" data-i18n-title="technical.git_lock_help" data-i18n-aria-label="technical.git_lock_help">i</span></span><span id="technicalGitLockState" data-i18n="format.loading"></span></p><p class="technical-git-lock__detail" id="technicalGitLockDetail" hidden></p><button class="queue-blocker__repair" id="technicalGitLockRecover" type="button" hidden data-i18n="technical.git_lock_recovery_action"></button><p class="technical-git-lock__status" id="technicalGitLockRecoveryStatus" role="status" aria-live="polite"></p></div></div>
+<div class="card"><strong id="technicalHostPreflightTitle" data-i18n="technical.host_preflight"></strong><p class="field"><span class="label" id="technicalExecutionHostLabel" data-i18n="technical.execution_host"></span><span id="executionHostName" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalExecutionHostVersionLabel" data-i18n="technical.execution_host_version"></span><span id="executionHostVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeLabel" data-i18n="technical.runtime"></span><span id="executionHostRuntime" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimeVersionLabel" data-i18n="detail.codex_cli_version"></span><span id="executionHostRuntimeVersion" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRuntimePathLabel" data-i18n="detail.codex_cli_installation_path"></span><code id="executionHostRuntimePath" data-i18n="format.unavailable"></code></p><p class="field"><span class="label" id="technicalRuntimePromptTransportLabel" data-i18n="technical.runtime_prompt_transport"></span><span id="executionHostTransport" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalHostStatusLabel" data-i18n="technical.host_status"></span><span id="hostPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastCheckLabel" data-i18n="technical.last_check"></span><span id="hostPreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalWorkspacePreflightStatusLabel" data-i18n="technical.workspace_status"></span><span id="workspacePreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalLastWorkspaceCheckLabel" data-i18n="technical.last_workspace_check"></span><span id="workspacePreflightTimestamp" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalCapabilityStatusLabel" data-i18n="technical.capability_status"></span><span id="capabilityPreflightStatus" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecoverabilityLabel" data-i18n="technical.recoverability"></span><span id="capabilityRecoverability" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalFailureOriginLabel" data-i18n="technical.failure_origin"></span><span id="capabilityFailureOrigin" data-i18n="format.unavailable"></span></p><p class="field"><span class="label" id="technicalRecommendationLabel" data-i18n="technical.recommended_action"></span><span id="capabilityRecommendation" data-i18n="format.unavailable"></span></p></div>
+<div class="card" id="driftDiagnosticsCard" hidden><strong data-i18n="technical.current_drift"></strong><p class="field"><span class="label" data-i18n="technical.severity"></span><span id="driftSeverity"></span></p><p class="field"><span class="label" data-i18n="technical.affected_component"></span><span id="driftComponent"></span></p><p class="field"><span class="label" data-i18n="technical.expected_state"></span><span id="driftExpected"></span></p><p class="field"><span class="label" data-i18n="technical.observed_state"></span><span id="driftObserved"></span></p><p class="field"><span class="label" data-i18n="technical.resolution"></span><span id="driftResolution"></span></p></div>
+<div class="card" id="technicalDiagnosticsCard"><strong id="technicalDiagnosticsTitle" data-i18n="technical.diagnostics"></strong><p id="diag"></p></div>
+</div></details>
+<details class="card card--context workspace-card" id="workspaceCard" data-testid="engineering-workspace"><summary><strong data-i18n="section.workspace"></strong></summary><p class="field"><span class="label" data-workspace-label="workspace.name" data-i18n="workspace.name"></span><span>$WORKSPACE_ID</span></p><div class="field"><span class="label" data-workspace-label="ui.workspace_location" data-i18n="ui.workspace_location"></span><pre>$WORKSPACE_LOCATION</pre></div><p class="field" id="workspaceFreeDiskSpace"><span class="label" data-workspace-label="workspace.free_disk_space" data-i18n="workspace.free_disk_space"></span><span>$WORKSPACE_FREE_DISK_SPACE</span></p><p class="field"><span class="label" data-workspace-label="detail.tracked_files" data-i18n="detail.tracked_files"></span><span>$TRACKED_FILES</span></p><p class="field"><span class="label" data-workspace-label="workspace.current_branch" data-i18n="workspace.current_branch"></span><code id="workspaceBranch">$WORKSPACE_BRANCH</code></p><p class="field"><span class="label" data-workspace-label="workspace.current_commit" data-i18n="workspace.current_commit"></span><code id="workspaceCommit">$WORKSPACE_COMMIT</code></p><p class="field" id="workspaceOriginMain" $ORIGIN_MAIN_HIDDEN><span class="label" data-workspace-label="workspace.origin_main_commit" data-i18n="workspace.origin_main_commit"></span><code id="workspaceOriginMainCommit">$ORIGIN_MAIN_COMMIT</code></p>$WORKSPACE_OPEN_PULL_REQUESTS<div class="workspace-branch-actions"><button class="workspace-branch-main" id="workspaceBranchMain" type="button" $WORKSPACE_MAIN_ACTION_HIDDEN data-i18n="workspace.branch_main_action"></button></div></details>
+<details class="card card--context workspace-card configuration-card" id="configuration" data-testid="dashboard-configuration"><summary><strong data-i18n="section.configuration"></strong></summary><p class="category-description" data-i18n="description.configuration"></p><section class="configuration-server-settings" id="configurationServerSettings" aria-labelledby="configurationServerSettingsTitle"><h2 id="configurationServerSettingsTitle" data-i18n="configuration.server_settings"></h2><div class="configuration-controls"><label for="configurationInboxScanInterval"><span data-i18n="configuration.inbox_scan_interval"></span><select id="configurationInboxScanInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationOpenPrInterval"><span data-i18n="configuration.open_pr_interval"></span><select id="configurationOpenPrInterval"><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label></div></section><div class="configuration-controls"><label for="configurationLogRetention"><span data-i18n="configuration.log_retention"></span><select id="configurationLogRetention"><option value="30"></option><option value="60"></option><option value="90"></option><option value="120"></option><option value="180"></option><option value="360"></option></select></label><label for="configurationLogLevel"><span data-i18n="configuration.log_level"></span><select id="configurationLogLevel"><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="configurationDashboardStreamInterval"><span data-i18n="configuration.dashboard_stream_interval"></span><select id="configurationDashboardStreamInterval"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option><option value="6"></option><option value="7"></option><option value="8"></option><option value="9"></option><option value="10"></option></select></label><label for="configurationPlatformHealthInterval"><span data-i18n="configuration.platform_health_interval"></span><select id="configurationPlatformHealthInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><label for="configurationComponentDetailsInterval"><span data-i18n="configuration.component_details_interval"></span><select id="configurationComponentDetailsInterval"><option value="5" data-i18n="configuration.seconds_5"></option><option value="15" data-i18n="configuration.seconds_15"></option><option value="30" data-i18n="configuration.seconds_30"></option><option value="60" data-i18n="configuration.seconds_60"></option></select></label><p id="configurationStatus" role="status" aria-live="polite"></p></div><section class="configuration-readonly-settings" aria-labelledby="configurationReadonlySettingsTitle"><h2 id="configurationReadonlySettingsTitle" data-i18n="configuration.readonly_platform_settings"></h2><p class="field configuration-field"><span class="label"><span data-i18n="configuration.operator_merge_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.operator_merge_interval_help" data-i18n-aria-label="configuration.operator_merge_interval_help">i</span></span><span data-i18n="configuration.seconds_60"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.required_checks_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.required_checks_interval_help" data-i18n-aria-label="configuration.required_checks_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_heartbeat_interval"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_heartbeat_interval_help" data-i18n-aria-label="configuration.lease_heartbeat_interval_help">i</span></span><span data-i18n="configuration.seconds_15"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.lease_timeout"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.lease_timeout_help" data-i18n-aria-label="configuration.lease_timeout_help">i</span></span><span data-i18n="configuration.seconds_90"></span></p><p class="field configuration-field"><span class="label"><span data-i18n="configuration.github_retry_backoff"></span><span class="configuration-info" role="img" tabindex="0" data-i18n-title="configuration.github_retry_backoff_help" data-i18n-aria-label="configuration.github_retry_backoff_help">i</span></span><span data-i18n="configuration.github_retry_backoff_value"></span></p></section><section class="configuration-timeout-policy" aria-labelledby="configurationTimeoutPolicyTitle"><h2 id="configurationTimeoutPolicyTitle" data-i18n="configuration.timeout_policy"></h2><p data-i18n="configuration.timeout_policy_description"></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.specialist_review"></span><span data-i18n="configuration.minutes_5"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.implementation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.local_repository_validation"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.autonomous_quality_control"></span><span data-i18n="configuration.minutes_10"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.repair"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.finalization"></span><span data-i18n="configuration.minutes_15"></span></p><p class="field configuration-field"><span class="label" data-i18n="configuration.timeout.end_reconciliation"></span><span data-i18n="configuration.minutes_10"></span></p></section></details>
+</main></div>
+<footer class="footer" aria-live="polite"><span class="footer__item"><span class="label" id="platformVersionLabel" data-i18n="footer.platform_version"></span><span id="platformVersion" data-i18n="format.loading"></span></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="lastRefresh" data-i18n="format.loading"></span><span class="footer__separator" aria-hidden="true">·</span><span class="footer__item" id="updateMode" data-i18n="format.loading"></span></footer><span id="dashboardVersion" hidden></span><span id="workerVersion" hidden></span>
+<script>window.DJCONNECT_DASHBOARD_BUILD="$BUILD_COMMIT";</script>
+<script src="/assets/dashboard.js?build=$BUILD_COMMIT" type="module"></script>
+
+</body>
+</html>"""
+    def open_pull_request_item(pull_request: dict[str, object]) -> str:
+        authorization = (
+            f'<button class="open-pr-owner-authorization" '
+            f'data-open-pull-request-owner-authorization="{pull_request["number"]}" '
+            f'type="button" data-i18n="workspace.open_pull_request.authorize_owner"></button>'
+            if pull_request.get("owner_authorization_requested") is True else ""
+        )
+        repair = (
+            f'<button class="open-pr-check-repair" '
+            f'data-open-pull-request-check-repair="{pull_request["number"]}" '
+            f'data-open-pull-request-failed-checks="{escape(json.dumps(pull_request.get("failed_checks", [])), quote=True)}" '
+            f'type="button" data-i18n="workspace.open_pull_request.repair_failed_checks"></button>'
+            if pull_request.get("check_repair_available") is True else ""
+        )
+        return (
+            f'<li data-open-pull-request="{pull_request["number"]}"><a href="{escape(str(pull_request["url"]), quote=True)}" '
+            f'target="_blank" rel="noreferrer">PR #{pull_request["number"]} — {escape(str(pull_request["title"]))}</a>'
+            f'<span class="open-pr-status open-pr-status--{escape(str(pull_request.get("status", "waiting_for_checks")), quote=True)}">'
+            f'<span class="open-pr-status__dot" aria-hidden="true"></span><span class="open-pr-status__label"></span></span>'
+            f'{authorization}{repair}<code>{escape(str(pull_request["branch"]))}</code></li>'
+        )
+
+    pull_request_items = "".join(
+        open_pull_request_item(pull_request)
+        for pull_request in workspace_open_pull_requests or []
+    )
+    workspace_open_pull_requests_html = (
+        f'<section id="workspaceOpenPullRequests" class="workspace-open-prs" aria-live="polite"><div class="workspace-open-prs__header"><strong data-i18n="workspace.open_pull_requests"></strong><button class="workspace-open-prs__refresh" id="workspaceOpenPullRequestsRefresh" type="button" data-i18n-title="workspace.open_pull_requests_refresh" data-i18n-aria-label="workspace.open_pull_requests_refresh">↻</button></div><ul>{pull_request_items}</ul></section>'
+        if pull_request_items else ""
+    )
+    return (
+        page.replace("$TITLE", escape(title))
+        .replace("$BUILD_COMMIT", escape(build_commit))
+        .replace("$CHAT_MODEL", escape(chat_model()))
+        .replace("$WORKSPACE_ID", escape(workspace_id))
+        .replace("$PROJECT_NAME", escape(project_name))
+        .replace("$WORKSPACE_LOCATION", escape(workspace_location))
+        .replace("$WORKSPACE_FREE_DISK_SPACE", escape(workspace_free_disk_space))
+        .replace("$TRACKED_FILES", escape(tracked_files))
+        .replace("$WORKSPACE_BRANCH", escape(workspace_branch))
+        .replace("$WORKSPACE_COMMIT", escape(workspace_commit))
+        .replace("$ORIGIN_MAIN_COMMIT", escape(origin_main_commit))
+        .replace("$ORIGIN_MAIN_HIDDEN", "" if origin_main_available else "hidden")
+        .replace("$WORKSPACE_OPEN_PULL_REQUESTS", workspace_open_pull_requests_html)
+        .replace("$WORKSPACE_MAIN_ACTION_HIDDEN", "hidden" if workspace_main_action_hidden else "")
+        .replace("$BRANCH_CLEANUP_HIDDEN", "hidden" if workspace_branch_cleanup_hidden else "")
+        .replace("$PLATFORM_VERSION", escape(platform_version))
+        .replace("$CONFIGURATION_INBOX", escape(configuration_inbox))
+        .encode()
+    )

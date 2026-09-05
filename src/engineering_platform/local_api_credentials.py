@@ -339,8 +339,9 @@ def rotate_credential(
 def verify_capabilities_over_http(credential: str, *, consumer_id: str, project_id: str, port: int = 8766) -> bool:
     """Prove a credential through the real, read-only Local API transport."""
     body = json.dumps({"contract_version":"1.0","request_type":"contract.foundation","request_id":"credential-rotation","project_id":project_id,"consumer":{"consumer_id":consumer_id},"auth":{"scheme":"bearer","credential":"operator-carrier"},"payload":{}})
-    connection = HTTPConnection("127.0.0.1", port, timeout=15)
+    connection: HTTPConnection | None = None
     try:
+        connection = HTTPConnection("127.0.0.1", port, timeout=15)
         connection.request("POST", "/v1/capabilities", body=body, headers={"Content-Type":"application/json","Authorization":f"Bearer {credential}"})
         response = connection.getresponse()
         response.read()
@@ -348,7 +349,8 @@ def verify_capabilities_over_http(credential: str, *, consumer_id: str, project_
     except OSError:
         return False
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 class CredentialAuthority:

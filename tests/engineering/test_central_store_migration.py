@@ -7,8 +7,9 @@ import hashlib
 import fcntl
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -92,6 +93,134 @@ class CentralStoreMigrationTests(unittest.TestCase):
     def test_data_root_is_portable_and_central_path_is_deterministic(self) -> None:
         self.assertEqual(migration.installation_data_root().name, "Engineering Platform")
         self.assertEqual(migration.central_store_path().name, "engineering.db")
+
+    def test_platform_data_roots_honor_xdg_contract(self) -> None:
+        with patch.object(migration.sys, "platform", "linux"), \
+             patch.dict(os.environ, {"XDG_DATA_HOME": "/portable/data"}, clear=False):
+            self.assertEqual(migration.user_data_dir("EP"), Path("/portable/data/EP"))
+
+    def test_windows_data_root_uses_localappdata_without_host_path_semantics(self) -> None:
+        with patch.object(migration.sys, "platform", "win32"), patch.object(migration.os, "name", "nt"), \
+             patch.object(migration, "Path", PurePosixPath), \
+             patch.dict(os.environ, {"LOCALAPPDATA": "/portable/local", "APPDATA": "/portable/roaming"}, clear=False):
+            self.assertEqual(str(migration.user_data_dir("EP")), "/portable/local/EP")
+
+    def test_launchagent_control_fails_closed_when_launchd_cannot_confirm_state(self) -> None:
+        control = migration.LaunchAgentServiceControl(uid=501)
+        label = "com.example.engineering"
+        with patch.object(control._launchd, "quiesce", side_effect=OSError("offline")):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_STOP_FAILED"):
+                control.stop(label)
+        with patch.object(control._launchd, "quiesce"), patch.object(control, "stopped", return_value=False):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_STOP_FAILED"):
+                control.stop(label)
+        with patch.object(control._launchd, "resume", side_effect=OSError("offline")):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_RESTART_FAILED"):
+                control.start(label)
+        with patch.object(control._launchd, "resume"), patch.object(control, "running", return_value=False):
+            with self.assertRaisesRegex(migration.CutoverError, "SERVICE_RESTART_FAILED"):
+                control.start(label)
+        with patch("engineering_platform.central_store_migration.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "state = running", "")):
+            self.assertTrue(control.running(label))
+        with patch("engineering_platform.central_store_migration.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "state = stopped", "")):
+            self.assertFalse(control.running(label))
+
+    def test_corrupt_source_and_target_are_never_accepted_as_migratable(self) -> None:
+        corrupt = Path(self.temporary.name) / "corrupt.db"
+        corrupt.write_text("not a sqlite database", encoding="utf-8")
+        candidate = migration.StoreCandidate(str(corrupt), str(corrupt.resolve()), ("test",))
+        inspected = migration.inspect_source(candidate)
+        self.assertIn("SOURCE_INTEGRITY_FAILED", inspected["blocking_codes"])
+        self.assertEqual(migration.classify_target(corrupt)["state"], "CORRUPT_UNREADABLE")
+
+    def test_preflight_reports_a_malformed_authoritative_source_fail_closed(self) -> None:
+        malformed_root = Path(self.temporary.name) / "malformed-repository"
+        malformed = malformed_root / ".engineering" / "engineering.db"
+        malformed.parent.mkdir(parents=True)
+        malformed.write_text("not a sqlite database", encoding="utf-8")
+        result = migration.preflight(malformed_root)
+        self.assertFalse(result["eligible"])
+        self.assertIn("SOURCE_INTEGRITY_FAILED", result["blocking_codes"])
+
+    def test_forensic_value_normalization_is_type_stable_and_never_parses_scalar_text_as_json(self) -> None:
+        cases = (
+            (None, {"type": "null"}),
+            (b"\x01", {"type": "bytes", "hex": "01"}),
+            ('{"key":1}', {"type": "json", "value": {"key": 1}}),
+            ("[1,2]", {"type": "json", "value": [1, 2]}),
+            ("42", {"type": "text", "value": "42"}),
+            (True, {"type": "boolean", "value": True}),
+            (3, {"type": "integer", "value": 3}),
+            (1.5, {"type": "real", "value": 1.5}),
+        )
+        for value, expected in cases:
+            self.assertEqual(migration._normalized_value(value), expected)
+
+    def test_forensic_table_key_requires_a_declared_deterministic_identity(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE primary_keyed(identifier TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("CREATE TABLE uniquely_keyed(left_key TEXT, right_key TEXT, UNIQUE(left_key,right_key))")
+        connection.execute("CREATE TABLE unkeyed(value TEXT)")
+        self.assertEqual(migration._table_key(connection, "primary_keyed"), ("identifier",))
+        self.assertEqual(migration._table_key(connection, "uniquely_keyed"), ("left_key", "right_key"))
+        with self.assertRaisesRegex(migration.CutoverError, "no deterministic key"):
+            migration._table_key(connection, "unkeyed")
+        connection.close()
+
+    def test_migration_control_helpers_reject_invalid_targets_locks_and_transitions(self) -> None:
+        directory_target = Path(self.temporary.name) / "directory-target"
+        directory_target.mkdir()
+        self.assertEqual(migration.classify_target(directory_target)["state"], "UNKNOWN")
+        empty_database = Path(self.temporary.name) / "empty.db"
+        with sqlite3.connect(empty_database) as connection:
+            connection.execute("PRAGMA user_version=1")
+        self.assertEqual(migration.classify_target(empty_database)["state"], "EMPTY_NEW")
+        malformed_lock = Path(self.temporary.name) / "malformed.lock"
+        malformed_lock.write_text("not-json", encoding="utf-8")
+        self.assertIsNone(migration._lock_owner(malformed_lock))
+        malformed_lock.write_text(json.dumps({"component": 7, "pid": "invalid"}), encoding="utf-8")
+        self.assertIsNone(migration._lock_owner(malformed_lock))
+        with self.assertRaisesRegex(migration.CutoverError, "ADMISSION_FREEZE_FAILED"):
+            migration.set_admission_freeze(self.root, reason="")
+        with self.assertRaisesRegex(migration.CutoverError, "THAW_FAILED"):
+            migration.thaw_admission(self.root, migration_id="wrong")
+        with self.assertRaisesRegex(migration.CutoverError, "unknown state"):
+            migration.transition_receipt({"migration_id": "test"}, "NOT_A_STATE")
+
+    def test_target_equivalence_detects_schema_and_authority_content_drift(self) -> None:
+        target = Path(self.temporary.name) / "candidate.db"
+        with sqlite3.connect(self.source) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+        self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
+        with sqlite3.connect(target) as connection:
+            connection.execute("DELETE FROM local_api_consumer_registrations")
+        result = migration.validate_target_equivalence(self.source, target)
+        self.assertFalse(result["equivalent"])
+        self.assertIn("table_counts", result["differences"])
+        self.assertEqual(result["blocking_codes"], ["TARGET_STORE_CONFLICT"])
+
+    def test_lock_classification_never_trusts_an_unheld_or_unattributed_lock(self) -> None:
+        lock = Path(self.temporary.name) / "candidate.lock"
+        lock.write_text(json.dumps({"component": "unknown", "pid": os.getpid()}), encoding="utf-8")
+        self.assertEqual(migration._classify_lock(lock, pre_stop=False, services=None), "STALE_UNOWNED_LOCK")
+        with lock.open("r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            self.assertEqual(migration._classify_lock(lock, pre_stop=False, services=None), "UNKNOWN_LOCK")
+
+    def test_forensic_contaminated_target_remains_non_authoritative(self) -> None:
+        target = Path(self.temporary.name) / "forensic.db"
+        with sqlite3.connect(target) as connection:
+            connection.execute("PRAGMA user_version=1")
+        data_root = Path(self.temporary.name) / "installation"
+        receipt = data_root / "migration" / "forensic.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({"central_forensic": {
+            "path": str(target.resolve()), "classification": "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE",
+        }}), encoding="utf-8")
+        with patch.object(migration, "installation_data_root", return_value=data_root):
+            result = migration.classify_target(target)
+        self.assertEqual(result["state"], "FORENSIC_CONTAMINATED_NON_AUTHORITATIVE")
+        self.assertEqual(result["blocking_code"], "TARGET_STORE_CONFLICT")
 
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())

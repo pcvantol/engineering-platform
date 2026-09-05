@@ -424,7 +424,7 @@ class StateStore:
                 ))
             finally:
                 connection.close()
-        except (EngineeringStorageError, StateError) as error:
+        except (EngineeringStorageError, StateError, sqlite3.DatabaseError) as error:
             raise StateError("canonical engineering storage is unavailable") from error
 
     def load(self, run_id: str) -> TransactionState:

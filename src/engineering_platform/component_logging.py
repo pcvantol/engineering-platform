@@ -1,4 +1,4 @@
-"""Redacted, rotating local logs for Engineering Platform components."""
+"""Redacted component logging with CENTRAL as the only persistent authority."""
 
 from __future__ import annotations
 
@@ -6,24 +6,24 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import signal
 import sqlite3
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 
 from .agent_state import redact_diagnostic
-from .dashboard_configuration import get as dashboard_configuration
 from .storage import EngineeringStorageError, open_storage
 from .providers import GitProvider
+from .platform_components import PLATFORM_COMPONENT_IDS
 
 LOG_LEVEL_ENVIRONMENT = "DJCONNECT_ENGINEERING_LOG_LEVEL"
+SERVER_DATA_ROOT_ENVIRONMENT = "EP_SERVER_DATA_ROOT"
 DEFAULT_LOG_LEVEL = "INFO"
-MAX_LOG_BYTES = 1_000_000
-BACKUP_COUNT = 3
 COMPONENT_LOG_PAGE_SIZE = 50
 MAX_COMPONENT_LOG_PAGE_SIZE = 200
+PLATFORM_LOG_COMPONENTS = PLATFORM_COMPONENT_IDS
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 LOG_LEVELS_AT_OR_ABOVE = {
     "INFO": ("INFO", "WARNING", "ERROR"),
@@ -38,6 +38,10 @@ LIFECYCLE_CONTEXT_KEYS = frozenset(
         "launch_agent_path",
         "target_component",
         "shutdown_signal",
+        "configuration_scope",
+        "configuration_key",
+        "previous_value",
+        "new_value",
     }
 )
 
@@ -46,15 +50,6 @@ def configured_level(value: str | None = None) -> int:
     """Resolve the supported local logging level without silently accepting typos."""
     name = (value or os.environ.get(LOG_LEVEL_ENVIRONMENT, DEFAULT_LOG_LEVEL)).upper()
     return getattr(logging, name if name in VALID_LEVELS else DEFAULT_LOG_LEVEL)
-
-
-class SecureRotatingFileHandler(RotatingFileHandler):
-    """Keep both a newly opened log and its rotated predecessor private."""
-
-    def _open(self) -> object:
-        stream = super()._open()
-        os.chmod(self.baseFilename, 0o600)
-        return stream
 
 
 class RedactingJsonFormatter(logging.Formatter):
@@ -80,37 +75,21 @@ class RedactingJsonFormatter(logging.Formatter):
 
 
 class SQLiteLogHandler(logging.Handler):
-    """Persist component events in canonical storage, with file fallback on failure."""
+    """Persist component events only in the canonical CENTRAL store."""
 
     def __init__(self, root: Path, component: str, *, central_database: Path | None = None) -> None:
         super().__init__()
         self.root = root.resolve()
         self.component = component
         self.central_database = central_database.resolve() if central_database is not None else None
-        self._fallback: SecureRotatingFileHandler | None = None
-
-    def _fallback_handler(self) -> SecureRotatingFileHandler:
-        if self._fallback is None:
-            directory = self.root / ".engineering" / "logs"
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            self._fallback = SecureRotatingFileHandler(
-                directory / f"{self.component}.log",
-                maxBytes=MAX_LOG_BYTES,
-                backupCount=BACKUP_COUNT,
-                encoding="utf-8",
-            )
-            self._fallback.setFormatter(self.formatter)
-        return self._fallback
-
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            if self.central_database is None:
+                raise EngineeringStorageError("CENTRAL component log authority is unavailable")
             payload = self.format(record)
             parsed = json.loads(payload)
             created_at = parsed.get("timestamp")
-            connection = (
-                sqlite3.connect(self.central_database, isolation_level=None)
-                if self.central_database is not None else open_storage(self.root)
-            )
+            connection = sqlite3.connect(self.central_database, isolation_level=None)
             try:
                 connection.execute(
                     "INSERT INTO engineering_component_logs(component,payload,created_at) VALUES(?,?,?)",
@@ -119,14 +98,15 @@ class SQLiteLogHandler(logging.Handler):
             finally:
                 connection.close()
         except (EngineeringStorageError, OSError, sqlite3.DatabaseError, TypeError, ValueError):
+            # Falling back into an arbitrary checkout would silently create a
+            # second supported component-log authority.  Keep the diagnostic
+            # observable but non-persistent when CENTRAL is unavailable.
             try:
-                self._fallback_handler().emit(record)
+                sys.stderr.write("engineering-platform: CENTRAL component log unavailable\n")
             except OSError:
                 pass
 
     def close(self) -> None:
-        if self._fallback is not None:
-            self._fallback.close()
         super().close()
 
 
@@ -134,21 +114,34 @@ def component_logger(
     root: Path, component: str, *, level: str | None = None,
     central_database: Path | None = None,
 ) -> logging.Logger:
-    """Return the single private SQLite logger for one EP component."""
+    """Return the canonical CENTRAL logger for supported Platform components.
+
+    Installed runtime writers do not select a repository-local sink: the
+    Server publishes its data root and the component identity resolves through
+    the shared Platform Component model.  Missing CENTRAL binding is a
+    bounded diagnostic, never a local persistent fallback.
+    """
+    if component not in PLATFORM_COMPONENT_IDS:
+        # The database table has no foreign key to the component model.  The
+        # writer is therefore the authority boundary: accepting an arbitrary
+        # string here would let a retired alias become a new operational log
+        # identity simply by supplying a CENTRAL path.
+        raise ValueError("Unsupported Platform component.")
+    if central_database is None:
+        configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
+        if configured_root:
+            candidate = Path(configured_root).resolve() / "engineering.db"
+            if candidate.is_file():
+                central_database = candidate
     logger = logging.getLogger(f"djconnect.engineering.{component}")
-    configured = level
-    if configured is None and central_database is None:
-        try:
-            configured = str(dashboard_configuration(root)["log_level"])
-        except (EngineeringStorageError, KeyError, TypeError, ValueError):
-            configured = None
-    logger.setLevel(configured_level(configured))
+    logger.setLevel(configured_level(level))
     logger.propagate = False
     for handler in tuple(logger.handlers):
         if (
             isinstance(handler, SQLiteLogHandler)
             and handler.root == root.resolve()
             and handler.central_database == (central_database.resolve() if central_database is not None else None)
+            and handler.component == component
         ):
             handler.setLevel(logger.level)
             return logger
@@ -162,8 +155,8 @@ def component_logger(
 
 
 def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
-    """Read canonical SQLite logs; use private files only if SQLite is unavailable."""
-    if component not in {"inbox", "dashboard"}:
+    """Read component logs from CENTRAL, never from a repository-local fallback."""
+    if component not in PLATFORM_COMPONENT_IDS:
         return b""
     try:
         connection = open_storage(root)
@@ -177,7 +170,7 @@ def component_log(root: Path, component: str, *, limit: int = 100) -> bytes:
         lines = [str(row[0]) for row in reversed(rows)]
         return ("\n".join(lines) or "Nog geen applicatielog beschikbaar.").encode()
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-        return _fallback_component_log(root, component, limit=limit)
+        return b"CENTRAL componentlog is tijdelijk niet beschikbaar."
 
 
 def component_log_page(
@@ -201,7 +194,7 @@ def component_log_page(
     search never disappears merely because newer rows filled an arbitrary
     client-side sample.
     """
-    if component not in {"inbox", "dashboard"}:
+    if component not in PLATFORM_COMPONENT_IDS:
         raise ValueError("Onbekende componentlog.")
     if not isinstance(page, int) or page < 1:
         raise ValueError("Ongeldige logpagina.")
@@ -305,8 +298,8 @@ def component_log_page(
 
 
 def component_log_version(root: Path, component: str) -> str:
-    """Return a lightweight SQLite revision, falling back to legacy file metadata."""
-    if component not in {"inbox", "dashboard"}:
+    """Return a lightweight CENTRAL SQLite revision."""
+    if component not in PLATFORM_COMPONENT_IDS:
         return "missing"
     try:
         connection = open_storage(root)
@@ -319,16 +312,12 @@ def component_log_version(root: Path, component: str) -> str:
             connection.close()
         return f"sqlite:{count}:{newest}"
     except (EngineeringStorageError, OSError, sqlite3.DatabaseError):
-        try:
-            observed = (root / ".engineering" / "logs" / f"{component}.log").stat()
-            return f"fallback:{observed.st_mtime_ns}:{observed.st_size}"
-        except OSError:
-            return "missing"
+        return "central-unavailable"
 
 
 def clear_component_log(root: Path, component: str) -> None:
-    """Clear one canonical component log, falling back only when SQLite is unavailable."""
-    if component not in {"inbox", "dashboard"}:
+    """Clear one CENTRAL component log without creating local log state."""
+    if component not in PLATFORM_COMPONENT_IDS:
         raise ValueError("Onbekende componentlog.")
     try:
         connection = open_storage(root)
@@ -337,13 +326,8 @@ def clear_component_log(root: Path, component: str) -> None:
         finally:
             connection.close()
         return
-    except (EngineeringStorageError, sqlite3.DatabaseError):
-        path = root / ".engineering" / "logs" / f"{component}.log"
-        try:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path.write_text("", encoding="utf-8")
-        except OSError as error:
-            raise OSError("Applicatielog kon niet worden gewist.") from error
+    except (EngineeringStorageError, OSError, sqlite3.DatabaseError) as error:
+        raise OSError("CENTRAL componentlog kon niet worden gewist.") from error
 
 
 def prune_component_logs(root: Path, retention_days: int) -> None:
@@ -359,16 +343,6 @@ def prune_component_logs(root: Path, retention_days: int) -> None:
         )
     finally:
         connection.close()
-
-
-def _fallback_component_log(root: Path, component: str, *, limit: int) -> bytes:
-    try:
-        lines = (root / ".engineering" / "logs" / f"{component}.log").read_text(
-            encoding="utf-8"
-        ).splitlines()
-    except OSError:
-        return b"Nog geen applicatielog beschikbaar."
-    return ("\n".join(lines[-limit:])[-64_000:] or "Nog geen applicatielog beschikbaar.").encode()
 
 
 def log_event(

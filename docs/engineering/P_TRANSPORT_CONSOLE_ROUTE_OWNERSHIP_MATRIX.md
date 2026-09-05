@@ -1,0 +1,118 @@
+# P-TRANSPORT Console route ownership matrix
+
+Status: `P-TRANSPORT AWAITING_HUMAN_UI_REVIEW`
+
+This is the readable form of the executable canonical matrix in
+`engineering_platform.console_route_ownership`. Every supported Console or
+Console-adjacent API route has exactly one owner. A selected project may add
+explicitly documented display context to a Platform projection; it cannot
+change authority, select a checkout, or delegate that route.
+
+| Owner | Routes | Component / intent |
+| --- | --- | --- |
+| PLATFORM | `GET /`, Console assets/icons, `/health`, `/api/platform-status`, `/api/dashboard-snapshot`, `/api/status`, `/api/events` | Console shell and Platform Components projection (selected project is presentation-only) |
+| PLATFORM | `GET /api/components/{ep_server,platform_database,lifecycle_worker,operations_console,dashboard_relay,http_ingress,cli_ingress,file_inbox_ingress,dependabot_producer}/details`, `GET /api/logs/all`, `GET /api/logs/{component}`, `POST /api/logs/all`, `/api/{process-metrics,usage}` | Platform Components, status popout, one CENTRAL log projection (server-filtered by EP-component, time, text, level, event, sort and page), controlled log clearing, File Inbox and Dependabot producer projection |
+| PLATFORM | `GET /api/provider-login-status`; `POST /api/provider-login/{repair,logout}` | Provider status and login actions |
+| PLATFORM | `GET /api/execution-runtime-status`; `POST /api/execution-runtime/repair` | Execution runtime status and repair |
+| PLATFORM | `GET /api/provider-capacity`, `/api/github-rate-limit`; `GET/POST /api/provider-capacity/configuration` | Provider capacity/readiness diagnostics and settings |
+| PLATFORM | `GET/POST /api/configuration`; `GET /api/central-database/download`; `POST /api/central-database/open-directory`; `GET/POST /api/central-database/configuration` | Server settings and Central database operations |
+| HOST_ADMIN | `GET /api/host-admin/diagnostics` | Bounded installation-only disk and managed-runtime observation; no project, queue, execution or mutation authority |
+| PLATFORM | `GET /v1/operations/projects` | Operations Console platform listing |
+| PROJECT | `GET /api/prompt-history`, `/api/prompt-history/{run}/{report,chat,details}`, `/api/telemetry/{date}`; `POST /api/execution-{dismiss,retry}`, `/api/dashboard-translate` | Project history, telemetry and project actions; no valid selected project returns `409 CONSOLE_PROJECT_UNAVAILABLE` |
+| TRANSPORT_INTERNAL | `/diagnostics/topology`, `/healthz`, `/readyz`, `/v1/projects/{project}/submissions`, `/v1/agent/{pair,register,heartbeat,attachment}` | Transport probes and authenticated transport endpoints, not Console delegation |
+| HISTORICAL_UNREACHABLE | `POST /api/runtime-directory/open` | Explicitly retired checkout-bound runtime action (`410 RUNTIME_DIRECTORY_RETIRED`) |
+
+## Enforced invariants
+
+- `PLATFORM_ROUTE(<geen>) == PLATFORM_ROUTE(selected_project)` for authority and health semantics. The selected project can only affect documented display context.
+- A Platform component family has one scope across status, detail, repair/action, restart (where present), and diagnostics/logs: `COMPONENT_ROUTE_SCOPE_CONSISTENT=PASS`.
+- Project routes fail closed without a valid project identity; they do not inherit a first checkout.
+- The Host Admin diagnostic resolves before project selection and receives only the explicit EP Server installation root. It neither accepts a filesystem target nor exposes Finder, worktree, Git-lock or arbitrary-command actions.
+- `tools/qualification/console_route_ownership_guard.py` runs in normal validation and emits `PLATFORM_ROUTE_PROJECT_DELEGATION=0`, `PLATFORM_ROUTE_CHECKOUT_DEPENDENCY=0`, and `AMBIGUOUS_ROUTE_OWNERSHIP=0`.
+
+## Removed fallback paths
+
+There are no platform-to-project fallback paths. Provider login repair/logout and execution-runtime repair resolve before project lookup; the retired runtime-directory action is unreachable rather than delegated.
+
+## Test and qualification coverage
+
+The matrix is not documentation-only. The following checks are the normal
+qualification contract for this ownership boundary.
+
+| Concern | Evidence | Required result |
+| --- | --- | --- |
+| Closed, unambiguous matrix | `tests/engineering/test_console_route_ownership.py` | Every representative route resolves to one declared owner. |
+| Source ordering and dependency guard | `tools/qualification/console_route_ownership_guard.py --source-root src` | `PLATFORM_ROUTE_PROJECT_DELEGATION=0`; `PLATFORM_ROUTE_CHECKOUT_DEPENDENCY=0`; `AMBIGUOUS_ROUTE_OWNERSHIP=0`; `COMPONENT_ROUTE_SCOPE_CONSISTENT=PASS`. |
+| No-project and selected-project integration contexts | `tests/engineering/test_server_foundation.py::ServerFoundationTest.test_root_reuses_historical_console_with_request_scoped_project_selection` | The Platform health, status, component-detail, logging, provider, execution-runtime and configuration routes retain `EP-Console-Route-Owner: PLATFORM` in both contexts and never fail for missing project scope. |
+| Project fail-closed boundary | The same integration test | Project history is `409` without project scope; Platform requests are never used as an implicit project fallback. |
+| Platform Components and status popout | `tests/engineering/dashboard.spec.mjs` (`shows live platform readiness in the titlebar health indicator`, `keeps platform health authoritative while an execution is active`, `renders canonical platform components in the platform card`, `opens canonical ingress details from the status popout`) | The eight canonical components remain the source for cards, popout and details; an active execution cannot hide an unhealthy Platform component. |
+| CENTRAL log query and actions | `tests/engineering/test_server_foundation.py::StandaloneServerFoundationTest.test_central_log_route_filters_sorts_and_paginates_before_responding`; `tests/engineering/dashboard.spec.mjs` | Filters, sort and pagination run in CENTRAL; download keeps active filters and omits page bounds; copy includes structured fields; clear is component-scoped. See `CENTRAL_COMPONENT_LOG_QUERY_CONTRACT.md`. |
+| Browser qualification | `npm run test:engineering-dashboard` and the four `browser-dashboard` CI shards | Console interaction and presentation remain covered in the normal validation profile. |
+
+The browser specification uses one shared canonical eight-component fixture for
+these contracts. This keeps the card, popout and ingress-detail tests aligned
+with the installed Server inventory instead of reintroducing historical
+watcher or execution-host identities through test data.
+
+### Candidate qualification evidence
+
+Qualification is candidate-SHA-specific: every PR update reruns the ownership
+guard, focused status-popout browser coverage, all four CI browser shards,
+validation, UI localisation, CodeQL, Trusted Delivery and exact-SHA Owner
+Authorization. The current candidate's required checks are the authoritative
+evidence; this architecture document intentionally does not preserve a stale
+commit hash as a substitute. The required human status remains
+`P-TRANSPORT AWAITING_HUMAN_UI_REVIEW`.
+
+## Canonical platform component inventory
+
+`engineering_platform.platform_components.PLATFORM_COMPONENTS` is the sole
+Server-native component model. It supplies stable identity, product name key,
+kind, health group, restart capability, log identity and detail metadata to
+the Server status projection. The Console receives that model with
+`/api/platform-status`; its cards, status popout and log-component picker do
+not carry a second component inventory. Historical log aliases are read-only
+migration mappings and never selectable component identities.
+
+The rendered CENTRAL Console structurally removes the retired local
+Inbox-watcher location picker, folder chooser and watcher-restart path.
+`POST /api/configuration/inbox-location` and `/browse` are explicitly retired
+(`410`). The canonical File Inbox scan interval and Open PR polling control
+are both placed under **Server settings** inside Configuration; neither is a
+project, checkout or selected-project setting. Component logs render one
+CENTRAL Platform table; a second watcher/dashboard log card is not emitted in
+either no-project or selected-project Console documents.
+
+The installed Server owns one component inventory, used by Platform Components,
+the status popout and every component detail modal. It contains `ep_server`
+(DAEMON), `platform_database` (STORAGE), `lifecycle_worker`
+(IN_PROCESS_COMPONENT), `operations_console` (UI_SERVICE), `dashboard_relay`
+(UI_SERVICE), and `http_ingress`, `cli_ingress`, `file_inbox_ingress`
+(TRANSPORT). The File Inbox is installation-owned at `<data_root>/file-inbox`
+with `incoming`, `processing`, `accepted` and `quarantine` dispositions; its
+Server-composed service writes the liveness heartbeat. This is not a watcher,
+checkout, selected-project or filesystem-backlog queue model.
+
+## Dashboard relay runtime contract
+
+The Dashboard access path is deliberately narrower than the Server's Platform
+Components projection:
+
+```text
+Tailnet device → Tailscale IPv4 :8765 → Dashboard relay → 127.0.0.1 EP Server Console
+```
+
+The Server's relay component projection proves only this access path. It is
+healthy when the loopback Server Console and its relay are healthy; it must neither start
+nor require the historical `inbox_watcher` LaunchAgent. A missing watcher is
+therefore never a reason for the relay endpoint to return `503`.
+
+File Inbox health, retry state and quarantine count are instead exposed by
+the installed EP Server's canonical `file_inbox_ingress` component. That
+component is Server-owned and has no independently installed watcher or
+daemon. The Dashboard relay has no submission, File Inbox, Action, run or
+execution authority.
+
+This separation keeps a successful remote access check from claiming that
+the Server itself is running: Server and File Inbox availability remain visible
+through the canonical Server component projection.

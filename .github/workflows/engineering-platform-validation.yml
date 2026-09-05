@@ -14,6 +14,7 @@ on:
       - 'package-lock.json'
       - 'playwright.config.mjs'
       - 'pyproject.toml'
+      - 'tools/qualification/**'
       - '.github/workflows/engineering-platform-validation.yml'
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - 'package-lock.json'
       - 'playwright.config.mjs'
       - 'pyproject.toml'
+      - 'tools/qualification/**'
 
 jobs:
   projection:
@@ -46,6 +48,7 @@ jobs:
       tier: ${{ steps.profile.outputs.tier }}
       phase: ${{ steps.profile.outputs.phase }}
       browser_dashboard_required: ${{ steps.profile.outputs.browser_dashboard_required }}
+      localization_required: ${{ steps.profile.outputs.localization_required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with: {fetch-depth: 0}
@@ -64,7 +67,10 @@ jobs:
         run: |
           python3 -c "import engineering_platform, engineering_platform.execution_host"
           python3 -m compileall -q src/engineering_platform
+          PYTHONPATH=src python3 tools/qualification/console_route_ownership_guard.py --source-root src
           python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Qualify installed P-TRANSPORT 3×2 ingress matrix
+        run: python3 tools/qualification/p_transport_installed_ingress_matrix.py --source-root .
       - name: Enforce Engineering Platform coverage contract
         run: |
           # The standalone package is installed before this job runs.  Tell
@@ -77,17 +83,36 @@ jobs:
           from pathlib import Path
 
           # The platform quality bar is deliberately above 80%, while leaving
-          # a small, verified margin below the current dashboard evidence.
+          # a small, verified margin below the established runtime evidence.
+          # The direct Dashboard module was retired; its broad Server successor
+          # is qualified by route and browser integration, not a fabricated
+          # per-file carry-over baseline.
           minimum = 80.20
           targets = (
-              "engineering_platform/dashboard.py",
               "engineering_platform/platform_bootstrap.py",
               "engineering_platform/providers.py",
-              "engineering_platform/inbox_watcher.py",
+              "engineering_platform/file_inbox.py",
           )
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]
           failures = []
+          # Every shipped Python module is production scope.  This aggregate
+          # gate is deliberately independent from the stricter evidence bar
+          # below for the three protected runtime boundaries.
+          import engineering_platform
+          production_root = Path(engineering_platform.__file__).resolve().parent
+          production_modules = sorted(production_root.rglob("*.py"))
+          measured_modules = {Path(path).resolve() for path in files}
+          unmeasured = [str(path) for path in production_modules if path not in measured_modules]
+          aggregate = report["totals"]["percent_covered"]
+          if len(production_modules) != 107:
+              failures.append(f"production module inventory changed: {len(production_modules)} (expected 107)")
+          if unmeasured:
+              failures.append("unmeasured production modules: " + ", ".join(unmeasured))
+          if aggregate < 80.00:
+              failures.append(f"repository production coverage: {aggregate:.2f}% (minimum 80.00%)")
+          else:
+              print(f"repository production coverage: {aggregate:.2f}%")
           for target in targets:
               matching_paths = [path for path in files if path.replace("\\\\", "/").endswith(target)]
               covered = (
@@ -148,13 +173,26 @@ jobs:
             test-results/**
             tests/engineering/dashboard.spec.mjs-snapshots/**
           if-no-files-found: warn
+  localization-gate:
+    name: UI-GOLDEN-LOCALIZATION
+    needs: validation-profile
+    if: needs.validation-profile.outputs.localization_required == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v22
+        with: {node-version: '22'}
+      - name: Enforce five-locale Console contract
+        run: npm run test:ui-localization && node --test tests/engineering/ui_localization_contract.test.mjs
   trusted-delivery-evidence:
     name: Qualify trusted delivery evidence
-    needs: [validation-profile, validate, browser-dashboard]
+    needs: [validation-profile, validate, browser-dashboard, localization-gate]
     if: >-
       always() && needs.validate.result == 'success' &&
       (needs.validation-profile.outputs.browser_dashboard_required != 'true' ||
-      needs.browser-dashboard.result == 'success')
+      needs.browser-dashboard.result == 'success') &&
+      (needs.validation-profile.outputs.localization_required != 'true' ||
+      needs.localization-gate.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5

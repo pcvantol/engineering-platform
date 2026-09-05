@@ -12,39 +12,69 @@ from datetime import datetime, timezone
 from html import escape
 import http.server
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import select
+import shlex
+import shutil
 import signal
 import sqlite3
 # The lifecycle starts this module with a fixed argv; no shell is used.
 import subprocess  # nosec B404
 import sys
 import time
-from typing import Protocol
+from threading import Lock
+from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
-from urllib.parse import SplitResult, parse_qs, parse_qsl, urlencode, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 from uuid import uuid4
 
 from . import agent_trust
 from . import central_database
-from . import dashboard
+from . import console_route_ownership
+from . import console_presentation
+from . import server_console_services
 from . import dashboard_translation
+from . import dependabot_producer
+from . import external_producer_binding
+from . import file_inbox
+from . import host_admin
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
+from . import server_relay
 from . import storage
 from . import managed_codex_runtime
-from .lifecycle_worker import LifecycleWorker, WORKER_RUNNING
-from .parity_lifecycle_dispatcher import ParityLifecycleDispatchError, dismiss_operator_gate, retry_operator_gate
+from . import provider_readiness
+from .platform_components import (
+    PLATFORM_COMPONENT_BY_ID,
+    PLATFORM_COMPONENT_IDS,
+    PLATFORM_COMPONENTS,
+    PLATFORM_COMPONENT_ROUTE_PATTERN,
+    RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN,
+)
+from .component_logging import (
+    LOG_LEVELS_AT_OR_ABOVE,
+    MAX_COMPONENT_LOG_PAGE_SIZE,
+    VALID_LEVELS,
+    component_logger,
+    log_event,
+)
 from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
+from .platform_version import EngineeringPlatformManifest
 from .providers import (
+    GitHubProvider,
+    CodexCliProvider,
+    LaunchdProvider,
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
     default_engineering_platform_codex_cli_prefix,
 )
+from .resources import package_path
 
 
 SERVER_CONFIGURATION_FILENAME = "server.json"
@@ -57,11 +87,26 @@ SERVER_CONFIGURATION_VERSION = 2
 # bootstrap is deliberately separate from the retired DJConnect migration
 # machinery: it creates a clean installation only and never accepts a source
 # database path.
-SERVER_STORE_SCHEMA_VERSION = 48
+SERVER_STORE_SCHEMA_VERSION = 52
 SERVER_ENVIRONMENT_DATA_ROOT = "EP_SERVER_DATA_ROOT"
+FILE_INBOX_DIRECTORY = "file-inbox"
+_CENTRAL_LOG_SORT_COLUMNS = {
+    "line": "id",
+    "timestamp": "created_at",
+    "level": "json_extract(payload, '$.level')",
+    "event": "json_extract(payload, '$.event')",
+    "runId": "COALESCE(json_extract(payload, '$.run_id'), '')",
+    "details": "COALESCE(json_extract(payload, '$.diagnostic'), '')",
+}
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+_PROVIDER_LOGIN_LOCK = Lock()
+_PROVIDER_INSTALL_LOCK = Lock()
+_CODEX_RATE_LIMIT_CACHE: tuple[float, bytes] | None = None
+_CODEX_RATE_LIMIT_CACHE_LOCK = Lock()
+_CODEX_IDENTITY_CACHE: tuple[float, dict[str, str]] | None = None
+_CODEX_IDENTITY_CACHE_LOCK = Lock()
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -84,6 +129,221 @@ def _report_content_disposition(report_id: object) -> str:
     if not isinstance(report_id, str) or not _SAFE_REPORT_ID.fullmatch(report_id):
         raise ValueError("report identifier is invalid")
     return _attachment_content_disposition(f"engineering-report-{report_id}.md")
+
+
+def _execution_runtime_status() -> dict[str, str]:
+    """Project installed Server Python readiness without Dashboard ownership."""
+    executable = Path(sys.executable).resolve()
+    ready = executable.is_file() and os.access(executable, os.X_OK)
+    return {
+        "state": "READY" if ready else "UNAVAILABLE",
+        "executable": str(executable) if ready else "",
+        "version": sys.version.split()[0] if ready else "",
+    }
+
+
+def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | None:
+    """Return the most restrictive remaining safe quota percentage."""
+    windows = rate_limits.get("windows")
+    if not isinstance(windows, list):
+        return None
+    remaining: list[float] = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        if isinstance(used, (int, float)) and not isinstance(used, bool):
+            remaining.append(max(0.0, min(100.0, 100.0 - float(used))))
+    return min(remaining) if remaining else None
+
+
+def _github_rate_limit_status() -> dict[str, object]:
+    """Read GitHub quota state without changing GitHub or repository state."""
+    try:
+        payload = json.loads(GitHubProvider().github("api", "rate_limit"))
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        return {"limited": "rate limit" in str(error).lower()}
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, dict):
+        return {"limited": False}
+    exhausted: list[tuple[str, int]] = []
+    for name in ("core", "graphql", "search"):
+        resource = resources.get(name)
+        if not isinstance(resource, dict):
+            continue
+        remaining, reset = resource.get("remaining"), resource.get("reset")
+        if isinstance(remaining, int) and remaining <= 0:
+            exhausted.append((name, reset if isinstance(reset, int) else 0))
+    if not exhausted:
+        return {"limited": False}
+    reset_at = min((reset for _, reset in exhausted if reset > 0), default=None)
+    return {"limited": True, "reset_at": reset_at}
+
+
+def _codex_rate_limits() -> bytes:
+    """Read quota through the Server-owned app-server protocol/cache."""
+    global _CODEX_RATE_LIMIT_CACHE
+    now = time.monotonic()
+    with _CODEX_RATE_LIMIT_CACHE_LOCK:
+        if _CODEX_RATE_LIMIT_CACHE and now - _CODEX_RATE_LIMIT_CACHE[0] < 60:
+            return _CODEX_RATE_LIMIT_CACHE[1]
+    identity = _codex_provider_identity()
+    provider = CodexCliProvider(); process = None
+    try:
+        process = provider.app_server()
+        if process.stdin is None or process.stdout is None:
+            return json.dumps(identity, separators=(",", ":")).encode()
+        process.stdin.write(json.dumps({"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "engineering-platform-server", "title": "EP Operations", "version": "2.0.0"}}}) + "\n")
+        process.stdin.flush(); deadline = time.monotonic() + 5; requested = False
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
+            if not ready: break
+            line = process.stdout.readline()
+            if not line: break
+            response = json.loads(line)
+            if response.get("id") == 1 and not requested:
+                process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                process.stdin.write(json.dumps({"method": "account/rateLimits/read", "id": 2, "params": {}}) + "\n")
+                process.stdin.flush(); requested = True
+            elif response.get("id") == 2:
+                encoded = json.dumps({**identity, **_normalize_rate_limits(response.get("result"))}, separators=(",", ":")).encode()
+                with _CODEX_RATE_LIMIT_CACHE_LOCK: _CODEX_RATE_LIMIT_CACHE = (time.monotonic(), encoded)
+                return encoded
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    finally:
+        if process is not None: provider.close_app_server(process)
+    return json.dumps(identity, separators=(",", ":")).encode()
+
+
+def _normalize_rate_limits(payload: object) -> dict[str, object]:
+    """Keep only bounded display values from the read-only quota response."""
+    limits = payload.get("rateLimits") if isinstance(payload, dict) else None
+    if not isinstance(limits, dict): return {}
+    windows: list[dict[str, int | str]] = []
+    for key in ("primary", "secondary"):
+        item = limits.get(key)
+        if not isinstance(item, dict): continue
+        used, duration, resets = item.get("usedPercent"), item.get("windowDurationMins"), item.get("resetsAt")
+        if not isinstance(used, (int, float)) or isinstance(used, bool) or not isinstance(duration, int) or isinstance(duration, bool) or not isinstance(resets, int) or isinstance(resets, bool): continue
+        windows.append({"label": _rate_limit_window_label(duration), "used_percent": max(0, min(100, round(used))), "window_minutes": duration, "resets_at": resets})
+    credits = payload.get("rateLimitResetCredits"); available = credits.get("availableCount") if isinstance(credits, dict) else None
+    result: dict[str, object] = {"windows": windows}
+    if isinstance(available, int) and not isinstance(available, bool) and available >= 0: result["reset_credits"] = available
+    return result if windows or "reset_credits" in result else {}
+
+
+def _rate_limit_window_label(duration: int) -> str:
+    if duration == 300: return "5-uursvenster"
+    if duration == 10_080: return "Weekvenster"
+    if duration % 1_440 == 0: return f"{duration // 1_440}-daags venster"
+    if duration % 60 == 0: return f"{duration // 60}-uursvenster"
+    return f"{duration}-minutenvenster"
+
+
+def _codex_provider_identity() -> dict[str, str]:
+    """Return the managed Codex CLI identity without selecting PATH authority."""
+    global _CODEX_IDENTITY_CACHE
+    now = time.monotonic()
+    with _CODEX_IDENTITY_CACHE_LOCK:
+        if _CODEX_IDENTITY_CACHE and now - _CODEX_IDENTITY_CACHE[0] < 300:
+            return dict(_CODEX_IDENTITY_CACHE[1])
+    identity = {"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"}
+    executable = CodexCliProvider()._executable
+    if executable:
+        candidate = Path(executable).expanduser()
+        if candidate.is_absolute(): identity["provider_path"] = str(candidate.parent.parent)
+        try: completed = LocalProcessProvider().execute(default_data_root(), (executable, "--version"))
+        except OSError: completed = None
+        if completed and completed.returncode == 0:
+            match = re.search(r"(?<!\d)(\d+\.\d+\.\d+)(?!\d)", (completed.stdout or completed.stderr).strip())
+            if match: identity["provider_version"] = match.group(1)
+    with _CODEX_IDENTITY_CACHE_LOCK: _CODEX_IDENTITY_CACHE = (now, identity)
+    return dict(identity)
+
+
+def _start_provider_login(data_root: Path, provider: str) -> None:
+    """Dispatch one explicit host-wide provider login from the Server."""
+    commands = {
+        "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
+        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+    }
+    command = commands.get(provider)
+    if command is None:
+        raise ValueError("Unsupported provider login request.")
+    if provider == "CODEX" and not CodexCliProvider().status().qualified:
+        raise ValueError("Codex CLI is not installed.")
+    if provider == "GITHUB" and shutil.which("gh") is None:
+        raise ValueError("GitHub CLI is not installed.")
+    if sys.platform != "darwin":
+        raise ValueError("Interactive provider login is supported from the local macOS Server only.")
+    script = "\n".join((
+        'tell application "Terminal"', "activate",
+        f"do script {json.dumps('exec ' + ' '.join(shlex.quote(part) for part in command))}",
+        "end tell",
+    ))
+    with _PROVIDER_LOGIN_LOCK:
+        completed = LocalProcessProvider().execute(data_root, ("/usr/bin/osascript", "-e", script))
+    if completed.returncode:
+        raise ValueError("Provider login window could not be opened.")
+
+
+def _logout_provider(data_root: Path, provider: str) -> None:
+    """Remove one locally stored provider session without exposing credentials."""
+    if provider == "CODEX":
+        completed = CodexCliProvider().command("logout")
+    elif provider == "GITHUB":
+        process = LocalProcessProvider()
+        account = process.execute(data_root, ("gh", "api", "user", "--jq", ".login"))
+        username = account.stdout.strip()
+        if account.returncode or not username or not re.fullmatch(r"[A-Za-z0-9-]+", username):
+            raise ValueError("GitHub session cannot be safely identified for logout.")
+        completed = process.execute(data_root, ("gh", "auth", "logout", "--hostname", "github.com", "--user", username))
+    else:
+        raise ValueError("Unsupported provider logout request.")
+    if completed.returncode:
+        raise ValueError("Provider logout did not complete.")
+
+
+def _central_execution_active(data_root: Path) -> bool:
+    """Read active lifecycle state from CENTRAL, never a checkout status file."""
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM ep_parity_lifecycle_dispatches WHERE "
+            "state IN ('CLAIMED','RUNNING') OR (state IN ('BLOCKED','FAILED') "
+            "AND operator_resolution='OPEN') LIMIT 1"
+        ).fetchone()
+    return row is not None
+
+
+def _install_provider(data_root: Path, provider: str) -> None:
+    """Install one provider only through the Server installation boundary."""
+    if not _PROVIDER_INSTALL_LOCK.acquire(blocking=False):
+        raise ValueError("Another provider installation is already in progress.")
+    try:
+        if _central_execution_active(data_root):
+            raise ValueError("Provider installation is unavailable while an execution is active.")
+        if provider == "CODEX":
+            try:
+                managed_codex_runtime.provision(data_root)
+            except managed_codex_runtime.ManagedCodexRuntimeError as error:
+                raise ValueError(str(error)) from error
+            key = "codex"
+        elif provider == "GITHUB":
+            brew = shutil.which("brew")
+            if brew is None:
+                raise ValueError("GitHub CLI installation requires Homebrew on this host.")
+            completed = LocalProcessProvider().execute(data_root, (brew, "install", "gh"))
+            verification = LocalProcessProvider().execute(data_root, ("gh", "--version"))
+            if completed.returncode or verification.returncode:
+                raise ValueError("Provider installation could not be verified.")
+            key = "github"
+        else:
+            raise ValueError("Unsupported provider installation request.")
+        if _central_provider_readiness(data_root).get(key, {}).get("state") == "UNAVAILABLE":
+            raise ValueError("Provider installation could not be verified.")
+    finally:
+        _PROVIDER_INSTALL_LOCK.release()
 
 
 class ServerConfigurationError(ValueError):
@@ -111,6 +371,9 @@ SERVER_REQUIRED_TABLES = frozenset(
         "ep_submission_events",
         "ep_submission_prompt_history",
         "ep_parity_lifecycle_dispatches",
+        "ep_receipt_run_provenance",
+        "ep_external_producer_bindings",
+        "ep_external_producer_binding_audit",
         "engineering_transactions",
         "execution_lifecycle_events",
     }
@@ -128,6 +391,8 @@ SERVER_REQUIRED_INDEXES = frozenset(
         "ep_submissions_project_lookup",
         "ep_submissions_idempotency_lookup",
         "ep_parity_lifecycle_dispatches_run_lookup",
+        "ep_receipt_run_provenance_project_lookup",
+        "ep_external_producer_bindings_active_key",
     }
 )
 
@@ -290,7 +555,7 @@ def _migrate_schema_43(connection: sqlite3.Connection) -> None:
         submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
         repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
         producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
-        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','LEGACY_FILE')),
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','LEGACY_FILE')),
         prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
         idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
         state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
@@ -395,6 +660,205 @@ def _migrate_schema_48(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE ep_installations SET schema_version=48")
 
 
+def _migrate_schema_49(connection: sqlite3.Connection) -> None:
+    """Record bounded ingress receipts in the canonical submission row."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema48")
+    connection.execute(
+        "CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49)))"
+    )
+    connection.execute(
+        "INSERT INTO ep_installations(instance_id,created_at,schema_version) "
+        "SELECT instance_id,created_at,49 FROM ep_installations_schema48"
+    )
+    connection.execute("DROP TABLE ep_installations_schema48")
+    # SQLite cannot widen the schema-43 transport CHECK in place.  Rebuild the
+    # parent table while foreign-key enforcement is temporarily disabled by
+    # the caller; SQLite keeps dependent references pointed at its canonical
+    # name.  No submission facts are rewritten or inferred.
+    # Child tables must be rebuilt too: SQLite otherwise retains a foreign-key
+    # reference to the renamed historical parent table.
+    connection.execute("ALTER TABLE ep_submission_events RENAME TO ep_submission_events_schema48")
+    connection.execute("ALTER TABLE ep_submission_prompt_history RENAME TO ep_submission_prompt_history_schema48")
+    connection.execute("ALTER TABLE ep_parity_lifecycle_dispatches RENAME TO ep_parity_lifecycle_dispatches_schema48")
+    connection.execute("ALTER TABLE ep_submissions RENAME TO ep_submissions_schema48")
+    connection.execute("""CREATE TABLE ep_submissions (
+        submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','LEGACY_FILE')),
+        prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
+        idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
+        transport_receipt_id TEXT, transport_received_at TEXT,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        created_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submissions(
+        submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at)
+        SELECT submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,state,admission,created_at
+        FROM ep_submissions_schema48""")
+    connection.execute("""CREATE TABLE ep_submission_events (
+        event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id),
+        event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_events(event_id,submission_id,event_kind,payload,recorded_at)
+        SELECT event_id,submission_id,event_kind,payload,recorded_at FROM ep_submission_events_schema48""")
+    connection.execute("""CREATE TABLE ep_submission_prompt_history (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL,
+        recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at)
+        SELECT submission_id,prompt_digest,recorded_at FROM ep_submission_prompt_history_schema48""")
+    connection.execute("""CREATE TABLE ep_parity_lifecycle_dispatches (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')),
+        prompt_path TEXT NOT NULL, claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED')),
+        resolution_submission_id TEXT REFERENCES ep_submissions(submission_id))""")
+    connection.execute("""INSERT INTO ep_parity_lifecycle_dispatches(
+        submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id)
+        SELECT submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id
+        FROM ep_parity_lifecycle_dispatches_schema48""")
+    connection.execute("DROP TABLE ep_submission_events_schema48")
+    connection.execute("DROP TABLE ep_submission_prompt_history_schema48")
+    connection.execute("DROP TABLE ep_parity_lifecycle_dispatches_schema48")
+    connection.execute("DROP TABLE ep_submissions_schema48")
+    connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
+    connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    connection.execute("CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(49)")
+    connection.execute("UPDATE engineering_metadata SET value='49' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=49")
+
+
+def _migrate_schema_50(connection: sqlite3.Connection) -> None:
+    """Add CENTRAL-owned external producer bindings and immutable audit evidence."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema49")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,50 FROM ep_installations_schema49")
+    connection.execute("DROP TABLE ep_installations_schema49")
+    connection.execute("""CREATE TABLE ep_external_producer_bindings (
+        binding_id TEXT PRIMARY KEY, producer_type TEXT NOT NULL, external_resource_type TEXT NOT NULL,
+        external_resource_identity TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id), status TEXT NOT NULL,
+        version INTEGER NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+        provenance TEXT NOT NULL)""")
+    connection.execute("CREATE UNIQUE INDEX ep_external_producer_bindings_active_key ON ep_external_producer_bindings(producer_type,external_resource_type,external_resource_identity) WHERE status='ACTIVE'")
+    connection.execute("""CREATE TABLE ep_external_producer_binding_audit (
+        audit_id INTEGER PRIMARY KEY, binding_id TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL,
+        reason TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)""")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(50)")
+    connection.execute("UPDATE engineering_metadata SET value='50' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=50")
+
+
+def _migrate_schema_51(connection: sqlite3.Connection) -> None:
+    """Add the explicit Server-owned Dependabot transport value.
+
+    The producer is a bounded internal adapter, not an HTTP caller and not a
+    File Inbox delivery. SQLite requires the durable submission constraint to
+    be rebuilt to record that distinction truthfully.
+    """
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema50")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,51 FROM ep_installations_schema50")
+    connection.execute("DROP TABLE ep_installations_schema50")
+    connection.execute("ALTER TABLE ep_submission_events RENAME TO ep_submission_events_schema50")
+    connection.execute("ALTER TABLE ep_submission_prompt_history RENAME TO ep_submission_prompt_history_schema50")
+    connection.execute("ALTER TABLE ep_parity_lifecycle_dispatches RENAME TO ep_parity_lifecycle_dispatches_schema50")
+    connection.execute("ALTER TABLE ep_submissions RENAME TO ep_submissions_schema50")
+    connection.execute("""CREATE TABLE ep_submissions (
+        submission_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        producer_id TEXT NOT NULL, producer_type TEXT NOT NULL, producer_version TEXT,
+        transport TEXT NOT NULL CHECK(transport IN ('HTTP','CLI','FILE_INBOX','DEPENDABOT','LEGACY_FILE')),
+        prompt TEXT NOT NULL, prompt_digest TEXT NOT NULL, constraints TEXT NOT NULL,
+        idempotency_key TEXT, correlation_id TEXT, mission_id TEXT, engineering_action_id TEXT,
+        transport_receipt_id TEXT, transport_received_at TEXT,
+        state TEXT NOT NULL CHECK(state IN ('QUEUED','REJECTED')), admission TEXT NOT NULL,
+        created_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submissions(
+        submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport_received_at,state,admission,created_at)
+        SELECT submission_id,project_id,repository_id,producer_id,producer_type,producer_version,transport,prompt,prompt_digest,constraints,idempotency_key,correlation_id,mission_id,engineering_action_id,transport_receipt_id,transport_received_at,state,admission,created_at
+        FROM ep_submissions_schema50""")
+    connection.execute("""CREATE TABLE ep_submission_events (
+        event_id INTEGER PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES ep_submissions(submission_id),
+        event_kind TEXT NOT NULL, payload TEXT NOT NULL, recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_events(event_id,submission_id,event_kind,payload,recorded_at)
+        SELECT event_id,submission_id,event_kind,payload,recorded_at FROM ep_submission_events_schema50""")
+    connection.execute("""CREATE TABLE ep_submission_prompt_history (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id), prompt_digest TEXT NOT NULL,
+        recorded_at TEXT NOT NULL)""")
+    connection.execute("""INSERT INTO ep_submission_prompt_history(submission_id,prompt_digest,recorded_at)
+        SELECT submission_id,prompt_digest,recorded_at FROM ep_submission_prompt_history_schema50""")
+    connection.execute("""CREATE TABLE ep_parity_lifecycle_dispatches (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        state TEXT NOT NULL CHECK(state IN ('CLAIMED','RUNNING','COMPLETE','BLOCKED','FAILED')),
+        prompt_path TEXT NOT NULL, claimed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        operator_resolution TEXT NOT NULL DEFAULT 'NONE' CHECK(operator_resolution IN ('NONE','OPEN','DISMISSED','RETRIED')),
+        resolution_submission_id TEXT REFERENCES ep_submissions(submission_id))""")
+    connection.execute("""INSERT INTO ep_parity_lifecycle_dispatches(
+        submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id)
+        SELECT submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at,operator_resolution,resolution_submission_id
+        FROM ep_parity_lifecycle_dispatches_schema50""")
+    for table in ("ep_submission_events_schema50", "ep_submission_prompt_history_schema50", "ep_parity_lifecycle_dispatches_schema50", "ep_submissions_schema50"):
+        connection.execute(f"DROP TABLE {table}")
+    connection.execute("CREATE INDEX ep_submissions_project_lookup ON ep_submissions(project_id,state,created_at DESC)")
+    connection.execute("CREATE UNIQUE INDEX ep_submissions_idempotency_lookup ON ep_submissions(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    connection.execute("CREATE INDEX ep_parity_lifecycle_dispatches_run_lookup ON ep_parity_lifecycle_dispatches(run_id,state)")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(51)")
+    connection.execute("UPDATE engineering_metadata SET value='51' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=51")
+
+
+def _migrate_schema_52(connection: sqlite3.Connection) -> None:
+    """Add the sole immutable CENTRAL receipt-to-run provenance authority."""
+    connection.execute("ALTER TABLE ep_installations RENAME TO ep_installations_schema51")
+    connection.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51,52)))")
+    connection.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,52 FROM ep_installations_schema51")
+    connection.execute("DROP TABLE ep_installations_schema51")
+    connection.execute("""CREATE TABLE ep_receipt_run_provenance (
+        submission_id TEXT PRIMARY KEY REFERENCES ep_submissions(submission_id),
+        run_id TEXT NOT NULL UNIQUE REFERENCES ep_execution_runs(run_id),
+        project_id TEXT NOT NULL REFERENCES ep_project_registrations(project_id),
+        repository_id TEXT NOT NULL REFERENCES ep_repository_registrations(repository_id),
+        installation_id TEXT NOT NULL REFERENCES ep_installations(instance_id),
+        created_at TEXT NOT NULL
+    )""")
+    connection.execute("CREATE INDEX ep_receipt_run_provenance_project_lookup ON ep_receipt_run_provenance(project_id,created_at DESC)")
+    connection.execute("""CREATE TRIGGER ep_receipt_run_provenance_scope_insert
+        BEFORE INSERT ON ep_receipt_run_provenance BEGIN
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_submissions s WHERE s.submission_id=NEW.submission_id AND s.project_id=NEW.project_id AND s.repository_id=NEW.repository_id) THEN RAISE(ABORT,'PROVENANCE_SUBMISSION_SCOPE_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_execution_runs r WHERE r.run_id=NEW.run_id AND r.project_id=NEW.project_id) THEN RAISE(ABORT,'PROVENANCE_RUN_PROJECT_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ep_parity_lifecycle_dispatches d WHERE d.run_id=NEW.run_id AND d.submission_id=NEW.submission_id AND d.project_id=NEW.project_id AND d.repository_id=NEW.repository_id) THEN RAISE(ABORT,'PROVENANCE_DISPATCH_SCOPE_MISMATCH') END;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM engineering_metadata WHERE key='installation.instance_id' AND value=NEW.installation_id) THEN RAISE(ABORT,'PROVENANCE_INSTALLATION_MISMATCH') END;
+    END""")
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(f"CREATE TRIGGER ep_receipt_run_provenance_immutable_{operation.casefold()} BEFORE {operation} ON ep_receipt_run_provenance BEGIN SELECT RAISE(ABORT,'PROVENANCE_IMMUTABLE'); END")
+    # Backfill only rows whose canonical dispatch already proves every scope.
+    connection.execute("""INSERT INTO ep_receipt_run_provenance(submission_id,run_id,project_id,repository_id,installation_id,created_at)
+        SELECT d.submission_id,d.run_id,d.project_id,d.repository_id,m.value,d.claimed_at
+        FROM ep_parity_lifecycle_dispatches d JOIN ep_submissions s ON s.submission_id=d.submission_id AND s.project_id=d.project_id AND s.repository_id=d.repository_id
+        JOIN ep_execution_runs r ON r.run_id=d.run_id AND r.project_id=d.project_id
+        JOIN engineering_metadata m ON m.key='installation.instance_id'""")
+    missing = connection.execute(
+        """SELECT 1 FROM ep_parity_lifecycle_dispatches d
+           WHERE NOT EXISTS (
+               SELECT 1 FROM ep_receipt_run_provenance p
+               WHERE p.submission_id=d.submission_id AND p.run_id=d.run_id
+                 AND p.project_id=d.project_id AND p.repository_id=d.repository_id
+           ) LIMIT 1"""
+    ).fetchone()
+    if missing is not None:
+        raise ServerConfigurationError("CENTRAL receipt-to-run provenance migration is incomplete.")
+    connection.execute("INSERT OR IGNORE INTO engineering_schema_migrations(version) VALUES(52)")
+    connection.execute("UPDATE engineering_metadata SET value='52' WHERE key='installation.schema_version'")
+    connection.execute("UPDATE ep_installations SET schema_version=52")
+
+
 def validate_store(data_root: Path, identity: RuntimeIdentity) -> dict[str, object]:
     """Return a deterministic fail-closed current-schema structural report."""
     path = data_root / SERVER_DATABASE_FILENAME
@@ -459,16 +923,18 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                 existing_tables = _table_names(existing)
                 if existing_tables:
                     current_schema = _schema_version(existing)
-                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, SERVER_STORE_SCHEMA_VERSION}:
+                    if current_schema not in {41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, SERVER_STORE_SCHEMA_VERSION}:
                         raise ServerConfigurationError(
                             f"EP Server store is not a valid official schema-{SERVER_STORE_SCHEMA_VERSION} installation."
                         )
                     if current_schema == SERVER_STORE_SCHEMA_VERSION:
                         validate_store(data_root, identity)
                         return identity
-                    if current_schema in {42, 43, 44, 45, 46, 47}:
+                    if current_schema in {42, 43, 44, 45, 46, 47, 48, 49, 50, 51}:
                         with sqlite3.connect(database_path) as connection:
-                            connection.execute("PRAGMA foreign_keys=ON")
+                            # Schema-49 rebuilds the submission parent table
+                            # to widen its immutable transport constraint.
+                            connection.execute("PRAGMA foreign_keys=OFF")
                             connection.execute("BEGIN IMMEDIATE")
                             if current_schema == 42:
                                 _migrate_schema_43(connection)
@@ -480,7 +946,15 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
                                 _migrate_schema_46(connection)
                             if current_schema in {42, 43, 44, 45, 46}:
                                 _migrate_schema_47(connection)
-                            _migrate_schema_48(connection)
+                            if current_schema in {42, 43, 44, 45, 46, 47}:
+                                _migrate_schema_48(connection)
+                            if current_schema in {42, 43, 44, 45, 46, 47, 48}:
+                                _migrate_schema_49(connection)
+                            if current_schema in {42, 43, 44, 45, 46, 47, 48, 49}:
+                                _migrate_schema_50(connection)
+                            if current_schema != 51:
+                                _migrate_schema_51(connection)
+                            _migrate_schema_52(connection)
                             connection.execute("COMMIT")
                         validate_store(data_root, identity)
                         return identity
@@ -497,6 +971,10 @@ def initialize(data_root: Path, *, bind_host: str = "127.0.0.1", bind_port: int 
         _migrate_schema_46(connection)
         _migrate_schema_47(connection)
         _migrate_schema_48(connection)
+        _migrate_schema_49(connection)
+        _migrate_schema_50(connection)
+        _migrate_schema_51(connection)
+        _migrate_schema_52(connection)
         connection.execute("COMMIT")
     database_path.chmod(0o600)
     validate_store(data_root, identity)
@@ -523,13 +1001,259 @@ def _alive(pid: object) -> bool:
     return True
 
 
+def _transport_components(data_root: Path, *, server_running: bool) -> dict[str, dict[str, object]]:
+    """Return secret-free, platform-scoped ingress observability from CENTRAL.
+
+    Submission timestamps are observation only.  They never change queue or
+    execution semantics and intentionally retain no credential or raw prompt.
+    """
+    latest: dict[str, str] = {}
+    with sqlite3.connect(f"file:{data_root / SERVER_DATABASE_FILENAME}?mode=ro", uri=True) as connection:
+        for transport, created_at in connection.execute(
+            "SELECT transport,MAX(created_at) FROM ep_submissions GROUP BY transport"
+        ):
+            latest[str(transport)] = str(created_at)
+    http_status_code = "HTTP_INGRESS_HEALTHY" if server_running else "HTTP_INGRESS_DOWN"
+    cli_status_code = "CLI_INGRESS_AVAILABLE" if server_running else "CLI_INGRESS_DEGRADED"
+    file_last = latest.get("FILE_INBOX")
+    dependabot_last = latest.get("DEPENDABOT")
+    heartbeat = file_inbox.read_heartbeat(data_root / FILE_INBOX_DIRECTORY)
+    heartbeat_at = str(heartbeat.get("updated_at", "")) if heartbeat else ""
+    try:
+        heartbeat_fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(heartbeat_at)).total_seconds() <= 10
+    except ValueError:
+        heartbeat_fresh = False
+    delivery_retry = str(heartbeat.get("delivery_retry", "NONE")) if heartbeat else "NONE"
+    submission_ready = bool(heartbeat and heartbeat.get("state") == "READY" and heartbeat.get("readiness") == "SUBMISSION_CAPABLE")
+    quarantine_count = int(heartbeat.get("quarantine_count", 0)) if heartbeat and isinstance(heartbeat.get("quarantine_count", 0), int) else 0
+    recent_error = heartbeat.get("recent_error") if heartbeat else None
+    # A live watcher with pending delivery, a bounded adapter diagnostic, or
+    # quarantined ingress is operational but needs attention.  It is not a
+    # CENTRAL execution/run failure and cannot affect queue authority.
+    file_attention_needed = delivery_retry != "NONE" or bool(recent_error) or quarantine_count > 0
+    file_status_code = (
+        "FILE_INGRESS_STOPPED" if not server_running or not heartbeat_fresh
+        else "FILE_INGRESS_NOT_READY" if not submission_ready
+        else "FILE_INGRESS_DEGRADED" if file_attention_needed else "FILE_INGRESS_RUNNING"
+    )
+    dependabot_heartbeat = dependabot_producer.read_heartbeat(data_root)
+    dependabot_updated = str(dependabot_heartbeat.get("updated_at", "")) if dependabot_heartbeat else ""
+    try:
+        dependabot_fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(dependabot_updated)).total_seconds() <= 310
+    except ValueError:
+        dependabot_fresh = False
+    dependabot_ready = bool(
+        server_running
+        and dependabot_fresh
+        and dependabot_heartbeat
+        and dependabot_heartbeat.get("state") == "READY"
+        and dependabot_heartbeat.get("readiness") == "DISCOVERY_CAPABLE"
+    )
+    return {
+        "http_ingress": {
+            "healthy": server_running, "status_code": http_status_code,
+            "detail_code": "CENTRAL_LISTENER_ENDPOINT" if server_running else "CENTRAL_LISTENER_UNAVAILABLE",
+            "version": "1",  # canonical submission protocol version
+            "last_successful_submission": latest.get("HTTP"), "recent_error": None,
+        },
+        "cli_ingress": {
+            "healthy": server_running, "status_code": cli_status_code,
+            "detail_code": "CANONICAL_SUBMISSION_COMPATIBILITY" if server_running else "CENTRAL_ENDPOINT_UNAVAILABLE",
+            "version": "1", "last_successful_submission": latest.get("CLI"), "recent_error": None,
+        },
+        "file_inbox_ingress": {
+            "healthy": file_status_code == "FILE_INGRESS_RUNNING", "status_code": file_status_code,
+            "detail_code": "FILE_INBOX_HEARTBEAT" if server_running and heartbeat_fresh else "FILE_INBOX_HEARTBEAT_MISSING",
+            "watched_location": heartbeat.get("watched_location") if heartbeat else str(data_root / FILE_INBOX_DIRECTORY),
+            "heartbeat": heartbeat_at or None,
+            "last_successful_submission": file_last,
+            "delivery_retry_code": f"FILE_INGRESS_DELIVERY_RETRY_{delivery_retry}",
+            "quarantine_count": quarantine_count,
+            # Never transport a raw exception into a presentation projection.
+            "reason_code": "FILE_INBOX_DIAGNOSTIC" if recent_error else None,
+        },
+        "dependabot_producer": {
+            "healthy": dependabot_ready,
+            "status_code": "DEPENDABOT_READY" if dependabot_ready else "DEPENDABOT_DEGRADED",
+            "detail_code": "DEPENDABOT_HEARTBEAT" if dependabot_fresh else "DEPENDABOT_HEARTBEAT_MISSING",
+            "heartbeat": dependabot_updated or None,
+            "last_successful_submission": dependabot_last,
+            "reason_code": "DEPENDABOT_DIAGNOSTIC" if dependabot_heartbeat and dependabot_heartbeat.get("recent_error") else None,
+        },
+    }
+
+
+def _dashboard_relay_component(*, server_running: bool) -> dict[str, object]:
+    """Project the Relay only when its real lifecycle owner is live.
+
+    The relay is an optional access adapter, but it is still a logical
+    Platform Component.  A running EP Server cannot stand in for a missing or
+    repeatedly exiting LaunchAgent.
+    """
+    definition = PLATFORM_COMPONENT_BY_ID["dashboard_relay"]
+    label = definition.lifecycle_label
+    try:
+        runtime = LaunchdProvider().runtime_status(label) if label else None
+        relay_running = bool(runtime and runtime.qualified)
+        detail = runtime.detail if runtime is not None else "lifecycle owner unavailable"
+    except OSError:
+        relay_running, detail = False, "lifecycle owner unavailable"
+    healthy = server_running and relay_running
+    return {
+        "healthy": healthy,
+        "status_code": definition.active_status if healthy else definition.inactive_status,
+        "detail_code": definition.detail_code,
+        "lifecycle_label": label,
+        "lifecycle_state": "RUNNING" if relay_running else "STOPPED",
+        "uptime_seconds": 0,
+        "recent_error": None if healthy else detail,
+    }
+
+
+def _platform_component_detail(data_root: Path, component_id: str) -> dict[str, object] | None:
+    """Expose one secret-free detail view from the same platform projection."""
+    component = status(data_root)["components"].get(component_id)  # type: ignore[index]
+    if not isinstance(component, dict):
+        return None
+    definition = PLATFORM_COMPONENT_BY_ID[component_id]
+    return {
+        "component": component_id,
+        "machine": os.uname().nodename,
+        "restart_supported": definition.restart_supported,
+        **component,
+    }
+
+
+def _restart_platform_component(data_root: Path, component_id: str) -> dict[str, object]:
+    """Restart one explicitly restartable Platform component through its owner.
+
+    Component identifiers and lifecycle labels come exclusively from the
+    canonical model.  This deliberately does not expose a generic process or
+    LaunchAgent control endpoint.
+    """
+    definition = PLATFORM_COMPONENT_BY_ID.get(component_id)
+    if definition is None or not definition.restart_supported or not definition.lifecycle_label:
+        raise ValueError("COMPONENT_RESTART_NOT_SUPPORTED")
+    logger = component_logger(
+        data_root,
+        definition.id,
+        central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "component_restart_requested",
+        context={"target_component": definition.id},
+    )
+    lifecycle = LaunchdProvider()
+    try:
+        lifecycle.restart(definition.lifecycle_label)
+        # ``kickstart`` only acknowledges the request.  Give launchd a small,
+        # bounded interval to spawn the owned process before deciding whether
+        # the repair actually reached its observable postcondition.
+        deadline = time.monotonic() + 2
+        postcondition = lifecycle.runtime_status(definition.lifecycle_label)
+        while not postcondition.qualified and time.monotonic() < deadline:
+            time.sleep(.1)
+            postcondition = lifecycle.runtime_status(definition.lifecycle_label)
+        if not postcondition.qualified:
+            raise OSError("COMPONENT_RESTART_POSTCONDITION_FAILED")
+    except OSError as error:
+        log_event(
+            logger,
+            logging.WARNING,
+            "component_restart_failed",
+            diagnostic=str(error),
+            context={"target_component": definition.id},
+        )
+        raise
+    log_event(
+        logger,
+        logging.INFO,
+        "component_restart_completed",
+        context={
+            "target_component": definition.id,
+            "postcondition": "LIFECYCLE_OWNER_RUNNING",
+        },
+    )
+    return {
+        "restarting": definition.id,
+        "scope": "PLATFORM",
+        "postcondition": "LIFECYCLE_OWNER_RUNNING",
+    }
+
+
+def _audit_configuration_change(
+    data_root: Path,
+    *,
+    scope: str,
+    key: str,
+    previous: object,
+    value: object,
+) -> None:
+    """Persist a bounded CENTRAL audit event for a successful setting change."""
+    log_event(
+        component_logger(
+            data_root,
+            "operations_console",
+            central_database=data_root / SERVER_DATABASE_FILENAME,
+        ),
+        logging.INFO,
+        "configuration_changed",
+        context={
+            "configuration_scope": scope,
+            "configuration_key": key,
+            "previous_value": previous,
+            "new_value": value,
+        },
+    )
+
+
 def status(data_root: Path) -> dict[str, object]:
     identity = initialize(data_root)
     config = ServerConfiguration.load(data_root)
     runtime = _runtime(data_root)
     running = bool(runtime and _alive(runtime.get("pid")))
+    components = _transport_components(data_root, server_running=running)
+    components["dashboard_relay"] = _dashboard_relay_component(server_running=running)
+    # One Server-native inventory feeds Components, the titlebar popout and
+    # detail modals. It deliberately contains no watcher/check-out model.
+    for definition in PLATFORM_COMPONENTS:
+        if definition.id in components:
+            components[definition.id].update({
+                "kind": definition.kind, "name_key": definition.name_key,
+                "group": definition.group, "critical": definition.critical, "restart_supported": definition.restart_supported,
+                "log_component": definition.id,
+            })
+            continue
+        healthy = True if definition.id == "platform_database" else running
+        components[definition.id] = {
+            "kind": definition.kind, "name_key": definition.name_key,
+            "group": definition.group, "critical": definition.critical, "restart_supported": definition.restart_supported,
+            "log_component": definition.id, "healthy": healthy,
+            "status_code": definition.active_status if healthy else definition.inactive_status,
+            "detail_code": definition.detail_code,
+            **({"version": str(SERVER_STORE_SCHEMA_VERSION)} if definition.id == "platform_database" else {}),
+        }
+    server_component = components["ep_server"]
+    server_component["version"] = _console_platform_version()
+    started_at = runtime.get("started_at") if runtime else None
+    if isinstance(started_at, str):
+        try:
+            server_component["uptime_seconds"] = max(
+                0, int((datetime.now(timezone.utc) - datetime.fromisoformat(started_at)).total_seconds())
+            )
+        except ValueError:
+            pass
+    healthy = all(
+        bool(components[item.id].get("healthy"))
+        for item in PLATFORM_COMPONENTS
+        if item.critical
+    )
     return {
         "service": "engineering-platform-server",
+        "healthy": healthy,
+        "health": "ok" if healthy else "degraded",
         "instance_id": identity.instance_id,
         "store": "ready",
         "schema_version": SERVER_STORE_SCHEMA_VERSION,
@@ -539,9 +1263,16 @@ def status(data_root: Path) -> dict[str, object]:
         "lifecycle_worker": {
             # The worker is hosted by the sole installed Server process.  A
             # stopped process is never reported as an active worker.
-            "state": WORKER_RUNNING if running else "STOPPED",
+            "state": "RUNNING" if running else "STOPPED",
         },
         "bind": {"host": config.bind_host, "port": config.bind_port},
+        "components": components,
+        "component_model": [
+            {"id": item.id, "name_key": item.name_key, "kind": item.kind, "group": item.group,
+             "critical": item.critical, "restart_supported": item.restart_supported,
+             "lifecycle_label": item.lifecycle_label, "log_component": item.id}
+            for item in PLATFORM_COMPONENTS
+        ],
     }
 
 
@@ -561,11 +1292,6 @@ def operations_projection(data_root: Path) -> dict[str, object]:
         "managed_codex_runtime": managed_codex_runtime.inspect(data_root),
         "projects": topology["projects"],
     }
-
-
-def _operations_console_document() -> bytes:
-    """Small CENTRAL-owned console shell; all topology is loaded from its API."""
-    return b'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engineering Platform Operations Console</title></head><body><main><h1>Engineering Platform Operations Console</h1><label for="project">Project</label><select id="project" aria-label="Project"></select><pre id="topology" aria-live="polite">Loading...</pre></main><script>const select=document.querySelector('#project'),view=document.querySelector('#topology');fetch('/v1/operations/projects').then(r=>r.ok?r.json():Promise.reject()).then(data=>{for(const p of data.projects){const o=document.createElement('option');o.value=p.project_id;o.textContent=p.project_id==='djconnect'?'DJConnect':p.project_id==='engineering-platform'?'Engineering Platform':p.project_id;select.append(o)}const render=()=>{const p=data.projects.find(x=>x.project_id===select.value);view.textContent=JSON.stringify({installation_id:data.installation_id,schema_version:data.schema_version,project:p},null,2)};select.onchange=render;render()}).catch(()=>view.textContent='Operations Console unavailable');</script></body></html>'''
 
 
 def _console_projects(data_root: Path) -> list[dict[str, str]]:
@@ -609,6 +1335,13 @@ def _console_queue_projection(data_root: Path, project_id: str) -> dict[str, obj
     raise local_repository_binding.LocalRepositoryBindingError("CONSOLE_PROJECT_UNAVAILABLE")
 
 
+def _console_platform_version() -> str:
+    """Read the installed platform version once for CENTRAL Console snapshots."""
+    return EngineeringPlatformManifest.load(
+        package_path("ENGINEERING_PLATFORM_VERSION.json")
+    ).platform_version
+
+
 def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[str, object]:
     """Return the Slice-B project status/history projection from CENTRAL only."""
     queue = _console_queue_projection(data_root, project_id)
@@ -638,6 +1371,7 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
         "scope": "PROJECT",
         "status": {
             "project_id": project_id,
+            "platform_version": _console_platform_version(),
             "queue_depth": queue["queue_depth"],
             "queue_items": queue["queue_items"],
             "active_run": active["run_id"] if active else None,
@@ -647,6 +1381,34 @@ def _central_console_project_snapshot(data_root: Path, project_id: str) -> dict[
         "runs": records,
         "queue": queue,
         "telemetry": _central_console_telemetry(data_root, project_id),
+    }
+
+
+def _no_project_console_snapshot(data_root: Path) -> dict[str, object]:
+    """Give the Console a loadable CENTRAL-only snapshot at ``<geen>``.
+
+    The no-project document deliberately hides project state, but the shared
+    dashboard shell still hydrates through the snapshot endpoint. Returning a
+    minimal platform projection prevents it from remaining behind the loading
+    overlay while preserving the fail-closed boundary for all project routes.
+    """
+    # Aggregate the canonical CENTRAL submission state only. File Inbox files,
+    # watcher backlogs and transport retry diagnostics never affect this count.
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        queue_depth = int(connection.execute(
+            "SELECT COUNT(*) FROM ep_submissions WHERE state IN ('QUEUED','ADMITTED')"
+        ).fetchone()[0])
+    queue = {"operator_handling": {}, "queue_depth": queue_depth, "queue_items": [], "scope": "ALL_PROJECTS"}
+    return {
+        "scope": "PLATFORM",
+        "queue": queue,
+        "runs": [],
+        "telemetry": [],
+        "status": {
+            "lifecycle_source": "CENTRAL",
+            "platform_version": _console_platform_version(),
+            **queue,
+        },
     }
 
 
@@ -757,23 +1519,151 @@ def _central_console_chat_history(data_root: Path, project_id: str, run_id: str)
             for role, content, model, created_at in rows]
 
 
-def _central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
-    """Read Server-owned component logs only from CENTRAL's log index."""
-    if component not in {"dashboard", "inbox"}:
+@dataclass(frozen=True)
+class _CentralLogQuery:
+    page: int
+    page_size: int
+    start_at: str
+    end_at: str
+    inclusive_end: bool
+    search: str
+    level: str
+    events: tuple[str, ...]
+    sort_key: str
+    direction: str
+
+
+def _parse_central_log_query(values: dict[str, list[str]] | None) -> _CentralLogQuery:
+    """Validate the public query once, before composing any CENTRAL SQL."""
+    query = values or {}
+
+    def first(name: str, default: str = "") -> str:
+        return str((query.get(name) or [default])[0])
+
+    try:
+        page = int(first("page", "1"))
+        page_size = int(first("page_size", "50"))
+    except ValueError as error:
+        raise ValueError("Invalid component-log pagination.") from error
+    if page < 1 or not 1 <= page_size <= MAX_COMPONENT_LOG_PAGE_SIZE:
+        raise ValueError("Invalid component-log pagination.")
+    level, search = first("level").upper().strip(), first("search").strip()
+    if level and level not in VALID_LEVELS:
+        raise ValueError("Invalid component-log level.")
+    if len(search) > 160:
+        raise ValueError("Component-log search is too long.")
+    events = tuple(sorted({value.strip() for value in query.get("event", []) if value.strip()}))
+    if len(events) > 50 or any(len(event) > 160 for event in events):
+        raise ValueError("Invalid component-log event filter.")
+    sort_key, direction = first("sort", "timestamp"), first("direction", "desc").lower()
+    if sort_key not in _CENTRAL_LOG_SORT_COLUMNS or direction not in {"asc", "desc"}:
+        raise ValueError("Invalid component-log sort.")
+    return _CentralLogQuery(
+        page=page,
+        page_size=page_size,
+        start_at=first("start").strip(),
+        end_at=first("end").strip(),
+        inclusive_end=first("inclusive_end") == "1",
+        search=search,
+        level=level,
+        events=events,
+        sort_key=sort_key,
+        direction=direction,
+    )
+
+
+def _central_log_components(component: str) -> tuple[frozenset[str], tuple[str, ...]] | None:
+    """Resolve only canonical component identities without project context."""
+    if component == "all":
+        selected = PLATFORM_COMPONENT_IDS
+    elif component in PLATFORM_COMPONENT_IDS:
+        selected = frozenset({component})
+    else:
         return None
+    return selected, tuple(selected)
+
+
+def _central_console_component_logs(
+    data_root: Path,
+    component: str,
+    query: dict[str, list[str]] | None = None,
+    *,
+    export_all: bool = False,
+) -> dict[str, object] | None:
+    """Read one filtered, sorted CENTRAL log page before it reaches the Console."""
+    selection = _central_log_components(component)
+    if selection is None:
+        return None
+    _, stored_components = selection
+    filters = _parse_central_log_query(query)
+    clauses = ["component IN (" + ",".join("?" for _ in stored_components) + ")"]
+    parameters: list[object] = list(stored_components)
+    if filters.start_at:
+        clauses.append("created_at >= ?")
+        parameters.append(filters.start_at)
+    if filters.end_at:
+        clauses.append("created_at <= ?" if filters.inclusive_end else "created_at < ?")
+        parameters.append(filters.end_at)
+    if filters.search:
+        escaped = filters.search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("LOWER(payload) LIKE ? ESCAPE '\\'")
+        parameters.append(f"%{escaped}%")
+    if filters.level in LOG_LEVELS_AT_OR_ABOVE:
+        levels = LOG_LEVELS_AT_OR_ABOVE[filters.level]
+        clauses.append("json_extract(payload, '$.level') IN (" + ",".join("?" for _ in levels) + ")")
+        parameters.extend(levels)
+    event_option_clauses, event_option_parameters = list(clauses), list(parameters)
+    if filters.events:
+        clauses.append("json_extract(payload, '$.event') IN (" + ",".join("?" for _ in filters.events) + ")")
+        parameters.extend(filters.events)
+    where = " WHERE " + " AND ".join(clauses)
     with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        total = int(connection.execute("SELECT COUNT(*) FROM engineering_component_logs" + where, parameters).fetchone()[0])
         rows = connection.execute(
-            "SELECT id,payload,created_at FROM engineering_component_logs WHERE component=? ORDER BY id DESC LIMIT 200",
-            (component,),
+            "SELECT id,component,payload,created_at FROM engineering_component_logs" + where
+            + f" ORDER BY {_CENTRAL_LOG_SORT_COLUMNS[filters.sort_key]} {filters.direction.upper()}, id {filters.direction.upper()} LIMIT ? OFFSET ?",
+            [
+                *parameters,
+                5000 if export_all else filters.page_size,
+                0 if export_all else (filters.page - 1) * filters.page_size,
+            ],
+        ).fetchall()
+        event_rows = connection.execute(
+            "SELECT DISTINCT json_extract(payload, '$.event') FROM engineering_component_logs WHERE "
+            + " AND ".join(event_option_clauses)
+            + " AND json_extract(payload, '$.event') IS NOT NULL ORDER BY 1 LIMIT 500",
+            event_option_parameters,
         ).fetchall()
     entries: list[dict[str, object]] = []
-    for identifier, payload, created_at in reversed(rows):
+    for identifier, stored_component, payload, created_at in rows:
         try:
             decoded = json.loads(str(payload))
         except (TypeError, ValueError, json.JSONDecodeError):
             decoded = {"event": "malformed_central_log"}
-        entries.append({"line": int(identifier), "timestamp": str(created_at), **(decoded if isinstance(decoded, dict) else {})})
-    return {"scope": "PLATFORM", "component": component, "entries": entries, "total": len(entries), "events": sorted({str(item.get("event")) for item in entries if item.get("event")})}
+        record = decoded if isinstance(decoded, dict) else {}
+        entries.append({"line": int(identifier), "timestamp": str(created_at), **record, "component": str(stored_component)})
+    return {
+        "scope": "PLATFORM", "component": component, "entries": entries,
+        "page": filters.page, "page_size": filters.page_size, "total": total,
+        "events": [str(row[0]) for row in event_rows if row[0]],
+    }
+
+
+def _clear_central_console_component_logs(data_root: Path, component: str) -> dict[str, object] | None:
+    """Delete only the explicitly selected CENTRAL component-log projection."""
+    if component == "all":
+        selected = PLATFORM_COMPONENT_IDS
+    elif component in PLATFORM_COMPONENT_IDS:
+        selected = frozenset({component})
+    else:
+        return None
+    stored = tuple(selected)
+    with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+        cursor = connection.execute(
+            "DELETE FROM engineering_component_logs WHERE component IN (" + ",".join("?" for _ in stored) + ")",
+            stored,
+        )
+    return {"scope": "PLATFORM", "component": component, "deleted": int(cursor.rowcount)}
 
 
 def _central_console_configuration(data_root: Path) -> dict[str, object]:
@@ -782,7 +1672,54 @@ def _central_console_configuration(data_root: Path) -> dict[str, object]:
         "scope": "PLATFORM",
         **central_database.maintenance_configuration(data_root),
         **central_database.capacity_configuration(data_root),
+        **central_database.console_interval_configuration(data_root),
     }
+
+
+def _central_provider_readiness(data_root: Path) -> dict[str, dict[str, object]]:
+    """Project-independent, token-free authentication readiness for CENTRAL."""
+    statuses = provider_readiness.host_status(data_root)
+    runtime = provider_readiness.runtime_details(data_root)
+    return {
+        provider: {**value, **runtime.get(provider, {}), "scope": "PLATFORM"}
+        for provider, value in statuses.items()
+    }
+
+
+def _central_provider_repair(data_root: Path, payload: object) -> None:
+    """Start one validated host-wide provider action without a checkout."""
+    if not isinstance(payload, dict) or set(payload) != {"provider", "action"}:
+        raise ValueError("Invalid provider repair request.")
+    provider, action = str(payload["provider"]), str(payload["action"])
+    if provider not in {"CODEX", "GITHUB"} or action not in {"login", "install"}:
+        raise ValueError("Invalid provider repair request.")
+    readiness = _central_provider_readiness(data_root)
+    state = str(readiness[provider.lower()]["state"])
+    if (action == "login" and state != "AUTH_REQUIRED") or (action == "install" and state != "UNAVAILABLE"):
+        raise ValueError("Provider is not ready for the requested repair.")
+    if action == "login":
+        _start_provider_login(data_root, provider)
+    else:
+        _install_provider(data_root, provider)
+
+
+def _central_provider_logout(data_root: Path, payload: object) -> None:
+    """Remove one verified host-wide provider session through CENTRAL.
+
+    The Console never owns provider credentials.  It can only request this
+    narrowly validated host operation while the provider is known ready, so a
+    stale or fabricated UI request cannot be delegated to a checkout-bound
+    legacy handler.
+    """
+    if not isinstance(payload, dict) or set(payload) != {"provider"}:
+        raise ValueError("Invalid provider logout request.")
+    provider = str(payload["provider"])
+    if provider not in {"CODEX", "GITHUB"}:
+        raise ValueError("Invalid provider logout request.")
+    readiness = _central_provider_readiness(data_root)
+    if str(readiness[provider.lower()]["state"]) != "READY":
+        raise ValueError("Provider is not ready for logout.")
+    _logout_provider(data_root, provider)
 
 
 def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: Path) -> bytes:
@@ -807,7 +1744,7 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: 
     rate_limits = decoded.get("rate_limits")
     if isinstance(rate_limits, dict):
         provider = rate_limits.get("provider")
-        remaining = dashboard._remaining_rate_limit_capacity(rate_limits)
+        remaining = _remaining_rate_limit_capacity(rate_limits)
         if isinstance(provider, str) and remaining is not None:
             decoded["ai_capacity_history"] = central_database.record_provider_capacity(
                 data_root, provider=provider, remaining_percent=remaining,
@@ -820,13 +1757,13 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: 
 def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
     """Read the account-owned quota once and project it from CENTRAL."""
     try:
-        payload = json.loads(dashboard._codex_rate_limits())
+        payload = json.loads(_codex_rate_limits())
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
     provider = payload.get("provider")
-    remaining = dashboard._remaining_rate_limit_capacity(payload)
+    remaining = _remaining_rate_limit_capacity(payload)
     history: list[dict[str, object]] = []
     if isinstance(provider, str) and remaining is not None:
         history = central_database.record_provider_capacity(
@@ -838,16 +1775,6 @@ def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
         "scope": "EP",
         "configuration": central_database.capacity_configuration(data_root),
     }
-
-
-def _historical_dashboard_path(request: SplitResult) -> str:
-    """Remove the Server-only project selector before historical routing."""
-    retained = [
-        (key, value)
-        for key, value in parse_qsl(request.query, keep_blank_values=True)
-        if key != "project"
-    ]
-    return request.path if not retained else f"{request.path}?{urlencode(retained, doseq=True)}"
 
 
 def _console_project_options(project_id: str | None, projects: list[dict[str, str]]) -> str:
@@ -880,7 +1807,7 @@ def _central_database_section(data_root: Path) -> str:
         'aria-label="Download EP-database">Download EP-database</a></header>'
         '<dl class="configuration-central-database__facts">'
         '<div><dt class="label" data-i18n="configuration.database_owner">Database-eigendom</dt><dd data-i18n="configuration.ep_database_owner">Engineering Platform</dd></div>'
-        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd><button id="centralDatabaseLocation" class="local-folder-link configuration-central-database__location-link" type="button" data-i18n-aria-label="configuration.ep_database_open_folder" aria-label="Open EP-databasemap in Finder">{escape(str(details["path"]))}</button></dd></div>'
+        f'<div class="configuration-central-database__location"><dt class="label" data-i18n="configuration.database_location">Databaselocatie</dt><dd>{escape(str(details["path"]))}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.database_size">Databasegrootte</dt><dd>{size}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.schema_version">Schema-versie</dt><dd>{details["schema_version"]}</dd></div>'
         f'<div><dt class="label" data-i18n="configuration.integrity">Integriteit</dt><dd>{details["integrity"]}</dd></div>'
@@ -896,32 +1823,25 @@ def _central_database_section(data_root: Path) -> str:
 
 def _central_database_script() -> str:
     """Keep the EP database maintenance preference host-scoped in the Console."""
-    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus');if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud bijgewerkt.'}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent='Databaseonderhoud kon niet worden bijgewerkt.'}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});'''
+    return '''const maintenance=document.getElementById('centralDatabaseMaintenanceInterval'),maintenanceStatus=document.getElementById('centralDatabaseMaintenanceStatus'),translate=window.__djconnectDashboardTranslate;if(maintenance)maintenance.addEventListener('change',async()=>{const previous=maintenance.dataset.savedValue||maintenance.value,requested=Number(maintenance.value);maintenance.disabled=true;maintenance.setAttribute('aria-busy','true');if(maintenanceStatus)maintenanceStatus.textContent='';try{const response=await fetch('/api/central-database/configuration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds:requested})});const result=response.ok?await response.json():null;if(!result||Number(result.interval_seconds)!==requested)throw Error();maintenance.dataset.savedValue=String(requested);if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_saved')}catch{maintenance.value=previous;if(maintenanceStatus)maintenanceStatus.textContent=translate('configuration.ep_database_maintenance_failed')}finally{maintenance.disabled=false;maintenance.removeAttribute('aria-busy')}});'''
 
 
-def _open_central_database_directory(data_root: Path) -> dict[str, str]:
-    """Open exactly CENTRAL's owning directory in Finder, never a request path."""
-    directory = central_database.path(data_root).parent.resolve()
-    if sys.platform != "darwin" or directory != data_root.resolve() or not directory.is_dir():
-        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE")
-    try:
-        outcome = LocalProcessProvider().execute(directory, ("open", str(directory)))
-    except OSError as error:
-        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE") from error
-    if outcome.returncode:
-        raise RuntimeError("CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE")
-    return {"opened_directory": str(directory)}
+def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
+    """Add the canonical File Inbox projection to the installed Console.
 
-
-_WORKSPACE_ID_FIELD = re.compile(
-    br'(<span class="label" data-workspace-label="workspace\.name" data-i18n="workspace\.name"></span><span>)[^<]*(</span>)'
-)
-
-
-def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
-    """Make CENTRAL's selected project the sole visible workspace identity."""
-    replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"
-    return _WORKSPACE_ID_FIELD.sub(replacement, document, count=1)
+    The dashboard template contains no local-root chooser, folder picker or
+    watcher restart path.  The retained File Inbox scan interval is a Server
+    setting, alongside Open PR polling; it is not project or checkout state.
+    """
+    location = escape(str((data_root / FILE_INBOX_DIRECTORY).resolve())).encode("utf-8")
+    readonly = b'<p class="field configuration-field configuration-file-inbox-readonly"><span class="label" data-i18n="transport.file"></span><span>' + location + b'</span></p>'
+    document = document.replace(b'data-i18n="section.host_components"', b'data-i18n="section.platform_components"')
+    document = document.replace(b'data-i18n="description.host_components"', b'data-i18n="description.platform_components"')
+    return document.replace(
+        b'<p class="category-description" data-i18n="description.configuration"></p>',
+        b'<p class="category-description" data-i18n="description.configuration"></p>' + readonly,
+        1,
+    )
 
 
 def _console_project_boundary(project_id: str, options: str) -> str:
@@ -968,58 +1888,19 @@ def _console_project_boundary(project_id: str, options: str) -> str:
     )
 
 
-def _console_document_transform(project_id: str, projects: list[dict[str, str]], root: Path, data_root: Path):
-    """Bind CENTRAL project scope to the historical title-bar selector.
-
-    The Operations Console already owns its project selector in the title bar.
-    The Server supplies its authoritative options and request scoping there;
-    it must not add a second selector to the dashboard content.
-    """
-    options = _console_project_options(project_id, projects)
-    scoped_body = (
-        f'<body data-project-id="{escape(project_id, quote=True)}" '
-        f'data-project-name="{escape(project_id, quote=True)}">'
-    ).encode("utf-8")
-    boundary = _console_project_boundary(project_id, options)
-    def transform(document: bytes) -> bytes:
-        scoped = re.sub(
-            br'<body data-project-id="[^"]*" data-project-name="[^"]*">',
-            scoped_body,
-            document,
-            count=1,
-        )
-        scoped = _centralize_workspace_identity(scoped, project_id)
-        central_section = _central_database_section(data_root).encode("utf-8")
-        # The repository binding is not project identity: that remains wholly
-        # CENTRAL-owned above.  It is, however, useful operational evidence
-        # and the dashboard turns this concrete local path into its approved
-        # Finder link.  Do not redact it into prose, otherwise there is no
-        # valid path left for that safe, allowlisted action.
-        scoped = scoped.replace(
-            b'<p class="category-description" data-i18n="description.configuration"></p>',
-            b'<p class="category-description" data-i18n="description.configuration"></p>' + central_section,
-            1,
-        )
-        return scoped.replace(
-            b"</main>", boundary.encode("utf-8") + b"</main>", 1,
-        )
-
-    return transform
-
-
 def _no_project_console_document(projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render global Console controls without selecting project-owned data."""
-    document = dashboard._dashboard_html(
+    document = server_console_services.render_console_document(
         "EP Operations",
         workspace_id="none",
         project_name="<geen>",
-        workspace_location="Niet beschikbaar",
-        configuration_inbox="Niet beschikbaar",
+        workspace_location="",
+        configuration_inbox="",
     )
     options = _console_project_options(None, projects)
-    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
     boundary = '''<script>window.ENGINEERING_PLATFORM_NO_PROJECT=true;(function(){const select=document.getElementById('dashboardProject');if(select)select.addEventListener('change',()=>{const url=new URL(window.location.href);if(select.value)url.searchParams.set('project',select.value);else url.searchParams.delete('project');window.location.assign(url)});$CENTRAL_DATABASE_SCRIPT})();</script>'''.replace("$CENTRAL_DATABASE_SCRIPT", _central_database_script())
-    empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong>Geen project gekozen</strong><span>Kies bovenin een project om uitsluitend de wachtrij, uitvoeringsgeschiedenis en configuratie van dat project te tonen. Hostbrede logs en configuratie blijven hieronder beschikbaar.</span></aside>'''
+    empty_state = '''<aside class="dashboard-status-banner dashboard-status-banner--no-project" id="noProjectSelected" role="status" aria-live="polite" data-testid="no-project-selected"><strong data-i18n="central.no_project_selected_title"></strong><span data-i18n="central.no_project_selected_body"></span></aside>'''
     scoped_style = '''<style>
 body[data-project-id="none"] #queueItems,
 body[data-project-id="none"] #promptHistory,
@@ -1038,6 +1919,8 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         selector.encode("utf-8") + b'<label class="dashboard-locale"',
         1,
     )
+    document = document.replace(b'<pre></pre>', b'<pre data-i18n="format.not_available"></pre>', 1)
+    document = _retire_legacy_inbox_configuration(document, data_root)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
     document = document.replace(
@@ -1061,16 +1944,17 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
 
 def _selected_project_console_document(project_id: str, projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render the installed Console shell without loading a project checkout."""
-    document = dashboard._dashboard_html(
+    document = server_console_services.render_console_document(
         "EP Operations", workspace_id=project_id, project_name=project_id,
-        workspace_location="Physical binding is not Console authority.",
-        configuration_inbox="Not available from the CENTRAL Console.",
+        workspace_location="",
+        configuration_inbox="",
     )
     options = _console_project_options(project_id, projects)
-    selector = f'''<label class="dashboard-project" for="dashboardProject"><span>Project</span><select id="dashboardProject" aria-label="Project">{options}</select></label>'''
+    selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
     document = document.replace(
         b'<label class="dashboard-locale"', selector.encode("utf-8") + b'<label class="dashboard-locale"', 1,
     )
+    document = document.replace(b'<pre></pre>', b'<pre data-i18n="central.project_workspace_not_authority"></pre>', 1)
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
         b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,
@@ -1086,12 +1970,12 @@ _CONSOLE_STATIC_ASSETS = {
     "/assets/operations-console/icon-dark.png": ("operations-console/icon-dark.png", "image/png"),
     "/assets/operations-console/icon-light.png": ("operations-console/icon-light.png", "image/png"),
     "/assets/operations-console/icon-transparent.png": ("operations-console/icon-transparent.png", "image/png"),
-    "/assets/operations-console/apple-touch-icon-dark.png": (dashboard.APP_ICON_DARK, "image/png"),
-    "/assets/operations-console/apple-touch-icon-light.png": (dashboard.APP_ICON_LIGHT, "image/png"),
-    "/assets/operations-console/manifest.webmanifest": (dashboard.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
-    "/favicon.ico": (dashboard.APP_ICON_DARK, "image/png"),
-    "/apple-touch-icon.png": (dashboard.APP_ICON_DARK, "image/png"),
-    "/apple-touch-icon-precomposed.png": (dashboard.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-dark.png": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/assets/operations-console/apple-touch-icon-light.png": (console_presentation.APP_ICON_LIGHT, "image/png"),
+    "/assets/operations-console/manifest.webmanifest": (console_presentation.WEB_MANIFEST, "application/manifest+json; charset=utf-8"),
+    "/favicon.ico": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon.png": (console_presentation.APP_ICON_DARK, "image/png"),
+    "/apple-touch-icon-precomposed.png": (console_presentation.APP_ICON_DARK, "image/png"),
 }
 
 
@@ -1121,6 +2005,41 @@ def _authenticated_consumer(connection: sqlite3.Connection, token: object, proje
     return str(row[0]) if row else None
 
 
+def _admit_server_owned_file_inbox(
+    data_root: Path, envelope: dict[str, object], receipt_id: str, received_at: str,
+) -> dict[str, object]:
+    """Use the canonical application service for the Server's File Inbox child.
+
+    The adapter bypasses only external consumer authentication. Request
+    parsing, project/repository scope, execution-mode validation, idempotency,
+    admission and lifecycle initialization remain owned by ``submission_service``.
+    """
+    project_id = envelope.get("project_id")
+    submission = envelope.get("submission")
+    if not isinstance(project_id, str) or not isinstance(submission, Mapping):
+        raise file_inbox.FileInboxError("MALFORMED_FILE")
+    payload = dict(submission)
+    payload["idempotency_key"] = receipt_id
+    payload["transport_receipt_id"] = receipt_id
+    payload["transport_received_at"] = received_at
+    constraints = payload.get("constraints")
+    if constraints is None:
+        payload["constraints"] = {"transport_principal": "FILE_INBOX"}
+    elif isinstance(constraints, Mapping):
+        payload["constraints"] = {**constraints, "transport_principal": "FILE_INBOX"}
+    try:
+        with sqlite3.connect(data_root / SERVER_DATABASE_FILENAME) as connection:
+            request = submission_service.request_from_mapping(project_id, payload, transport="FILE_INBOX")
+            return submission_service.submit(connection, request).to_dict()
+    except submission_service.SubmissionError as error:
+        raise file_inbox.FileInboxError(error.code) from error
+    except (OSError, sqlite3.Error) as error:
+        # A Server/database interruption is delivery availability, never an
+        # execution failure. The physical item remains in ``processing`` for
+        # the bounded File Inbox retry loop.
+        raise URLError("CENTRAL_UNAVAILABLE") from error
+
+
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def _status(self) -> dict[str, object]:
         report = status(self.server.data_root)  # type: ignore[attr-defined]
@@ -1136,6 +2055,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         if instance_id:
             self.send_header("EP-Server-Instance", instance_id)
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _send_ndjson(self, entries: list[dict[str, object]]) -> None:
+        encoded = ("\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + ("\n" if entries else "")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -1146,7 +2080,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             return False
         name, content_type = asset
         try:
-            content = (dashboard.ASSET_DIRECTORY / name).read_bytes()
+            content = (console_presentation.ASSET_DIRECTORY / name).read_bytes()
         except OSError:
             self.send_error(404)
             return True
@@ -1171,6 +2105,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/platform-status":
             self._send(200, _no_project_platform_projection(self.server.data_root))  # type: ignore[attr-defined]
             return True
+        if request.path in {"/api/dashboard-snapshot", "/api/status"}:
+            self._send(200, _no_project_console_snapshot(self.server.data_root))  # type: ignore[attr-defined]
+            return True
+        if request.path == "/api/events":
+            self._stream_no_project_console_events()
+            return True
         if request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
@@ -1181,23 +2121,21 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path == "/api/execution-runtime-status":
-            self._send(200, dashboard._execution_runtime_status())
+            self._send(200, _execution_runtime_status())
             return True
         if request.path == "/api/github-rate-limit":
-            self._send(200, dashboard._github_rate_limit_status())
+            self._send(200, _github_rate_limit_status())
+            return True
+        if request.path == "/api/host-admin/diagnostics":
+            self._send(200, host_admin.diagnostics(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path == "/api/provider-login-status":
-            # Provider identity is installation scoped.  Do not ask the
-            # retained helper to inspect a selected checkout in `<geen>`.
-            self._send(200, {"providers": {
-                "codex": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
-                "github": {"state": "CHECK_FAILED", "scope": "PLATFORM"},
-            }})
+            self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
             return True
         if request.path in {"/api/process-metrics", "/api/usage"}:
             self._send(200, {"scope": "PLATFORM", "available": False})
             return True
-        if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+        if re.fullmatch(rf"/api/logs/(?:all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path):
             component = request.path.rsplit("/", 1)[-1]
             self._send(200, _central_console_component_logs(self.server.data_root, component) or {"error": "LOG_COMPONENT_UNKNOWN"})  # type: ignore[attr-defined]
             return True
@@ -1215,6 +2153,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(snapshot)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        route = getattr(self, "_console_route", None)
+        if route is not None:
+            self.send_header("EP-Console-Route-Owner", route.owner)
         self.end_headers()
         self.wfile.write(snapshot)
 
@@ -1222,16 +2163,6 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         request = urlsplit(self.path)
         if request.path == "/api/central-database/download" and method == "do_GET":
             self._send_central_database_backup()
-            return True
-        if request.path == "/api/central-database/open-directory" and method == "do_POST":
-            try:
-                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
-                    raise ValueError
-                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
-                    raise ValueError
-                self._send(202, _open_central_database_directory(self.server.data_root))  # type: ignore[attr-defined]
-            except (OSError, RuntimeError, ValueError):
-                self._send(409, {"error": "CENTRAL_DATABASE_DIRECTORY_UNAVAILABLE"})
             return True
         if request.path != "/api/central-database/configuration":
             return False
@@ -1251,24 +2182,44 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             self._send(400, {"error": "CENTRAL_DATABASE_MAINTENANCE_INTERVAL_INVALID"})
             return True
+        _audit_configuration_change(
+            self.server.data_root,  # type: ignore[attr-defined]
+            scope="CENTRAL_DATABASE",
+            key="maintenance_interval_seconds",
+            previous=result.get("previous", "UNAVAILABLE"),
+            value=result.get("interval_seconds", "UNAVAILABLE"),
+        )
         self._send(200, result)
         return True
 
     def _stream_console_events(self, root: Path, project_id: str) -> None:
-        """Stream preserved dashboard state with the selected CENTRAL FIFO."""
+        """Stream the selected project from CENTRAL only.
+
+        ``root`` is retained temporarily by the route's binding contract but
+        is intentionally not read: a checkout cannot become state authority
+        merely because it is attached to a selected project.
+        """
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
-            stream_interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+            # Event delivery is a platform concern even when its snapshot has
+            # a selected-project projection.  It must therefore use the same
+            # CENTRAL-owned interval as the no-project Console, rather than a
+            # repository/root-local Dashboard preference.
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
             self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
             previous: bytes | None = None
             for iteration in range(300):
-                snapshot = _with_console_queue(
-                    dashboard._sse_snapshot(root),
-                    queue=_console_queue_projection(self.server.data_root, project_id), data_root=self.server.data_root,  # type: ignore[attr-defined]
-                )
+                snapshot = json.dumps(
+                    _central_console_project_snapshot(self.server.data_root, project_id),
+                    separators=(",", ":"),
+                ).encode("utf-8")  # type: ignore[attr-defined]
                 if snapshot != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
                     self.wfile.flush()
@@ -1276,7 +2227,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 elif iteration and iteration % 15 == 0:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
-                interval = int(dashboard.dashboard_configuration(root)["dashboard_stream_interval_seconds"])
+                interval = int(
+                    central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                        "dashboard_stream_interval_seconds"
+                    ]
+                )
                 if interval != stream_interval:
                     self.wfile.write(f"retry: {interval * 1000}\n\n".encode())
                     self.wfile.flush()
@@ -1285,10 +2240,159 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _stream_no_project_console_events(self) -> None:
+        """Send a CENTRAL-only event that completes the shared Console shell."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("EP-Console-Route-Owner", "PLATFORM")
+        self.end_headers()
+        try:
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
+            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
+            previous: bytes | None = None
+            for iteration in range(300):
+                payload = json.dumps(
+                    _no_project_console_snapshot(self.server.data_root), separators=(",", ":")  # type: ignore[attr-defined]
+                ).encode("utf-8")
+                if payload != previous:
+                    self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
+                    self.wfile.flush()
+                    previous = payload
+                elif iteration and iteration % 15 == 0:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                time.sleep(stream_interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _stream_project_console_events(self, project_id: str) -> None:
+        """Keep the selected project's CENTRAL-only dashboard stream alive."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("EP-Console-Route-Owner", "PLATFORM")
+        self.end_headers()
+        try:
+            stream_interval = int(
+                central_database.console_interval_configuration(self.server.data_root)[  # type: ignore[attr-defined]
+                    "dashboard_stream_interval_seconds"
+                ]
+            )
+            self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
+            previous: bytes | None = None
+            for iteration in range(300):
+                payload = json.dumps(
+                    _central_console_project_snapshot(self.server.data_root, project_id),  # type: ignore[attr-defined]
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if payload != previous:
+                    self.wfile.write(b"event: dashboard\ndata: " + payload + b"\n\n")
+                    self.wfile.flush()
+                    previous = payload
+                elif iteration and iteration % 15 == 0:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                time.sleep(stream_interval)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _delegate_dashboard(self, method: str) -> None:
         """Route the transitional Console after CENTRAL validates its scope."""
         request = urlsplit(self.path)
+        # Resolve ownership once, before any project identity is read.  The
+        # header makes the runtime contract observable to browser/integration
+        # coverage without granting a selected project any authority.
+        self._console_route = console_route_ownership.route_owner(method.removeprefix("do_"), request.path)
         if method == "do_GET" and self._send_console_asset(request):
+            return
+        if method == "do_POST" and re.fullmatch(r"/api/configuration/inbox-location(?:/browse)?", request.path):
+            self._send(410, {"error": "INBOX_WATCHER_CONFIGURATION_RETIRED"})
+            return
+        if re.fullmatch(r"/api/logs/(?:inbox|dashboard)", request.path):
+            # These former dashboard-owned streams are deliberately absent
+            # from the canonical CENTRAL component model.  Handle them before
+            # scope resolution so a stale caller cannot turn a retired route
+            # into a project-delegation failure.
+            self._send(410, {"error": "LEGACY_COMPONENT_LOG_ROUTE_RETIRED"})
+            return
+        if re.fullmatch(
+            rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)",
+            request.path,
+        ):
+            # A retired name is never normalized to a supported component.
+            # Reject it before project resolution so it cannot acquire a
+            # project, lifecycle or repair interpretation as a side effect.
+            self._send(410, {"error": "LEGACY_COMPONENT_AUTHORITY_RETIRED"})
+            return
+        log_match = re.fullmatch(rf"/api/logs/(all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path)
+        if log_match and method == "do_GET":
+            query = parse_qs(request.query)
+            try:
+                payload = _central_console_component_logs(
+                    self.server.data_root, log_match.group(1), query,
+                    export_all=(query.get("format") or [""])[0] == "ndjson",
+                )  # type: ignore[attr-defined]
+            except ValueError:
+                self._send(400, {"error": "LOG_QUERY_INVALID"})
+                return
+            if payload is None:
+                self._send(404, {"error": "LOG_COMPONENT_UNKNOWN"})
+            elif (query.get("format") or [""])[0] == "ndjson":
+                self._send_ndjson(list(payload["entries"]))
+            else:
+                self._send(200, payload)
+            return
+        if log_match and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"component"} or not isinstance(payload["component"], str):
+                    raise ValueError
+                result = _clear_central_console_component_logs(self.server.data_root, payload["component"])  # type: ignore[attr-defined]
+                if result is None:
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(400, {"error": "LOG_COMPONENT_INVALID"})
+            else:
+                self._send(200, result)
+            return
+        # Platform health is deliberately independent of the browser's
+        # selected project preference, so the same components remain visible
+        # in both Console modes.
+        if method == "do_GET" and request.path == "/health":
+            report = status(self.server.data_root)  # type: ignore[attr-defined]
+            self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            return
+        if method == "do_GET" and request.path == "/api/host-admin/diagnostics":
+            # Host Admin has an installation-only root and is intentionally
+            # resolved before any selected-project header is inspected.
+            self._send(200, host_admin.diagnostics(self.server.data_root))  # type: ignore[attr-defined]
+            return
+        component_match = re.fullmatch(r"/api/components/([a-z_]+)/details", request.path)
+        if component_match and component_match.group(1) not in PLATFORM_COMPONENT_IDS:
+            component_match = None
+        if method == "do_GET" and component_match:
+            detail = _platform_component_detail(self.server.data_root, component_match.group(1))  # type: ignore[attr-defined]
+            self._send(200, detail) if detail is not None else self._send(404, {"error": "COMPONENT_UNKNOWN"})
+            return
+        restart_match = re.fullmatch(r"/api/components/([a-z_]+)/restart", request.path)
+        if method == "do_POST" and restart_match:
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                result = _restart_platform_component(self.server.data_root, restart_match.group(1))  # type: ignore[attr-defined]
+            except (ValueError, OSError):
+                self._send(409, {"error": "COMPONENT_RESTART_UNAVAILABLE"})
+            else:
+                self._send(202, result)
             return
         if self._central_database_configuration(method):
             return
@@ -1297,6 +2401,65 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 self._send(405, {"error": "METHOD_NOT_ALLOWED"})
             else:
                 self._send(200, _provider_capacity_projection(self.server.data_root))  # type: ignore[attr-defined]
+            return
+        if request.path == "/api/provider-login-status" and method == "do_GET":
+            self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
+            return
+        if request.path == "/api/execution-runtime-status" and method == "do_GET":
+            # Validation is an installation capability, independent of the
+            # selected project.  Keep it out of the legacy checkout delegate.
+            self._send(200, _execution_runtime_status())
+            return
+        if request.path == "/api/execution-runtime/repair" and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
+                    raise ValueError
+                runtime = _execution_runtime_status()
+                if runtime["state"] != "READY":
+                    raise ValueError
+            except (ValueError, OSError):
+                self._send(409, {"error": "EXECUTION_RUNTIME_UNAVAILABLE"})
+                return
+            self._send(200, {"rechecked": True, "runtime": runtime, "scope": "PLATFORM"})
+            return
+        if request.path == "/api/provider-login/repair" and method == "do_POST":
+            # Provider installation and interactive sign-in are host-wide
+            # operations.  They must never fall through to the historical
+            # checkout-bound dashboard handler: on the <geen> projection that
+            # handler rejects the request for lack of a selected project and
+            # the subsequent readiness refresh misleadingly becomes a check
+            # failure.
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                _central_provider_repair(self.server.data_root, payload)  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "PROVIDER_REPAIR_UNAVAILABLE"})
+                return
+            self._send(202, {"started": True, "scope": "PLATFORM"})
+            return
+        if request.path == "/api/provider-login/logout" and method == "do_POST":
+            # Logout is the companion host-wide action to login.  Do not let
+            # the installed no-project Console fall through to the retired
+            # checkout handler, which rejects it before the CLI can run.
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                _central_provider_logout(self.server.data_root, payload)  # type: ignore[attr-defined]
+            except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "PROVIDER_LOGOUT_UNAVAILABLE"})
+                return
+            self._send(200, {"logged_out": True, "scope": "PLATFORM"})
             return
         if request.path == "/api/provider-capacity/configuration":
             if method == "do_GET":
@@ -1308,12 +2471,41 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
                 reserve = payload.get("codex_capacity_reserve_percent") if isinstance(payload, dict) else None
                 live = _provider_capacity_projection(self.server.data_root)  # type: ignore[attr-defined]
-                remaining = dashboard._remaining_rate_limit_capacity(live["rate_limits"])
+                remaining = _remaining_rate_limit_capacity(live["rate_limits"])
                 if not isinstance(reserve, int) or isinstance(reserve, bool) or (reserve and (remaining is None or reserve > remaining)):
                     raise ValueError
-                self._send(200, central_database.update_capacity_configuration(self.server.data_root, reserve))  # type: ignore[attr-defined]
+                result = central_database.update_capacity_configuration(self.server.data_root, reserve)  # type: ignore[attr-defined]
+                _audit_configuration_change(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    scope="PROVIDER_CAPACITY",
+                    key="codex_capacity_reserve_percent",
+                    previous=result.get("previous", "UNAVAILABLE"),
+                    value=result.get("codex_capacity_reserve_percent", "UNAVAILABLE"),
+                )
+                self._send(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send(409, {"error": "CODEX_CAPACITY_RESERVE_INVALID"})
+            return
+        if request.path == "/api/configuration" and method == "do_POST":
+            try:
+                if self.headers.get("Origin") not in {None, "", f"http://{self.headers.get('Host', '')}"}:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+                if not isinstance(payload, dict) or set(payload) != {"key", "value", "previous"}:
+                    raise ValueError
+                result = central_database.update_console_interval_configuration(
+                    self.server.data_root, payload["key"], payload["value"],
+                )  # type: ignore[attr-defined]
+                _audit_configuration_change(
+                    self.server.data_root,  # type: ignore[attr-defined]
+                    scope="OPERATIONS_CONSOLE",
+                    key=str(result["key"]),
+                    previous=result.get("previous", "UNAVAILABLE"),
+                    value=result.get("value", "UNAVAILABLE"),
+                )
+                self._send(200, result)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send(409, {"error": "CONSOLE_CONFIGURATION_INVALID"})
             return
         if method == "do_POST" and request.path == "/api/runtime-directory/open":
             # This action historically resolved the first bound checkout.
@@ -1345,7 +2537,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if request.path == "/api/configuration":
                 self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
                 return
-            if request.path in {"/api/logs/dashboard", "/api/logs/inbox"}:
+            if re.fullmatch(rf"/api/logs/(?:all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path):
                 component = request.path.rsplit("/", 1)[-1]
                 payload = _central_console_component_logs(self.server.data_root, component)  # type: ignore[attr-defined]
                 if payload is None:
@@ -1414,13 +2606,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     self._send(200, detail)
                 return
             if request.path == "/api/events":
-                snapshot = _central_console_project_snapshot(self.server.data_root, selected)  # type: ignore[attr-defined]
-                encoded = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(b"event: dashboard\ndata: " + encoded + b"\n\n")
+                self._stream_project_console_events(selected)
                 return
         if method == "do_POST" and isinstance(selected, str) and selected in project_ids and (
             request.path == "/api/configuration" or request.path.startswith("/api/logs/")
@@ -1437,6 +2623,14 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(selected, str) or selected not in project_ids:
                 self._send(409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"})
                 return
+            # The preserved execution lifecycle is loaded only when its
+            # project-scoped mutation is requested.  Importing the canonical
+            # Server must not load retired watcher-era implementation modules.
+            from .parity_lifecycle_dispatcher import (
+                ParityLifecycleDispatchError,
+                dismiss_operator_gate,
+                retry_operator_gate,
+            )
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 2 <= length <= 256:
@@ -1517,12 +2711,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         request = urlsplit(self.path)
         if request.path == "/diagnostics/topology":
-            body = _operations_console_document()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self._send(200, operations_projection(self.server.data_root), initialize(self.server.data_root).instance_id)  # type: ignore[attr-defined]
+            except ServerConfigurationError:
+                self._send(503, {"error": "TOPOLOGY_DIAGNOSTIC_UNAVAILABLE"})
             return
         if self.path == "/v1/operations/projects":
             try:
@@ -1612,7 +2804,33 @@ def serve(data_root: Path) -> int:
     os.environ[MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT] = config.managed_codex_cli_prefix
     server = http.server.ThreadingHTTPServer((config.bind_host, config.bind_port), _HealthHandler)
     server.data_root = data_root.resolve()  # type: ignore[attr-defined]
+    # Lifecycle composition is intentionally lazy: read-only Server import
+    # and Console startup must stay independent of retired watcher modules.
+    from .lifecycle_worker import LifecycleWorker
+
     worker = LifecycleWorker(data_root)
+    # The File Inbox is an installed Server child, not a Dashboard or
+    # checkout-owned watcher.  Its heartbeat is the source for its platform
+    # component health; a prior successful file is never treated as liveness.
+    inbox_service = file_inbox.FileInboxService(
+        data_root / FILE_INBOX_DIRECTORY,
+        admission=lambda envelope, receipt_id, received_at: _admit_server_owned_file_inbox(
+            data_root, envelope, receipt_id, received_at,
+        ),
+    )
+    dependabot_service = dependabot_producer.DependabotService(
+        data_root,
+        event=lambda event, context: log_event(
+            component_logger(
+                data_root,
+                "dependabot_producer",
+                central_database=data_root / SERVER_DATABASE_FILENAME,
+            ),
+            logging.INFO if event == "dependabot_submission_admitted" else logging.WARNING,
+            event,
+            context=context,
+        ),
+    )
     server.lifecycle_worker = worker  # type: ignore[attr-defined]
     _write_json(data_root / SERVER_RUNTIME_FILENAME, {"pid": os.getpid(), "instance_id": identity.instance_id, "started_at": _utcnow()})
     def stop(_signum: int, _frame: object) -> None:
@@ -1622,9 +2840,30 @@ def serve(data_root: Path) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     worker.start()
+    if not worker.wait_until_running():
+        worker.stop()
+        server.server_close()
+        raise RuntimeError("Lifecycle Worker did not become ready.")
+    inbox_service.start()
+    dependabot_service.start()
+    # A fresh installation must have operational evidence before its first
+    # submission.  These are genuine Server lifecycle events, persisted in
+    # the same CENTRAL store that backs the Console's combined log table.
+    for definition in PLATFORM_COMPONENTS:
+        log_event(
+            component_logger(
+                data_root, definition.id,
+                central_database=data_root / SERVER_DATABASE_FILENAME,
+            ),
+            logging.INFO,
+            definition.startup_event,
+            context={"target_component": definition.id},
+        )
     try:
         server.serve_forever()
     finally:
+        dependabot_service.stop()
+        inbox_service.stop()
         worker.stop()
         server.server_close()
         (data_root / SERVER_RUNTIME_FILENAME).unlink(missing_ok=True)
@@ -1699,7 +2938,7 @@ def health(data_root: Path) -> dict[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engineering-platform-server", description="Manage the standalone Engineering Platform Server foundation")
-    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository"))
+    parser.add_argument("command", choices=("init", "start", "serve", "stop", "status", "health", "relay-install", "relay-uninstall", "pairing-create", "agent-status", "agent-revoke", "agent-reset", "topology", "submission-diagnose", "bootstrap-topology", "register-topology", "provision-declaration", "issue-consumer-credential", "bind-repository", "rebind-repository", "unbind-repository", "resolve-repository", "register-producer-binding", "list-producer-bindings", "deactivate-producer-binding"))
     parser.add_argument("--data-root", type=Path, default=default_data_root())
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--bind-port", type=int, default=8765)
@@ -1710,6 +2949,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--declaration", type=Path)
     parser.add_argument("--consumer-id")
     parser.add_argument("--submission-id")
+    parser.add_argument("--producer-type")
+    parser.add_argument("--external-resource-type")
+    parser.add_argument("--external-resource-identity")
+    parser.add_argument("--binding-id")
+    parser.add_argument("--reason")
     return parser
 
 
@@ -1732,6 +2976,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "stop": result = stop(args.data_root)
         elif args.command == "status": result = status(args.data_root)
         elif args.command == "health": result = health(args.data_root)
+        elif args.command == "relay-install":
+            initialize(args.data_root)
+            result = {"result": "INSTALLED", **server_relay.install(args.data_root)}
+        elif args.command == "relay-uninstall":
+            result = {"result": "UNINSTALLED", **server_relay.uninstall()}
         elif args.command == "topology":
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
@@ -1741,11 +2990,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ServerConfigurationError("--submission-id is required for submission diagnostics.")
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
-                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,d.run_id,d.state,d.operator_resolution FROM ep_submissions s LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
+                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,p.run_id,d.state,d.operator_resolution,p.project_id,p.repository_id FROM ep_submissions s LEFT JOIN ep_receipt_run_provenance p ON p.submission_id=s.submission_id LEFT JOIN ep_parity_lifecycle_dispatches d ON d.run_id=p.run_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
                 if row is None:
                     raise ServerConfigurationError("UNKNOWN_SUBMISSION")
-                project_id, repository_id, state, admission, run_id, dispatch_state, resolution = row
-                blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, run_id or "")).fetchone()
+                project_id, repository_id, state, admission, transport, receipt_id, received_at, run_id, dispatch_state, resolution, dispatch_project, dispatch_repository = row
+                blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND submission_id!=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, args.submission_id, run_id or "")).fetchone()
+                admission_audit = connection.execute("SELECT 1 FROM ep_submission_events WHERE submission_id=? AND event_kind='ADMISSION_GRANTED'", (args.submission_id,)).fetchone()
             early = None
             if run_id:
                 early_path = args.data_root / "artifacts" / "projects" / str(project_id) / "runs" / str(run_id) / "early-runner-failure.json"
@@ -1754,7 +3004,9 @@ def main(argv: list[str] | None = None) -> int:
                         early = json.loads(early_path.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
-            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+            receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
+            scope_complete = run_id is not None and (dispatch_project, dispatch_repository) == (project_id, repository_id)
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "admission_audit_provenance": "PRESENT" if admission_audit else "UNAVAILABLE", "receipt_run_provenance": "PRESENT" if run_id else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")
@@ -1776,6 +3028,33 @@ def main(argv: list[str] | None = None) -> int:
             from .submission_service import issue_consumer_credential
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
                 result = issue_consumer_credential(connection, consumer_id=args.consumer_id, project_id=args.project_id)
+        elif args.command == "register-producer-binding":
+            if not all((args.producer_type, args.external_resource_type, args.external_resource_identity, args.project_id, args.repository_id, args.reason)):
+                raise ServerConfigurationError("--producer-type, --external-resource-type, --external-resource-identity, --project-id, --repository-id and --reason are required for producer binding registration.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                binding = external_producer_binding.register(
+                    connection,
+                    data_root=args.data_root,
+                    producer_type=args.producer_type,
+                    external_resource_type=args.external_resource_type,
+                    external_resource_identity=args.external_resource_identity,
+                    project_id=args.project_id,
+                    repository_id=args.repository_id,
+                    reason=args.reason,
+                )
+            result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "REGISTERED"}
+        elif args.command == "list-producer-bindings":
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                result = {"bindings": external_producer_binding.list_bindings(connection, data_root=args.data_root)}
+        elif args.command == "deactivate-producer-binding":
+            if not args.binding_id or not args.reason:
+                raise ServerConfigurationError("--binding-id and --reason are required for producer binding deactivation.")
+            initialize(args.data_root)
+            with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
+                binding = external_producer_binding.deactivate(connection, data_root=args.data_root, binding_id=args.binding_id, reason=args.reason)
+            result = {"binding_id": binding.binding_id, "project_id": binding.project_id, "repository_id": binding.repository_id, "version": binding.version, "result": "DEACTIVATED"}
         elif args.command == "provision-declaration":
             if not args.project_id or not args.repository_id or args.path is None:
                 raise ServerConfigurationError("--project-id, --repository-id and --path are required for declaration provisioning.")
@@ -1823,7 +3102,7 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.command == "agent-status": result = agent_trust.registration_status(connection, args.agent_id)
                 elif args.command == "agent-revoke": result = {"agent_id": args.agent_id, "revoked": agent_trust.revoke(connection, args.agent_id)}
                 else: result = {"agent_id": args.agent_id, "reset": agent_trust.reset(connection, args.agent_id)}
-    except (OSError, RuntimeError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError) as error:
+    except (OSError, RuntimeError, PermissionError, ServerConfigurationError, local_repository_binding.LocalRepositoryBindingError, external_producer_binding.ProducerBindingError) as error:
         print(json.dumps({"error": str(error), "ready": False}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
