@@ -169,6 +169,18 @@ class CentralStoreMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(migration.CutoverError, "unknown state"):
             migration.transition_receipt({"migration_id": "test"}, "NOT_A_STATE")
 
+    def test_target_equivalence_detects_schema_and_authority_content_drift(self) -> None:
+        target = Path(self.temporary.name) / "candidate.db"
+        with sqlite3.connect(self.source) as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+        self.assertTrue(migration.validate_target_equivalence(self.source, target)["equivalent"])
+        with sqlite3.connect(target) as connection:
+            connection.execute("DELETE FROM local_api_consumer_registrations")
+        result = migration.validate_target_equivalence(self.source, target)
+        self.assertFalse(result["equivalent"])
+        self.assertIn("table_counts", result["differences"])
+        self.assertEqual(result["blocking_codes"], ["TARGET_STORE_CONFLICT"])
+
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
         absent = migration.preflight(self.root.parent / "missing")
