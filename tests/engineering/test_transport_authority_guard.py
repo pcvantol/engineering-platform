@@ -31,7 +31,7 @@ class TransportAuthorityGuardTest(unittest.TestCase):
 
     def test_supported_runtime_modules_do_not_import_the_retired_watcher(self) -> None:
         source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
-        supported = ("server.py", "dashboard.py", "parity_lifecycle_dispatcher.py", "emergency_recovery.py")
+        supported = ("server.py", "server_console_services.py", "parity_lifecycle_dispatcher.py", "emergency_recovery.py")
         for name in supported:
             source = (source_root / name).read_text(encoding="utf-8")
             self.assertNotIn("inbox_watcher", source, name)
@@ -40,7 +40,7 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         """A writer cannot silently recreate a retired Inbox/Dashboard stream."""
         source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
         supported = (
-            "dashboard.py",
+            "server_console_services.py",
             "host_preflight.py",
             "file_inbox.py",
             "dependabot_producer.py",
@@ -89,23 +89,30 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         fixture = (root / "tests" / "engineering" / "dashboard.spec.mjs").read_text(encoding="utf-8")
         self.assertIn("from engineering_platform.server import _HealthHandler, initialize", fixture)
-        self.assertNotIn("engineering_platform.dashboard import DashboardHTTPServer, handler", fixture)
+        self.assertNotIn("engineering_platform.dashboard import " + "Dashboard" + "HTTPServer, handler", fixture)
         dashboard = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
         self.assertNotIn('fetch("/api/open-local-directory"', dashboard)
         self.assertNotIn('fetch("/api/runtime-directory/open"', dashboard)
 
-    def test_direct_dashboard_module_has_no_runtime_entrypoint(self) -> None:
-        """The historical wrapper cannot become an installed listener again."""
+    def test_direct_dashboard_runtime_is_physically_absent(self) -> None:
+        """The historical wrapper and its listener cannot be revived silently."""
         root = Path(__file__).resolve().parents[2]
-        dashboard = (root / "src" / "engineering_platform" / "dashboard.py").read_text(encoding="utf-8")
+        source_root = root / "src" / "engineering_platform"
         packaging = (root / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertNotIn('if __name__ == "__main__"', dashboard)
+        self.assertFalse((source_root / "dashboard.py").exists())
+        services = (source_root / "server_console_services.py").read_text(encoding="utf-8")
+        self.assertNotIn("Dashboard" + "HTTPServer", services)
+        self.assertNotIn("BaseHTTPRequestHandler", services)
+        self.assertNotIn("def handler(", services)
+        self.assertNotIn("def create_servers(", services)
+        self.assertNotIn("def run(", services)
+        self.assertNotIn("def main(", services)
         self.assertNotIn("engineering_platform.dashboard:main", packaging)
 
     def test_retired_local_branch_cleanup_is_absent_from_supported_console(self) -> None:
         """The Console must not own destructive checkout-local branch cleanup."""
         root = Path(__file__).resolve().parents[2]
-        dashboard = (root / "src" / "engineering_platform" / "dashboard.py").read_text(encoding="utf-8")
+        dashboard = (root / "src" / "engineering_platform" / "server_console_services.py").read_text(encoding="utf-8")
         asset = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
         stylesheet = (root / "src" / "engineering_platform" / "assets" / "dashboard.css").read_text(encoding="utf-8")
         for source in (dashboard, asset, stylesheet):

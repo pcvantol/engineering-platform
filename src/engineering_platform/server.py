@@ -36,7 +36,7 @@ from . import agent_trust
 from . import central_database
 from . import console_route_ownership
 from . import console_presentation
-from . import dashboard
+from . import server_console_services
 from . import dashboard_translation
 from . import dependabot_producer
 from . import external_producer_binding
@@ -1792,7 +1792,7 @@ def _console_project_boundary(project_id: str, options: str) -> str:
 
 def _no_project_console_document(projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render global Console controls without selecting project-owned data."""
-    document = dashboard._dashboard_html(
+    document = server_console_services._dashboard_html(
         "EP Operations",
         workspace_id="none",
         project_name="<geen>",
@@ -1845,7 +1845,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
 
 def _selected_project_console_document(project_id: str, projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render the installed Console shell without loading a project checkout."""
-    document = dashboard._dashboard_html(
+    document = server_console_services._dashboard_html(
         "EP Operations", workspace_id=project_id, project_name=project_id,
         workspace_location="Physical binding is not Console authority.",
         configuration_inbox="Not available from the CENTRAL Console.",
@@ -2115,7 +2115,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             previous: bytes | None = None
             for iteration in range(300):
                 snapshot = _with_console_queue(
-                    dashboard._sse_snapshot(root),
+                    server_console_services._sse_snapshot(root),
                     queue=_console_queue_projection(self.server.data_root, project_id), data_root=self.server.data_root,  # type: ignore[attr-defined]
                 )
                 if snapshot != previous:

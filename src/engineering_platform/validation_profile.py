@@ -9,7 +9,7 @@ import sys
 
 DOCUMENTATION_PREFIXES = ("docs/",)
 DASHBOARD_PREFIXES = ("src/engineering_platform/assets/",)
-DASHBOARD_FILES = {"src/engineering_platform/dashboard.py", "src/engineering_platform/server.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
+DASHBOARD_FILES = {"src/engineering_platform/server_console_services.py", "src/engineering_platform/server.py", "tests/engineering/dashboard.spec.mjs", "package.json", "package-lock.json"}
 RUNTIME_PREFIXES = ("src/engineering_platform/", "tests/engineering/", ".github/workflows/")
 VALIDATION_PROFILE_VERSION = "1.0"
 REQUIRED_CONTROLS = {

@@ -13,8 +13,8 @@ import unittest
 from contextlib import ExitStack, contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
-from engineering_platform import dashboard
-from engineering_platform.dashboard import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees, binding_addresses
+from engineering_platform import server_console_services as dashboard
+from engineering_platform.server_console_services import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees
 from engineering_platform.platform_version import EngineeringPlatformManifest
 from engineering_platform.resources import package_path
 from engineering_platform.prompt_history import record_prompt_execution
@@ -37,15 +37,15 @@ class DashboardStatusTest(unittest.TestCase):
         )
 
     def test_managed_codex_installation_path_never_accepts_another_executable(self) -> None:
-        with patch("engineering_platform.dashboard.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex")):
+        with patch("engineering_platform.server_console_services.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex")):
             self.assertIsNone(_codex_cli_installation_path(None))
             self.assertEqual(
                 _codex_cli_installation_path("/managed/codex/bin/codex"), "/managed/codex"
             )
             self.assertIsNone(_codex_cli_installation_path("/usr/local/bin/codex"))
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_pull_request_metrics_are_bound_to_the_verified_repository(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -84,7 +84,7 @@ class DashboardStatusTest(unittest.TestCase):
     def test_terminal_diagnostic_rejects_an_invalid_run_identifier(self) -> None:
         self.assertIsNone(dashboard._terminal_run_diagnostic(Path("/repository"), "../outside"))
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
     def test_github_rate_limit_status_handles_malformed_and_exhausted_responses(
         self, github_provider: object
     ) -> None:
@@ -112,7 +112,7 @@ class DashboardStatusTest(unittest.TestCase):
 
     def test_workspace_card_shows_free_space_on_its_volume(self) -> None:
         with patch(
-            "engineering_platform.dashboard.shutil.disk_usage",
+            "engineering_platform.server_console_services.shutil.disk_usage",
             return_value=MagicMock(free=12.34 * 1024**3),
         ):
             self.assertEqual(_workspace_free_disk_space(Path("/workspace")), "12.3 GB")
@@ -187,8 +187,8 @@ class DashboardStatusTest(unittest.TestCase):
         )
         self.assertLess(page.index('id="configuration"'), page.index("</main>"))
 
-    @patch("engineering_platform.dashboard.provider_runtime_details")
-    @patch("engineering_platform.dashboard.provider_readiness_status")
+    @patch("engineering_platform.server_console_services.provider_runtime_details")
+    @patch("engineering_platform.server_console_services.provider_readiness_status")
     def test_provider_login_status_is_token_free_and_classifies_auth(
         self, readiness: MagicMock, runtime: MagicMock,
     ) -> None:
@@ -217,19 +217,19 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("executable", status)
         self.assertRegex(status["version"], r"^\d+\.\d+\.\d+")
 
-    @patch("engineering_platform.dashboard._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
-    @patch("engineering_platform.dashboard.managed_codex_runtime.provision")
-    @patch("engineering_platform.dashboard._execution_active", return_value=False)
+    @patch("engineering_platform.server_console_services._provider_login_status", return_value={"codex": {"state": "AUTH_REQUIRED"}})
+    @patch("engineering_platform.server_console_services.managed_codex_runtime.provision")
+    @patch("engineering_platform.server_console_services._execution_active", return_value=False)
     def test_codex_install_uses_the_installation_owned_runtime_lifecycle(
         self, _active: MagicMock, provision: MagicMock, _status: MagicMock,
     ) -> None:
         dashboard._install_provider(Path("/workspace"), "CODEX")
         provision.assert_called_once_with(Path("/workspace"))
 
-    @patch("engineering_platform.dashboard.LocalProcessProvider")
-    @patch("engineering_platform.dashboard.CodexCliProvider")
-    @patch("engineering_platform.dashboard.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("engineering_platform.dashboard.sys.platform", "darwin")
+    @patch("engineering_platform.server_console_services.LocalProcessProvider")
+    @patch("engineering_platform.server_console_services.CodexCliProvider")
+    @patch("engineering_platform.server_console_services.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("engineering_platform.server_console_services.sys.platform", "darwin")
     def test_provider_login_allows_a_retry_and_the_other_provider(
         self, _which: MagicMock, codex: MagicMock, process: MagicMock,
     ) -> None:
@@ -248,9 +248,9 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("codex login --device-auth", scripts[1])
         self.assertIn("gh auth login --hostname github.com --web", scripts[2])
 
-    @patch("engineering_platform.dashboard.LocalProcessProvider")
-    @patch("engineering_platform.dashboard.CodexCliProvider")
-    @patch("engineering_platform.dashboard.sys.platform", "darwin")
+    @patch("engineering_platform.server_console_services.LocalProcessProvider")
+    @patch("engineering_platform.server_console_services.CodexCliProvider")
+    @patch("engineering_platform.server_console_services.sys.platform", "darwin")
     def test_provider_login_dispatch_failure_does_not_block_a_later_retry(
         self, codex: MagicMock, process: MagicMock,
     ) -> None:
@@ -268,7 +268,7 @@ class DashboardStatusTest(unittest.TestCase):
 
         self.assertEqual(process.return_value.execute.call_count, 2)
 
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_git_projection_is_safe_and_sse_ready(self, git_provider: object) -> None:
         completed = __import__("subprocess").CompletedProcess
         git_provider.return_value.execute.side_effect = [
@@ -287,7 +287,7 @@ class DashboardStatusTest(unittest.TestCase):
             "branch_cleanup_available": False,
         })
 
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_git_projection_hides_main_action_when_origin_is_unavailable(self, git_provider: object) -> None:
         completed = __import__("subprocess").CompletedProcess
         git_provider.return_value.execute.side_effect = [
@@ -306,7 +306,7 @@ class DashboardStatusTest(unittest.TestCase):
             "branch_cleanup_available": True,
         })
 
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_git_projection_is_safe_when_git_cannot_start(self, git_provider: object) -> None:
         git_provider.return_value.execute.side_effect = OSError("Git unavailable")
 
@@ -321,7 +321,7 @@ class DashboardStatusTest(unittest.TestCase):
             "branch_cleanup_available": False,
         })
 
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_worktrees_projection_lists_each_local_branch(self, git_provider: object) -> None:
         completed = __import__("subprocess").CompletedProcess
         git_provider.return_value.execute.return_value = completed(
@@ -340,7 +340,7 @@ class DashboardStatusTest(unittest.TestCase):
             {"path": "/tmp/detached", "branch": None, "commit": "ffffff123456", "detached": True, "active": False},
         ]})
 
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_worktrees_projection_includes_unchecked_out_main(self, git_provider: object) -> None:
         completed = __import__("subprocess").CompletedProcess
         git_provider.return_value.execute.side_effect = [
@@ -362,34 +362,34 @@ class DashboardStatusTest(unittest.TestCase):
             worktree.mkdir()
             completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
             with (
-                patch("engineering_platform.dashboard.sys.platform", "darwin"),
-                patch("engineering_platform.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.dashboard.LocalProcessProvider.execute", return_value=completed) as execute,
+                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
+                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=completed) as execute,
             ):
                 self.assertEqual(_open_worktree_in_finder(root, str(worktree)), {"opened_worktree": str(worktree.resolve())})
                 execute.assert_called_once_with(root, ("open", str(worktree.resolve())))
-            with patch("engineering_platform.dashboard.sys.platform", "darwin"), patch(
-                "engineering_platform.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": []},
+            with patch("engineering_platform.server_console_services.sys.platform", "darwin"), patch(
+                "engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": []},
             ):
                 with self.assertRaises(RuntimeError):
                     _open_worktree_in_finder(root, str(worktree))
-            with patch("engineering_platform.dashboard.sys.platform", "darwin"):
+            with patch("engineering_platform.server_console_services.sys.platform", "darwin"):
                 with self.assertRaisesRegex(RuntimeError, "actuele lokale worktree"):
                     _open_worktree_in_finder(root, str(root / "missing"))
             with (
-                patch("engineering_platform.dashboard.sys.platform", "darwin"),
-                patch("engineering_platform.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.dashboard.LocalProcessProvider.execute", side_effect=OSError),
+                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
+                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", side_effect=OSError),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Finder kon"):
                     _open_worktree_in_finder(root, str(worktree))
-            with patch("engineering_platform.dashboard.sys.platform", "linux"):
+            with patch("engineering_platform.server_console_services.sys.platform", "linux"):
                 with self.assertRaisesRegex(RuntimeError, "kan niet veilig"):
                     _open_worktree_in_finder(root, str(worktree))
             with (
-                patch("engineering_platform.dashboard.sys.platform", "darwin"),
-                patch("engineering_platform.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.dashboard.LocalProcessProvider.execute", return_value=__import__("subprocess").CompletedProcess(("open",), 1, "", "")),
+                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
+                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
+                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=__import__("subprocess").CompletedProcess(("open",), 1, "", "")),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Finder kon"):
                     _open_worktree_in_finder(root, str(worktree))
@@ -405,10 +405,10 @@ class DashboardStatusTest(unittest.TestCase):
             configuration.resolver.return_value.resolve_runtime_prompt_transport.return_value.inbox = inbox
             completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
             with (
-                patch("engineering_platform.dashboard.sys.platform", "darwin"),
-                patch("engineering_platform.dashboard.PlatformConfiguration.load", return_value=configuration),
-                patch("engineering_platform.dashboard._workspace_worktrees", return_value={"available": True, "worktrees": []}),
-                patch("engineering_platform.dashboard.LocalProcessProvider.execute", return_value=completed) as execute,
+                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
+                patch("engineering_platform.server_console_services.PlatformConfiguration.load", return_value=configuration),
+                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": []}),
+                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=completed) as execute,
             ):
                 self.assertEqual(
                     dashboard._open_local_directory_in_finder(root, str(inbox)),
@@ -426,7 +426,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn('id="dashboardLocale"', page)
         self.assertIn('id="executionRuntimeBanner"', page)
         self.assertIn('data-project-id="onbekend" data-project-name="Project"', page)
-        self.assertIn('"/assets/dashboard_locales.mjs"', (root / "src/engineering_platform/dashboard.py").read_text(encoding="utf-8"))
+        self.assertIn('src="/assets/dashboard.js', page)
         for locale in ("en", "nl", "de", "fr", "es"):
             self.assertIn(f"  {locale}: {{", catalog)
             self.assertIn(f'"language.{locale}"', catalog)
@@ -482,43 +482,13 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("initializeDashboardConfiguration", dashboard_script)
         self.assertIn("scheduleProviderReadinessRefresh", dashboard_script)
 
-    def test_dashboard_run_logs_startup_and_graceful_shutdown_identity(self) -> None:
-        class InterruptingServer:
-            server_address = (LOOPBACK_ADDRESS, 8765)
-
-            def serve_forever(self) -> None:
-                raise KeyboardInterrupt
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            lifecycle_context = {
-                "application_version": DASHBOARD_VERSION,
-                "git_commit": "abc123def456",
-                "launchd_label": dashboard.LABEL,
-                "launch_agent_path": "/tmp/dashboard.plist",
-            }
-            with (
-                patch("engineering_platform.dashboard.provision_workspace"),
-                patch("engineering_platform.dashboard.component_logger", return_value=logging.getLogger("test")) as logger,
-                patch("engineering_platform.dashboard.component_lifecycle_context", return_value=lifecycle_context),
-                patch("engineering_platform.dashboard.shutdown_signal_logging", return_value=nullcontext()),
-                patch("engineering_platform.dashboard.create_servers", return_value=(InterruptingServer(),)),
-                patch("engineering_platform.dashboard.log_event") as log_event,
-            ):
-                dashboard.run(root)
-
-            logger.assert_called_once_with(root, "operations_console")
-            self.assertEqual(log_event.call_args_list[0].args[2], "dashboard_started")
-            self.assertEqual(log_event.call_args_list[-1].args[2], "dashboard_shutdown_completed")
-            self.assertEqual(log_event.call_args_list[-1].kwargs["context"], lifecycle_context)
-
     def test_component_versions_match_the_canonical_platform_manifest(self) -> None:
         manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))
 
         self.assertEqual(DASHBOARD_VERSION, manifest.dashboard_version)
 
     def test_dashboard_helpers_fail_closed_for_unavailable_local_dependencies(self) -> None:
-        with patch("engineering_platform.dashboard.shutil.which", return_value=None):
+        with patch("engineering_platform.server_console_services.shutil.which", return_value=None):
             self.assertEqual(
                 dashboard._launch_agent_health("com.example.missing"),
                 {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
@@ -529,8 +499,8 @@ class DashboardStatusTest(unittest.TestCase):
                 dashboard._restart_component("dashboard")
 
         with (
-            patch("engineering_platform.dashboard.shutil.which", return_value="/bin/launchctl"),
-            patch("engineering_platform.dashboard.subprocess.run") as run,
+            patch("engineering_platform.server_console_services.shutil.which", return_value="/bin/launchctl"),
+            patch("engineering_platform.server_console_services.subprocess.run") as run,
         ):
             run.return_value = __import__("subprocess").CompletedProcess(("launchctl",), 1, "", "")
             self.assertEqual(
@@ -540,7 +510,7 @@ class DashboardStatusTest(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "De herstart is niet gelukt"):
                 dashboard._restart_component("dashboard")
 
-    @patch("engineering_platform.dashboard.LaunchdProvider")
+    @patch("engineering_platform.server_console_services.LaunchdProvider")
     def test_launch_agent_health_rejects_a_loaded_agent_without_a_process(self, launchd: object) -> None:
         launchd.return_value.runtime_status.return_value = ProviderStatus(
             "launchd", "configured", False, "LaunchAgent is loaded but has no active process"
@@ -554,7 +524,7 @@ class DashboardStatusTest(unittest.TestCase):
             },
         )
 
-    @patch("engineering_platform.dashboard.LaunchdProvider")
+    @patch("engineering_platform.server_console_services.LaunchdProvider")
     def test_launch_agent_health_reports_a_real_process_and_unavailable_launchctl(self, launchd: object) -> None:
         launchd.return_value.runtime_status.return_value = ProviderStatus(
             "launchd", "configured", True, "LaunchAgent has an active process"
@@ -572,8 +542,8 @@ class DashboardStatusTest(unittest.TestCase):
             {"healthy": False, "state": "unavailable", "detail": "launchctl ontbreekt"},
         )
 
-    @patch("engineering_platform.dashboard.LocalProcessProvider")
-    @patch("engineering_platform.dashboard.shutil.which", return_value="/usr/sbin/lsof")
+    @patch("engineering_platform.server_console_services.LocalProcessProvider")
+    @patch("engineering_platform.server_console_services.shutil.which", return_value="/usr/sbin/lsof")
     def test_workspace_git_lock_only_becomes_recoverable_when_lsof_proves_it_stale(
         self, which: object, process_provider: object
     ) -> None:
@@ -608,7 +578,7 @@ class DashboardStatusTest(unittest.TestCase):
             self.assertEqual(unavailable["state"], "active")
             self.assertFalse(unavailable["stale"])
 
-    @patch("engineering_platform.dashboard._workspace_git_lock", return_value={"state": "stale", "stale": True})
+    @patch("engineering_platform.server_console_services._workspace_git_lock", return_value={"state": "stale", "stale": True})
     def test_stale_workspace_git_lock_recovery_removes_only_confirmed_lock(self, lock_state: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -621,8 +591,8 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertFalse(lock.exists())
 
-    @patch("engineering_platform.dashboard.GitProvider")
-    @patch("engineering_platform.dashboard._safe_worktree_removal_candidates")
+    @patch("engineering_platform.server_console_services.GitProvider")
+    @patch("engineering_platform.server_console_services._safe_worktree_removal_candidates")
     def test_safe_worktree_removal_removes_only_the_reviewed_worktree(
         self, candidates: object, git_provider: object
     ) -> None:
@@ -646,8 +616,8 @@ class DashboardStatusTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "kon niet veilig worden verwijderd"):
                 dashboard._remove_safe_worktree(root, str(Path(temporary) / "missing"), selected["branch"])
 
-    @patch("engineering_platform.dashboard.GitProvider")
-    @patch("engineering_platform.dashboard._safe_worktree_removal_candidates")
+    @patch("engineering_platform.server_console_services.GitProvider")
+    @patch("engineering_platform.server_console_services._safe_worktree_removal_candidates")
     def test_safe_worktree_removal_accepts_only_the_reviewed_detached_head(
         self, candidates: object, git_provider: object
     ) -> None:
@@ -666,9 +636,9 @@ class DashboardStatusTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "controle is gewijzigd"):
                 dashboard._remove_safe_worktree(root, selected["path"], head="other-head")
 
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.PlatformConfiguration.load")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_safe_worktree_removal_candidates_require_clean_synced_main_and_stale_worktree(
         self, git_provider: object, github_provider: object, configuration: object
     ) -> None:
@@ -703,9 +673,9 @@ class DashboardStatusTest(unittest.TestCase):
             [{"path": "/worktrees/stale", "branch": "codex/stale"}],
         )
 
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.PlatformConfiguration.load")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_worktree_removal_analysis_accepts_a_verified_squash_merged_head(
         self, git_provider: object, github_provider: object, configuration: object
     ) -> None:
@@ -742,9 +712,9 @@ class DashboardStatusTest(unittest.TestCase):
             [{"path": "/worktrees/squash", "branch": "codex/squash"}],
         )
 
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.PlatformConfiguration.load")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_worktree_removal_analysis_explains_a_detached_head_in_an_open_pull_request(
         self, git_provider: object, github_provider: object, configuration: object
     ) -> None:
@@ -781,8 +751,8 @@ class DashboardStatusTest(unittest.TestCase):
             "pull_request": {"number": 969, "url": "https://github.com/pcvantol/djconnect/pull/969", "state": "OPEN"},
         }]})
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_detached_commit_evidence_prefers_a_verified_merged_pull_request(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -800,8 +770,8 @@ class DashboardStatusTest(unittest.TestCase):
             {"number": 2, "url": "https://example.test/pull/2", "state": "MERGED", "verified": True},
         )
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_detached_commit_evidence_keeps_an_open_pull_request_as_the_best_blocker(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -820,7 +790,7 @@ class DashboardStatusTest(unittest.TestCase):
             {"number": 2, "url": "https://example.test/pull/2", "state": "OPEN", "verified": False},
         )
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
     def test_detached_commit_evidence_fails_closed_for_an_invalid_github_response(self, github_provider: object) -> None:
         github_provider.return_value.github.return_value = "{}"
 
@@ -830,10 +800,10 @@ class DashboardStatusTest(unittest.TestCase):
             )
         )
 
-    @patch("engineering_platform.dashboard._github_pull_request_for_detached_commit", return_value=None)
-    @patch("engineering_platform.dashboard.PlatformConfiguration.load")
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services._github_pull_request_for_detached_commit", return_value=None)
+    @patch("engineering_platform.server_console_services.PlatformConfiguration.load")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_worktree_removal_analysis_accepts_a_clean_detached_commit_already_in_main(
         self, git_provider: object, github_provider: object, configuration: object, _: object
     ) -> None:
@@ -860,7 +830,7 @@ class DashboardStatusTest(unittest.TestCase):
             [{"path": "/worktrees/detached", "head": "a0496fea7ef1"}],
         )
 
-    @patch("engineering_platform.dashboard._workspace_worktrees")
+    @patch("engineering_platform.server_console_services._workspace_worktrees")
     def test_registered_worktree_path_rejects_invalid_and_ambiguous_selectors(self, worktrees: object) -> None:
         root = Path("/repository")
         with self.assertRaisesRegex(ValueError, "ongeldig"):
@@ -873,8 +843,8 @@ class DashboardStatusTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
             dashboard._registered_worktree_path(root, "/worktrees/duplicate", "codex/selected")
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_workspace_open_pull_requests_are_bounded_display_safe_context(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -974,8 +944,8 @@ class DashboardStatusTest(unittest.TestCase):
             {"author": {"login": "pcvantol"}, "state": "CHANGES_REQUESTED", "submittedAt": "2026-08-24T12:01:00Z"},
         ]}, "pcvantol"), "changes_requested")
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_owner_authorization_dispatches_only_current_qualified_high_risk_sha(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -1018,8 +988,8 @@ class DashboardStatusTest(unittest.TestCase):
             ],
         )
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_owner_authorization_refuses_incomplete_or_stale_github_evidence(
         self, git_provider: object, github_provider: object
     ) -> None:
@@ -1080,7 +1050,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(dashboard._normalize_rate_limits({"rateLimits": []}), {})
 
         dashboard._codex_identity_cache = None
-        with patch("engineering_platform.dashboard.codex_cli_executable", return_value=None):
+        with patch("engineering_platform.server_console_services.codex_cli_executable", return_value=None):
             self.assertEqual(
                 dashboard._codex_provider_identity(),
                 {"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"},
@@ -1093,9 +1063,9 @@ class DashboardStatusTest(unittest.TestCase):
         dashboard._codex_update_cache = None
 
         with (
-            patch("engineering_platform.dashboard.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
-            patch("engineering_platform.dashboard.codex_cli_executable", return_value="/managed/bin/codex"),
-            patch("engineering_platform.dashboard.LocalProcessProvider.execute", side_effect=[
+            patch("engineering_platform.server_console_services.shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+            patch("engineering_platform.server_console_services.codex_cli_executable", return_value="/managed/bin/codex"),
+            patch("engineering_platform.server_console_services.LocalProcessProvider.execute", side_effect=[
                 completed(("codex", "--version"), 0, "codex-cli 0.149.0", ""),
                 completed(("npm", "view"), 0, '"0.150.0"', ""),
             ]) as execute,
@@ -1106,15 +1076,15 @@ class DashboardStatusTest(unittest.TestCase):
             )
             self.assertEqual(execute.call_args_list[1].args[1], ("/usr/local/bin/npm", "view", "@openai/codex", "version", "--json"))
 
-        with patch("engineering_platform.dashboard.managed_codex_runtime.provision", return_value={"updated": True, "current_version": "0.150.0"}) as provision:
+        with patch("engineering_platform.server_console_services.managed_codex_runtime.provision", return_value={"updated": True, "current_version": "0.150.0"}) as provision:
             self.assertEqual(dashboard._install_codex_cli_update(root), {"updated": True, "current_version": "0.150.0"})
             provision.assert_called_once_with(root)
 
     def test_codex_cli_update_installation_is_blocked_during_an_active_execution(self) -> None:
         with patch(
-            "engineering_platform.dashboard._status",
+            "engineering_platform.server_console_services._status",
             return_value=b'{"watcher_state":"ENGINEERING_RUN_ACTIVE","run_id":"inbox-active"}',
-        ), patch("engineering_platform.dashboard._codex_cli_update_status") as check:
+        ), patch("engineering_platform.server_console_services._codex_cli_update_status") as check:
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_execution_active"):
                 dashboard._install_codex_cli_update(Path("/workspace"))
             check.assert_not_called()
@@ -1123,16 +1093,16 @@ class DashboardStatusTest(unittest.TestCase):
         root = Path("/workspace")
         dashboard._codex_update_cache = None
         with (
-            patch("engineering_platform.dashboard._codex_provider_identity", return_value={"provider_version": "not-a-version"}),
-            patch("engineering_platform.dashboard._npm_executable", return_value=None),
+            patch("engineering_platform.server_console_services._codex_provider_identity", return_value={"provider_version": "not-a-version"}),
+            patch("engineering_platform.server_console_services._npm_executable", return_value=None),
         ):
             self.assertEqual(
                 dashboard._codex_cli_update_status(root, refresh=True),
                 {"state": "unavailable", "update_available": False},
             )
 
-        with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard.managed_codex_runtime.provision",
+        with patch("engineering_platform.server_console_services._execution_active", return_value=False), patch(
+            "engineering_platform.server_console_services.managed_codex_runtime.provision",
             return_value={"updated": False, "current_version": "0.150.0"},
         ):
             self.assertEqual(
@@ -1140,15 +1110,15 @@ class DashboardStatusTest(unittest.TestCase):
                 {"updated": False, "current_version": "0.150.0"},
             )
 
-        with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard.managed_codex_runtime.provision",
+        with patch("engineering_platform.server_console_services._execution_active", return_value=False), patch(
+            "engineering_platform.server_console_services.managed_codex_runtime.provision",
             side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_unavailable"),
         ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_unavailable"):
                 dashboard._install_codex_cli_update(root)
 
-        with patch("engineering_platform.dashboard._execution_active", return_value=False), patch(
-            "engineering_platform.dashboard.managed_codex_runtime.provision",
+        with patch("engineering_platform.server_console_services._execution_active", return_value=False), patch(
+            "engineering_platform.server_console_services.managed_codex_runtime.provision",
             side_effect=dashboard.managed_codex_runtime.ManagedCodexRuntimeError("codex_cli_update_permissions_required"),
         ):
             with self.assertRaisesRegex(dashboard.CodexCliUpdateError, "codex_cli_update_permissions_required"):
@@ -1156,24 +1126,19 @@ class DashboardStatusTest(unittest.TestCase):
 
     def test_component_processes_and_metrics_ignore_invalid_process_rows(self) -> None:
         self.assertEqual(dashboard._component_processes("unknown"), [])
-        with patch("engineering_platform.dashboard.subprocess.run", side_effect=OSError):
+        with patch("engineering_platform.server_console_services.subprocess.run", side_effect=OSError):
             self.assertEqual(dashboard._component_processes("dashboard"), [])
-        with patch("engineering_platform.dashboard.subprocess.run") as run:
+        with patch("engineering_platform.server_console_services.subprocess.run") as run:
             run.return_value = __import__("subprocess").CompletedProcess(
                 ("ps",),
                 0,
-                "bad\n1 x 3 dashboard.py\n2 4 5 python -m engineering_platform.dashboard run\n3 12 01:05 python -m engineering_platform.dashboard run\n4 32 00:20 python -m engineering_platform.dashboard /tmp/djconnect-dashboard-test-example\n",
+                "bad\n1 x 3 dashboard.py\n2 4 5 python -m engineering_platform.server_console_services run\n3 12 01:05 python -m engineering_platform.server_console_services run\n4 32 00:20 python -m engineering_platform.server_console_services /tmp/djconnect-dashboard-test-example\n",
                 "",
             )
-            self.assertEqual(
-                dashboard._component_processes("dashboard"),
-                [
-                    {"pid": 2, "memory_kib": 4, "uptime_seconds": 5},
-                    {"pid": 3, "memory_kib": 12, "uptime_seconds": 65},
-                ],
-            )
+            # The retired direct-dashboard process is no longer a component.
+            self.assertEqual(dashboard._component_processes("dashboard"), [])
         self.assertEqual(dashboard._process_elapsed_seconds("2-01:02:03"), 176_523)
-        with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.dashboard.subprocess.run") as run:
+        with tempfile.TemporaryDirectory() as temporary, patch("engineering_platform.server_console_services.subprocess.run") as run:
             root = Path(temporary)
             status = root / ".engineering" / "status"
             status.mkdir(parents=True)
@@ -1197,27 +1162,14 @@ class DashboardStatusTest(unittest.TestCase):
 
     def test_launch_agent_details_and_component_details_handle_unavailable_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
+            "engineering_platform.server_console_services.Path.home", return_value=Path(temporary)
         ):
             details = dashboard._launch_agent_details("com.example.missing")
         self.assertFalse(details["loaded"])
         self.assertEqual(details["program_arguments"], [])
-        with patch("engineering_platform.dashboard._platform_health", return_value={"components": {}}):
+        with patch("engineering_platform.server_console_services._platform_health", return_value={"components": {}}):
             with self.assertRaisesRegex(ValueError, "Onbekend Engineering Platform-onderdeel"):
                 dashboard._component_details(Path("/missing"), "missing")
-
-    def test_dashboard_launch_agent_discovers_its_module_from_the_selected_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
-        ):
-            repository = Path(temporary) / "project"
-            repository.mkdir()
-            rendered = dashboard.launch_agent(repository).read_text(encoding="utf-8")
-        self.assertIn(f"cd {repository} &amp;&amp; exec", rendered)
-        self.assertIn("-m engineering_platform.dashboard", rendered)
-        self.assertIn(f"<key>WorkingDirectory</key><string>{repository}</string>", rendered)
-        self.assertNotIn("-P", rendered)
-        self.assertNotIn("PYTHONPATH", rendered)
 
     def test_local_dashboard_supervisor_preserves_private_and_resilient_boundaries(self) -> None:
         source = package_path("dashboard_supervisor.swift").read_text(encoding="utf-8")
@@ -1303,7 +1255,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn("renderLegacyComponentLogs", script)
         self.assertNotIn("renderSortedComponentLogs", script)
         self.assertNotIn("renderPaginatedComponentLogs", script)
-        self.assertNotIn('id="logSort"', (Path(__file__).parents[2] / "src/engineering_platform/dashboard.py").read_text(encoding="utf-8"))
+        self.assertNotIn('id="logSort"', (Path(__file__).parents[2] / "src/engineering_platform/server_console_services.py").read_text(encoding="utf-8"))
 
     def test_codex_usage_is_shown_only_for_the_displayed_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1407,7 +1359,7 @@ class DashboardStatusTest(unittest.TestCase):
             {},
         )
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
     def test_github_rate_limit_status_only_reports_exhausted_or_explicit_limits(self, github_provider: object) -> None:
         github_provider.return_value.github.return_value = json.dumps({
             "resources": {"core": {"remaining": 0, "reset": 1_786_162_124}, "graphql": {"remaining": 4, "reset": 0}},
@@ -1420,9 +1372,9 @@ class DashboardStatusTest(unittest.TestCase):
         github_provider.return_value.github.side_effect = RuntimeError("authentication failed")
         self.assertEqual(dashboard._github_rate_limit_status(), {"limited": False})
 
-    @patch("engineering_platform.dashboard.subprocess.run")
-    @patch("engineering_platform.dashboard.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex-cli"))
-    @patch("engineering_platform.dashboard.codex_cli_executable", return_value="/managed/codex-cli/bin/codex")
+    @patch("engineering_platform.server_console_services.subprocess.run")
+    @patch("engineering_platform.server_console_services.engineering_platform_codex_cli_prefix", return_value=Path("/managed/codex-cli"))
+    @patch("engineering_platform.server_console_services.codex_cli_executable", return_value="/managed/codex-cli/bin/codex")
     def test_codex_provider_identity_includes_the_managed_cli_path(
         self, _: object, __: object, run: object
     ) -> None:
@@ -1506,11 +1458,11 @@ class DashboardStatusTest(unittest.TestCase):
 
         process = FakeProcess()
         with (
-            patch("engineering_platform.dashboard.subprocess.Popen", return_value=process),
-            patch("engineering_platform.dashboard.select.select", return_value=([process.stdout], [], [])),
+            patch("engineering_platform.server_console_services.subprocess.Popen", return_value=process),
+            patch("engineering_platform.server_console_services.select.select", return_value=([process.stdout], [], [])),
             patch("engineering_platform.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
-                "engineering_platform.dashboard._codex_provider_identity",
+                "engineering_platform.server_console_services._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "0.146.0"},
             ),
         ):
@@ -1540,10 +1492,10 @@ class DashboardStatusTest(unittest.TestCase):
 
         process = FakeProcess()
         with (
-            patch("engineering_platform.dashboard.subprocess.Popen", return_value=process),
+            patch("engineering_platform.server_console_services.subprocess.Popen", return_value=process),
             patch("engineering_platform.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
-                "engineering_platform.dashboard._codex_provider_identity",
+                "engineering_platform.server_console_services._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"},
             ),
         ):
@@ -1555,10 +1507,10 @@ class DashboardStatusTest(unittest.TestCase):
 
     def test_codex_rate_limits_fails_closed_when_app_server_cannot_start(self) -> None:
         with (
-            patch("engineering_platform.dashboard.subprocess.Popen", side_effect=OSError),
+            patch("engineering_platform.server_console_services.subprocess.Popen", side_effect=OSError),
             patch("engineering_platform.providers.codex_cli_executable", return_value="/managed/bin/codex"),
             patch(
-                "engineering_platform.dashboard._codex_provider_identity",
+                "engineering_platform.server_console_services._codex_provider_identity",
                 return_value={"provider": "Codex CLI", "provider_version": "versie niet beschikbaar"},
             ),
         ):
@@ -1604,8 +1556,8 @@ class DashboardStatusTest(unittest.TestCase):
 
         process = FakeProcess()
         with (
-            patch("engineering_platform.dashboard.subprocess.Popen", return_value=process),
-            patch("engineering_platform.dashboard.select.select", return_value=([process.stdout], [], [])),
+            patch("engineering_platform.server_console_services.subprocess.Popen", return_value=process),
+            patch("engineering_platform.server_console_services.select.select", return_value=([process.stdout], [], [])),
             patch("engineering_platform.providers.codex_cli_executable", return_value="/managed/bin/codex"),
         ):
             self.assertEqual(dashboard._consume_codex_rate_limit_reset_credit(), "reset")
@@ -1773,14 +1725,14 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn(b"\n", payload)
         self.assertEqual(json.loads(payload)["watcher_state"], "WATCHER_IDLE")
 
-    @patch("engineering_platform.dashboard.subprocess.run")
+    @patch("engineering_platform.server_console_services.subprocess.run")
     def test_tracked_file_count_counts_recursive_git_index_entries(self, run: object) -> None:
         run.return_value = __import__("subprocess").CompletedProcess(
-            ("git",), 0, b"README.md\0docs/guide.md\0src/engineering_platform/dashboard.py\0", b""
+            ("git",), 0, b"README.md\0docs/guide.md\0src/engineering_platform/server_console_services.py\0", b""
         )
         self.assertEqual(_tracked_file_count(Path("/workspace")), "3")
 
-    @patch("engineering_platform.dashboard._codex_rate_limits", return_value=b"{}")
+    @patch("engineering_platform.server_console_services._codex_rate_limits", return_value=b"{}")
     def test_sse_snapshot_contains_the_read_only_dashboard_projection(self, _: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / ".engineering" / "status"
@@ -1813,7 +1765,7 @@ class DashboardStatusTest(unittest.TestCase):
             (logs / "run.log").write_text("redacted diagnostic", encoding="utf-8")
             self.assertEqual(_latest_codex_log(Path(temporary)), b"redacted diagnostic")
 
-    @patch("engineering_platform.dashboard.subprocess.run")
+    @patch("engineering_platform.server_console_services.subprocess.run")
     def test_codex_process_metrics_ignore_unowned_codex_processes(self, run: object) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1959,7 +1911,7 @@ class DashboardStatusTest(unittest.TestCase):
         grammar widening cannot turn the report reader into path traversal.
         """
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.os.path.basename", return_value="other-run",
+            "engineering_platform.server_console_services.os.path.basename", return_value="other-run",
         ):
             root = Path(temporary)
             self.assertEqual(_report_analysis_for_run(root, "run-1"), b"")
@@ -1991,7 +1943,7 @@ class DashboardStatusTest(unittest.TestCase):
                 generated.write_text("## Analyseverwerking\n- Status: `processed`\n", encoding="utf-8")
                 return generated
 
-            with patch("engineering_platform.dashboard.analyze_terminal_report", side_effect=regenerate) as analyze:
+            with patch("engineering_platform.server_console_services.analyze_terminal_report", side_effect=regenerate) as analyze:
                 self.assertEqual(_retry_report_analysis(root, "inbox-retryable"), generated.read_bytes())
             analyze.assert_called_once_with(root, "inbox-retryable", report.resolve())
             self.assertEqual(_report_analysis_processing_status(root, "inbox-retryable"), "processed")
@@ -2046,8 +1998,8 @@ class DashboardStatusTest(unittest.TestCase):
             ])
             self.assertEqual(_prompt_history_detail(root, "../../other"), b"")
 
-    @patch("engineering_platform.dashboard.GitHubProvider")
-    @patch("engineering_platform.dashboard.GitProvider")
+    @patch("engineering_platform.server_console_services.GitHubProvider")
+    @patch("engineering_platform.server_console_services.GitProvider")
     def test_managed_pull_request_evidence_includes_verified_github_counts(
         self, git_provider: MagicMock, github_provider: MagicMock,
     ) -> None:
@@ -2315,7 +2267,7 @@ class DashboardStatusTest(unittest.TestCase):
                 {"phase": "REPAIR_AGENT", "observed_at": "not-a-date", "commit_sha": "not-a-sha", "description": "Unsafe"},
             ]
         }
-        with patch("engineering_platform.dashboard._canonical_checkpoint", return_value=checkpoint):
+        with patch("engineering_platform.server_console_services._canonical_checkpoint", return_value=checkpoint):
             timeline = dashboard._commit_timeline_for_run(Path("/workspace"), "inbox-commit-evidence")
 
         self.assertEqual([event["commit_sha"] for event in timeline], ["a" * 40, "b" * 40])
@@ -2404,8 +2356,8 @@ class DashboardStatusTest(unittest.TestCase):
                 )
             self.assertEqual(_component_log_versions(root)["inbox"], "sqlite:1:1")
 
-    @patch("engineering_platform.dashboard._component_uptime_seconds", side_effect=(122,))
-    @patch("engineering_platform.dashboard._launch_agent_health")
+    @patch("engineering_platform.server_console_services._component_uptime_seconds", side_effect=(122,))
+    @patch("engineering_platform.server_console_services._launch_agent_health")
     def test_platform_health_reports_only_the_dashboard_access_path(
         self, launch_agent_health: object, component_uptime: object
     ) -> None:
@@ -2428,7 +2380,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(health["components"]["dashboard_relay"]["uptime_seconds"], 122)
         component_uptime.assert_called_once_with("dashboard_relay")
 
-    @patch("engineering_platform.dashboard._component_processes")
+    @patch("engineering_platform.server_console_services._component_processes")
     def test_component_uptime_uses_the_longest_owned_process_lifetime(self, processes: object) -> None:
         processes.return_value = [
             {"pid": 10, "memory_kib": 100, "uptime_seconds": 20},
@@ -2437,9 +2389,6 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(_component_uptime_seconds("dashboard_relay"), 90)
         processes.return_value = []
         self.assertIsNone(_component_uptime_seconds("dashboard_relay"))
-
-    def test_dashboard_binds_only_loopback_and_delegates_tailnet_ingress_to_relay(self) -> None:
-        self.assertEqual(binding_addresses(), (LOOPBACK_ADDRESS,))
 
     def test_prompt_history_projection_is_private_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2450,7 +2399,7 @@ class DashboardStatusTest(unittest.TestCase):
     def test_prompt_history_and_detail_fail_closed_when_evidence_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch("engineering_platform.dashboard.prompt_history", side_effect=OSError("unavailable")):
+            with patch("engineering_platform.server_console_services.prompt_history", side_effect=OSError("unavailable")):
                 self.assertEqual(json.loads(_prompt_history(root)), {"runs": []})
 
             record_prompt_execution(
@@ -2488,7 +2437,7 @@ class DashboardStatusTest(unittest.TestCase):
             )
             connection = MagicMock()
             connection.execute.return_value.fetchone.return_value = (10, 20, 30)
-            with patch("engineering_platform.dashboard.open_storage", return_value=connection):
+            with patch("engineering_platform.server_console_services.open_storage", return_value=connection):
                 detail = json.loads(_prompt_history_detail(root, "inbox-evidence"))
             self.assertEqual(
                 detail["usage"],
@@ -2549,1040 +2498,14 @@ class DashboardStatusTest(unittest.TestCase):
             (status / "runner_process.json").write_text(
                 '{"run_id":"inbox-owned","pid":9,"process_group":8}', encoding="utf-8"
             )
-            with patch("engineering_platform.dashboard.subprocess.run") as run:
+            with patch("engineering_platform.server_console_services.subprocess.run") as run:
                 run.return_value = __import__("subprocess").CompletedProcess(
                     ("ps",), 0, "malformed\n10 8 invalid worker\n", ""
                 )
                 self.assertEqual(json.loads(_codex_process_metrics(root))["process_count"], 0)
-            with patch("engineering_platform.dashboard._platform_health", return_value={"components": {"dashboard_relay": {}}}):
+            with patch("engineering_platform.server_console_services._platform_health", return_value={"components": {"dashboard_relay": {}}}):
                 details = dashboard._component_details(root, "dashboard_relay")
             self.assertEqual(details["launchd"]["label"], dashboard.RELAY_LABEL)
             self.assertEqual(dashboard._process_elapsed_seconds("1:02"), 62)
             with self.assertRaises(ValueError):
                 dashboard._process_elapsed_seconds("1:2:3:4")
-
-    @contextmanager
-    def _dashboard_http_connection(
-        self, *, central_database: Path | None = None, central_project_id: str | None = None,
-    ):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            configuration = root / "src" / "engineering_platform"
-            configuration.mkdir(parents=True)
-            shutil.copyfile(
-                Path(__file__).parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_CONFIG.json",
-                configuration / "ENGINEERING_PLATFORM_CONFIG.json",
-            )
-            shutil.copyfile(
-                Path(__file__).parents[2] / "src/engineering_platform/ENGINEERING_PLATFORM_VERSION.json",
-                configuration / "ENGINEERING_PLATFORM_VERSION.json",
-            )
-            # Keep HTTP tests isolated from the managed checkout's persistent
-            # store: an intentionally deferred production migration must not
-            # cause the suite to activate or mutate that shared database.
-            with open_storage(root):
-                pass
-            server = dashboard.DashboardHTTPServer(
-                (LOOPBACK_ADDRESS, 0),
-                dashboard.handler(
-                    root, central_database=central_database, central_project_id=central_project_id,
-                ),
-            )
-            thread = Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            # The dashboard landing page reads the current Git and pull-request
-            # state.  On a busy CI runner that legitimate local work can exceed
-            # the short socket timeout, which made this integration check flaky.
-            connection = HTTPConnection(LOOPBACK_ADDRESS, server.server_port, timeout=10)
-            try:
-                yield root, connection
-            finally:
-                connection.close()
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=2)
-
-    def test_dashboard_emergency_recovery_passes_the_central_project_binding(self) -> None:
-        database = Path("/installation/engineering.db")
-        with self._dashboard_http_connection(
-            central_database=database, central_project_id="project-alpha",
-        ) as (root, connection), patch(
-            "engineering_platform.dashboard.execute_emergency_recovery",
-            return_value={"run_id": "inbox-abcdef12", "stopped": True, "rolled_back": True},
-        ) as recover:
-            connection.request(
-                "POST", "/api/execution-emergency-rollback",
-                body='{"run_id":"inbox-abcdef12"}', headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 202)
-            response.read()
-
-        recover.assert_called_once_with(
-            root, "inbox-abcdef12", central_database=database, project_id="project-alpha",
-        )
-
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_http_dashboard_status_routes(self, _open_pull_requests: object) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            for route, content_type in (
-                ("/", "text/html"),
-                ("/assets/operations-console/apple-touch-icon-dark.png", "image/png"),
-                ("/assets/operations-console/apple-touch-icon-light.png", "image/png"),
-                ("/favicon.ico", "image/png"),
-                ("/apple-touch-icon.png", "image/png"),
-                ("/apple-touch-icon-precomposed.png", "image/png"),
-                ("/api/status", "application/json"),
-                ("/api/build", "application/json"),
-                ("/api/health", "application/json"),
-                ("/api/components/dashboard/details", "application/json"),
-                ("/api/process-metrics", "application/json"),
-                ("/api/usage", "application/json"),
-                ("/api/commits", "application/json"),
-                ("/api/prompt-started", "application/json"),
-                ("/api/log/latest", "text/plain"),
-                ("/api/logs/inbox", "text/plain"),
-                ("/api/logs/dashboard", "text/plain"),
-                ("/api/log/current", "text/plain"),
-                ("/api/report/latest", "text/markdown"),
-            ):
-                connection.request("GET", route)
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertIn(content_type, response.getheader("Content-Type"))
-                self.assertEqual(response.getheader("Cache-Control"), "no-store")
-                response.read()
-
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_http_component_log_json_route_accepts_server_side_filters(
-        self, _open_pull_requests: object,
-    ) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            connection.request(
-                "GET",
-                "/api/logs/inbox?format=json&page=1&page_size=50"
-                "&start=2026-08-26T00%3A00%3A00.000Z"
-                "&end=2026-08-27T00%3A00%3A00.000Z&level=INFO",
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertIn("application/json", response.getheader("Content-Type"))
-            payload = json.loads(response.read())
-            self.assertEqual(payload["page"], 1)
-            self.assertEqual(payload["page_size"], 50)
-            self.assertIsInstance(payload["entries"], list)
-            self.assertIsInstance(payload["events"], list)
-            self.assertIsInstance(payload["total"], int)
-
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_http_component_log_json_route_rejects_an_end_before_start(
-        self, _open_pull_requests: object,
-    ) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            connection.request(
-                "GET",
-                "/api/logs/inbox?format=json"
-                "&start=2026-08-27T00%3A00%3A00.000Z"
-                "&end=2026-08-26T00%3A00%3A00.000Z",
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            self.assertIn("application/json", response.getheader("Content-Type"))
-            self.assertEqual(
-                json.loads(response.read()),
-                {"error": "Eindtijd van het logtijdvenster ligt vóór de begintijd."},
-            )
-
-    @patch("engineering_platform.dashboard._request_owner_authorization", return_value={"queued": True, "pull_request": 940})
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_http_owner_authorization_dispatch_uses_only_the_pull_request_number(
-        self, _open_pull_requests: object, request_authorization: object
-    ) -> None:
-        with self._dashboard_http_connection() as (root, connection):
-            connection.request(
-                "POST", "/api/open-pull-requests/940/owner-authorization",
-                body=b"{}", headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 202)
-            self.assertEqual(json.loads(response.read()), {"queued": True, "pull_request": 940})
-        request_authorization.assert_called_once_with(root, 940)
-
-    @patch("engineering_platform.dashboard.LocalProcessProvider")
-    @patch("engineering_platform.dashboard.admit_pr_check_repair", return_value={"head_sha": "a" * 40})
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_http_pr_check_repair_dispatches_only_an_admitted_exact_sha(
-        self, _open_pull_requests: object, admit: object, process: object
-    ) -> None:
-        with self._dashboard_http_connection() as (root, connection):
-            connection.request(
-                "POST", "/api/open-pull-requests/940/repair-failed-checks",
-                body=b"{}", headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 202)
-            self.assertEqual(json.loads(response.read()), {"queued": True, "pull_request": 940})
-        admit.assert_called_once_with(root, 940)
-        process.return_value.spawn_detached.assert_called_once()
-        arguments = process.return_value.spawn_detached.call_args.args[1]
-        self.assertIn("--pull-request", arguments)
-        self.assertIn("940", arguments)
-        self.assertIn("a" * 40, arguments)
-
-    def test_http_configuration_routes_preserve_the_server_side_safety_contract(self) -> None:
-        """Exercise successful configuration changes and their guarded counterparts."""
-        event = {"key": "log_retention_days", "previous": 90, "value": 30}
-        with self._dashboard_http_connection() as (root, connection), patch(
-            "engineering_platform.dashboard.update_dashboard_configuration", return_value=event
-        ) as update, patch(
-            "engineering_platform.dashboard.prune_component_logs"
-        ) as prune, patch(
-            "engineering_platform.dashboard.prune_telemetry"
-        ) as prune_telemetry, patch(
-            "engineering_platform.dashboard.log_event"
-        ):
-            connection.request(
-                "POST", "/api/configuration",
-                body=json.dumps({"key": "log_retention_days", "value": 30, "previous": 90}),
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read()), event)
-            update.assert_called_once_with(root, "log_retention_days", 30, expected_previous=90)
-            prune.assert_called_once_with(root, 30)
-
-            telemetry_event = {"key": "telemetry_retention_days", "previous": 90, "value": 60}
-            update.reset_mock()
-            update.return_value = telemetry_event
-            connection.request(
-                "POST", "/api/configuration",
-                body=json.dumps({"key": "telemetry_retention_days", "value": 60, "previous": 90}),
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read()), telemetry_event)
-            update.assert_called_once_with(root, "telemetry_retention_days", 60, expected_previous=90)
-            prune_telemetry.assert_called_once_with(root, 60)
-
-            connection.request(
-                "POST", "/api/configuration", body=b"{}",
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            self.assertEqual(json.loads(response.read()), {"error": "Ongeldige dashboardinstelling."})
-
-    def test_http_configuration_refuses_unsafe_codex_capacity_reserve_increases(self) -> None:
-        settings = {"codex_capacity_reserve_percent": 0}
-
-        def update_reserve(_root: Path, key: str, value: int, *, expected_previous: int) -> dict[str, object]:
-            self.assertEqual(key, "codex_capacity_reserve_percent")
-            self.assertEqual(expected_previous, settings[key])
-            previous = settings[key]
-            settings[key] = value
-            return {"key": key, "previous": previous, "value": value}
-
-        with self._dashboard_http_connection() as (_, connection), patch(
-            "engineering_platform.dashboard.dashboard_configuration", return_value=settings,
-        ), patch("engineering_platform.dashboard.update_dashboard_configuration", side_effect=update_reserve):
-            with patch("engineering_platform.dashboard.read_remaining_percent", return_value=47):
-                connection.request(
-                    "POST", "/api/configuration",
-                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 50, "previous": 0}),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {
-                    "error_code": "codex_capacity_reserve_exceeds_remaining",
-                    "value": 0,
-                    "remaining_percent": 47,
-                })
-
-                connection.request(
-                    "POST", "/api/configuration",
-                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 25, "previous": 0}),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read())["value"], 25)
-
-            with patch("engineering_platform.dashboard.read_remaining_percent", return_value=None):
-                connection.request(
-                    "POST", "/api/configuration",
-                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 75, "previous": 25}),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {
-                    "error_code": "codex_capacity_reserve_unavailable",
-                    "value": 25,
-                    "remaining_percent": None,
-                })
-
-                connection.request(
-                    "POST", "/api/configuration",
-                    body=json.dumps({"key": "codex_capacity_reserve_percent", "value": 20, "previous": 25}),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read())["value"], 20)
-
-    def test_http_direct_dashboard_rejects_retired_watcher_and_workspace_routes(self) -> None:
-        """The retired handler cannot reintroduce watcher or root authority."""
-        retired_routes = (
-            "/api/queue-recovery",
-            "/api/predecessor-retry",
-            "/api/managed-branch-recovery",
-            "/api/managed-branch-synchronization",
-            "/api/workspace-switch-to-main",
-            "/api/workspace-switch-to-worktree",
-            "/api/execution-retry",
-            "/api/status-reconciliation",
-            "/api/execution-merge-wait-abort",
-            "/api/queue-defer",
-            "/api/provider-login/repair",
-            "/api/provider-login/logout",
-            "/api/execution-runtime/repair",
-            "/api/components/dashboard_relay/restart",
-        )
-        with self._dashboard_http_connection() as (_, connection):
-            for path in retired_routes:
-                connection.request("POST", path, body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 404, path)
-                response.read()
-
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=[])
-    def test_dashboard_document_never_exposes_a_saved_legacy_inbox_location(
-        self, _open_pull_requests: object
-    ) -> None:
-        first = Path("/private/engineering/first")
-        second = Path("/private/engineering/second")
-        with patch(
-            "engineering_platform.platform_api.configured_inbox_root", return_value=first
-        ) as configured_inbox:
-            with self._dashboard_http_connection() as (_, connection):
-                connection.request("GET", "/")
-                first_page = connection.getresponse().read().decode("utf-8")
-                self.assertNotIn(f"{first}/Inbox", first_page)
-
-                configured_inbox.return_value = second
-                connection.request("GET", "/")
-                second_page = connection.getresponse().read().decode("utf-8")
-                self.assertNotIn(f"{second}/Inbox", second_page)
-                self.assertNotIn(f"{first}/Inbox", second_page)
-
-    @patch("engineering_platform.dashboard._workspace_open_pull_requests", return_value=None)
-    def test_http_open_pull_requests_keeps_unknown_github_state_distinct_from_an_empty_list(
-        self, _open_pull_requests: object
-    ) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            connection.request("GET", "/api/open-pull-requests")
-            response = connection.getresponse()
-            self.assertEqual(response.status, 503)
-            self.assertEqual(
-                json.loads(response.read()),
-                {"error": "GitHub pull-requeststatus is tijdelijk niet beschikbaar."},
-            )
-
-    def test_http_read_only_evidence_and_telemetry_routes_keep_response_contracts(self) -> None:
-        with ExitStack() as patches:
-            patches.enter_context(patch("engineering_platform.dashboard._prompt_history_detail", return_value=b'{"run_id":"run-1"}'))
-            patches.enter_context(patch("engineering_platform.dashboard.report_for_prompt_history", return_value=b"# report\n"))
-            patches.enter_context(patch("engineering_platform.dashboard._report_analysis_for_run", return_value=b"# analysis\n"))
-            patches.enter_context(patch("engineering_platform.dashboard._github_rate_limit_status", return_value={"state": "ok"}))
-            patches.enter_context(patch("engineering_platform.dashboard._codex_cli_update_status", return_value={"state": "current"}))
-            patches.enter_context(patch("engineering_platform.dashboard.daily_timing_detail", return_value={"date": "2026-08-25"}))
-            patches.enter_context(patch("engineering_platform.dashboard._component_details", return_value={"component": "dashboard"}))
-            patches.enter_context(patch("engineering_platform.dashboard.log_event"))
-            with self._dashboard_http_connection() as (_, connection):
-                for route, content_type in (
-                    ("/api/prompt-history/run-1/details", "application/json"),
-                    ("/api/prompt-history/run-1/report?audit=download", "text/markdown"),
-                    ("/api/prompt-history/run-1/analysis?audit=download", "text/markdown"),
-                    ("/api/github-rate-limit", "application/json"),
-                    ("/api/codex-cli-update", "application/json"),
-                    ("/api/telemetry/2026-08-25", "application/json"),
-                    ("/api/components/dashboard/details", "application/json"),
-                ):
-                    connection.request("GET", route)
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 200, route)
-                    self.assertIn(content_type, response.getheader("Content-Type"))
-                    response.read()
-
-    def test_http_read_only_evidence_routes_return_explicit_not_found_or_invalid_responses(self) -> None:
-        with self._dashboard_http_connection() as (_, connection), patch(
-            "engineering_platform.dashboard._prompt_history_detail", return_value=b""
-        ), patch(
-            "engineering_platform.dashboard.report_for_prompt_history", return_value=None
-        ), patch(
-            "engineering_platform.dashboard._report_analysis_for_run", return_value=b""
-        ), patch(
-            "engineering_platform.dashboard.daily_timing_detail", side_effect=ValueError("bad date")
-        ), patch(
-            "engineering_platform.dashboard._component_details", side_effect=ValueError("unknown")
-        ):
-            for route, expected_status in (
-                ("/api/prompt-history/missing/details", 404),
-                ("/api/prompt-history/missing/report", 404),
-                ("/api/prompt-history/missing/analysis", 404),
-                ("/api/telemetry/nope", 400),
-                ("/api/components/nope/details", 404),
-                ("/api/engineering-database/download", 404),
-            ):
-                connection.request("GET", route)
-                response = connection.getresponse()
-                self.assertEqual(response.status, expected_status, route)
-                response.read()
-
-    def test_http_report_analysis_retry_is_bound_to_its_controlled_retry_route(self) -> None:
-        with self._dashboard_http_connection() as (_, connection), patch(
-            "engineering_platform.dashboard._retry_report_analysis",
-            return_value=b"## Analyseverwerking\n- Status: `processed`\n",
-        ) as retry:
-            connection.request(
-                "POST",
-                "/api/prompt-history/inbox-retry/analysis-retry",
-                body=b"{}",
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertIn("text/markdown", response.getheader("Content-Type"))
-            self.assertIn(b"processed", response.read())
-        retry.assert_called_once()
-
-        with self._dashboard_http_connection() as (_, connection), patch(
-            "engineering_platform.dashboard._retry_report_analysis",
-            side_effect=ValueError("Deze AI-analyse hoeft niet opnieuw te worden gegenereerd."),
-        ):
-            connection.request(
-                "POST",
-                "/api/prompt-history/inbox-retry/analysis-retry",
-                body=b"{}",
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 409)
-            self.assertIn("hoeft niet opnieuw", json.loads(response.read())["error"])
-
-    def test_http_codex_cli_update_routes_only_install_after_post(self) -> None:
-        with self._dashboard_http_connection() as (_, connection), patch(
-            "engineering_platform.dashboard._codex_cli_update_status",
-            return_value={"state": "update_available", "update_available": True, "current_version": "0.149.0", "latest_version": "0.150.0"},
-        ) as check, patch(
-            "engineering_platform.dashboard._install_codex_cli_update",
-            return_value={"updated": True, "current_version": "0.150.0"},
-        ) as install:
-            connection.request("GET", "/api/codex-cli-update")
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read())["latest_version"], "0.150.0")
-            check.assert_called_once()
-            install.assert_not_called()
-            connection.request("POST", "/api/codex-cli-update", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read()), {"updated": True, "current_version": "0.150.0"})
-            install.assert_called_once()
-            with patch("engineering_platform.dashboard._codex_rate_limits", return_value=b"{}"):
-                connection.request("GET", "/api/dashboard-snapshot")
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertIn("application/json", response.getheader("Content-Type"))
-                self.assertEqual(response.getheader("Cache-Control"), "no-store")
-                snapshot = json.loads(response.read())
-                self.assertIn("status", snapshot)
-                self.assertIn("rate_limits", snapshot)
-            with patch(
-                "engineering_platform.dashboard._platform_health",
-                return_value={"health": "ok", "healthy": True, "components": {}},
-            ):
-                connection.request("GET", "/health")
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read())["health"], "ok")
-            connection.request("GET", "/missing")
-            response = connection.getresponse()
-            self.assertEqual(response.status, 404)
-            response.read()
-
-    def test_http_codex_cli_update_rejects_invalid_requests_and_reports_update_errors(self) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            connection.request("POST", "/api/codex-cli-update", body="[]", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            self.assertEqual(json.loads(response.read()), {"error": "invalid_request"})
-
-            with patch(
-                "engineering_platform.dashboard._install_codex_cli_update",
-                side_effect=dashboard.CodexCliUpdateError("codex_cli_update_execution_active"),
-            ):
-                connection.request("POST", "/api/codex-cli-update", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(
-                    json.loads(response.read()),
-                    {"error": "codex_cli_update_execution_active"},
-                )
-
-    def test_http_dashboard_history_routes(self) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            connection.request("GET", "/api/prompt-history")
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertIn("application/json", response.getheader("Content-Type"))
-            self.assertEqual(response.getheader("Cache-Control"), "no-store")
-            response.read()
-            for route in (
-                "/api/report/last-executed?run_id=invalid",
-                "/api/report-analysis/last-executed?run_id=invalid",
-                "/api/usage/last-executed?run_id=invalid",
-                "/api/commits/last-executed",
-                "/api/log/last",
-            ):
-                connection.request("GET", route)
-                response = connection.getresponse()
-                self.assertEqual(response.status, 404)
-                response.read()
-
-    def test_http_direct_dashboard_transitional_operations_have_bounded_contracts(self) -> None:
-        """Exercise still-shipped direct-handler operations until their Server successors land.
-
-        These are deliberately real HTTP calls against the handler, with the
-        destructive implementation boundary mocked.  That keeps the current
-        compatibility surface covered without granting a test fixture local
-        execution or storage authority.
-        """
-        with self._dashboard_http_connection() as (root, connection):
-            def post(path: str, body: str = "{}") -> tuple[int, object]:
-                connection.request(
-                    "POST", path, body=body, headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                return response.status, json.loads(response.read())
-
-            with (
-                patch(
-                    "engineering_platform.dashboard.clear_telemetry",
-                    return_value={"execution_runs": 3, "daily_statistics": 2},
-                ) as clear_telemetry,
-                patch("engineering_platform.dashboard.log_event"),
-            ):
-                status, payload = post("/api/telemetry/clear")
-                self.assertEqual(status, 200)
-                self.assertEqual(payload, {"cleared": True, "execution_runs": 3, "daily_statistics": 2})
-                clear_telemetry.assert_called_once_with(root)
-
-            with (
-                patch(
-                    "engineering_platform.dashboard._consume_codex_rate_limit_reset_credit",
-                    return_value="reset",
-                ),
-                patch("engineering_platform.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
-                patch("engineering_platform.dashboard.log_event"),
-            ):
-                status, payload = post("/api/rate-limit-reset")
-                self.assertEqual(status, 200)
-                self.assertEqual(payload, {"outcome": "reset", "rate_limits": {"reset_credits": 1}})
-
-            with patch("engineering_platform.dashboard.log_event") as audit_log:
-                status, payload = post("/api/audit/user-action", '{"action":"chat_downloaded"}')
-                self.assertEqual(status, 200)
-                self.assertEqual(payload, {"logged": True})
-                audit_log.assert_any_call(ANY, logging.INFO, "chat_downloaded")
-
-            with patch(
-                "engineering_platform.dashboard._recover_stale_workspace_git_lock",
-                return_value={"recovered": True},
-            ):
-                status, payload = post("/api/stale-git-lock-recovery")
-                self.assertEqual(status, 202)
-                self.assertEqual(payload, {"recovered": True})
-
-            removal = {"removed_worktree": "/worktrees/stale", "branch": "codex/stale"}
-            with patch("engineering_platform.dashboard._remove_safe_worktree", return_value=removal) as remove:
-                status, payload = post(
-                    "/api/safe-worktree-removal",
-                    '{"worktree_path":"/worktrees/stale","branch":"codex/stale"}',
-                )
-                self.assertEqual(status, 202)
-                self.assertEqual(payload, removal)
-                remove.assert_called_once_with(root, "/worktrees/stale", "codex/stale")
-
-            with patch(
-                "engineering_platform.dashboard._open_worktree_in_finder",
-                return_value={"opened_worktree": "/worktrees/stale"},
-            ):
-                status, payload = post("/api/open-worktree-folder", '{"worktree_path":"/worktrees/stale"}')
-                self.assertEqual(status, 202)
-                self.assertEqual(payload, {"opened_worktree": "/worktrees/stale"})
-
-            with patch(
-                "engineering_platform.dashboard._open_local_directory_in_finder",
-                return_value={"opened_directory": "/repository"},
-            ):
-                status, payload = post("/api/open-local-directory", '{"directory_path":"/repository"}')
-                self.assertEqual(status, 202)
-                self.assertEqual(payload, {"opened_directory": "/repository"})
-
-    def _retired_http_dashboard_operator_routes(self) -> None:
-        """Historical direct-handler contracts retained only pending file split.
-
-        These root-bound controls have no supported route after P-TRANSPORT;
-        their executable regression is the negative route guard above.  This
-        helper is deliberately not a unittest case while the remaining
-        presentation-only direct-handler tests are split out for deletion.
-        """
-        with self._dashboard_http_connection() as (root, connection):
-            with (
-                patch("engineering_platform.dashboard.clear_telemetry", return_value={"execution_runs": 3, "daily_statistics": 2}) as clear_telemetry,
-                patch("engineering_platform.dashboard.log_event"),
-            ):
-                connection.request("POST", "/api/telemetry/clear", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(
-                    json.loads(response.read()),
-                    {"cleared": True, "execution_runs": 3, "daily_statistics": 2},
-                )
-                clear_telemetry.assert_called_once_with(root)
-            connection.request("POST", "/api/telemetry/clear", body="[]", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            with (
-                patch("engineering_platform.dashboard._clear_component_log") as clear_log,
-                patch("engineering_platform.dashboard.log_event"),
-            ):
-                connection.request("POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"cleared": "inbox"})
-                clear_log.assert_called_once_with(root, "inbox")
-            for route, body in (("/api/logs/not-a-component", "{}"), ("/api/logs/inbox", "[]")):
-                connection.request("POST", route, body=body, headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 400)
-                response.read()
-            connection.request("POST", "/api/components/inbox_watcher/restart", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            connection.request("POST", "/api/components/unknown_component/restart", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            with (
-                patch("engineering_platform.dashboard._consume_codex_rate_limit_reset_credit", return_value="reset"),
-                patch("engineering_platform.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
-                patch("engineering_platform.dashboard.log_event") as reset_log_event,
-            ):
-                connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"outcome": "reset", "rate_limits": {"reset_credits": 1}})
-                reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_completed", diagnostic="outcome=reset")
-            for outcome in ("nothingToReset", "noCredit", "alreadyRedeemed"):
-                with (
-                    patch("engineering_platform.dashboard._consume_codex_rate_limit_reset_credit", return_value=outcome),
-                    patch("engineering_platform.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
-                    patch("engineering_platform.dashboard.log_event") as reset_log_event,
-                ):
-                    connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 409)
-                    self.assertEqual(json.loads(response.read()), {"outcome": outcome, "rate_limits": {"reset_credits": 1}})
-                    reset_log_event.assert_any_call(ANY, logging.INFO, "ai_usage_reset_not_consumed", diagnostic=f"outcome={outcome}")
-            with patch("engineering_platform.dashboard.log_event") as audit_log_event:
-                connection.request("POST", "/api/audit/user-action", body='{"action":"chat_downloaded"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"logged": True})
-                audit_log_event.assert_any_call(ANY, logging.INFO, "chat_downloaded")
-            dashboard.update_dashboard_configuration(root, "log_level", "INFO")
-            connection.request("POST", "/api/configuration", body='{"key":"log_level","value":"DEBUG","previous":"INFO"}', headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read())["value"], "DEBUG")
-            connection.request("POST", "/api/configuration", body='{"key":"log_level","value":"INFO","previous":"DEBUG"}', headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            response.read()
-            connection.request("POST", "/api/configuration", body='{"key":"log_level","value":"DEBUG","previous":"DEBUG"}', headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 409)
-            self.assertEqual(json.loads(response.read())["value"], "INFO")
-            connection.request("POST", "/api/configuration", body='{"key":"unknown","value":1,"previous":1}', headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            connection.request(
-                "POST", "/api/configuration/inbox-location",
-                body=json.dumps({"inbox_root": "/private/retired"}),
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            self.assertEqual(response.status, 404)
-            response.read()
-            with patch("engineering_platform.dashboard._recover_stale_workspace_git_lock", return_value={"recovered": True}):
-                connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), {"recovered": True})
-            with patch("engineering_platform.dashboard._recover_stale_workspace_git_lock", side_effect=RuntimeError("active")):
-                connection.request("POST", "/api/stale-git-lock-recovery", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "De Git-vergrendeling is niet veilig herstelbaar."})
-            with patch("engineering_platform.dashboard._remove_safe_worktree", return_value={"removed_worktree": "/worktrees/stale", "branch": "codex/stale", "branch_pending_cleanup": True}) as remove:
-                connection.request("POST", "/api/safe-worktree-removal", body='{"worktree_path":"/worktrees/stale","branch":"codex/stale"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read())["branch"], "codex/stale")
-                remove.assert_called_once_with(root, "/worktrees/stale", "codex/stale")
-            with patch("engineering_platform.dashboard._open_worktree_in_finder", return_value={"opened_worktree": "/worktrees/stale"}) as open_folder:
-                connection.request("POST", "/api/open-worktree-folder", body='{"worktree_path":"/worktrees/stale"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), {"opened_worktree": "/worktrees/stale"})
-                open_folder.assert_called_once_with(root, "/worktrees/stale")
-            with patch("engineering_platform.dashboard._open_local_directory_in_finder", return_value={"opened_directory": "/repository"}) as open_folder:
-                connection.request("POST", "/api/open-local-directory", body='{"directory_path":"/repository"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), {"opened_directory": "/repository"})
-                open_folder.assert_called_once_with(root, "/repository")
-            execution_retry_outcome = {"retry_of": "inbox-blocked", "original_run_id": "inbox-blocked", "retry_generation": 1, "retry_timestamp": "2026-08-03T12:00:00+00:00", "filename": "retry-inbox-blocked.md", "retry_run_id": "inbox-retry"}
-            with (
-                patch("engineering_platform.dashboard.cloud_root", return_value=root),
-                patch("engineering_platform.dashboard.retry_admission_preflight") as retry_preflight,
-                patch("engineering_platform.dashboard.submit_execution_retry", return_value=execution_retry_outcome) as submit_execution_retry,
-                patch("engineering_platform.dashboard.log_event") as execution_retry_log,
-            ):
-                connection.request("POST", "/api/execution-retry", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), execution_retry_outcome)
-                retry_preflight.assert_called_once_with(root, "inbox-blocked")
-                submit_execution_retry.assert_called_once_with(root, root, "inbox-blocked")
-                execution_retry_log.assert_any_call(ANY, logging.INFO, "execution_retry_triggered", run_id="inbox-blocked", diagnostic="retry_run_id=inbox-retry")
-            with (
-                patch("engineering_platform.dashboard.retry_admission_preflight", side_effect=dashboard.RetrySubmissionError("Preflight mislukt: Git kan geen index-lock aanmaken.")),
-                patch("engineering_platform.dashboard.submit_execution_retry") as submit_execution_retry,
-            ):
-                connection.request("POST", "/api/execution-retry", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Preflight mislukt: Git kan geen index-lock aanmaken."})
-                submit_execution_retry.assert_not_called()
-            connection.request("POST", "/api/execution-retry", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            reconciliation_preview = {"run_id": "inbox-status-drift", "reason": "merged_status_records_stale"}
-            with patch("engineering_platform.dashboard.status_reconciliation_preview", return_value=reconciliation_preview) as preview:
-                connection.request("POST", "/api/status-reconciliation-preview", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), reconciliation_preview)
-                preview.assert_called_once_with(root, "inbox-status-drift")
-            with patch("engineering_platform.dashboard.status_reconciliation_preview", side_effect=dashboard.RetrySubmissionError("Geen veilige statusreconciliatie.")):
-                connection.request("POST", "/api/status-reconciliation-preview", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Geen veilige statusreconciliatie."})
-            reconciliation_outcome = {**reconciliation_preview, "filename": "status-reconciliation-inbox-status-drift.md"}
-            with (
-                patch("engineering_platform.dashboard.cloud_root", return_value=root),
-                patch("engineering_platform.dashboard.submit_status_reconciliation", return_value=reconciliation_outcome) as submit_reconciliation,
-                patch("engineering_platform.dashboard.log_event") as reconciliation_log,
-            ):
-                connection.request("POST", "/api/status-reconciliation", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), reconciliation_outcome)
-                submit_reconciliation.assert_called_once_with(root, root, "inbox-status-drift")
-                reconciliation_log.assert_any_call(ANY, logging.INFO, "status_reconciliation_requested", run_id="inbox-status-drift")
-            with patch("engineering_platform.dashboard.submit_status_reconciliation", side_effect=dashboard.RetrySubmissionError("Statusherstel is niet beschikbaar.")):
-                connection.request("POST", "/api/status-reconciliation", body='{"run_id":"inbox-status-drift"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Statusherstel is niet beschikbaar."})
-            connection.request("POST", "/api/status-reconciliation", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 409)
-            response.read()
-            deferred = {"filename": "later.md", "deferred_filename": "later.md", "deferred_at": "2026-08-07T16:00:00+00:00"}
-            with (
-                patch("engineering_platform.dashboard.cloud_root", return_value=root),
-                patch("engineering_platform.dashboard.defer_queued_prompt", return_value=deferred) as defer_prompt,
-                patch("engineering_platform.dashboard.log_event") as defer_log_event,
-            ):
-                connection.request("POST", "/api/queue-defer", body='{"filename":"later.md"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), deferred)
-                defer_prompt.assert_called_once_with(root, root, "later.md")
-                defer_log_event.assert_any_call(ANY, logging.INFO, "queue_item_deferred", diagnostic="filename=later.md; deferred_filename=later.md")
-            for body in ("{}", "[]", '{"filename":1}', '{"filename":"later.md","extra":true}'):
-                connection.request("POST", "/api/queue-defer", body=body, headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 400)
-                response.read()
-            dismissal = {"run_id": "inbox-blocked", "dismissed": True, "dismissed_at": "2026-08-03T12:01:00+00:00", "dismissed_by": "dashboard_operator"}
-            with (
-                patch("engineering_platform.dashboard.dismiss_execution", return_value=dismissal) as dismiss,
-                patch("engineering_platform.dashboard.log_event") as dismiss_log_event,
-            ):
-                connection.request("POST", "/api/execution-dismiss", body='{"run_id":"inbox-blocked"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), dismissal)
-                dismiss.assert_called_once_with(root, "inbox-blocked")
-                dismiss_log_event.assert_any_call(ANY, logging.INFO, "execution_dismissed", run_id="inbox-blocked")
-            with patch("engineering_platform.dashboard.dismiss_execution", side_effect=dashboard.RetrySubmissionError("De uitvoering is nog actief.")):
-                connection.request("POST", "/api/execution-dismiss", body='{"run_id":"inbox-active"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "De uitvoering is nog actief."})
-            for body in ("{}", "[]", '{"run_id":1}', '{"run_id":"inbox-blocked","extra":true}'):
-                connection.request("POST", "/api/execution-dismiss", body=body, headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 400)
-                self.assertEqual(json.loads(response.read()), {"error": "De uitvoering kan nu niet veilig worden bevestigd."})
-            aborted = {"run_id": "inbox-merge-wait", "dismissed": True}
-            with (
-                patch("engineering_platform.dashboard.abort_operator_merge_wait", return_value=aborted) as abort,
-                patch("engineering_platform.dashboard.log_event") as abort_log_event,
-            ):
-                connection.request("POST", "/api/execution-merge-wait-abort", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), aborted)
-                abort.assert_called_once_with(root, "inbox-merge-wait")
-                abort_log_event.assert_any_call(ANY, logging.INFO, "operator_merge_wait_aborted", run_id="inbox-merge-wait")
-            with patch("engineering_platform.dashboard.abort_operator_merge_wait", side_effect=dashboard.RetrySubmissionError("Deze uitvoering wacht niet op een pull request-merge.")):
-                connection.request("POST", "/api/execution-merge-wait-abort", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Deze uitvoering wacht niet op een pull request-merge."})
-            for body in ("{}", "[]", '{"run_id":1}', '{"run_id":"inbox-merge-wait","extra":true}'):
-                connection.request("POST", "/api/execution-merge-wait-abort", body=body, headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 400)
-                self.assertEqual(json.loads(response.read()), {"error": "De wachtende uitvoering kon niet veilig worden afgebroken."})
-            emergency_outcome = {"run_id": "inbox-emergency", "stopped": True, "rolled_back": True}
-            with (
-                patch("engineering_platform.dashboard.execute_emergency_recovery", return_value=emergency_outcome) as emergency,
-                patch("engineering_platform.dashboard.log_event") as emergency_log,
-            ):
-                connection.request("POST", "/api/execution-emergency-rollback", body='{"run_id":"inbox-emergency"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read()), emergency_outcome)
-                emergency.assert_called_once_with(root, "inbox-emergency")
-                emergency_log.assert_any_call(ANY, logging.WARNING, "execution_emergency_rollback_completed", run_id="inbox-emergency")
-            with patch("engineering_platform.dashboard.execute_emergency_recovery", side_effect=dashboard.EmergencyRecoveryError("De host is niet veilig identificeerbaar.")):
-                connection.request("POST", "/api/execution-emergency-rollback", body='{"run_id":"inbox-emergency"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "De host is niet veilig identificeerbaar."})
-            with (
-                patch("engineering_platform.dashboard.check_operator_merge_status", return_value={"verified": True, "continuation": "scheduled", "pull_request": 915}) as check,
-                patch("engineering_platform.dashboard.log_event") as check_log_event,
-            ):
-                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 202)
-                self.assertEqual(json.loads(response.read())["continuation"], "scheduled")
-                check.assert_called_once_with(root, "inbox-merge-wait")
-                check_log_event.assert_any_call(ANY, logging.INFO, "operator_merge_status_checked", run_id="inbox-merge-wait", diagnostic="scheduled")
-            with patch("engineering_platform.dashboard.check_operator_merge_status", return_value={"verified": False, "reason": "pull_request_not_merged", "pull_request": 915}):
-                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read())["reason"], "pull_request_not_merged")
-            with patch("engineering_platform.dashboard.check_operator_merge_status", side_effect=dashboard.RetrySubmissionError("Ongeldige run-ID.")):
-                connection.request("POST", "/api/execution-merge-status-check", body='{"run_id":"inbox-merge-wait"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 409)
-                self.assertEqual(json.loads(response.read()), {"error": "Ongeldige run-ID."})
-            connection.request("POST", "/api/execution-merge-status-check", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            self.assertEqual(json.loads(response.read()), {"error": "De pull request-status kon niet veilig worden gecontroleerd."})
-            connection.request("POST", "/api/rate-limit-reset", body="[]", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            with (
-                patch("engineering_platform.dashboard._consume_codex_rate_limit_reset_credit", side_effect=dashboard.RateLimitResetError("Reset niet beschikbaar.")),
-                patch("engineering_platform.dashboard.log_event") as reset_failure_log_event,
-            ):
-                connection.request("POST", "/api/rate-limit-reset", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 503)
-                response.read()
-                reset_failure_log_event.assert_any_call(ANY, logging.WARNING, "ai_usage_reset_failed", diagnostic="Reset niet beschikbaar.")
-            with patch("engineering_platform.dashboard._clear_component_log", side_effect=OSError("Niet beschikbaar.")):
-                connection.request("POST", "/api/logs/inbox", body="{}", headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 503)
-                response.read()
-
-    def test_http_dashboard_chat_routes(self) -> None:
-        with self._dashboard_http_connection() as (_, connection):
-            with (
-                patch("engineering_platform.dashboard.codex_chat_response", return_value="Veilig advies."),
-                patch("engineering_platform.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Wat nu?", "created_at": "2026-08-29T05:01:14+00:00"}, {"role": "assistant", "text": "Veilig advies.", "created_at": "2026-08-29T05:01:15+00:00"}]),
-                patch("engineering_platform.dashboard.log_event") as chat_log_event,
-            ):
-                connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?"}), headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"answer": "Veilig advies.", "model": "gpt-5.6-terra", "messages": [{"role": "user", "text": "Wat nu?", "created_at": "2026-08-29T05:01:14+00:00"}, {"role": "assistant", "text": "Veilig advies.", "created_at": "2026-08-29T05:01:15+00:00"}]})
-                chat_log_event.assert_any_call(ANY, logging.INFO, "ai_chat_message_sent", diagnostic="[REDACTED]")
-            connection.request("POST", "/api/codex-chat", body="{}", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 400)
-            response.read()
-            connection.request("POST", "/api/codex-chat", body=json.dumps({"message": "Wat nu?"}), headers={"Content-Type": "application/json", "Origin": "https://example.invalid"})
-            response = connection.getresponse()
-            self.assertEqual(response.status, 403)
-            response.read()
-            with patch("engineering_platform.dashboard.codex_chat_history", return_value=[{"role": "user", "text": "Bewaard", "created_at": "2026-08-29T05:01:14+00:00"}]):
-                connection.request("GET", "/api/prompt-history/inbox-chat/chat")
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"messages": [{"role": "user", "text": "Bewaard", "created_at": "2026-08-29T05:01:14+00:00"}]})
-            with patch("engineering_platform.dashboard.clear_codex_chat_history") as clear:
-                connection.request("POST", "/api/codex-chat/clear", body='{"run_id":"inbox-chat"}', headers={"Content-Type": "application/json"})
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"cleared": True})
-                clear.assert_called_once()
-
-    @patch(
-        "engineering_platform.dashboard.build_relay",
-        return_value=Path("/private/tmp/engineering-dashboard-relay"),
-    )
-    @patch("engineering_platform.dashboard.LaunchdProvider")
-    @patch("engineering_platform.dashboard.run")
-    def test_main_handles_service_lifecycle(self, run: object, launchd: object, _: object) -> None:
-        root = Path(__file__).parents[2]
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
-        ):
-            self.assertEqual(dashboard.main(["run", "--repo", str(root), "--port", "9888"]), 0)
-            run.assert_called_once()
-            self.assertEqual(dashboard.main(["install", "--repo", str(root)]), 0)
-            self.assertEqual(launchd.return_value.install.call_count, 2)
-            self.assertEqual(dashboard.main(["uninstall", "--repo", str(root)]), 0)
-            self.assertEqual(launchd.return_value.uninstall.call_count, 2)
-
-    @patch("engineering_platform.dashboard.TailscaleProvider")
-    def test_doctor_reports_both_ready_and_degraded_states(self, provider: object) -> None:
-        provider.return_value.status.return_value = __import__(
-            "engineering_platform.providers", fromlist=["ProviderStatus"]
-        ).ProviderStatus("tailscale", "configured", True, "connected")
-        provider.return_value.ipv4_address.return_value = "100.100.100.100"
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
-        ):
-            root = Path(temporary) / "repository"
-            (root / ".engineering" / "status").mkdir(parents=True)
-            self.assertEqual(dashboard.main(["doctor", "--repo", str(root)]), 1)
-            (root / ".engineering" / "status" / "status.json").write_text("{}", encoding="utf-8")
-            agent = Path(temporary) / "Library/LaunchAgents" / f"{dashboard.LABEL}.plist"
-            agent.parent.mkdir(parents=True)
-            agent.write_text("owned", encoding="utf-8")
-            relay = Path(temporary) / "Library/LaunchAgents" / f"{dashboard.RELAY_LABEL}.plist"
-            relay.write_text("owned", encoding="utf-8")
-            self.assertEqual(dashboard.main(["doctor", "--repo", str(root)]), 0)
-
-    @patch("engineering_platform.dashboard.binding_addresses", return_value=(LOOPBACK_ADDRESS,))
-    @patch("engineering_platform.dashboard.handler")
-    def test_server_creation_and_launch_agent_are_private_and_owned(
-        self, request_handler: object, _: object
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
-        ):
-            root = Path(temporary) / "repository"
-            root.mkdir()
-            request_handler.return_value = dashboard.BaseHTTPRequestHandler
-            servers = dashboard.create_servers(root, port=0)
-            try:
-                self.assertEqual(len(servers), 1)
-            finally:
-                for server in servers:
-                    server.server_close()
-            agent = dashboard.launch_agent(root)
-            rendered = agent.read_text(encoding="utf-8")
-            self.assertIn(dashboard.LABEL, rendered)
-            self.assertIn("KeepAlive", rendered)
-            self.assertIn(str(root), rendered)
-            self.assertNotIn("<key>PYTHONPATH</key>", rendered)
-            self.assertIn("<key>WorkingDirectory</key><string>" + str(root) + "</string>", rendered)
-            self.assertIn("/bin/zsh", rendered)
-            self.assertIn("-lc", rendered)
-            self.assertNotIn(" -P -m engineering_platform.dashboard ", rendered)
-            self.assertIn("cd " + str(root) + " &amp;&amp; exec", rendered)
-            self.assertIn("exec", rendered)
-            self.assertNotIn("StandardOutPath", rendered)
-            self.assertNotIn("StandardErrorPath", rendered)
-
-    def test_launch_agent_keeps_the_persisted_log_level_over_an_inherited_value(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "engineering_platform.dashboard.Path.home", return_value=Path(temporary)
-        ), patch.dict("os.environ", {dashboard.LOG_LEVEL_ENVIRONMENT: "DEBUG"}):
-            root = Path(temporary) / "repository"
-            root.mkdir()
-            dashboard.update_dashboard_configuration(root, "log_level", "INFO")
-
-            rendered = dashboard.launch_agent(root).read_text(encoding="utf-8")
-
-        self.assertIn(
-            f"<key>{dashboard.LOG_LEVEL_ENVIRONMENT}</key><string>INFO</string>",
-            rendered,
-        )
-
-    @patch("engineering_platform.dashboard._last_executed_commits", return_value=b"not-json")
-    @patch("engineering_platform.dashboard._completion_commits", return_value=b"not-json")
-    @patch("engineering_platform.dashboard._codex_usage_for_run", return_value=b"not-json")
-    @patch("engineering_platform.dashboard._codex_usage", return_value=b"not-json")
-    @patch("engineering_platform.dashboard._prompt_started", return_value=b"not-json")
-    @patch("engineering_platform.dashboard._sse_status", return_value=b"not-json")
-    def test_snapshot_fails_closed_when_optional_projections_are_invalid(self, *_: object) -> None:
-        snapshot = json.loads(_sse_snapshot(Path("/missing")))
-        self.assertEqual(snapshot["status"]["watcher_state"], "REMOTE_ENGINEERING_DEGRADED")
-        self.assertEqual(snapshot["usage"], {})
-        self.assertEqual(snapshot["completion_commits"], {})
-
-    @patch("engineering_platform.dashboard.subprocess.run", side_effect=OSError)
-    def test_dashboard_process_metrics_fail_closed(self, _: object) -> None:
-        self.assertEqual(json.loads(_codex_process_metrics(Path("/missing")))["process_count"], 0)
-
-    @patch("engineering_platform.dashboard.subprocess.run")
-    def test_dashboard_build_identifier_handles_failed_git_query(self, run: object) -> None:
-        run.return_value = __import__("subprocess").CompletedProcess(("git",), 1, "", "")
-        self.assertEqual(dashboard._build_commit(Path("/missing")), "onbekend")
-
-    def test_terminal_watcher_status_is_used_when_no_live_run_exists(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            status = root / ".engineering" / "status"
-            status.mkdir(parents=True)
-            (status / "status.json").write_text(
-                '{"watcher_state":"JOB_COMPLETED","current_phase":"COMPLETE"}',
-                encoding="utf-8",
-            )
-            self.assertEqual(json.loads(_status(root))["watcher_state"], "JOB_COMPLETED")
