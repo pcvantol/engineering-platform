@@ -2928,10 +2928,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ServerConfigurationError("--submission-id is required for submission diagnostics.")
             initialize(args.data_root)
             with sqlite3.connect(args.data_root / SERVER_DATABASE_FILENAME) as connection:
-                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,d.run_id,d.state,d.operator_resolution FROM ep_submissions s LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
+                row = connection.execute("SELECT s.project_id,s.repository_id,s.state,s.admission,s.transport,s.transport_receipt_id,s.transport_received_at,d.run_id,d.state,d.operator_resolution,d.project_id,d.repository_id FROM ep_submissions s LEFT JOIN ep_parity_lifecycle_dispatches d ON d.submission_id=s.submission_id WHERE s.submission_id=?", (args.submission_id,)).fetchone()
                 if row is None:
                     raise ServerConfigurationError("UNKNOWN_SUBMISSION")
-                project_id, repository_id, state, admission, transport, receipt_id, received_at, run_id, dispatch_state, resolution = row
+                project_id, repository_id, state, admission, transport, receipt_id, received_at, run_id, dispatch_state, resolution, dispatch_project, dispatch_repository = row
                 blocked = connection.execute("SELECT run_id,state FROM ep_parity_lifecycle_dispatches WHERE project_id=? AND state IN ('CLAIMED','RUNNING','BLOCKED','FAILED') AND run_id!=? ORDER BY updated_at LIMIT 1", (project_id, run_id or "")).fetchone()
                 execution_receipt = connection.execute("SELECT 1 FROM execution_receipts WHERE run_id=?", (run_id,)).fetchone() if run_id else None
             early = None
@@ -2943,7 +2943,8 @@ def main(argv: list[str] | None = None) -> int:
                     except (OSError, json.JSONDecodeError):
                         early = {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"}
             receipt_complete = transport != "FILE_INBOX" or (isinstance(receipt_id, str) and bool(receipt_id) and isinstance(received_at, str) and bool(received_at))
-            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "execution_receipt_provenance": "PRESENT" if execution_receipt else "UNAVAILABLE", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
+            scope_complete = run_id is None or (dispatch_project, dispatch_repository) == (project_id, repository_id)
+            result = {"submission_id": args.submission_id, "project_id": project_id, "repository_id": repository_id, "submission_state": state, "admission": admission, "run_id": run_id, "dispatch_state": dispatch_state, "operator_resolution": resolution, "transport_provenance": "COMPLETE" if receipt_complete else "INCOMPLETE", "execution_receipt_provenance": "PRESENT" if execution_receipt else "UNAVAILABLE", "dispatch_scope_provenance": "COMPLETE" if scope_complete else "CONFLICT", "lane_blocker": {"run_id": blocked[0], "state": blocked[1]} if blocked else None, "early_failure": early, "worker_eligible": state == "QUEUED" and admission == "ADMITTED" and blocked is None}
         elif args.command == "register-topology":
             if args.declaration is None:
                 raise ServerConfigurationError("--declaration is required for explicit topology registration.")

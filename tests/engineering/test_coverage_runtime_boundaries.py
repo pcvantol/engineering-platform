@@ -1399,6 +1399,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(records[0]["worker_eligible"], True)
         self.assertEqual(records[0]["transport_provenance"], "COMPLETE")
         self.assertEqual(records[0]["execution_receipt_provenance"], "UNAVAILABLE")
+        self.assertEqual(records[0]["dispatch_scope_provenance"], "COMPLETE")
         with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
             connection.execute("INSERT INTO execution_receipts(run_id,producer_id,producer_type,execution_host,execution_host_version,receipt_timestamp,execution_outcome) VALUES(?,?,?,?,?,?,?)", ("run-a", "test", "TEST", "Engineering Platform", "2.0", "now", "COMPLETE"))
         output = io.StringIO()
