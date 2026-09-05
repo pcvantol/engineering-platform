@@ -107,3 +107,12 @@ class ConsumerCredentialTests(unittest.TestCase):
         self.assertIsNone(CredentialAuthority.test_fixture("safe", consumer_id="consumer", project_id="project").authenticate("\udcff"))
         with patch("engineering_platform.local_api_credentials.HTTPConnection", side_effect=OSError("offline")):
             self.assertFalse(verify_capabilities_over_http("safe", consumer_id="consumer", project_id="project"))
+
+    def test_credential_authority_storage_failure_denies_readiness_authentication_and_authorization(self) -> None:
+        authority = CredentialAuthority(self.root)
+        with patch("engineering_platform.local_api_credentials.open_storage", side_effect=OSError("offline")):
+            self.assertFalse(authority.ready())
+            self.assertIsNone(authority.authenticate("credential"))
+            scope = CredentialAuthority.test_fixture("credential", consumer_id="consumer", project_id="project").authenticate("credential")
+            assert scope is not None
+            self.assertFalse(authority.authorized(scope))
