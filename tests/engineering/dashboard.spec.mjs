@@ -316,7 +316,7 @@ test.describe("Engineering Status browser smoke", () => {
     await configuration.evaluate((element) => { element.open = true; });
     const section = configuration.locator("#configurationHostComponents");
     await expect(section).toHaveCount(1);
-    await expect(section).toContainText("Dashboardinstellingen");
+    await expect(section).toContainText(DASHBOARD_MESSAGES.nl["configuration.dashboard_settings"]);
     await expect(section.locator("#workspaceFreeDiskSpace")).toHaveCount(0);
     await expect(section.locator("#configurationComponentDetailsInterval")).toHaveCount(1);
     await expect(section.locator("#configurationDashboardStreamInterval")).toHaveCount(1);
@@ -2147,6 +2147,17 @@ test.describe("Engineering Status browser smoke", () => {
     expect(dashboardSource).toContain(
       '$("pageRefresh")?.addEventListener("click", refreshDashboard)',
     );
+  });
+
+  test("renders current execution and relay terminology in every supported locale", async ({ page }) => {
+    for (const language of SUPPORTED_LOCALES) {
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await selectDashboardLocale(page, language);
+      await page.evaluate(() => r({ watcher_state: "WATCHER_IDLE" }, {}));
+      await expect(page.locator(".field").filter({ hasText: DASHBOARD_MESSAGES[language]["ui.execution_status"] })).toHaveCount(1);
+      await expect(page.locator("#watcher")).toHaveText(DASHBOARD_MESSAGES[language]["state.WATCHER_IDLE"]);
+      await expect(page.locator("#watcher").locator("xpath=preceding-sibling::span")).not.toHaveText(DASHBOARD_MESSAGES[language]["ui.watcher"]);
+    }
   });
 
   test("copies chat text synchronously for iOS Safari", async ({ page }) => {
@@ -9691,7 +9702,9 @@ test.describe("Engineering Status browser smoke", () => {
 
     await deferButton.click();
     await expect(page.locator("#confirmationModalTitle")).toHaveText("Uitvoering uitstellen");
-    await expect(page.locator("#confirmationModalText")).toContainText("Inbox/_deferred");
+    await expect(page.locator("#confirmationModalText")).toHaveText(
+      DASHBOARD_MESSAGES.nl["queue.defer_description"].replace("{title}", "Later uitvoeren"),
+    );
     await page.locator("#confirmationModalConfirm").click();
 
     await expect(page.locator("#queueList .queue-item")).toHaveCount(1);
@@ -9761,7 +9774,7 @@ test.describe("Engineering Status browser smoke", () => {
     await dispatchDashboardPointerClick(page.getByTestId("engineering-inbox-queue").locator("summary"));
     await expect(page.locator("#inboxBlocker")).toBeVisible();
     await expect(page.locator("#inboxBlocker")).toHaveText(
-      "De Inbox wacht omdat de lokale Codex CLI niet kan starten. Herstel dit handmatig met: npm install -g @openai/codex@latest",
+      DASHBOARD_MESSAGES.nl["queue.runtime_invocation_blocked"],
     );
   });
 
@@ -9803,9 +9816,11 @@ test.describe("Engineering Status browser smoke", () => {
     );
     await dispatchDashboardPointerClick(repair);
     await expect(page.locator("#confirmationModal")).toBeVisible();
-    await expect(page.locator("#confirmationModalText")).toContainText("herstart de Inbox-watcher");
+    await expect(page.locator("#confirmationModalText")).toHaveText(
+      DASHBOARD_MESSAGES.nl["queue.managed_branch_recovery"],
+    );
     await page.locator("#confirmationModalConfirm").click();
-    await expect(blocker).toHaveText("Werkmap hersteld naar main; de Inbox-watcher draait weer.");
+    await expect(blocker).toHaveText(DASHBOARD_MESSAGES.nl["queue.managed_branch_recovery_ready"]);
     expect(repairRequested).toBeTruthy();
   });
 
