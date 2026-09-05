@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 from engineering_platform.agent_state import StateError, StateStore, TransactionState, is_valid_commit_evidence_record, redact_diagnostic, verified_commit_evidence_record
@@ -1557,6 +1558,31 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("In quality_evidence, record only work actually performed", agent.prompts[1])
         self.assertEqual(state.quality_evidence, quality_evidence)
         self.assertEqual(repository.synchronize_calls, [self.root])
+
+    def test_provider_recovery_preflight_rejects_every_ambiguous_restart_condition(self) -> None:
+        repository = FakeRepository(branch="recovery")
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("recovery-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="recovery")
+        with patch("engineering_platform.execution_host.dismissal_for_run", return_value=False), \
+             patch("engineering_platform.execution_host.verify_worktree_recovery", return_value=True):
+            self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            runner.active_lease = SimpleNamespace(run_id=state.run_id)
+            self.assertIsNone(runner._provider_recovery_preflight(state))
+            repository.evidence = RepositoryEvidence("pcvantol/djconnect", "other", "a" * 40, True, True)
+            self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            repository.evidence = RepositoryEvidence("pcvantol/djconnect", "recovery", "a" * 40, True, True)
+            with patch("engineering_platform.execution_host.verify_worktree_recovery", return_value=False):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            process = self.root / ".engineering" / "status" / "runner_process.json"
+            process.parent.mkdir(parents=True)
+            process.write_text(json.dumps({"run_id": state.run_id, "pid": 42}), encoding="utf-8")
+            with patch("engineering_platform.execution_host.os.kill"):
+                self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
+            with patch("engineering_platform.execution_host.os.kill", side_effect=ProcessLookupError):
+                self.assertIsNone(runner._provider_recovery_preflight(state))
+            self.assertFalse(process.exists())
+        terminal = TransactionState("terminal-recovery", "pcvantol/djconnect", str(self.prompt), "COMPLETE", terminal=True)
+        self.assertEqual(runner._provider_recovery_preflight(terminal), "CANCELLED")
 
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
