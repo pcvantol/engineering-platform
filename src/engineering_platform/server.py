@@ -1492,11 +1492,6 @@ def _open_central_database_directory(data_root: Path) -> dict[str, str]:
     return {"opened_directory": str(directory)}
 
 
-_WORKSPACE_ID_FIELD = re.compile(
-    br'(<span class="label" data-workspace-label="workspace\.name" data-i18n="workspace\.name"></span><span>)[^<]*(</span>)'
-)
-
-
 def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> bytes:
     """Add the canonical File Inbox projection to the installed Console.
 
@@ -1513,12 +1508,6 @@ def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> byte
         b'<p class="category-description" data-i18n="description.configuration"></p>' + readonly,
         1,
     )
-
-
-def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
-    """Make CENTRAL's selected project the sole visible workspace identity."""
-    replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"
-    return _WORKSPACE_ID_FIELD.sub(replacement, document, count=1)
 
 
 def _console_project_boundary(project_id: str, options: str) -> str:

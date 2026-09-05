@@ -452,15 +452,6 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(component["quarantine_count"], 1)
         self.assertEqual(component["reason_code"], "FILE_INBOX_DIAGNOSTIC")
 
-    def test_console_workspace_identity_is_overridden_by_the_selected_central_project(self) -> None:
-        historical = (
-            b'<details id="workspaceCard"><span class="label" data-workspace-label="workspace.name" '
-            b'data-i18n="workspace.name"></span><span>djconnect</span></details>'
-        )
-        projected = server._centralize_workspace_identity(historical, "alpha")
-        self.assertIn(b'<span>alpha</span>', projected)
-        self.assertNotIn(b'djconnect', projected)
-
     def test_central_database_controls_read_and_back_up_only_the_server_store(self) -> None:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]
