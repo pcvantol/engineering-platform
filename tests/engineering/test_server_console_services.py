@@ -1497,7 +1497,7 @@ class DashboardStatusTest(unittest.TestCase):
             metrics = json.loads(_codex_process_metrics(root))
         self.assertEqual(metrics["process_count"], 2)
         self.assertEqual(metrics["cpu_percent"], 10.0)
-        self.assertIn("Execution Host-verwerking", metrics["gpu_status"])
+        self.assertEqual(metrics["gpu_status"], "EXECUTION_HOST_EXTERNAL")
 
     def test_current_codex_log_reader_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1313,7 +1313,7 @@ def _codex_process_metrics(root: Path) -> bytes:
     except (OSError, json.JSONDecodeError):
         process_group, runner_pid = None, None
     if not isinstance(process_group, int) or process_group <= 0 or not isinstance(runner_pid, int) or runner_pid <= 0:
-        return json.dumps({"process_count": 0, "cpu_percent": 0, "gpu_status": "Niet beschikbaar: geen actieve Execution Host-runner."}, separators=(",", ":")).encode()
+        return json.dumps({"process_count": 0, "cpu_percent": 0, "gpu_status": "NO_ACTIVE_EXECUTION_HOST"}, separators=(",", ":")).encode()
     try:
         observed = LocalProcessProvider().execute(Path.cwd(), ("ps", "-axo", "pid=,pgid=,pcpu=,command="))
     except OSError:
@@ -1338,7 +1338,7 @@ def _codex_process_metrics(root: Path) -> bytes:
         {
             "process_count": len(processes),
             "cpu_percent": round(sum(item["cpu_percent"] for item in processes), 1),
-            "gpu_status": "Niet beschikbaar: Execution Host-verwerking draait extern.",
+            "gpu_status": "EXECUTION_HOST_EXTERNAL",
         },
         separators=(",", ":"),
     ).encode()

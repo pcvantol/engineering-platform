@@ -776,7 +776,12 @@ function processMetrics(active, x) {
   $("codexCpu").textContent =
     locale.number(Number(x?.cpu_percent || 0), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
   $("codexProcesses").textContent = x?.process_count ?? 0;
-  $("codexGpu").textContent = x?.gpu_status || t("format.not_available");
+  const gpuStatus = String(x?.gpu_status || "");
+  $("codexGpu").textContent = gpuStatus === "NO_ACTIVE_EXECUTION_HOST"
+    ? t("metrics.gpu_status.no_active_execution_host")
+    : gpuStatus === "EXECUTION_HOST_EXTERNAL"
+      ? t("metrics.gpu_status.execution_host_external")
+      : gpuStatus || t("format.not_available");
 }
 function reviewerPresentationState(status = {}) {
   const watcherState = String(status?.watcher_state || "").toUpperCase();
