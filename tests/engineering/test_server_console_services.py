@@ -417,6 +417,11 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn("localeCompare(", dashboard_script)
         self.assertIn("initializeDashboardConfiguration", dashboard_script)
         self.assertIn("scheduleProviderReadinessRefresh", dashboard_script)
+        self.assertIn("__djconnectDashboardTranslate", dashboard_script)
+        server_source = (root / "src/engineering_platform/server.py").read_text(encoding="utf-8")
+        self.assertIn("configuration.ep_database_maintenance_saved", server_source)
+        self.assertIn("configuration.ep_database_maintenance_failed", server_source)
+        self.assertNotIn("Databaseonderhoud bijgewerkt.'", server_source)
 
     def test_component_versions_match_the_canonical_platform_manifest(self) -> None:
         manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))

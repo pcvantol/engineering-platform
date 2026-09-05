@@ -27,6 +27,9 @@ function t(key, values = {}, fallback = key) {
 // every dashboard copy lookup auditable without adding a second translation
 // path or relying on a hand-maintained list of visible labels.
 window.__djconnectDashboardLocalizationCalls = () => [...localizationCalls.values()];
+// Server-owned enhancement scripts may request a catalog value, but never
+// provide their own user-visible fallback copy.
+window.__djconnectDashboardTranslate = (key) => t(key);
 document.documentElement.lang = dashboardLocale;
 
 const $ = (id) => document.getElementById(id),
