@@ -29,6 +29,19 @@ class ComponentModelRegressionTest(unittest.TestCase):
             self.assertNotIn('"inbox", "dashboard"', source)
         self.assertNotIn('"dashboard":', services)
 
+    def test_historical_inbox_log_evidence_cannot_become_supported_component_state(self) -> None:
+        root = Path(__file__).parents[2]
+        services = (root / "src" / "engineering_platform" / "server_console_services.py").read_text(encoding="utf-8")
+        history = (root / "src" / "engineering_platform" / "prompt_history.py").read_text(encoding="utf-8")
+        routes = (root / "src" / "engineering_platform" / "console_route_ownership.py").read_text(encoding="utf-8")
+        # Legacy records are read only and run-bound; neither module may add
+        # the old name to a supported component model or route surface.
+        self.assertIn("WHERE component='inbox'", services)
+        self.assertIn("WHERE log.component = 'inbox'", history)
+        self.assertNotIn("PLATFORM_COMPONENT_BY_ID[\"inbox\"]", services)
+        self.assertNotIn("PLATFORM_COMPONENT_BY_ID[\"inbox\"]", history)
+        self.assertIn("/api/logs/(?:inbox|dashboard)", routes)
+
     def test_console_actions_require_canonical_server_capability(self) -> None:
         root = Path(__file__).parents[2]
         server = (root / "src" / "engineering_platform" / "server.py").read_text(encoding="utf-8")
