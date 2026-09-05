@@ -74,8 +74,14 @@ def execute_qualification(
     checks: dict[str, bool] | None = None,
     *,
     ep_repository_root: Path | None = None,
+    evidence_root: Path | None = None,
 ) -> dict[str, object]:
-    """Execute all registered local scenarios and write immutable local evidence."""
+    """Execute all registered local scenarios and write immutable local evidence.
+
+    ``evidence_root`` is for read-only source checkouts such as the Golden
+    scenario.  It changes only where the receipt is stored, never the
+    repository whose contracts are being checked.
+    """
     started = time.monotonic()
     manifest = EngineeringPlatformManifest.load(
         package_path("ENGINEERING_PLATFORM_VERSION.json")
@@ -109,7 +115,7 @@ def execute_qualification(
         "failures": len(results) - passed,
         "blocked": 0,
     }
-    _write_report(root, report)
+    _write_report(evidence_root or root, report)
     return report
 
 
