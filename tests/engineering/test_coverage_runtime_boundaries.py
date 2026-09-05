@@ -1413,6 +1413,16 @@ class InstallationBoundaryTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-incomplete"]), 0)
         self.assertEqual(json.loads(output.getvalue())["transport_provenance"], "INCOMPLETE")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(server.main(["bootstrap-topology", "--data-root", str(root), "--project-id", "project-b", "--repository-id", "repo-b"]), 0)
+        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_execution_runs(run_id,project_id,state,created_at,updated_at) VALUES(?,?,?,?,?)", ("run-b", "project-b", "RUNNING", "now", "now"))
+            connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-conflict", "project-a", "repo-a", "test", "TEST", "HTTP", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
+            connection.execute("INSERT INTO ep_parity_lifecycle_dispatches(submission_id,project_id,repository_id,run_id,state,prompt_path,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", ("sub-conflict", "project-b", "repo-b", "run-b", "RUNNING", "CENTRAL:prompt", "now", "now"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-conflict"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["dispatch_scope_provenance"], "CONFLICT")
         checkout = root.parent / "declared-checkout"; checkout.mkdir()
         provision = io.StringIO()
         with redirect_stdout(provision):
