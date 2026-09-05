@@ -7,7 +7,7 @@ import json
 from threading import Thread
 import unittest
 from engineering_platform.local_api import LOOPBACK_ADDRESS, LocalApiServer
-from engineering_platform.local_api_credentials import CredentialAuthority, disable_consumer, issue_credential, register_consumer, revoke_credential, rotate_credential
+from engineering_platform.local_api_credentials import CredentialAuthority, create_qualification_credential, qualification_status, revoke_consumer, revoke_credential, revoke_qualification_credential, rotate_credential, consumer_status, disable_consumer, issue_credential, register_consumer
 from engineering_platform.local_api_keychain import KeychainError, MacOSKeychainCredentialStore
 
 
@@ -78,3 +78,22 @@ class ConsumerCredentialTests(unittest.TestCase):
         )
         self.assertIsNone(CredentialAuthority(self.root).authenticate(old.credential))
         self.assertIsNotNone(CredentialAuthority(self.root).authenticate(replacement.credential))
+
+    def test_credential_authority_tracks_qualification_and_rolls_back_an_unproven_rotation(self) -> None:
+        register_consumer(self.root, consumer_id="consumer", project_id="project")
+        qualification = create_qualification_credential(self.root, consumer_id="consumer", project_id="project")
+        self.assertTrue(qualification_status(self.root)[0]["active"])
+        self.assertTrue(revoke_qualification_credential(self.root, qualification.credential_id))
+        self.assertFalse(qualification_status(self.root)[0]["active"])
+        with self.assertRaises(ValueError):
+            revoke_qualification_credential(self.root, "production-not-qualification")
+        original = issue_credential(self.root, consumer_id="consumer", project_id="project")
+        class Store:
+            def put_credential(self, *_: str) -> None: raise OSError("keychain unavailable")
+        with self.assertRaisesRegex(OSError, "keychain"):
+            rotate_credential(self.root, consumer_id="consumer", project_id="project", old_credential_id=original.credential_id, store=Store(), authenticate=lambda _: True)
+        self.assertIsNotNone(CredentialAuthority(self.root).authenticate(original.credential))
+        self.assertEqual(consumer_status(self.root, consumer_id="consumer", project_id="project")["active_production_credentials"], 1)
+        self.assertTrue(revoke_consumer(self.root, consumer_id="consumer", project_id="project"))
+        with self.assertRaisesRegex(ValueError, "state conflicts"):
+            disable_consumer(self.root, consumer_id="consumer", project_id="project")

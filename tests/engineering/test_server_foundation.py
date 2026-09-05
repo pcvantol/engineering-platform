@@ -827,7 +827,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         self.assertEqual(logs["scope"], "PLATFORM")
         central_record = next(entry for entry in logs["entries"] if entry["event"] == "central_console_test")
         self.assertEqual(central_record["component"], "operations_console")
-        self.assertIn("ep_server_started", [entry["event"] for entry in logs["entries"]])
+        # The installation lifecycle owns the Console now.  The retired
+        # Dashboard listener never emitted a supported startup event here.
+        self.assertIn("operations_console_available", [entry["event"] for entry in logs["entries"]])
         ndjson_request = Request(
             f"http://127.0.0.1:{port}/api/logs/operations_console?format=ndjson",
         )

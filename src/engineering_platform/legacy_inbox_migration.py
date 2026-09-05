@@ -44,7 +44,14 @@ def migrate_icloud_archives(repo: Path, root: Path) -> dict[str, int]:
             else:
                 _move(source, destination)
                 moved += 1
-        source_directory.rmdir()
+        # A skipped symlink or non-file is intentionally retained as
+        # historical evidence.  It must not turn a safe archive migration
+        # into a partial failure merely because the source directory is no
+        # longer empty.
+        try:
+            source_directory.rmdir()
+        except OSError:
+            pass
     for name in ("status.json", "status.md"):
         source, destination = root / name, repo / ".engineering" / "status" / name
         if not source.is_file() or source.is_symlink():

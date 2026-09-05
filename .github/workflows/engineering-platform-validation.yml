@@ -96,6 +96,23 @@ jobs:
           report = json.loads(Path("engineering-platform-coverage.json").read_text())
           files = report["files"]
           failures = []
+          # Every shipped Python module is production scope.  This aggregate
+          # gate is deliberately independent from the stricter evidence bar
+          # below for the three protected runtime boundaries.
+          import engineering_platform
+          production_root = Path(engineering_platform.__file__).resolve().parent
+          production_modules = sorted(production_root.rglob("*.py"))
+          measured_modules = {Path(path).resolve() for path in files}
+          unmeasured = [str(path) for path in production_modules if path not in measured_modules]
+          aggregate = report["totals"]["percent_covered"]
+          if len(production_modules) != 107:
+              failures.append(f"production module inventory changed: {len(production_modules)} (expected 107)")
+          if unmeasured:
+              failures.append("unmeasured production modules: " + ", ".join(unmeasured))
+          if aggregate < 80.00:
+              failures.append(f"repository production coverage: {aggregate:.2f}% (minimum 80.00%)")
+          else:
+              print(f"repository production coverage: {aggregate:.2f}%")
           for target in targets:
               matching_paths = [path for path in files if path.replace("\\\\", "/").endswith(target)]
               covered = (

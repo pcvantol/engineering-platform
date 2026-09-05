@@ -14,14 +14,13 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from unittest.mock import ANY, MagicMock, call, patch
 
 from engineering_platform import server_console_services as dashboard
-from engineering_platform.server_console_services import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _open_worktree_in_finder, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees
+from engineering_platform.server_console_services import DASHBOARD_VERSION, LOOPBACK_ADDRESS, _clear_component_log, _codex_cli_installation_path, _codex_process_metrics, _codex_provider_identity, _codex_usage, _codex_usage_for_run, _component_log, _component_log_versions, _completion_commits, _component_uptime_seconds, _current_codex_log, _dashboard_html, _execution_runtime_status, _last_executed_agent_execution, _last_executed_codex_log, _last_executed_commits, _last_executed_runtime_metadata, _latest_codex_log, _normalize_rate_limits, _platform_health, _prompt_history, _prompt_history_detail, _report_analysis_available_for_run, _report_analysis_for_run, _report_analysis_processing_status, _report_for_run, _retry_report_analysis, _reviewer_agents_for_run, _sse_snapshot, _sse_status, _status, _tracked_file_count, _workspace_free_disk_space, _workspace_git_projection, _workspace_worktrees
 from engineering_platform.platform_version import EngineeringPlatformManifest
 from engineering_platform.resources import package_path
 from engineering_platform.prompt_history import record_prompt_execution
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
 from engineering_platform.providers import ProviderStatus
-from engineering_platform.historical_dashboard_configuration import inbox_root, update_inbox_root
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_lease import acquire
 
@@ -354,69 +353,6 @@ class DashboardStatusTest(unittest.TestCase):
             {"path": None, "branch": "main", "commit": "abcdef123456", "detached": False, "checked_out": False},
             {"path": "/workspace", "branch": "codex/feature", "commit": "123456789abc", "detached": False, "active": True, "removable": True},
         ]})
-
-    def test_open_worktree_in_finder_accepts_only_a_current_worktree(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            worktree = root / "worktree"
-            worktree.mkdir()
-            completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
-            with (
-                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
-                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=completed) as execute,
-            ):
-                self.assertEqual(_open_worktree_in_finder(root, str(worktree)), {"opened_worktree": str(worktree.resolve())})
-                execute.assert_called_once_with(root, ("open", str(worktree.resolve())))
-            with patch("engineering_platform.server_console_services.sys.platform", "darwin"), patch(
-                "engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": []},
-            ):
-                with self.assertRaises(RuntimeError):
-                    _open_worktree_in_finder(root, str(worktree))
-            with patch("engineering_platform.server_console_services.sys.platform", "darwin"):
-                with self.assertRaisesRegex(RuntimeError, "actuele lokale worktree"):
-                    _open_worktree_in_finder(root, str(root / "missing"))
-            with (
-                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
-                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", side_effect=OSError),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "Finder kon"):
-                    _open_worktree_in_finder(root, str(worktree))
-            with patch("engineering_platform.server_console_services.sys.platform", "linux"):
-                with self.assertRaisesRegex(RuntimeError, "kan niet veilig"):
-                    _open_worktree_in_finder(root, str(worktree))
-            with (
-                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
-                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": [{"path": str(worktree)}]}),
-                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=__import__("subprocess").CompletedProcess(("open",), 1, "", "")),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "Finder kon"):
-                    _open_worktree_in_finder(root, str(worktree))
-
-    def test_open_local_directory_in_finder_accepts_only_current_dashboard_locations(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "repository"
-            root.mkdir()
-            (root / ".engineering").mkdir()
-            inbox = Path(temporary) / "Inbox"
-            inbox.mkdir()
-            configuration = MagicMock()
-            configuration.resolver.return_value.resolve_runtime_prompt_transport.return_value.inbox = inbox
-            completed = __import__("subprocess").CompletedProcess(("open",), 0, "", "")
-            with (
-                patch("engineering_platform.server_console_services.sys.platform", "darwin"),
-                patch("engineering_platform.server_console_services.PlatformConfiguration.load", return_value=configuration),
-                patch("engineering_platform.server_console_services._workspace_worktrees", return_value={"available": True, "worktrees": []}),
-                patch("engineering_platform.server_console_services.LocalProcessProvider.execute", return_value=completed) as execute,
-            ):
-                self.assertEqual(
-                    dashboard._open_local_directory_in_finder(root, str(inbox)),
-                    {"opened_directory": str(inbox.resolve())},
-                )
-                execute.assert_called_once_with(root, ("open", str(inbox.resolve())))
-                with self.assertRaisesRegex(RuntimeError, "niet beschikbaar"):
-                    dashboard._open_local_directory_in_finder(root, str(Path(temporary)))
 
     def test_dashboard_exposes_the_canonical_five_locale_catalog(self) -> None:
         root = Path(__file__).parents[2]

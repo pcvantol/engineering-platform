@@ -119,3 +119,10 @@ class TransportAuthorityGuardTest(unittest.TestCase):
             self.assertNotIn("stale-local-branch-cleanup", source)
             self.assertNotIn("workspaceBranchCleanup", source)
             self.assertNotIn("workspace-branch-cleanup", source)
+
+    def test_retired_finder_actions_are_absent_from_console_compatibility_code(self) -> None:
+        """A browser must not regain a direct local-file action by import drift."""
+        root = Path(__file__).resolve().parents[2]
+        services = (root / "src" / "engineering_platform" / "server_console_services.py").read_text(encoding="utf-8")
+        for retired in ("_open_worktree_in_finder", "_open_local_directory_in_finder", "Finder kon"):
+            self.assertNotIn(retired, services)

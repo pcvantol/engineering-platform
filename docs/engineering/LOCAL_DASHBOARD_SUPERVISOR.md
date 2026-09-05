@@ -625,15 +625,18 @@ CI keeps one clean retry per browser interaction, but stops after three final
 test failures. This fail-closed limit preserves actionable diagnostics without
 letting one shared layout regression consume the full job timeout.
 
-The same workflow also runs the Engineering Python suite under branch coverage.
-The required core files are `dashboard.py`, `platform_bootstrap.py`,
-`providers.py` and `inbox_watcher.py`. Each must remain
-strictly above 80%; an exactly 80.00% result fails the quality gate. To
-reproduce the measurement locally:
+The Engineering Platform workflow runs the Python suite under branch coverage
+against the installed `engineering_platform` package. Every shipped Python
+module participates in the aggregate production measurement, which must be at
+least 80.00%. The protected runtime modules are `platform_bootstrap.py`,
+`providers.py`, and Server-owned `file_inbox.py`; each must be at least
+80.20%. Retired `dashboard.py` and `inbox_watcher.py` are not coverage
+targets and must not be reintroduced to satisfy a metric. To reproduce the
+measurement locally from a clean installed candidate:
 
 ```sh
-coverage run --branch -m unittest discover -s tests/engineering
-coverage report --include='tools/engineering/dashboard.py,tools/engineering/platform_bootstrap.py,tools/engineering/providers.py,tools/engineering/inbox_watcher.py'
+coverage run --branch --source=engineering_platform -m unittest discover -s tests/engineering
+coverage json -o engineering-platform-coverage.json
 ```
 
 ## Dashboard interpretation and interaction

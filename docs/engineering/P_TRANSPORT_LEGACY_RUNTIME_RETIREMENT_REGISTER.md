@@ -1,6 +1,10 @@
 # P-TRANSPORT legacy runtime retirement register
 
-**Status:** audit in progress — not completion evidence.
+**Status:** re-audited 2026-09-05 — not technical-closure evidence.
+
+Earlier `RESOLVED` entries record a structural decision, not an exact-head
+installed/runtime approval. The integrated re-audit findings below take
+precedence whenever they conflict with an older completion claim.
 
 This register applies the consequence-closure rule to the standalone Server
 transition.  It is derived from the Phase-P standalone roadmap, ADR-0026,
@@ -20,6 +24,25 @@ forensic evidence are outside this production-runtime inventory.
 
 `AMBIGUOUS_AUTHORITY_TRANSITIONS = 0` for the transition map above.  This
 does not yet assert that all old code is removed.
+
+## 2026-09-05 integrated re-audit findings
+
+This is a read-only audit of the source package and clean candidate test
+environment. It does not authorize a human UI review or Owner Authorization.
+
+| Area | Evidence | Current result | Required closure evidence |
+| --- | --- | --- | --- |
+| Installed ingress | `p_transport_installed_ingress_matrix.py` | **FAIL**: `DEPENDABOT_MULTI_PROJECT_BINDING_FAILED` | A clean exact-head candidate must pass the complete installed ingress matrix. |
+| Direct Dashboard retirement | `server.py` imports `server_console_services` and calls `_dashboard_html` at two Server document-rendering sites | **GAP** | Classify or extract remaining presentation helpers, then prove no supported runtime/import path retains historical direct-Dashboard authority. |
+| Historical configuration | `server_console_services` imports `historical_dashboard_configuration`; its update, Inbox-root update, and restore APIs write local metadata | **GAP** | Remove or make strictly forensic/read-only every supported caller; add a whole-package guard rather than a Server-snapshot-only assertion. |
+| Finder actions | The re-audit found two direct Finder helpers in `server_console_services`; they and their historical tests were then removed, with a permanent source-absence guard | **FIXED IN WORKTREE — uncommitted** | Keep the absence guard; exact-head qualification must confirm no remote Console route/action advertises it. |
+| Route/CENTRAL ownership | Central-core, central-console and console-route guards | **PASS** | Preserve root-bound routes 0, dashboard delegates 0, project delegation 0, checkout dependency 0, and ambiguous ownership 0. |
+| Component model | Component-model regression guard | **PASS, narrow scope** | Extend it to package-wide legacy alias/read/write/lifecycle/logging reachability before declaring LR-12 complete. |
+| Coverage | Clean candidate full run: 1,069 tests, aggregate 81.64% | **PARTIAL** | `providers.py` is 79.70%, below its protected 80.20% requirement; 26 production modules are below 80.20%. |
+
+The re-audit does not reopen implementation by itself. It records blockers
+that must be resolved before `P_TRANSPORT_SIX_LEGACY_ARCHITECTURE_POINTS =
+PASS` can be claimed.
 
 ## Material discovery and reachability ledger
 

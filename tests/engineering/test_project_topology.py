@@ -24,6 +24,25 @@ class ProjectTopologyTests(unittest.TestCase):
                 self.assertEqual(result["result"], "REGISTERED")
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM ep_agent_repository_attachments").fetchone()[0], 0)
                 self.assertEqual(project_topology.register_server_local_topology(connection, declaration=declaration), result)
+
+    def test_server_topology_rejects_malformed_and_conflicting_declared_identities(self) -> None:
+        """CENTRAL accepts no inferred repository identity or conflicting declaration rewrite."""
+        declaration = json.loads(FIXTURE.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); server.initialize(root)
+            with sqlite3.connect(root / "engineering.db") as connection:
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "MALFORMED"):
+                    project_topology.register_server_local_topology(connection, declaration={"project": {}})
+                project_topology.register_server_local_topology(connection, declaration=declaration)
+                repository_conflict = json.loads(json.dumps(declaration))
+                repository_conflict["project"]["id"] = "other-project"
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
+                    project_topology.register_server_local_topology(connection, declaration=repository_conflict)
+                invalid_authority = json.loads(json.dumps(declaration))
+                invalid_authority["repository"]["role"] = "authority"
+                invalid_authority["repository"]["id"] = "child-cannot-be-authority"
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "MALFORMED_REPOSITORY_DECLARATION"):
+                    project_topology.register_server_local_topology(connection, declaration=invalid_authority)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "server"
