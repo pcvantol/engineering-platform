@@ -3207,6 +3207,99 @@ class DashboardStatusTest(unittest.TestCase):
                 self.assertEqual(response.status, 404)
                 response.read()
 
+    def test_http_direct_dashboard_transitional_operations_have_bounded_contracts(self) -> None:
+        """Exercise still-shipped direct-handler operations until their Server successors land.
+
+        These are deliberately real HTTP calls against the handler, with the
+        destructive implementation boundary mocked.  That keeps the current
+        compatibility surface covered without granting a test fixture local
+        execution or storage authority.
+        """
+        with self._dashboard_http_connection() as (root, connection):
+            def post(path: str, body: str = "{}") -> tuple[int, object]:
+                connection.request(
+                    "POST", path, body=body, headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+
+            with (
+                patch(
+                    "engineering_platform.dashboard.clear_telemetry",
+                    return_value={"execution_runs": 3, "daily_statistics": 2},
+                ) as clear_telemetry,
+                patch("engineering_platform.dashboard.log_event"),
+            ):
+                status, payload = post("/api/telemetry/clear")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, {"cleared": True, "execution_runs": 3, "daily_statistics": 2})
+                clear_telemetry.assert_called_once_with(root)
+
+            with (
+                patch(
+                    "engineering_platform.dashboard._consume_codex_rate_limit_reset_credit",
+                    return_value="reset",
+                ),
+                patch("engineering_platform.dashboard._codex_rate_limits", return_value=b'{"reset_credits":1}'),
+                patch("engineering_platform.dashboard.log_event"),
+            ):
+                status, payload = post("/api/rate-limit-reset")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, {"outcome": "reset", "rate_limits": {"reset_credits": 1}})
+
+            with patch("engineering_platform.dashboard.log_event") as audit_log:
+                status, payload = post("/api/audit/user-action", '{"action":"chat_downloaded"}')
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, {"logged": True})
+                audit_log.assert_any_call(ANY, logging.INFO, "chat_downloaded")
+
+            with patch(
+                "engineering_platform.dashboard._recover_stale_workspace_git_lock",
+                return_value={"recovered": True},
+            ):
+                status, payload = post("/api/stale-git-lock-recovery")
+                self.assertEqual(status, 202)
+                self.assertEqual(payload, {"recovered": True})
+
+            preview = {"branches": [{"name": "codex/stale"}]}
+            with patch("engineering_platform.dashboard._stale_local_branch_preview", return_value=preview):
+                status, payload = post("/api/stale-local-branch-cleanup-preview")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, preview)
+
+            cleanup = {"removed": ["codex/stale"], "removed_count": 1}
+            with patch("engineering_platform.dashboard._cleanup_stale_local_branches", return_value=cleanup) as clean:
+                status, payload = post("/api/stale-local-branch-cleanup", '{"branches":["codex/stale"]}')
+                self.assertEqual(status, 202)
+                self.assertEqual(payload, cleanup)
+                clean.assert_called_once_with(root, ["codex/stale"])
+
+            removal = {"removed_worktree": "/worktrees/stale", "branch": "codex/stale"}
+            with patch("engineering_platform.dashboard._remove_safe_worktree", return_value=removal) as remove:
+                status, payload = post(
+                    "/api/safe-worktree-removal",
+                    '{"worktree_path":"/worktrees/stale","branch":"codex/stale"}',
+                )
+                self.assertEqual(status, 202)
+                self.assertEqual(payload, removal)
+                remove.assert_called_once_with(root, "/worktrees/stale", "codex/stale")
+
+            with patch(
+                "engineering_platform.dashboard._open_worktree_in_finder",
+                return_value={"opened_worktree": "/worktrees/stale"},
+            ):
+                status, payload = post("/api/open-worktree-folder", '{"worktree_path":"/worktrees/stale"}')
+                self.assertEqual(status, 202)
+                self.assertEqual(payload, {"opened_worktree": "/worktrees/stale"})
+
+            with patch(
+                "engineering_platform.dashboard._open_local_directory_in_finder",
+                return_value={"opened_directory": "/repository"},
+            ):
+                status, payload = post("/api/open-local-directory", '{"directory_path":"/repository"}')
+                self.assertEqual(status, 202)
+                self.assertEqual(payload, {"opened_directory": "/repository"})
+
     def _retired_http_dashboard_operator_routes(self) -> None:
         """Historical direct-handler contracts retained only pending file split.
 
