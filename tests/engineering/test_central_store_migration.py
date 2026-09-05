@@ -152,6 +152,23 @@ class CentralStoreMigrationTests(unittest.TestCase):
             migration._table_key(connection, "unkeyed")
         connection.close()
 
+    def test_migration_control_helpers_reject_invalid_targets_locks_and_transitions(self) -> None:
+        directory_target = Path(self.temporary.name) / "directory-target"
+        directory_target.mkdir()
+        self.assertEqual(migration.classify_target(directory_target)["state"], "UNKNOWN")
+        empty_database = Path(self.temporary.name) / "empty.db"
+        sqlite3.connect(empty_database).close()
+        self.assertEqual(migration.classify_target(empty_database)["state"], "EMPTY_NEW")
+        malformed_lock = Path(self.temporary.name) / "malformed.lock"
+        malformed_lock.write_text("not-json", encoding="utf-8")
+        self.assertIsNone(migration._lock_owner(malformed_lock))
+        with self.assertRaisesRegex(migration.CutoverError, "ADMISSION_FREEZE_FAILED"):
+            migration.set_admission_freeze(self.root, reason="")
+        with self.assertRaisesRegex(migration.CutoverError, "THAW_FAILED"):
+            migration.thaw_admission(self.root, migration_id="wrong")
+        with self.assertRaisesRegex(migration.CutoverError, "unknown state"):
+            migration.transition_receipt({"migration_id": "test"}, "NOT_A_STATE")
+
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
         absent = migration.preflight(self.root.parent / "missing")
