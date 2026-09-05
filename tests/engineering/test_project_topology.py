@@ -43,6 +43,34 @@ class ProjectTopologyTests(unittest.TestCase):
                 invalid_authority["repository"]["id"] = "child-cannot-be-authority"
                 with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "MALFORMED_REPOSITORY_DECLARATION"):
                     project_topology.register_server_local_topology(connection, declaration=invalid_authority)
+
+    def test_agent_attachment_rejects_invalid_availability_and_conflicting_durable_identity(self) -> None:
+        declaration = json.loads(FIXTURE.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); server.initialize(root)
+            with sqlite3.connect(root / "engineering.db") as connection:
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "INVALID_ATTACHMENT_AVAILABILITY"):
+                    project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="UNAVAILABLE")
+                registered = project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
+                self.assertEqual(registered["result"], "REGISTERED")
+                connection.execute("UPDATE ep_project_registrations SET attachment_contract=?", ('{not-json',))
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "PROJECT_DECLARATION_CONFLICT"):
+                    project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
+
+    def test_agent_attachment_rejects_repository_and_authority_conflicts(self) -> None:
+        declaration = json.loads(FIXTURE.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); server.initialize(root)
+            with sqlite3.connect(root / "engineering.db") as connection:
+                project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
+                connection.execute("UPDATE ep_repository_registrations SET authority_repository_id='other-authority'")
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
+                    project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
+            with sqlite3.connect(root / "engineering.db") as connection:
+                connection.execute("DELETE FROM ep_repository_registrations")
+                connection.execute("INSERT INTO ep_repository_registrations(repository_id,project_id,authority_repository_id,role,attachment_contract,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", ("acme-data", "different-project", "acme-data", "authority", "{}", "now", "now"))
+                with self.assertRaisesRegex(project_topology.TopologyRegistrationError, "REPOSITORY_IDENTITY_CONFLICT"):
+                    project_topology.register_attachment(connection, agent_id="agent-one", declaration=declaration, availability="AVAILABLE")
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "server"

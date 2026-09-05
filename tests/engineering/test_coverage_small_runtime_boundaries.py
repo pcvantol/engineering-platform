@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,10 @@ from engineering_platform.evidence_projection import ToolProxyEnvironment
 
 
 class SmallRuntimeBoundaryCoverageTests(unittest.TestCase):
+    def test_module_entrypoint_is_inert_when_imported(self) -> None:
+        namespace = runpy.run_module("engineering_platform.__main__", run_name="coverage_import")
+        self.assertIn("main", namespace)
+
     def test_validation_identity_rejects_malformed_and_controlled_transports(self) -> None:
         self.assertIsNone(validation_identity.canonical_validation_launcher(""))
         self.assertIsNone(validation_identity.canonical_validation_launcher("'unterminated"))
