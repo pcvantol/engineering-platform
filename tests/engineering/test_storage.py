@@ -181,6 +181,54 @@ class EngineeringStorageTest(unittest.TestCase):
                         ),
                     )
 
+    def test_schema_7_backfills_safe_runtime_facts_and_rejects_report_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = database_path(root)
+            path.parent.mkdir(parents=True)
+            reports = path.parent / "reports"
+            reports.mkdir()
+            (reports / "valid.md").write_text(
+                "- Runtime Provider: `Codex`\n- AI Model: `gpt-5`\n"
+                "- Reasoning Profile: `high`\n- Configuration Profile: `safe`\n"
+                "- Submitted Prompt Characters: `42`\n",
+                encoding="utf-8",
+            )
+            connection = sqlite3.connect(path)
+            for version in range(1, 7):
+                MIGRATIONS[version](connection)
+            run_values = (
+                "historical-run", "2026-01-01", "now", "now", "now", 0.0, None,
+                "COMPLETE", None, None, None, "MANAGED", "workspace", "repository", "1.0",
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                run_values,
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("historical-run", "COMPLETE", "historical", "now", None, "valid.md", "now"),
+            )
+            connection.execute(
+                "INSERT INTO execution_runs(run_id,execution_date,arrived_at,execution_started_at,execution_finished_at,queue_wait_seconds,execution_seconds,terminal_state,input_tokens,output_tokens,total_tokens,execution_mode,workspace,repository,execution_host_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("escaped-run", *run_values[1:]),
+            )
+            connection.execute(
+                "INSERT INTO prompt_execution_history(run_id,terminal_state,prompt_title,executed_at,git_commit,report_path,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("escaped-run", "COMPLETE", "historical", "now", None, "../outside.md", "now"),
+            )
+            MIGRATIONS[7](connection)
+            backfill = connection.execute(
+                "SELECT prompt_characters,runtime_provider,runtime_model,reasoning_profile,configuration_profile FROM execution_runs WHERE run_id=?",
+                ("historical-run",),
+            ).fetchone()
+            escaped = connection.execute(
+                "SELECT prompt_characters,runtime_provider FROM execution_runs WHERE run_id=?", ("escaped-run",)
+            ).fetchone()
+            connection.close()
+        self.assertEqual(backfill, (42, "Codex", "gpt-5", "high", "safe"))
+        self.assertEqual(escaped, (None, None))
+
     def test_provider_recovery_schema_is_prospective_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
