@@ -112,6 +112,43 @@ def storage_authority(data_root: Path, root: Path) -> dict[str, object]:
     return {"operational_database_authorities": 1, "local_operational_db": 0, "local_statestore": 0, "secondary_operational_db": 0, "transport_state": "TRANSPORT_DELIVERY_STATE"}
 
 
+def installed_runtime_topology(candidate_wheel: Path, venv: Path) -> dict[str, object]:
+    """Prove the installed product cannot launch retired ingress runtimes.
+
+    The Server owns File Inbox.  Checking the wheel *and* its generated
+    console scripts catches both a packaged module regression and an
+    accidental entry-point regression, rather than trusting source metadata.
+    """
+    prohibited_modules = {
+        "engineering_platform/inbox_watcher.py",
+        "engineering_platform/dependabot_admission.py",
+    }
+    with zipfile.ZipFile(candidate_wheel) as candidate:
+        names = set(candidate.namelist())
+    present = sorted(module for module in prohibited_modules if module in names)
+    if present:
+        raise RuntimeError(f"INSTALLED_RETIRED_RUNTIME_PRESENT: {', '.join(present)}")
+
+    bin_directory = venv / "bin"
+    required = {"engineering-platform-server", "engineering-platform"}
+    prohibited_scripts = {
+        "engineering-platform-file-inbox",
+        "engineering-platform-dashboard",
+        "engineering-inbox-watcher",
+    }
+    missing = sorted(name for name in required if not (bin_directory / name).is_file())
+    retired = sorted(name for name in prohibited_scripts if (bin_directory / name).exists())
+    if missing or retired:
+        detail = ", ".join(([f"missing {name}" for name in missing] + [f"retired {name}" for name in retired]))
+        raise RuntimeError(f"INSTALLED_RUNTIME_TOPOLOGY_FAILED: {detail}")
+    return {
+        "file_inbox_runtime_owner": "EP_SERVER",
+        "standalone_file_inbox_executable": 0,
+        "installed_legacy_inbox_watcher": 0,
+        "installed_legacy_dependabot_runtime": 0,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
@@ -127,12 +164,10 @@ def main(argv: list[str] | None = None) -> int:
         wheels = tuple(wheelhouse.glob("engineering_platform-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError("CANDIDATE_WHEEL_UNAVAILABLE")
-        with zipfile.ZipFile(wheels[0]) as candidate:
-            if any(name.endswith("/dependabot_admission.py") for name in candidate.namelist()):
-                raise RuntimeError("INSTALLED_LEGACY_DEPENDABOT_RUNTIME_PRESENT")
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)  # nosec B603
         pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "--no-index", "--find-links", str(wheelhouse), "engineering-platform"], check=True, capture_output=True, text=True)  # nosec B603
+        topology = installed_runtime_topology(wheels[0], venv)
         server, cli = venv / "bin" / "engineering-platform-server", venv / "bin" / "engineering-platform"
         port = isolated_port()
         command(server, "init", "--data-root", str(data_root), "--bind-port", str(port))
@@ -511,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             process.terminate(); process.wait(timeout=5)
         evidence["STORAGE_AUTHORITY"] = storage_authority(data_root, data_root)
-        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "CENTRAL_DEPENDABOT_GATE": "PASS", "INSTALLED_LEGACY_DEPENDABOT_RUNTIME": 0, "matrix": evidence}, sort_keys=True))
+        print(json.dumps({"P_TRANSPORT_INGRESS_MATRIX": "PASS", "P_TRANSPORT_FILE_DURABILITY_GATE": "PASS", "P_TRANSPORT_NEGATIVE_INGRESS_GATE": "PASS", "P_TRANSPORT_STORAGE_AUTHORITY_GATE": "PASS", "P_TRANSPORT_FUNCTIONAL_INGRESS_GATE": "PASS", "CENTRAL_DEPENDABOT_GATE": "PASS", "INSTALLED_LEGACY_DEPENDABOT_RUNTIME": 0, "INSTALLED_RUNTIME_TOPOLOGY": topology, "matrix": evidence}, sort_keys=True))
     return 0
 
 

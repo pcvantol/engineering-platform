@@ -70,3 +70,16 @@ class TransportAuthorityGuardTest(unittest.TestCase):
             source = source_path.read_text(encoding="utf-8")
             self.assertNotIn("workspace_inbox_api", source, source_path.name)
             self.assertNotIn("human_text_ingress", source, source_path.name)
+
+    def test_installed_qualification_guards_retired_runtime_entrypoints(self) -> None:
+        """The installed-wheel gate must reject, not merely hide, old daemons."""
+        root = Path(__file__).resolve().parents[2]
+        qualification = (root / "tools" / "qualification" / "p_transport_installed_ingress_matrix.py").read_text(encoding="utf-8")
+        self.assertIn("installed_runtime_topology", qualification)
+        for retired in (
+            "engineering-platform-file-inbox",
+            "engineering-platform-dashboard",
+            "engineering-inbox-watcher",
+            "engineering_platform/inbox_watcher.py",
+        ):
+            self.assertIn(retired, qualification)
