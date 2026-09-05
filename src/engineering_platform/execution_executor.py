@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ from .providers import CodexCliProvider
 from .reviewer_evidence import ReviewerEvidence
 from .storage import EngineeringStorageError, open_storage, record_artifact, verify_artifact_integrity
 from .agent_state import redact_diagnostic
+from .component_logging import component_logger, log_event
 
 
 _LIVE_ACTION_NAME_DISALLOWED = re.compile(r"(?:https?://|[/\\\\`]|\b(?:api[_ -]?key|token|secret|password|authorization|bearer)\b)", re.IGNORECASE)
@@ -148,21 +150,25 @@ def format_cli_failure(exit_code: int, stderr: str, stdout: str, prompt: str = "
     return "\n".join((f"Codex CLI exit code: {exit_code}", f"stderr tail: {redacted_cli_tail(stderr, prompt)}", f"stdout tail: {redacted_cli_tail(stdout, prompt)}"))
 
 
-def write_redacted_codex_cli_log(root: Path, run_id: str, detail: str) -> Path:
-    directory = root / ".engineering" / "logs" / "codex"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{run_id}.log"
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{run_id}.", suffix=".tmp", dir=directory)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write("# Redacted Codex CLI diagnostic\n\n" + redact_diagnostic(detail, limit=3_000) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-    return path
+def record_redacted_codex_cli_diagnostic(
+    root: Path, run_id: str, detail: str, *, central_database: Path,
+) -> None:
+    """Persist a bounded CLI failure diagnostic through CENTRAL only.
+
+    The former checkout-local ``.engineering/logs/codex`` file was a second
+    durable operational log surface.  The Execution Host is owned by the
+    lifecycle worker, so its diagnostic belongs to that canonical component
+    identity and to the run that produced it.
+    """
+    logger = component_logger(root, "lifecycle_worker", central_database=central_database)
+    log_event(
+        logger,
+        logging.WARNING,
+        "codex_cli_diagnostic",
+        run_id=run_id,
+        diagnostic=redact_diagnostic(detail, limit=3_000),
+        context={"target_component": "lifecycle_worker"},
+    )
 
 
 def _bounded_redacted_validation_tail(value: str | None, *, limit: int = _VALIDATION_STREAM_LIMIT) -> tuple[str | None, bool, bool]:

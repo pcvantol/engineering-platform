@@ -870,12 +870,8 @@ def _consume_codex_rate_limit_reset_credit() -> str:
 
 
 def _latest_codex_log(root: Path) -> bytes:
-    """Return only the latest locally redacted Codex diagnostic."""
-    logs = sorted((root / ".engineering" / "logs" / "codex").glob("*.log"))
-    try:
-        return logs[-1].read_bytes() if logs else b"Geen Codex CLI-diagnose beschikbaar."
-    except OSError:
-        return b"Codex CLI-diagnose is niet beschikbaar."
+    """Retire the former checkout-local Codex diagnostic reader."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
 
 
 def _component_log(root: Path, component: str) -> bytes:
@@ -1456,31 +1452,13 @@ def _retry_report_analysis(root: Path, run_id: object) -> bytes:
 
 
 def _current_codex_log(root: Path) -> bytes:
-    """Return the diagnostic for the exact run currently shown by the dashboard."""
-    try:
-        run_id = json.loads(_status(root)).get("run_id")
-    except json.JSONDecodeError:
-        run_id = None
-    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
-        return b"Geen Codex CLI-diagnose beschikbaar voor de huidige uitvoering."
-    try:
-        return (root / ".engineering" / "logs" / "codex" / f"{run_id}.log").read_bytes()
-    except OSError:
-        return b"Geen Codex CLI-diagnose beschikbaar voor de huidige uitvoering."
+    """Retire local current-run diagnostics as an operational read source."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
 
 
 def _last_executed_codex_log(root: Path) -> bytes:
-    """Return only the log bound to the latest completed or failed Inbox run."""
-    try:
-        run_id = json.loads((root / ".engineering" / "status" / "status.json").read_text(encoding="utf-8")).get("last_executed_run")
-    except (OSError, json.JSONDecodeError):
-        run_id = None
-    if not isinstance(run_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", run_id):
-        return b"Geen Codex CLI-diagnose beschikbaar voor de laatst uitgevoerde uitvoering."
-    try:
-        return (root / ".engineering" / "logs" / "codex" / f"{run_id}.log").read_bytes()
-    except OSError:
-        return b"Geen Codex CLI-diagnose beschikbaar voor de laatst uitgevoerde uitvoering."
+    """Retire local terminal-run diagnostics as an operational read source."""
+    return b"Lokale Codex CLI-diagnoselogs zijn retired; gebruik CENTRAL componentlogs."
 
 
 def _codex_usage(root: Path) -> bytes:

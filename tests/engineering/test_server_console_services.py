@@ -1469,12 +1469,12 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["workspace_git"]["branch"], "Niet beschikbaar")
         self.assertIn("workspace_worktrees", snapshot)
 
-    def test_latest_codex_log_is_local_and_read_only(self) -> None:
+    def test_local_codex_log_reader_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             logs = Path(temporary) / ".engineering" / "logs" / "codex"
             logs.mkdir(parents=True)
             (logs / "run.log").write_text("redacted diagnostic", encoding="utf-8")
-            self.assertEqual(_latest_codex_log(Path(temporary)), b"redacted diagnostic")
+            self.assertIn(b"retired", _latest_codex_log(Path(temporary)))
 
     @patch("engineering_platform.server_console_services.subprocess.run")
     def test_codex_process_metrics_ignore_unowned_codex_processes(self, run: object) -> None:
@@ -1493,7 +1493,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(metrics["cpu_percent"], 10.0)
         self.assertIn("Execution Host-verwerking", metrics["gpu_status"])
 
-    def test_current_codex_log_never_falls_back_to_a_different_run(self) -> None:
+    def test_current_codex_log_reader_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             status = root / ".engineering" / "status"
@@ -1502,11 +1502,10 @@ class DashboardStatusTest(unittest.TestCase):
             logs.mkdir(parents=True)
             (status / "current.json").write_text('{"run_id":"inbox-new","phase":"INITIALIZE"}', encoding="utf-8")
             (logs / "inbox-old.log").write_text("old diagnostic", encoding="utf-8")
-            self.assertIn(b"huidige uitvoering", _current_codex_log(root))
+            self.assertIn(b"retired", _current_codex_log(root))
             (logs / "inbox-new.log").write_text("new diagnostic", encoding="utf-8")
-            self.assertEqual(_current_codex_log(root), b"new diagnostic")
 
-    def test_last_executed_log_is_bound_to_last_executed_run(self) -> None:
+    def test_last_executed_codex_log_reader_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             status = root / ".engineering" / "status"
@@ -1515,9 +1514,8 @@ class DashboardStatusTest(unittest.TestCase):
             logs.mkdir(parents=True)
             (status / "status.json").write_text('{"last_executed_run":"inbox-last"}', encoding="utf-8")
             (logs / "inbox-other.log").write_text("old diagnostic", encoding="utf-8")
-            self.assertIn(b"laatst uitgevoerde uitvoering", _last_executed_codex_log(root))
+            self.assertIn(b"retired", _last_executed_codex_log(root))
             (logs / "inbox-last.log").write_text("last diagnostic", encoding="utf-8")
-            self.assertEqual(_last_executed_codex_log(root), b"last diagnostic")
 
     def test_report_is_bound_to_the_requested_last_executed_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2102,8 +2100,8 @@ class DashboardStatusTest(unittest.TestCase):
             status = root / ".engineering" / "status"
             status.mkdir(parents=True)
             (status / "status.json").write_text("not json", encoding="utf-8")
-            self.assertIn(b"huidige uitvoering", dashboard._current_codex_log(root))
-            self.assertIn(b"laatst uitgevoerde", dashboard._last_executed_codex_log(root))
+            self.assertIn(b"retired", dashboard._current_codex_log(root))
+            self.assertIn(b"retired", dashboard._last_executed_codex_log(root))
             self.assertEqual(dashboard._prompt_started(root), b"{}")
             self.assertEqual(dashboard._tracked_file_count(root), "Niet beschikbaar")
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from engineering_platform import component_logging
 from engineering_platform.platform_components import RETIRED_COMPONENT_ALIASES
+from tools.qualification import logging_retirement_guard
 
 
 class ComponentLoggingTest(unittest.TestCase):
@@ -99,6 +100,17 @@ class ComponentLoggingTest(unittest.TestCase):
                     connection.execute("SELECT COUNT(*) FROM engineering_component_logs").fetchone()[0],
                     0,
                 )
+
+    def test_central_failure_never_creates_a_local_durable_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(component_logging.sys, "stderr", io.StringIO()):
+            root = Path(temporary)
+            logger = component_logging.component_logger(root, "operations_console")
+            component_logging.log_event(logger, logging.INFO, "central_unavailable")
+            self.assertFalse((root / ".engineering" / "logs").exists())
+
+    def test_logging_retirement_static_guard_passes(self) -> None:
+        source = Path(__file__).parents[2] / "src"
+        self.assertEqual(logging_retirement_guard.violations(source), [])
 
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
         from engineering_platform import providers, server

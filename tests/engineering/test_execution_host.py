@@ -53,7 +53,7 @@ from engineering_platform.execution_host import (
     generate_terminal_report,
     project_codex_activity,
     project_codex_live_action_name,
-    write_redacted_codex_cli_log,
+    record_redacted_codex_cli_diagnostic,
     write_codex_usage,
     write_live_status,
 )
@@ -3207,13 +3207,21 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertIn("[PROMPT_OMITTED]", detail)
         self.assertIn("ERROR: actionable failure", detail)
 
-    def test_codex_cli_log_is_private_and_redacted(self) -> None:
+    def test_codex_cli_diagnostic_is_central_and_redacted(self) -> None:
+        from engineering_platform.server import initialize
         with tempfile.TemporaryDirectory() as temporary:
-            path = write_redacted_codex_cli_log(Path(temporary), "cli-run", "Bearer private-token")
-            content = path.read_text(encoding="utf-8")
-            self.assertNotIn("private-token", content)
-            self.assertIn("[REDACTED]", content)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            root = Path(temporary)
+            central = root / "central"
+            initialize(central)
+            record_redacted_codex_cli_diagnostic(root, "cli-run", "Bearer private-token", central_database=central / "engineering.db")
+            with sqlite3.connect(central / "engineering.db") as connection:
+                component, payload = connection.execute(
+                    "SELECT component,payload FROM engineering_component_logs"
+                ).fetchone()
+            self.assertEqual(component, "lifecycle_worker")
+            self.assertNotIn("private-token", payload)
+            self.assertIn("[REDACTED]", payload)
+            self.assertFalse((root / ".engineering" / "logs").exists())
 
     def test_sensitive_diagnostic_is_redacted_before_persistence(self) -> None:
         agent = FakeAgent(AgentResult("BLOCKED", diagnostic="authorization=top-secret API_KEY=also-secret"))

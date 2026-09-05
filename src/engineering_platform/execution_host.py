@@ -85,7 +85,7 @@ from .execution_executor import (
     project_codex_live_action_name as executor_project_codex_live_action_name,
 )
 from .execution_executor import redacted_cli_tail as executor_redacted_cli_tail
-from .execution_executor import write_redacted_codex_cli_log as executor_write_redacted_codex_cli_log
+from .execution_executor import record_redacted_codex_cli_diagnostic
 from .execution_executor import persist_validation_failure_diagnostic
 from .execution_executor import CodexCliClient
 from .execution_finalization import FinalizationCoordinator
@@ -192,7 +192,6 @@ project_codex_activity = executor_project_codex_activity
 project_codex_live_action_name = executor_project_codex_live_action_name
 _redacted_cli_tail = executor_redacted_cli_tail
 _format_cli_failure = executor_format_cli_failure
-write_redacted_codex_cli_log = executor_write_redacted_codex_cli_log
 
 
 def assemble_prompt(
@@ -3268,8 +3267,10 @@ def main(argv: list[str] | None = None) -> int:
     if state.phase in {"BLOCKED", "FAILED"}:
         print(_format_terminal_report(state))
         if runner.console_detail:
-            log_path = write_redacted_codex_cli_log(root, state.run_id, runner.console_detail)
-            print(f"\nCodex CLI log: {log_path}")
+            record_redacted_codex_cli_diagnostic(
+                root, state.run_id, runner.console_detail, central_database=central_database,
+            )
+            print("\nCodex CLI-diagnostiek is veilig in CENTRAL vastgelegd.")
             print(f"\nCodex CLI details:\n{runner.console_detail}")
     elif state.phase == "COMPLETE" and state.owner_authorized and state.finalization_merge_commit:
         print(format_management_summary(state))
