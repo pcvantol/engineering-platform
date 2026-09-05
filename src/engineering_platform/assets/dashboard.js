@@ -597,9 +597,9 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   $("rateLimitProvider").textContent = provider + " · " + version;
   let providerPathElement = $("rateLimitProviderPath");
   if (!(providerPathElement instanceof HTMLButtonElement)) {
-    providerPathElement = replaceWithLocalFolderButton(providerPathElement);
+    providerPathElement = replaceWithReadOnlyLocation(providerPathElement);
   }
-  configureLocalFolderButton(providerPathElement, providerPath);
+  configureReadOnlyLocation(providerPathElement, providerPath);
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -622,7 +622,11 @@ async function refreshPlatformProviderCapacity() {
   try {
     const response = await fetch("/api/provider-capacity", { cache: "no-store" });
     const payload = response.ok ? await response.json() : null;
-    if (!payload || typeof payload.rate_limits !== "object") return;
+    // A Server that cannot currently observe provider capacity returns a
+    // bounded empty projection.  That observation must not erase a valid
+    // snapshot already rendered by the Console; accept only a complete
+    // capacity shape before replacing the current presentation.
+    if (!payload || !Array.isArray(payload.rate_limits?.windows) || payload.rate_limits.windows.length === 0) return;
     latestDashboardSnapshot = {
       ...(latestDashboardSnapshot || {}), rate_limits: payload.rate_limits,
       ai_capacity_history: Array.isArray(payload.ai_capacity_history) ? payload.ai_capacity_history : [],
@@ -1471,35 +1475,6 @@ function executionContextValue(value) {
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
   return "";
 }
-function localFolderPath(value) {
-  return typeof value === "string" && value.startsWith("/") ? value.trim() : "";
-}
-async function openLocalFolder(directoryPath) {
-  const path = localFolderPath(directoryPath);
-  if (!path) {
-    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
-    return;
-  }
-  try {
-    const response = await fetch("/api/open-local-directory", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ directory_path: path }),
-    });
-    // A reverse proxy or a temporarily restarting dashboard can return a
-    // non-JSON error page.  Do not surface a browser parser exception to the
-    // operator; the route has one clear, actionable fallback instead.
-    const outcome = await response.json().catch(() => ({}));
-    if (!response.ok) throw Error(outcome?.error || t("workspace.open_local_folder_failed"));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    showDashboardError(
-      message === "The string did not match the expected pattern."
-        ? t("workspace.open_local_folder_failed")
-        : message || t("workspace.open_local_folder_failed"),
-      t("workspace.open_local_folder_failed"),
-    );
-  }
-}
 async function openCentralDatabaseDirectory() {
   try {
     const response = await fetch("/api/central-database/open-directory", {
@@ -1510,65 +1485,25 @@ async function openCentralDatabaseDirectory() {
     showDashboardError(t("configuration.ep_database_open_folder_failed"), t("configuration.ep_database_open_folder_failed"));
   }
 }
-async function openRuntimeDirectory(runtime) {
-  if (!new Set(["codex", "github", "python"]).has(runtime)) return;
-  try {
-    const response = await fetch("/api/runtime-directory/open", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runtime }),
-    });
-    if (!response.ok) throw Error();
-  } catch {
-    showDashboardError(t("workspace.open_local_folder_failed"), t("workspace.open_local_folder_failed"));
-  }
-}
 document.addEventListener("click", (event) => {
   if (event.target.closest("#centralDatabaseLocation")) void openCentralDatabaseDirectory();
 });
-function configureLocalFolderButton(button, value, { containingFolder = false } = {}) {
-  const path = localFolderPath(value);
-  button.classList.add("local-folder-link");
+function configureRuntimeDirectoryButton(button, value, runtime) {
+  configureReadOnlyLocation(button, value || "—");
+}
+function configureReadOnlyLocation(button, value) {
+  button.classList.remove("local-folder-link", "runtime-directory-link");
   button.type = "button";
   button.textContent = String(value || t("format.not_available"));
-  button.disabled = !path;
+  button.disabled = true;
   button.onclick = null;
   button.removeAttribute("title");
   button.removeAttribute("aria-label");
-  if (!path) {
-    return;
-  }
-  const directoryPath = containingFolder ? path.replace(/\/[^/]+$/, "") : path;
-  const label = t(
-    containingFolder ? "workspace.open_containing_folder" : "workspace.open_local_folder",
-    { path },
-  );
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.onclick = () => void openLocalFolder(directoryPath);
 }
-function localFolderButton(value, options = {}) {
-  const button = document.createElement("button");
-  configureLocalFolderButton(button, value, options);
-  return button;
-}
-function configureRuntimeDirectoryButton(button, value, runtime) {
-  const path = localFolderPath(value);
-  button.classList.add("local-folder-link", "runtime-directory-link");
-  button.type = "button";
-  button.textContent = String(value || "—");
-  button.disabled = !path;
-  button.onclick = null;
-  button.removeAttribute("title");
-  button.removeAttribute("aria-label");
-  if (!path) return;
-  const label = t("workspace.open_containing_folder", { path });
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.onclick = () => void openRuntimeDirectory(runtime);
-}
-function replaceWithLocalFolderButton(element, options = {}) {
+function replaceWithReadOnlyLocation(element) {
   if (!element) return null;
-  const button = localFolderButton(element.textContent.trim(), options);
+  const button = document.createElement("button");
+  configureReadOnlyLocation(button, element.textContent.trim());
   if (element.id) button.id = element.id;
   element.replaceWith(button);
   return button;
@@ -1579,9 +1514,7 @@ function executionContextField(label, value, badge = false, folder = false) {
   caption.className = "label";
   caption.textContent = label;
   const supplied = executionContextValue(value);
-  const output = folder && localFolderPath(supplied)
-    ? localFolderButton(supplied)
-    : content;
+  const output = content;
   if (output === content) content.textContent = supplied || t("execution_context.not_supplied");
   if (badge) output.classList.add("execution-context__phase");
   field.append(caption, output);
@@ -5914,8 +5847,8 @@ document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
-replaceWithLocalFolderButton(workspaceLocation);
-replaceWithLocalFolderButton($("rateLimitProviderPath"));
+replaceWithReadOnlyLocation(workspaceLocation);
+replaceWithReadOnlyLocation($("rateLimitProviderPath"));
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
@@ -7221,9 +7154,7 @@ function detailField(label, value, preformatted = false, folder = false) {
   name.className = "label";
   name.textContent = label;
   const supplied = String(value ?? "—");
-  const content = folder && localFolderPath(supplied)
-    ? localFolderButton(supplied)
-    : output;
+  const content = output;
   if (content === output) output.textContent = supplied;
   field.append(name, content);
   return field;

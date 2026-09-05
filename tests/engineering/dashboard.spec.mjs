@@ -52,7 +52,7 @@ async function startDashboard(root, environment) {
       "python3",
       [
         "-c",
-        "from pathlib import Path; import sys; from engineering_platform.dashboard import DashboardHTTPServer, handler; server = DashboardHTTPServer(('127.0.0.1', 0), handler(Path(sys.argv[1]))); print(server.server_address[1], flush=True); server.serve_forever()",
+        "from http.server import ThreadingHTTPServer; from pathlib import Path; import sqlite3, sys; from engineering_platform import project_topology; from engineering_platform.server import _HealthHandler, initialize; root = Path(sys.argv[1]); server = ThreadingHTTPServer(('127.0.0.1', 0), _HealthHandler); initialize(root, bind_port=server.server_address[1]); connection = sqlite3.connect(root / 'engineering.db'); project_topology.register_server_local_topology(connection, declaration={'schema_version': '1.0', 'project': {'id': 'dashboard-fixture', 'authority_repository_id': 'dashboard-fixture-repository'}, 'repository': {'id': 'dashboard-fixture-repository', 'role': 'authority'}, 'validation': {'kind': 'none'}}); connection.commit(); connection.close(); server.data_root = root; print(server.server_address[1], flush=True); server.serve_forever()",
         root,
       ],
       { cwd: repository, env: environment, stdio: ["ignore", "pipe", "pipe"] },
@@ -75,7 +75,7 @@ async function startDashboard(root, environment) {
       const port = Number.parseInt(output, 10);
       if (!Number.isInteger(port) || port <= 0) return;
       clearTimeout(timeout);
-      resolve({ process, url: `http://127.0.0.1:${port}` });
+      resolve({ process, url: `http://127.0.0.1:${port}/?project=dashboard-fixture` });
     });
     process.stderr.on("data", (chunk) => { errors += chunk; });
   });
@@ -84,7 +84,7 @@ async function startDashboard(root, environment) {
 async function waitForDashboard() {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
-      if ((await fetch(`${dashboardUrl}/api/health`)).ok) return;
+      if ((await fetch(`${new URL(dashboardUrl).origin}/readyz`)).ok) return;
     } catch {
       // The isolated dashboard process is still starting.
     }
@@ -110,6 +110,16 @@ test.beforeAll(async () => {
 });
 
 test.beforeEach(async ({ page }) => {
+  // Project-scoped Server event streams carry their explicit CENTRAL project
+  // identity as a query parameter. Keep the existing fixture abort effective
+  // for that canonical URL shape as well as the former unscoped path.
+  const installRoute = page.route.bind(page);
+  page.route = (url, ...handlers) => installRoute(
+    typeof url === "string" && url.startsWith("**/api/") && !url.endsWith("*")
+      ? `${url}*`
+      : url,
+    ...handlers,
+  );
   // The fixture's SSE endpoint detects a disconnected browser only on a later
   // write.  Letting every short-lived page open a real stream therefore
   // accumulates server threads across a shard and can starve later reloads.
@@ -416,7 +426,6 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("shows localized provider login states in Configuration", async ({ page }) => {
-    const openedRuntimes = [];
     await page.route("**/api/provider-login-status", (route) => route.fulfill({ json: {
       providers: {
         codex: { provider: "CODEX", state: "READY", executable: "/ep/codex/bin/codex", version: "0.152.1" },
@@ -426,10 +435,6 @@ test.describe("Engineering Status browser smoke", () => {
     await page.route("**/api/execution-runtime-status", (route) => route.fulfill({ json: {
       state: "READY", executable: "/opt/engineering-platform/bin/python", version: "3.14.1",
     } }));
-    await page.route("**/api/runtime-directory/open", async (route) => {
-      openedRuntimes.push(JSON.parse(route.request().postData()).runtime);
-      await route.fulfill({ status: 202, json: { opened_directory: "/runtime/bin" } });
-    });
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body?.classList.contains("dashboard-ready"));
     await page.locator("#configuration").evaluate((element) => { element.open = true; });
@@ -441,7 +446,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
-    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveClass(/local-folder-link/);
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toBeDisabled();
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
@@ -460,14 +465,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
     await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
     await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
-    await expect(validation.locator("[data-execution-runtime-path]")).toHaveClass(/local-folder-link/);
+    await expect(validation.locator("[data-execution-runtime-path]")).toBeDisabled();
     await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
     await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
     await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
-    await dispatchDashboardPointerClick(block.locator('[data-provider="CODEX"] [data-provider-cli-path]'));
-    await dispatchDashboardPointerClick(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]'));
-    await dispatchDashboardPointerClick(validation.locator("[data-execution-runtime-path]"));
-    await expect.poll(() => openedRuntimes).toEqual(["codex", "github", "python"]);
   });
 
   test("uses the compact destructive action contract for provider sign-out", async ({ page }) => {
@@ -791,7 +792,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect.poll(() => requestedPath).toBe("/tmp/finder-worktree");
   });
 
-  test("opens displayed local workspace and checkout folders through the approved Finder route", async ({ page }) => {
+  test("keeps displayed local paths read-only without a Finder route", async ({ page }) => {
     const requestedDirectories = [];
     await page.route("**/api/open-local-directory", async (route) => {
       requestedDirectories.push(JSON.parse(route.request().postData()).directory_path);
@@ -800,17 +801,10 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
-    const workspace = page.locator("#workspaceCard .local-folder-link").first();
+    const workspace = page.locator("#workspaceCard button").first();
     const workspacePath = await workspace.textContent();
-    const restingLinkColor = await workspace.evaluate((element) => getComputedStyle(element).color);
-    await workspace.hover();
-    await expect(workspace).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(workspace).toHaveCSS("color", restingLinkColor);
-    await workspace.focus();
-    await expect(workspace).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(workspace).toHaveCSS("color", restingLinkColor);
-    await dispatchDashboardPointerClick(workspace);
-    await expect.poll(() => requestedDirectories).toEqual([workspacePath]);
+    expect(workspacePath).toBe("Physical binding is not Console authority.");
+    await expect(workspace).toBeDisabled();
 
     await page.evaluate(() => rateLimits({
       provider: "Codex CLI", provider_version: "0.150.1",
@@ -818,11 +812,8 @@ test.describe("Engineering Status browser smoke", () => {
       windows: [], reset_credits: 0,
     }));
     const installationPath = page.locator("#rateLimitProviderPath");
-    await dispatchDashboardPointerClick(installationPath);
-    await expect.poll(() => requestedDirectories).toEqual([
-      workspacePath,
-      "/Users/example/.local/share/engineering-platform/codex-cli",
-    ]);
+    await expect(installationPath).toBeDisabled();
+    await expect(installationPath).toHaveText("/Users/example/.local/share/engineering-platform/codex-cli");
 
     await page.evaluate(() => r({
       watcher_state: "ENGINEERING_RUN_ACTIVE",
@@ -833,14 +824,10 @@ test.describe("Engineering Status browser smoke", () => {
       checkout_path: "/Users/example/Documents/GitHub/djconnect",
       active_branch: "main",
     }, {}));
-    const checkout = page.locator("#executionContext .local-folder-link");
+    const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("span").last();
     await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
-    await dispatchDashboardPointerClick(checkout);
-    await expect.poll(() => requestedDirectories).toEqual([
-      workspacePath,
-      "/Users/example/.local/share/engineering-platform/codex-cli",
-      "/Users/example/Documents/GitHub/djconnect",
-    ]);
+    await expect(page.locator("#workspaceCard .local-folder-link, #rateLimitProviderPath.local-folder-link, #executionContext .local-folder-link")).toHaveCount(0);
+    await expect.poll(() => requestedDirectories).toEqual([]);
   });
 
   test("uses the CENTRAL-only Finder route for the EP database location", () => {
@@ -886,7 +873,7 @@ test.describe("Engineering Status browser smoke", () => {
   });
 
   test("confirms a safe per-worktree removal in the shared destructive modal", async ({ page }) => {
-    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/events*", (route) => route.abort());
     // This interaction supplies its own worktree projection. Keep the
     // dashboard's unrelated initial snapshot from replacing that fixture
     // while the confirmation flow is under test.
@@ -2486,11 +2473,13 @@ test.describe("Engineering Status browser smoke", () => {
       history: { run_id: runId, status: "COMPLETE", title: "Deeplink prompt" }, execution: {}, evidence: [],
     } }));
 
-    await page.goto(`${dashboardUrl}/?prompt=${runId}`, { waitUntil: "domcontentloaded" });
+    const deeplink = new URL(dashboardUrl);
+    deeplink.searchParams.set("prompt", runId);
+    await page.goto(deeplink.href, { waitUntil: "domcontentloaded" });
     const modal = page.locator("#promptHistoryDetailModal");
     await expect(modal).toBeVisible();
     await expect(page.locator("#promptHistoryDetailTitle")).toHaveText("Deeplink prompt");
-    await expect(page).toHaveURL(new RegExp(`\\?prompt=${runId}$`));
+    await expect(page).toHaveURL(new RegExp(`\\?project=dashboard-fixture&prompt=${runId}$`));
     await expect(page.locator("#promptHistoryRows .prompt-history-open-link, #promptHistoryRows .prompt-history-copy-link")).toHaveCount(0);
     await expect(modal.locator(".prompt-history-run-id-copy")).toHaveAttribute(
       "aria-label", DASHBOARD_MESSAGES.nl["history.copy_link"].replace("{title}", runId),
@@ -2510,7 +2499,9 @@ test.describe("Engineering Status browser smoke", () => {
       run_id: "inbox-known", status: "COMPLETE", title: "Known prompt",
     }] } }));
 
-    await page.goto(`${dashboardUrl}/?prompt=unknown-run`, { waitUntil: "domcontentloaded" });
+    const deeplink = new URL(dashboardUrl);
+    deeplink.searchParams.set("prompt", "unknown-run");
+    await page.goto(deeplink.href, { waitUntil: "domcontentloaded" });
     await expect(page.locator("#promptHistoryDetailModal")).not.toBeVisible();
     await expect(page).toHaveURL(dashboardUrl);
   });
@@ -3065,7 +3056,7 @@ test.describe("Engineering Status browser smoke", () => {
   test("keeps lifecycle steps transparent on iPhone and puts repair counts in their details", async ({ browser }) => {
     const context = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
     const page = await context.newPage();
-    await page.route("**/api/events", (route) => route.abort());
+    await page.route("**/api/events*", (route) => route.abort());
     await page.route("**/api/dashboard-snapshot", (route) => route.abort());
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.classList.contains("dashboard-ready"));

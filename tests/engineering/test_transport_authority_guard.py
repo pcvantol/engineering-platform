@@ -83,3 +83,13 @@ class TransportAuthorityGuardTest(unittest.TestCase):
             "engineering_platform/inbox_watcher.py",
         ):
             self.assertIn(retired, qualification)
+
+    def test_browser_fixture_uses_the_server_boundary_and_no_local_finder_route(self) -> None:
+        """Dashboard browser evidence must not revive the retired direct listener."""
+        root = Path(__file__).resolve().parents[2]
+        fixture = (root / "tests" / "engineering" / "dashboard.spec.mjs").read_text(encoding="utf-8")
+        self.assertIn("from engineering_platform.server import _HealthHandler, initialize", fixture)
+        self.assertNotIn("engineering_platform.dashboard import DashboardHTTPServer, handler", fixture)
+        dashboard = (root / "src" / "engineering_platform" / "assets" / "dashboard.js").read_text(encoding="utf-8")
+        self.assertNotIn('fetch("/api/open-local-directory"', dashboard)
+        self.assertNotIn('fetch("/api/runtime-directory/open"', dashboard)
