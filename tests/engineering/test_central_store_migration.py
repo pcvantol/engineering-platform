@@ -7,7 +7,7 @@ import hashlib
 import fcntl
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sqlite3
 import subprocess
 import tempfile
@@ -98,6 +98,12 @@ class CentralStoreMigrationTests(unittest.TestCase):
         with patch.object(migration.sys, "platform", "linux"), \
              patch.dict(os.environ, {"XDG_DATA_HOME": "/portable/data"}, clear=False):
             self.assertEqual(migration.user_data_dir("EP"), Path("/portable/data/EP"))
+
+    def test_windows_data_root_uses_localappdata_without_host_path_semantics(self) -> None:
+        with patch.object(migration.sys, "platform", "win32"), patch.object(migration.os, "name", "nt"), \
+             patch.object(migration, "Path", PurePosixPath), \
+             patch.dict(os.environ, {"LOCALAPPDATA": "/portable/local", "APPDATA": "/portable/roaming"}, clear=False):
+            self.assertEqual(str(migration.user_data_dir("EP")), "/portable/local/EP")
 
     def test_launchagent_control_fails_closed_when_launchd_cannot_confirm_state(self) -> None:
         control = migration.LaunchAgentServiceControl(uid=501)
