@@ -130,6 +130,21 @@ def _execution_runtime_status() -> dict[str, str]:
     }
 
 
+def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | None:
+    """Return the most restrictive remaining safe quota percentage."""
+    windows = rate_limits.get("windows")
+    if not isinstance(windows, list):
+        return None
+    remaining: list[float] = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        if isinstance(used, (int, float)) and not isinstance(used, bool):
+            remaining.append(max(0.0, min(100.0, 100.0 - float(used))))
+    return min(remaining) if remaining else None
+
+
 class ServerConfigurationError(ValueError):
     """Raised when an installation-owned server configuration is invalid."""
 
@@ -1417,7 +1432,7 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: 
     rate_limits = decoded.get("rate_limits")
     if isinstance(rate_limits, dict):
         provider = rate_limits.get("provider")
-        remaining = dashboard._remaining_rate_limit_capacity(rate_limits)
+        remaining = _remaining_rate_limit_capacity(rate_limits)
         if isinstance(provider, str) and remaining is not None:
             decoded["ai_capacity_history"] = central_database.record_provider_capacity(
                 data_root, provider=provider, remaining_percent=remaining,
@@ -1436,7 +1451,7 @@ def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         payload = {}
     provider = payload.get("provider")
-    remaining = dashboard._remaining_rate_limit_capacity(payload)
+    remaining = _remaining_rate_limit_capacity(payload)
     history: list[dict[str, object]] = []
     if isinstance(provider, str) and remaining is not None:
         history = central_database.record_provider_capacity(
@@ -2145,7 +2160,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
                 reserve = payload.get("codex_capacity_reserve_percent") if isinstance(payload, dict) else None
                 live = _provider_capacity_projection(self.server.data_root)  # type: ignore[attr-defined]
-                remaining = dashboard._remaining_rate_limit_capacity(live["rate_limits"])
+                remaining = _remaining_rate_limit_capacity(live["rate_limits"])
                 if not isinstance(reserve, int) or isinstance(reserve, bool) or (reserve and (remaining is None or reserve > remaining)):
                     raise ValueError
                 self._send(200, central_database.update_capacity_configuration(self.server.data_root, reserve))  # type: ignore[attr-defined]
