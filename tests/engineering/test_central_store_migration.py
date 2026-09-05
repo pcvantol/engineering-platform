@@ -133,6 +133,15 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertIn("SOURCE_INTEGRITY_FAILED", inspected["blocking_codes"])
         self.assertEqual(migration.classify_target(corrupt)["state"], "CORRUPT_UNREADABLE")
 
+    def test_preflight_reports_a_malformed_authoritative_source_fail_closed(self) -> None:
+        malformed_root = Path(self.temporary.name) / "malformed-repository"
+        malformed = malformed_root / ".engineering" / "engineering.db"
+        malformed.parent.mkdir(parents=True)
+        malformed.write_text("not a sqlite database", encoding="utf-8")
+        result = migration.preflight(malformed_root)
+        self.assertFalse(result["eligible"])
+        self.assertIn("SOURCE_INTEGRITY_FAILED", result["blocking_codes"])
+
     def test_forensic_value_normalization_is_type_stable_and_never_parses_scalar_text_as_json(self) -> None:
         cases = (
             (None, {"type": "null"}),
