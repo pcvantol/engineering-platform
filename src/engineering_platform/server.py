@@ -119,6 +119,17 @@ def _report_content_disposition(report_id: object) -> str:
     return _attachment_content_disposition(f"engineering-report-{report_id}.md")
 
 
+def _execution_runtime_status() -> dict[str, str]:
+    """Project installed Server Python readiness without Dashboard ownership."""
+    executable = Path(sys.executable).resolve()
+    ready = executable.is_file() and os.access(executable, os.X_OK)
+    return {
+        "state": "READY" if ready else "UNAVAILABLE",
+        "executable": str(executable) if ready else "",
+        "version": sys.version.split()[0] if ready else "",
+    }
+
+
 class ServerConfigurationError(ValueError):
     """Raised when an installation-owned server configuration is invalid."""
 
@@ -1795,7 +1806,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, _central_console_configuration(self.server.data_root))  # type: ignore[attr-defined]
             return True
         if request.path == "/api/execution-runtime-status":
-            self._send(200, dashboard._execution_runtime_status())
+            self._send(200, _execution_runtime_status())
             return True
         if request.path == "/api/github-rate-limit":
             self._send(200, dashboard._github_rate_limit_status())
@@ -2071,7 +2082,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/execution-runtime-status" and method == "do_GET":
             # Validation is an installation capability, independent of the
             # selected project.  Keep it out of the legacy checkout delegate.
-            self._send(200, dashboard._execution_runtime_status())
+            self._send(200, _execution_runtime_status())
             return
         if request.path == "/api/execution-runtime/repair" and method == "do_POST":
             try:
@@ -2079,7 +2090,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
                     raise ValueError
                 if self.rfile.read(int(self.headers.get("Content-Length", "0"))) != b"{}":
                     raise ValueError
-                runtime = dashboard._execution_runtime_status()
+                runtime = _execution_runtime_status()
                 if runtime["state"] != "READY":
                     raise ValueError
             except (ValueError, OSError):
