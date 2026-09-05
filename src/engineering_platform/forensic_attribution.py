@@ -194,7 +194,7 @@ def _classify(change: dict[str, Any], literals: dict[str, list[str]]) -> dict[st
         if key.startswith("dashboard_configuration."):
             return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "CONFIGURATION",
                     "evidence_status": "UNRESOLVED", "rule_id": "SHARED_CONFIGURATION_WRITER",
-                    "evidence": _evidence("SHARED_CONFIGURATION_WRITER", {"type": "writer_index", "source": "src/engineering_platform/dashboard_configuration.py", "signals": ["configuration_key", "shared_api_no_caller_receipt"]})}
+                    "evidence": _evidence("SHARED_CONFIGURATION_WRITER", {"type": "writer_index", "source": "src/engineering_platform/historical_dashboard_configuration.py", "signals": ["configuration_key", "shared_api_no_caller_receipt"]})}
     if table == "execution_projections":
         return {"ancestry_origin": "UNKNOWN", "writer_origin": "UNKNOWN", "state_semantics": "MUTABLE_PROJECTION",
                 "evidence_status": "UNRESOLVED", "rule_id": "SHARED_PROJECTION_WRITER",

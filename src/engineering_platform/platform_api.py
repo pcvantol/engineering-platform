@@ -13,7 +13,6 @@ from pathlib import Path
 import os
 import sys
 from .providers import engineering_platform_codex_cli_prefix, registry
-from .dashboard_configuration import inbox_root as configured_inbox_root
 from .resources import package_text
 
 
@@ -154,13 +153,10 @@ class ExecutionHostConfigurationResolver:
         provider = self._configuration.providers["remote_submission"]
         if provider != "icloud_inbox":
             raise PlatformConfigurationError("Configured Runtime Prompt transport is unsupported.")
-        override = os.environ.get("DJCONNECT_ENGINEERING_INBOX")
-        inbox_root = (
-            Path(override).expanduser()
-            if override
-            else configured_inbox_root(self._root)
-            or Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Engineering Platform"
-        )
+        # Root-local dashboard settings and environment overrides are retired
+        # from the supported runtime. File ingress is Server-owned; this
+        # legacy resolver has one deterministic historical fallback only.
+        inbox_root = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Engineering Platform"
         return RuntimePromptTransport(provider, inbox_root / "Inbox")
 
     def resolve_workspace_store(self) -> Path:

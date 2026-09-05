@@ -66,7 +66,7 @@ from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .platform_version import EngineeringPlatformManifest
 from .resources import package_path
-from .dashboard_configuration import (
+from .historical_dashboard_configuration import (
     DashboardConfigurationConflict,
     get as dashboard_configuration,
     update as update_dashboard_configuration,

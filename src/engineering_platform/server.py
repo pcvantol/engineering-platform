@@ -2096,7 +2096,12 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         return True
 
     def _stream_console_events(self, root: Path, project_id: str) -> None:
-        """Stream preserved dashboard state with the selected CENTRAL FIFO."""
+        """Stream the selected project from CENTRAL only.
+
+        ``root`` is retained temporarily by the route's binding contract but
+        is intentionally not read: a checkout cannot become state authority
+        merely because it is attached to a selected project.
+        """
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -2114,10 +2119,10 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f"retry: {stream_interval * 1000}\n\n".encode())
             previous: bytes | None = None
             for iteration in range(300):
-                snapshot = _with_console_queue(
-                    server_console_services._sse_snapshot(root),
-                    queue=_console_queue_projection(self.server.data_root, project_id), data_root=self.server.data_root,  # type: ignore[attr-defined]
-                )
+                snapshot = json.dumps(
+                    _central_console_project_snapshot(self.server.data_root, project_id),
+                    separators=(",", ":"),
+                ).encode("utf-8")  # type: ignore[attr-defined]
                 if snapshot != previous:
                     self.wfile.write(b"event: dashboard\ndata: " + snapshot + b"\n\n")
                     self.wfile.flush()

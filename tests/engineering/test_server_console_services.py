@@ -21,7 +21,7 @@ from engineering_platform.prompt_history import record_prompt_execution
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
 from engineering_platform.storage import ENGINEERING_STORAGE_SCHEMA_VERSION, open_storage, store_projection
 from engineering_platform.providers import ProviderStatus
-from engineering_platform.dashboard_configuration import inbox_root, update_inbox_root
+from engineering_platform.historical_dashboard_configuration import inbox_root, update_inbox_root
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_lease import acquire
 

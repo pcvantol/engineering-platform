@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from engineering_platform.dashboard_configuration import DEFAULTS, get, inbox_root, update, update_inbox_root
+from engineering_platform.historical_dashboard_configuration import DEFAULTS, get, inbox_root, update, update_inbox_root
 from engineering_platform.component_logging import prune_component_logs
 from engineering_platform.storage import open_storage
 
