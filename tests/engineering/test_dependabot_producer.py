@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from engineering_platform import dependabot_producer, external_producer_binding, server
@@ -223,3 +224,19 @@ class DependabotProducerTests(unittest.TestCase):
                 connection.execute("SELECT project_id,repository_id,transport FROM ep_submissions").fetchone(),
                 ("project-a", "repository-a", "DEPENDABOT"),
             )
+
+    def test_transient_central_lock_retries_before_the_normal_scan_interval(self) -> None:
+        service = dependabot_producer.DependabotService(self.root, interval_seconds=300)
+        waits: list[float] = []
+
+        def stop_after_retry(delay: float) -> bool:
+            waits.append(delay)
+            service._stop.set()
+            return True
+
+        with patch.object(service, "tick", side_effect=sqlite3.OperationalError("database is locked")), patch.object(
+            service, "_write_heartbeat"
+        ), patch.object(service._stop, "wait", side_effect=stop_after_retry):
+            service._run()
+
+        self.assertEqual(waits, [1.0])

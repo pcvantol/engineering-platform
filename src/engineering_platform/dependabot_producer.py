@@ -323,7 +323,17 @@ class DependabotService:
                 self.tick()
                 self._recent_error = None
                 self._write_heartbeat(ready=True)
-            except (DependabotProducerError, external_producer_binding.ProducerBindingError, OSError, sqlite3.Error) as error:
+            except sqlite3.Error as error:
+                # Startup shares CENTRAL with the lifecycle worker. A
+                # transient lock must not defer another independently-bound
+                # repository until the normal multi-minute scan interval.
+                # Immutable admission keys make this bounded retry idempotent.
+                self._recent_error = str(error)[:160]
+                self._emit("dependabot_discovery_degraded", {"diagnostic": self._recent_error})
+                self._write_heartbeat(ready=False)
+                self._stop.wait(min(self.interval_seconds, 1.0))
+                continue
+            except (DependabotProducerError, external_producer_binding.ProducerBindingError, OSError) as error:
                 self._recent_error = str(error)[:160]
                 self._emit("dependabot_discovery_degraded", {"diagnostic": self._recent_error})
                 self._write_heartbeat(ready=False)
