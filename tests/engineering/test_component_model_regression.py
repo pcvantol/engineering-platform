@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+from engineering_platform.platform_components import (
+    PLATFORM_COMPONENT_IDS,
+    RETIRED_COMPONENT_ALIASES,
+)
+from tools.qualification import component_alias_retirement_guard as guard
+
+
+SOURCE_ROOT = Path(__file__).parents[2] / "src"
 
 
 class ComponentModelRegressionTest(unittest.TestCase):
@@ -18,6 +25,14 @@ class ComponentModelRegressionTest(unittest.TestCase):
         self.assertNotIn('"inbox":', server)
         self.assertIn("operations_console", PLATFORM_COMPONENT_IDS)
         self.assertIn("file_inbox_ingress", PLATFORM_COMPONENT_IDS)
+        self.assertTrue(PLATFORM_COMPONENT_IDS.isdisjoint(RETIRED_COMPONENT_ALIASES))
+        self.assertEqual(
+            RETIRED_COMPONENT_ALIASES,
+            frozenset({
+                "dashboard", "dashboard_service", "dashboard_watcher", "finder",
+                "inbox", "inbox_service", "inbox_watcher", "watcher",
+            }),
+        )
 
     def test_legacy_aliases_cannot_be_component_authority(self) -> None:
         root = Path(__file__).parents[2]
@@ -49,3 +64,14 @@ class ComponentModelRegressionTest(unittest.TestCase):
         self.assertIn("restart_supported", server)
         self.assertIn("PLATFORM_COMPONENT_ROUTE_PATTERN", routes)
         self.assertNotIn("/api/components/dashboard/restart", routes)
+
+    def test_every_retired_alias_is_denied_before_component_or_project_resolution(self) -> None:
+        root = Path(__file__).parents[2]
+        server = (root / "src" / "engineering_platform" / "server.py").read_text(encoding="utf-8")
+        routes = (root / "src" / "engineering_platform" / "console_route_ownership.py").read_text(encoding="utf-8")
+        self.assertIn("LEGACY_COMPONENT_AUTHORITY_RETIRED", server)
+        self.assertIn("RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN", server)
+        self.assertIn("RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN", routes)
+
+    def test_alias_retirement_qualification_guard_passes(self) -> None:
+        self.assertEqual(guard.violations(SOURCE_ROOT), [])

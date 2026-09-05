@@ -43,3 +43,19 @@ PLATFORM_COMPONENT_BY_ID = {component.id: component for component in PLATFORM_CO
 PLATFORM_COMPONENT_IDS = frozenset(PLATFORM_COMPONENT_BY_ID)
 # Route consumers import this value instead of duplicating a literal inventory.
 PLATFORM_COMPONENT_ROUTE_PATTERN = "(?:" + "|".join(component.id for component in PLATFORM_COMPONENTS) + ")"
+
+# These are retired *input* identifiers, not components and never aliases for
+# a supported component.  Keeping the bounded denial list beside the canonical
+# model prevents a compatibility parser or route from quietly turning one back
+# into lifecycle, logging or configuration authority.
+RETIRED_COMPONENT_ALIASES = frozenset({
+    "dashboard",
+    "dashboard_service",
+    "dashboard_watcher",
+    "finder",
+    "inbox",
+    "inbox_service",
+    "inbox_watcher",
+    "watcher",
+})
+RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN = "(?:" + "|".join(sorted(RETIRED_COMPONENT_ALIASES)) + ")"

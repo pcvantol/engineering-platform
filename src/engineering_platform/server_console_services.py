@@ -73,7 +73,6 @@ from . import managed_codex_runtime
 from . import server_relay
 from .console_presentation import APP_ICON_DARK, APP_ICON_LIGHT, ASSET_DIRECTORY, WEB_MANIFEST
 
-LABEL = "com.djconnect.engineering-dashboard"
 RELAY_LABEL = PLATFORM_COMPONENT_BY_ID["dashboard_relay"].lifecycle_label or ""
 DASHBOARD_VERSION = "2.0.0"
 DASHBOARD_STARTED_AT = time.monotonic()

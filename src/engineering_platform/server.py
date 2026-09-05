@@ -54,6 +54,7 @@ from .platform_components import (
     PLATFORM_COMPONENT_IDS,
     PLATFORM_COMPONENTS,
     PLATFORM_COMPONENT_ROUTE_PATTERN,
+    RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN,
 )
 from .component_logging import (
     LOG_LEVELS_AT_OR_ABOVE,
@@ -2266,6 +2267,15 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             # scope resolution so a stale caller cannot turn a retired route
             # into a project-delegation failure.
             self._send(410, {"error": "LEGACY_COMPONENT_LOG_ROUTE_RETIRED"})
+            return
+        if re.fullmatch(
+            rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)",
+            request.path,
+        ):
+            # A retired name is never normalized to a supported component.
+            # Reject it before project resolution so it cannot acquire a
+            # project, lifecycle or repair interpretation as a side effect.
+            self._send(410, {"error": "LEGACY_COMPONENT_AUTHORITY_RETIRED"})
             return
         log_match = re.fullmatch(rf"/api/logs/(all|{PLATFORM_COMPONENT_ROUTE_PATTERN})", request.path)
         if log_match and method == "do_GET":

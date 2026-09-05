@@ -3190,8 +3190,10 @@ def main(argv: list[str] | None = None) -> int:
         CodexCliClient(CodexCliProvider(str(runtime)) if runtime is not None else CodexCliProvider()),
         compatibility=compatibility,
     )
-    logger = component_logger(root, "execution-host", central_database=central_database)
-    lifecycle_context = {"application_version": "2.0.0", "target_component": "execution-host"}
+    # Execution is hosted by the canonical lifecycle worker; it must not
+    # create an ad-hoc component identity in CENTRAL operational logs.
+    logger = component_logger(root, "lifecycle_worker", central_database=central_database)
+    lifecycle_context = {"application_version": "2.0.0", "target_component": "lifecycle_worker"}
     try:
         with shutdown_signal_logging(logger, lifecycle_context):
             state = runner.run(

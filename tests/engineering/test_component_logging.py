@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from engineering_platform import component_logging
+from engineering_platform.platform_components import RETIRED_COMPONENT_ALIASES
 
 
 class ComponentLoggingTest(unittest.TestCase):
@@ -82,6 +83,22 @@ class ComponentLoggingTest(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(component, "operations_console")
             self.assertEqual(json.loads(payload)["event"], "normal_console_event")
+
+    def test_retired_component_aliases_cannot_create_central_operational_logs(self) -> None:
+        """A caller cannot turn a historic name into a fresh log authority."""
+        from engineering_platform.server import initialize
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "central"
+            initialize(data_root)
+            for alias in RETIRED_COMPONENT_ALIASES:
+                with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, "Unsupported Platform component"):
+                    component_logging.component_logger(root, alias, central_database=data_root / "engineering.db")
+            with sqlite3.connect(data_root / "engineering.db") as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM engineering_component_logs").fetchone()[0],
+                    0,
+                )
 
     def test_lifecycle_events_include_only_redacted_component_identity(self) -> None:
         from engineering_platform import providers, server

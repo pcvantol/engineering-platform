@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from engineering_platform.console_route_ownership import HISTORICAL_UNREACHABLE, HOST_ADMIN, PLATFORM, PROJECT, ROUTE_OWNERSHIP_MATRIX, route_owner
+from engineering_platform.platform_components import RETIRED_COMPONENT_ALIASES
 from tools.qualification import console_route_ownership_guard as guard
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
@@ -23,6 +24,15 @@ class ConsoleRouteOwnershipTest(unittest.TestCase):
     def test_retired_component_log_routes_cannot_become_project_routes(self) -> None:
         for method, path in (("GET", "/api/logs/inbox"), ("POST", "/api/logs/dashboard")):
             self.assertEqual(route_owner(method, path).owner, HISTORICAL_UNREACHABLE, path)
+
+    def test_retired_component_aliases_have_no_supported_route_owner(self) -> None:
+        for alias in RETIRED_COMPONENT_ALIASES:
+            for method, suffix in (("GET", "details"), ("POST", "restart")):
+                self.assertEqual(
+                    route_owner(method, f"/api/components/{alias}/{suffix}").owner,
+                    HISTORICAL_UNREACHABLE,
+                    f"{method} {alias}",
+                )
 
     def test_qualification_guard_passes_for_installed_console_source(self) -> None:
         self.assertEqual(guard.violations(SOURCE_ROOT), [])

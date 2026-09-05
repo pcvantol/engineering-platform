@@ -10,7 +10,7 @@ not a roadmap.
 | AC-02 | critical | A published File Inbox executable could claim an Inbox outside EP Server. `STANDALONE_FILE_INBOX_EXECUTABLE=0` | Removed the package entry point and module CLI entry; File Inbox is constructed only by `server.serve`. | FIXED — installed-wheel absence check pending full gate |
 | AC-03 | high | A live child without admission capability was projected healthy. `FILE_INBOX_READY_IMPLIES_SUBMISSION_CAPABLE=TRUE` | Heartbeat differentiates `READY` from `RUNNING_NOT_READY`; platform projection maps the latter to `FILE_INGRESS_NOT_READY`. | FIXED — installed negative canary pending full gate |
 | AC-04 | critical | One external project credential could not safely represent multi-project File Inbox authority. | Canonical security decision: Server-owned `FILE_INBOX` principal invokes `request_from_mapping` and `submission_service.submit` in-process. It bypasses only external caller authentication. Exact-head installed 3×2 ingress matrix passed, including `DEPENDABOT_MULTI_PROJECT_BINDING`. | QUALIFIED — 2026-09-05, installed candidate at `4125cc298193695e3fc31d93b5fe6fb24ff14630`. |
-| AC-05 | high | Component consumers duplicated identity inventories. `PLATFORM_COMPONENT_MODEL_COUNT=1` | Route pattern, startup events and transport rendering derive from `platform_components`; browser logging now has one platform state and derives selectable component identities from that model. Remaining aliases/legacy inventory are tracked by AC-06. | IN_PROGRESS |
+| AC-05 | high | Component consumers duplicated identity inventories. `PLATFORM_COMPONENT_MODEL_COUNT=1` | `platform_components.py` is the single supported identity source. The bounded retired alias input set is denied before project resolution; it cannot select, write, route, configure, restart or own lifecycle. All new component-log writers reject noncanonical identities. Full fresh-candidate suite and coverage pass; exact-head hosted validation remains required. | PENDING EXACT-HEAD HOSTED VALIDATION |
 | AC-06 | critical | The legacy Dashboard direct wrapper and historical configuration runtime authority had remained in the supported Console chain. | Server now calls the Console document renderer directly by its Server-owned semantic name; the active Console module no longer imports or reads `historical_dashboard_configuration`. Structural guards reject reintroduction; installed ingress, route, browser and exact-head validation pass. | QUALIFIED — `f1555a88edf206bf51362a6a5593af440ca9e9de`. |
 | AC-07 | high | CENTRAL logging had a Server-bound checkout-file fallback. `REPOSITORY_LOCAL_COMPONENT_LOG_FALLBACK=0` | The Server-bound logger now emits only bounded stderr on CENTRAL failure; no local persistent fallback. All active writers use canonical `operations_console` or `file_inbox_ingress` identities. Historical reads/routes remain tied solely to the direct Dashboard-wrapper retirement tracked by AC-06. | IN_PROGRESS |
 | AC-08 | high | Qualification lacked CLI invalid-Genesis, complete Human negatives and port isolation. | Installed matrix now uses OS-assigned ports and includes the missing negative cases. | FIXED — installed matrix PASS |
@@ -111,6 +111,39 @@ local-data, component-model, route-ownership and new Dashboard-retirement
 guards pass, as do the exact-head installed ingress, browser and hosted
 validation checks. Final retirement remains pending only for the other rows in
 this register; AC-06 is no longer its blocker.
+
+### AC-05 component alias authority audit — 2026-09-05
+
+The sole supported component inventory is `platform_components.PLATFORM_COMPONENTS`.
+Its canonical identifiers are: `ep_server`, `platform_database`,
+`lifecycle_worker`, `operations_console`, `dashboard_relay`, `http_ingress`,
+`cli_ingress`, `file_inbox_ingress`, and `dependabot_producer`. The same model
+provides display-key, lifecycle-label, route-pattern, restart-capability and
+log-identity data; no Server, Console, lifecycle or logging-specific identity
+map is supported.
+
+The bounded retired input aliases are `dashboard`, `dashboard_service`,
+`dashboard_watcher`, `finder`, `inbox`, `inbox_service`, `inbox_watcher` and
+`watcher`. They are not normalized. Component detail/restart routes reject each
+with `410 LEGACY_COMPONENT_AUTHORITY_RETIRED` before project resolution; legacy
+log routes remain `410`; the CENTRAL log writer rejects every noncanonical
+component ID. The Execution Host now records under `lifecycle_worker`, rather
+than creating an ad-hoc `execution-host` log identity.
+
+Remaining legacy lexical references are classified as one of: Console product
+presentation (`assets/dashboard.*`, Console document and localization keys),
+immutable historical evidence reads (`server_console_services.py` and
+`prompt_history.py`), one-shot archive/migration input
+(`legacy_inbox_migration.py` and `central_store_migration.py`), or negative
+regression fixtures. None supplies active component selection, persistence,
+lifecycle, configuration, route, dispatch or log authority. The executable
+guard `tools/qualification/component_alias_retirement_guard.py` verifies this
+authority boundary in addition to the route and writer matrices.
+
+Fresh candidate evidence: 1154 Python tests passed; 107 production modules;
+zero modules below 80.20% branch coverage; minimum 80.26%
+(`central_store_migration.py`). AC-05 is pending only the hosted checks for its
+new exact head.
 
 ## Legacy branch successor reconciliation
 

@@ -597,10 +597,17 @@ class InstallationBoundaryTests(unittest.TestCase):
                 handler._central_database_configuration = lambda _method: False
                 handler._delegate_dashboard("do_GET")
                 self.assertEqual(responses[-1][0], 200, path)
-            bad_component, denied = self._in_process_console_handler("/api/components/dashboard/details")
-            bad_component._central_database_configuration = lambda _method: False
-            bad_component._delegate_dashboard("do_GET")
-            self.assertEqual(denied[-1], (409, {"error": "CONSOLE_PROJECT_UNAVAILABLE"}))
+            for alias in ("dashboard", "inbox", "inbox_watcher", "watcher", "finder"):
+                bad_component, denied = self._in_process_console_handler(f"/api/components/{alias}/details")
+                bad_component._central_database_configuration = lambda _method: False
+                bad_component._delegate_dashboard("do_GET")
+                self.assertEqual(denied[-1], (410, {"error": "LEGACY_COMPONENT_AUTHORITY_RETIRED"}))
+                restart, denied = self._in_process_console_handler(
+                    f"/api/components/{alias}/restart", body=b"{}", headers={"Content-Length": "2"},
+                )
+                restart._central_database_configuration = lambda _method: False
+                restart._delegate_dashboard("do_POST")
+                self.assertEqual(denied[-1], (410, {"error": "LEGACY_COMPONENT_AUTHORITY_RETIRED"}))
 
     def test_console_mutation_routes_fail_closed_and_accept_real_platform_actions(self) -> None:
         body = b"{}"

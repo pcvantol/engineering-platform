@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from .platform_components import PLATFORM_COMPONENT_ROUTE_PATTERN
+from .platform_components import PLATFORM_COMPONENT_ROUTE_PATTERN, RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN
 
 PLATFORM = "PLATFORM"
 PROJECT = "PROJECT"
@@ -67,6 +67,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("POST",), r"/api/runtime-directory/open", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired checkout runtime action"),
     ConsoleRoute(("POST",), r"/api/configuration/inbox-location(?:/browse)?", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired local Inbox-watcher configuration"),
     ConsoleRoute(("GET", "POST"), r"/api/logs/(?:inbox|dashboard)", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired legacy component-log routes"),
+    ConsoleRoute(("GET", "POST"), rf"/api/components/{RETIRED_COMPONENT_ALIAS_ROUTE_PATTERN}/(?:details|restart)", HISTORICAL_UNREACHABLE, "historical_unreachable", "Retired legacy component authority"),
 )
 
 

@@ -121,7 +121,13 @@ def component_logger(
     the shared Platform Component model.  Missing CENTRAL binding is a
     bounded diagnostic, never a local persistent fallback.
     """
-    if central_database is None and component in PLATFORM_COMPONENT_IDS:
+    if component not in PLATFORM_COMPONENT_IDS:
+        # The database table has no foreign key to the component model.  The
+        # writer is therefore the authority boundary: accepting an arbitrary
+        # string here would let a retired alias become a new operational log
+        # identity simply by supplying a CENTRAL path.
+        raise ValueError("Unsupported Platform component.")
+    if central_database is None:
         configured_root = os.environ.get(SERVER_DATA_ROOT_ENVIRONMENT)
         if configured_root:
             candidate = Path(configured_root).resolve() / "engineering.db"
