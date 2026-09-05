@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from engineering_platform.console_route_ownership import HISTORICAL_UNREACHABLE, PLATFORM, PROJECT, ROUTE_OWNERSHIP_MATRIX, route_owner
+from engineering_platform.console_route_ownership import HISTORICAL_UNREACHABLE, HOST_ADMIN, PLATFORM, PROJECT, ROUTE_OWNERSHIP_MATRIX, route_owner
 from tools.qualification import console_route_ownership_guard as guard
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
@@ -11,7 +11,10 @@ SOURCE_ROOT = Path(__file__).parents[2] / "src"
 class ConsoleRouteOwnershipTest(unittest.TestCase):
     def test_matrix_is_closed_and_unambiguous(self) -> None:
         self.assertTrue(ROUTE_OWNERSHIP_MATRIX)
-        self.assertTrue(all(route.owner in {PLATFORM, PROJECT, HISTORICAL_UNREACHABLE, "TRANSPORT_INTERNAL"} and route.component for route in ROUTE_OWNERSHIP_MATRIX))
+        self.assertTrue(all(route.owner in {PLATFORM, PROJECT, HOST_ADMIN, HISTORICAL_UNREACHABLE, "TRANSPORT_INTERNAL"} and route.component for route in ROUTE_OWNERSHIP_MATRIX))
+
+    def test_host_admin_diagnostic_has_its_own_non_project_owner(self) -> None:
+        self.assertEqual(route_owner("GET", "/api/host-admin/diagnostics").owner, HOST_ADMIN)
 
     def test_platform_routes_keep_owner_when_project_is_selected(self) -> None:
         for method, path in (("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"), ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"), ("GET", "/api/components/file_inbox_ingress/details"), ("POST", "/api/components/dashboard_relay/restart"), ("GET", "/api/logs/all"), ("GET", "/api/configuration")):

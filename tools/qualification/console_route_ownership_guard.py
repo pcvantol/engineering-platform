@@ -14,6 +14,7 @@ _REPRESENTATIVE_PATHS = (
     ("GET", "/api/components/dashboard_relay/details"), ("GET", "/api/components/file_inbox_ingress/details"), ("GET", "/api/logs/all"),
     ("GET", "/api/provider-login-status"), ("POST", "/api/provider-login/repair"),
     ("GET", "/api/execution-runtime-status"), ("POST", "/api/execution-runtime/repair"),
+    ("GET", "/api/host-admin/diagnostics"),
     ("GET", "/api/configuration"), ("POST", "/api/configuration"),
     ("GET", "/api/prompt-history"), ("POST", "/api/execution-retry"),
     ("GET", "/healthz"), ("POST", "/api/runtime-directory/open"),

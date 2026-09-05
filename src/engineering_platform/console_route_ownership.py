@@ -12,9 +12,10 @@ from .platform_components import PLATFORM_COMPONENT_ROUTE_PATTERN
 
 PLATFORM = "PLATFORM"
 PROJECT = "PROJECT"
+HOST_ADMIN = "HOST_ADMIN"
 TRANSPORT_INTERNAL = "TRANSPORT_INTERNAL"
 HISTORICAL_UNREACHABLE = "HISTORICAL_UNREACHABLE"
-OWNERS = frozenset({PLATFORM, PROJECT, TRANSPORT_INTERNAL, HISTORICAL_UNREACHABLE})
+OWNERS = frozenset({PLATFORM, PROJECT, HOST_ADMIN, TRANSPORT_INTERNAL, HISTORICAL_UNREACHABLE})
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ ROUTE_OWNERSHIP_MATRIX: tuple[ConsoleRoute, ...] = (
     ConsoleRoute(("GET",), r"/api/github-rate-limit", PLATFORM, "provider_capacity", "Provider rate-limit diagnostics", True),
     ConsoleRoute(("GET", "POST"), r"/api/configuration", PLATFORM, "server_settings", "Server settings", True),
     ConsoleRoute(("GET",), r"/api/(?:process-metrics|usage)", PLATFORM, "platform_components", "Platform diagnostics", True),
+    ConsoleRoute(("GET",), r"/api/host-admin/diagnostics", HOST_ADMIN, "host_admin", "Bounded installation diagnostics", True),
     ConsoleRoute(("GET",), r"/api/central-database/download", PLATFORM, "server_settings", "Central database backup", True),
     ConsoleRoute(("POST",), r"/api/central-database/open-directory", PLATFORM, "server_settings", "Central database action", True),
     ConsoleRoute(("GET", "POST"), r"/api/central-database/configuration", PLATFORM, "server_settings", "Central database maintenance settings", True),

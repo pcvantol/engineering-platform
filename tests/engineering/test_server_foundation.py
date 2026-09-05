@@ -88,6 +88,24 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         """The installed Console has one localized document composition path."""
         self.assertFalse(hasattr(server, "_operations_console_document"))
 
+    def test_host_admin_diagnostics_are_installation_scoped_not_project_scoped(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server.initialize(self.root, bind_port=port)
+        server.start(self.root)
+        try:
+            for headers in ({}, {"X-Engineering-Platform-Project": "unknown-project"}):
+                request = Request(f"http://127.0.0.1:{port}/api/host-admin/diagnostics", headers=headers)
+                with urlopen(request) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.headers["EP-Console-Route-Owner"], "HOST_ADMIN")
+                self.assertEqual(payload["scope"], "HOST_ADMIN")
+                self.assertFalse(payload["project_authority"])
+                self.assertFalse(payload["execution_authority"])
+        finally:
+            server.stop(self.root)
+
     def test_console_document_has_one_central_log_table_and_no_legacy_inbox_configuration(self) -> None:
         """Historical dashboard markup cannot re-enable retired Console controls."""
         server.initialize(self.root)

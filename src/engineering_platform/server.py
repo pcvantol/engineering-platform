@@ -37,6 +37,7 @@ from . import dashboard_translation
 from . import dependabot_producer
 from . import external_producer_binding
 from . import file_inbox
+from . import host_admin
 from . import local_repository_binding
 from . import project_topology
 from . import submission_service
@@ -1798,6 +1799,9 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if request.path == "/api/github-rate-limit":
             self._send(200, dashboard._github_rate_limit_status())
             return True
+        if request.path == "/api/host-admin/diagnostics":
+            self._send(200, host_admin.diagnostics(self.server.data_root))  # type: ignore[attr-defined]
+            return True
         if request.path == "/api/provider-login-status":
             self._send(200, {"providers": _central_provider_readiness(self.server.data_root)})  # type: ignore[attr-defined]
             return True
@@ -2026,6 +2030,11 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if method == "do_GET" and request.path == "/health":
             report = status(self.server.data_root)  # type: ignore[attr-defined]
             self._send(200 if report["store"] == "ready" else 503, report, str(report["instance_id"]))
+            return
+        if method == "do_GET" and request.path == "/api/host-admin/diagnostics":
+            # Host Admin has an installation-only root and is intentionally
+            # resolved before any selected-project header is inspected.
+            self._send(200, host_admin.diagnostics(self.server.data_root))  # type: ignore[attr-defined]
             return
         component_match = re.fullmatch(r"/api/components/([a-z_]+)/details", request.path)
         if component_match and component_match.group(1) not in PLATFORM_COMPONENT_IDS:
