@@ -107,6 +107,12 @@ wrapper plus an installed-wheel absence check.
 
 ## LR-02 direct-route consequence map
 
+The complete responsibility-to-successor worklist is maintained in
+[`P_TRANSPORT_DASHBOARD_RESPONSIBILITY_MATRIX.md`](P_TRANSPORT_DASHBOARD_RESPONSIBILITY_MATRIX.md).
+It deliberately distinguishes already Server-owned routes from still-present
+dashboard source code, so a route guard cannot be misread as physical legacy
+retirement.
+
 The historical direct handler is not a supported route owner.  The following
 map prevents a coverage repair from silently preserving it or deleting an
 unreplaced capability.
