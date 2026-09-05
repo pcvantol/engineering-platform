@@ -63,6 +63,7 @@ from .local_api_credentials import verifier
 from .parity_context import ParityProjectStore, project_context
 from .platform_version import EngineeringPlatformManifest
 from .providers import (
+    GitHubProvider,
     LaunchdProvider,
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
@@ -143,6 +144,29 @@ def _remaining_rate_limit_capacity(rate_limits: dict[str, object]) -> float | No
         if isinstance(used, (int, float)) and not isinstance(used, bool):
             remaining.append(max(0.0, min(100.0, 100.0 - float(used))))
     return min(remaining) if remaining else None
+
+
+def _github_rate_limit_status() -> dict[str, object]:
+    """Read GitHub quota state without changing GitHub or repository state."""
+    try:
+        payload = json.loads(GitHubProvider().github("api", "rate_limit"))
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        return {"limited": "rate limit" in str(error).lower()}
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, dict):
+        return {"limited": False}
+    exhausted: list[tuple[str, int]] = []
+    for name in ("core", "graphql", "search"):
+        resource = resources.get(name)
+        if not isinstance(resource, dict):
+            continue
+        remaining, reset = resource.get("remaining"), resource.get("reset")
+        if isinstance(remaining, int) and remaining <= 0:
+            exhausted.append((name, reset if isinstance(reset, int) else 0))
+    if not exhausted:
+        return {"limited": False}
+    reset_at = min((reset for _, reset in exhausted if reset > 0), default=None)
+    return {"limited": True, "reset_at": reset_at}
 
 
 class ServerConfigurationError(ValueError):
@@ -1824,7 +1848,7 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, _execution_runtime_status())
             return True
         if request.path == "/api/github-rate-limit":
-            self._send(200, dashboard._github_rate_limit_status())
+            self._send(200, _github_rate_limit_status())
             return True
         if request.path == "/api/host-admin/diagnostics":
             self._send(200, host_admin.diagnostics(self.server.data_root))  # type: ignore[attr-defined]
