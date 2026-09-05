@@ -1567,6 +1567,11 @@ class LocalAgentRunnerTest(unittest.TestCase):
         state = TransactionState("recovery-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="recovery")
         with patch("engineering_platform.execution_host.dismissal_for_run", return_value=False), \
              patch("engineering_platform.execution_host.verify_worktree_recovery", return_value=True):
+            exhausted = runner._recovery_record(
+                state, original="old", replacement="new", eligibility="ELIGIBLE", result="EXHAUSTED",
+                requested_at="now", started_at="now", completed_at="now",
+            )
+            self.assertEqual(runner._provider_recovery_preflight(exhausted), "PRECHECK_FAILED")
             self.assertEqual(runner._provider_recovery_preflight(state), "PRECHECK_FAILED")
             runner.active_lease = SimpleNamespace(run_id=state.run_id)
             self.assertIsNone(runner._provider_recovery_preflight(state))
