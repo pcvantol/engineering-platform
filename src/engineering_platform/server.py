@@ -1515,18 +1515,6 @@ def _retire_legacy_inbox_configuration(document: bytes, data_root: Path) -> byte
     )
 
 
-def _centralize_component_log_surface(document: bytes) -> bytes:
-    """Compile the historical two-card markup into one CENTRAL log table."""
-    replacement = b'''<details class="technical-details" id="componentLogs"><summary><strong data-i18n="section.logs"></strong></summary><p class="estimate-meta" data-i18n="description.logs"></p><div class="log-controls" id="componentLogControls" hidden><label for="logFilter"><span data-i18n="filter.search"></span><input id="logFilter" type="search" maxlength="160" data-sanitize="single-line" data-i18n-placeholder="filter.search_placeholder"></label><label for="logLevelFilter"><span data-i18n="filter.level"></span><select id="logLevelFilter"><option value="" data-i18n="filter.all_levels"></option><option value="ERROR" data-i18n="filter.error"></option><option value="WARNING" data-i18n="filter.warning"></option><option value="INFO" data-i18n="filter.info"></option><option value="DEBUG" data-i18n="filter.debug"></option></select></label><label for="logTimePreset"><span data-i18n="filter.time_period"></span><select id="logTimePreset"><option value="" data-i18n="filter.all_time"></option><option value="today" data-i18n="filter.today"></option><option value="yesterday" data-i18n="filter.yesterday"></option><option value="day" data-i18n="filter.specific_day"></option><option value="range" data-i18n="filter.custom_range"></option></select></label><label for="logSpecificDate" id="logSpecificDateControl" hidden><span data-i18n="filter.specific_day"></span><input id="logSpecificDate" type="date"></label><label for="logDateFrom" id="logDateFromControl" hidden><span data-i18n="filter.from"></span><input id="logDateFrom" type="datetime-local"></label><label for="logDateTo" id="logDateToControl" hidden><span data-i18n="filter.to"></span><input id="logDateTo" type="datetime-local"></label></div><div class="technical-grid"><div class="card"><div class="log-card-header"><strong data-i18n="section.platform_components"></strong><div class="log-card-actions"><button class="dashboard-action dashboard-action--download download download--glyph component-log-download" data-component="platform" data-testid="download-platform-log" type="button">&#x21e9;</button><button class="dashboard-action dashboard-action--destructive clear-component-log" data-component="platform" data-testid="clear-platform-log" type="button" data-i18n-title="action.clear_logs" data-i18n-aria-label="action.clear_logs">&#x232b;</button></div></div><div class="log-table-wrap"><table class="log-table" data-i18n-aria-label="section.platform_components"><thead><tr><th data-i18n="table.number"></th><th data-i18n="table.timestamp"></th><th data-i18n="table.level"></th><th data-i18n="table.event"></th><th data-i18n="table.run_id"></th><th data-i18n="table.details"></th></tr></thead><tbody id="platformComponentLog"><tr><td class="log-empty" colspan="6" data-i18n="logs.loading"></td></tr></tbody></table></div><nav class="log-pagination" id="platformLogPagination" data-i18n-aria-label="section.platform_components"></nav></div></div></details>'''
-    return re.sub(
-        br'<details class="technical-details" id="componentLogs">.*?</details>',
-        replacement,
-        document,
-        count=1,
-        flags=re.DOTALL,
-    )
-
-
 def _centralize_workspace_identity(document: bytes, project_id: str) -> bytes:
     """Make CENTRAL's selected project the sole visible workspace identity."""
     replacement = rb"\1" + escape(project_id).encode("utf-8") + rb"\2"

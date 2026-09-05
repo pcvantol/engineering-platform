@@ -105,10 +105,9 @@ class StandaloneServerFoundationTest(unittest.TestCase):
     def test_server_console_uses_canonical_log_markup_without_a_runtime_transform(self) -> None:
         """The one log table is authored once, not replaced after rendering."""
         server.initialize(self.root)
-        with patch("engineering_platform.server._centralize_component_log_surface") as compatibility:
-            no_project = server._no_project_console_document([], self.root)
-            selected = server._selected_project_console_document("project-a", [], self.root)
-        compatibility.assert_not_called()
+        self.assertFalse(hasattr(server, "_centralize_component_log_surface"))
+        no_project = server._no_project_console_document([], self.root)
+        selected = server._selected_project_console_document("project-a", [], self.root)
         for document in (no_project, selected):
             section = re.search(br'<details class="technical-details" id="componentLogs">(.*?)</details>', document, re.DOTALL)
             self.assertIsNotNone(section)
