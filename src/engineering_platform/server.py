@@ -1894,8 +1894,8 @@ def _no_project_console_document(projects: list[dict[str, str]], data_root: Path
         "EP Operations",
         workspace_id="none",
         project_name="<geen>",
-        workspace_location="Niet beschikbaar",
-        configuration_inbox="Niet beschikbaar",
+        workspace_location="",
+        configuration_inbox="",
     )
     options = _console_project_options(None, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
@@ -1919,6 +1919,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
         selector.encode("utf-8") + b'<label class="dashboard-locale"',
         1,
     )
+    document = document.replace(b'<pre></pre>', b'<pre data-i18n="format.not_available"></pre>', 1)
     document = _retire_legacy_inbox_configuration(document, data_root)
     # Keep the unscoped explanation in the sticky header.  It is operational
     # context, not a project card that should scroll away with the dashboard.
@@ -1945,14 +1946,15 @@ def _selected_project_console_document(project_id: str, projects: list[dict[str,
     """Render the installed Console shell without loading a project checkout."""
     document = server_console_services.render_console_document(
         "EP Operations", workspace_id=project_id, project_name=project_id,
-        workspace_location="Physical binding is not Console authority.",
-        configuration_inbox="Not available from the CENTRAL Console.",
+        workspace_location="",
+        configuration_inbox="",
     )
     options = _console_project_options(project_id, projects)
     selector = f'''<label class="dashboard-project" for="dashboardProject"><span data-i18n="project.label"></span><select id="dashboardProject" data-i18n-aria-label="project.label">{options}</select></label>'''
     document = document.replace(
         b'<label class="dashboard-locale"', selector.encode("utf-8") + b'<label class="dashboard-locale"', 1,
     )
+    document = document.replace(b'<pre></pre>', b'<pre data-i18n="central.project_workspace_not_authority"></pre>', 1)
     document = document.replace(
         b'<p class="category-description" data-i18n="description.configuration"></p>',
         b'<p class="category-description" data-i18n="description.configuration"></p>' + _central_database_section(data_root).encode("utf-8"), 1,

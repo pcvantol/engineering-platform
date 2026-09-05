@@ -422,6 +422,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertIn("configuration.ep_database_maintenance_saved", server_source)
         self.assertIn("configuration.ep_database_maintenance_failed", server_source)
         self.assertNotIn("Databaseonderhoud bijgewerkt.'", server_source)
+        self.assertIn('data-i18n="central.project_workspace_not_authority"', (root / "src/engineering_platform/server.py").read_text(encoding="utf-8"))
 
     def test_component_versions_match_the_canonical_platform_manifest(self) -> None:
         manifest = EngineeringPlatformManifest.load(package_path("ENGINEERING_PLATFORM_VERSION.json"))
