@@ -1600,6 +1600,18 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent.last_execution_seconds = 1.2345
         self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
 
+    def test_repair_plans_and_environmental_validation_require_explicit_durable_evidence(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("repair-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", repair_iterations=1)
+        self.assertIsNone(runner._repair_plan(state))
+        stale = state.__class__(**{**state.__dict__, "repair_audit": ({"iteration": "0", "outcome": "planned"},)})
+        self.assertIsNone(runner._repair_plan(stale))
+        planned = state.__class__(**{**state.__dict__, "repair_audit": ({"iteration": "1", "outcome": "planned", "failed_checks": "suite", "proposed_action": "repair"},)})
+        self.assertEqual(runner._repair_plan(planned)["failed_checks"], "suite")
+        self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED")))
+        self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed"},))))
+        self.assertTrue(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed once; timed out once"},))))
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
