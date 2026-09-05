@@ -299,7 +299,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertEqual(projection, {
             "branch": "main",
             "commit": "123456789abc",
-            "origin_main_commit": "Niet beschikbaar",
+            "origin_main_commit": "",
             "origin_main_available": False,
             "main_action_available": False,
             "branch_cleanup_available": True,
@@ -312,9 +312,9 @@ class DashboardStatusTest(unittest.TestCase):
         projection = _workspace_git_projection(Path("/workspace"))
 
         self.assertEqual(projection, {
-            "branch": "Niet beschikbaar",
-            "commit": "Niet beschikbaar",
-            "origin_main_commit": "Niet beschikbaar",
+            "branch": "",
+            "commit": "",
+            "origin_main_commit": "",
             "origin_main_available": False,
             "main_action_available": False,
             "branch_cleanup_available": False,
@@ -1472,7 +1472,7 @@ class DashboardStatusTest(unittest.TestCase):
         self.assertNotIn("dashboard", snapshot["component_log_versions"])
         self.assertNotEqual(snapshot["component_versions"]["worker"], "inbox-watcher")
         self.assertEqual(snapshot["workspace_git_lock"], {"state": "free", "active": False, "stale": False})
-        self.assertEqual(snapshot["workspace_git"]["branch"], "Niet beschikbaar")
+        self.assertEqual(snapshot["workspace_git"]["branch"], "")
         self.assertIn("workspace_worktrees", snapshot)
 
     def test_local_codex_log_reader_is_retired(self) -> None:

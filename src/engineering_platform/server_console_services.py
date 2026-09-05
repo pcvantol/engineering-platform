@@ -1775,7 +1775,9 @@ def _logout_provider(root: Path, provider: str) -> None:
 
 def _workspace_git_projection(root: Path) -> dict[str, object]:
     """Return the small, read-only Git projection shown in Workspace."""
-    unavailable = "Niet beschikbaar"
+    # The browser owns presentation.  An empty value is rendered through its
+    # five-locale unavailable label rather than leaking Server-localized copy.
+    unavailable = ""
     try:
         provider = GitProvider()
         branch = provider.execute(root, "git", "branch", "--show-current")
