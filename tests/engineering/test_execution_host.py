@@ -1606,6 +1606,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
         agent.last_execution_seconds = 1.2345
         self.assertEqual(runner._record_agent_execution_time(state).agent_execution_seconds, 1.234)
 
+    def test_optional_phase_wrappers_degrade_only_telemetry_storage_failures(self) -> None:
+        with patch("engineering_platform.execution_host._start_phase", return_value=SimpleNamespace()) as start:
+            self.assertIsNotNone(execution_host.start_phase(self.root, "phase-run", "VALIDATION"))
+            start.assert_called_once()
+        with patch("engineering_platform.execution_host._start_or_resume_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            self.assertIsNone(execution_host.start_or_resume_phase(self.root, "phase-run", "VALIDATION"))
+        with patch("engineering_platform.execution_host._complete_active_phase", side_effect=execution_host.EngineeringStorageError("offline")):
+            self.assertFalse(execution_host.complete_active_phase(self.root, "phase-run", "VALIDATION"))
+
     def test_repair_plans_and_environmental_validation_require_explicit_durable_evidence(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
         state = TransactionState("repair-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", repair_iterations=1)
