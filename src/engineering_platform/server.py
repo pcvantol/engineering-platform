@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -23,6 +24,7 @@ import sqlite3
 import subprocess  # nosec B404
 import sys
 import time
+from threading import Lock
 from typing import Mapping, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -64,6 +66,7 @@ from .parity_context import ParityProjectStore, project_context
 from .platform_version import EngineeringPlatformManifest
 from .providers import (
     GitHubProvider,
+    CodexCliProvider,
     LaunchdProvider,
     MANAGED_CODEX_CLI_PREFIX_ENVIRONMENT,
     LocalProcessProvider,
@@ -96,6 +99,7 @@ _CENTRAL_LOG_SORT_COLUMNS = {
 _CHILDREN: dict[int, subprocess.Popen[object]] = {}
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+_PROVIDER_LOGIN_LOCK = Lock()
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -167,6 +171,32 @@ def _github_rate_limit_status() -> dict[str, object]:
         return {"limited": False}
     reset_at = min((reset for _, reset in exhausted if reset > 0), default=None)
     return {"limited": True, "reset_at": reset_at}
+
+
+def _start_provider_login(data_root: Path, provider: str) -> None:
+    """Dispatch one explicit host-wide provider login from the Server."""
+    commands = {
+        "CODEX": (CodexCliProvider()._executable, "login", "--device-auth"),
+        "GITHUB": ("gh", "auth", "login", "--hostname", "github.com", "--web"),
+    }
+    command = commands.get(provider)
+    if command is None:
+        raise ValueError("Unsupported provider login request.")
+    if provider == "CODEX" and not CodexCliProvider().status().qualified:
+        raise ValueError("Codex CLI is not installed.")
+    if provider == "GITHUB" and shutil.which("gh") is None:
+        raise ValueError("GitHub CLI is not installed.")
+    if sys.platform != "darwin":
+        raise ValueError("Interactive provider login is supported from the local macOS Server only.")
+    script = "\n".join((
+        'tell application "Terminal"', "activate",
+        f"do script {json.dumps('exec ' + ' '.join(shlex.quote(part) for part in command))}",
+        "end tell",
+    ))
+    with _PROVIDER_LOGIN_LOCK:
+        completed = LocalProcessProvider().execute(data_root, ("/usr/bin/osascript", "-e", script))
+    if completed.returncode:
+        raise ValueError("Provider login window could not be opened.")
 
 
 class ServerConfigurationError(ValueError):
@@ -1410,7 +1440,7 @@ def _central_provider_repair(data_root: Path, payload: object) -> None:
     if (action == "login" and state != "AUTH_REQUIRED") or (action == "install" and state != "UNAVAILABLE"):
         raise ValueError("Provider is not ready for the requested repair.")
     if action == "login":
-        dashboard._start_provider_login(data_root, provider)  # type: ignore[attr-defined]
+        _start_provider_login(data_root, provider)
     else:
         dashboard._install_provider(data_root, provider)  # type: ignore[attr-defined]
 

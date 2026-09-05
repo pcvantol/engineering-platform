@@ -340,7 +340,7 @@ class StandaloneServerFoundationTest(unittest.TestCase):
             self.assertEqual(error.exception.code, 400)
             self.assertEqual(json.loads(error.exception.read())["error"], "LOG_QUERY_INVALID")
 
-    @patch("engineering_platform.server.dashboard._start_provider_login")
+    @patch("engineering_platform.server._start_provider_login")
     @patch("engineering_platform.server._central_provider_readiness")
     def test_provider_login_repair_is_central_and_keeps_no_project_readiness(
         self, readiness: object, start_login: object,
