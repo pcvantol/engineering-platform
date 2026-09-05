@@ -1083,18 +1083,53 @@ def _restart_platform_component(data_root: Path, component_id: str) -> dict[str,
     definition = PLATFORM_COMPONENT_BY_ID.get(component_id)
     if definition is None or not definition.restart_supported or not definition.lifecycle_label:
         raise ValueError("COMPONENT_RESTART_NOT_SUPPORTED")
-    LaunchdProvider().restart(definition.lifecycle_label)
+    logger = component_logger(
+        data_root,
+        definition.id,
+        central_database=data_root / SERVER_DATABASE_FILENAME,
+    )
     log_event(
-        component_logger(
-            data_root,
-            definition.id,
-            central_database=data_root / SERVER_DATABASE_FILENAME,
-        ),
+        logger,
         logging.INFO,
         "component_restart_requested",
         context={"target_component": definition.id},
     )
-    return {"restarting": definition.id, "scope": "PLATFORM"}
+    lifecycle = LaunchdProvider()
+    try:
+        lifecycle.restart(definition.lifecycle_label)
+        # ``kickstart`` only acknowledges the request.  Give launchd a small,
+        # bounded interval to spawn the owned process before deciding whether
+        # the repair actually reached its observable postcondition.
+        deadline = time.monotonic() + 2
+        postcondition = lifecycle.runtime_status(definition.lifecycle_label)
+        while not postcondition.qualified and time.monotonic() < deadline:
+            time.sleep(.1)
+            postcondition = lifecycle.runtime_status(definition.lifecycle_label)
+        if not postcondition.qualified:
+            raise OSError("COMPONENT_RESTART_POSTCONDITION_FAILED")
+    except OSError as error:
+        log_event(
+            logger,
+            logging.WARNING,
+            "component_restart_failed",
+            diagnostic=str(error),
+            context={"target_component": definition.id},
+        )
+        raise
+    log_event(
+        logger,
+        logging.INFO,
+        "component_restart_completed",
+        context={
+            "target_component": definition.id,
+            "postcondition": "LIFECYCLE_OWNER_RUNNING",
+        },
+    )
+    return {
+        "restarting": definition.id,
+        "scope": "PLATFORM",
+        "postcondition": "LIFECYCLE_OWNER_RUNNING",
+    }
 
 
 def _audit_configuration_change(

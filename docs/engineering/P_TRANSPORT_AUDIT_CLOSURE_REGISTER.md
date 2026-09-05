@@ -17,7 +17,7 @@ not a roadmap.
 | AC-09 | high | Human receipt lacked complete audit-chain provenance. | Accepted receipt now records source/normalized digest, scope, requested mode, normalization method/version and submission identity. | IN_PROGRESS — run linkage and durable audit verification pending |
 | AC-10 | high | Localization guard omits some Server-generated surface and stale watcher copy. | The Server-owned no-project title, explanation and selector now use five-locale keys; the broader Server-rendered surface audit remains in progress. | IN_PROGRESS |
 | AC-11 | high | Presentation-level Console/log compatibility transforms concealed legacy source structure. | Browser logging no longer retains separate Inbox/Dashboard state, and both supported Server document paths consume canonical log markup directly. The unused parallel Console document, scoped document transform, workspace-identity rewrite and log-surface transform are physically removed with absence guards. `_console_project_boundary` is the sole retained, explicitly classified Server scope adapter (LR-14), with no authority beyond an already CENTRAL-validated project header. The direct Dashboard wrapper remains separately tracked by AC-06. | FIXED — focused Server regression PASS |
-| AC-12 | high | Retroactive CENTRAL armed-repair end-to-end evidence is missing. | Recover contract, add installed positive/negative/restart gate. | IN_PROGRESS |
+| AC-12 | high | A component restart acknowledged `launchctl kickstart` without proving that the owned LaunchAgent process was running afterwards. | The only restartable component (`dashboard_relay`) now records requested/completed/failed CENTRAL events and fails closed unless its canonical lifecycle owner becomes active within a bounded interval. Positive and negative Server-boundary tests pass. A physical installed LaunchAgent canary remains required. | PARTIALLY QUALIFIED — installed physical lifecycle canary pending. |
 
 `UNRESOLVED_AUDIT_FINDINGS` remains non-zero until every `IN_PROGRESS` item
 has a real product-boundary canary and exact-head installed-wheel evidence.
@@ -90,7 +90,7 @@ rerun at that exact head.
 | Local data authority | **REQUALIFY** | Migration-only historical Inbox artifacts are retained; CENTRAL-only authority was the intended model. | Re-run local-data retirement matrix and prove no execution, queue, project, browser, checkout, or root-local authority remains. |
 | Migration to CENTRAL | **OPEN** | `central_store_migration.py` now meets the coverage contract (80.26%); earlier migration audit evidence includes abort/pre-handoff and historical-source paths, but not a complete exact-head cutover qualification. The historical Inbox archive mover is not a CENTRAL authority migration and must remain classified as historical-only. | Inventory each legacy source; prove bounded source identity, quiescence/admission freeze, schema compatibility, copy/import verification, durable receipt, rollback before cutover, and CENTRAL-only authority after cutover. Run positive, stale-source, malformed-source, conflict, interruption, rollback and postcondition canaries. |
 | Component aliases and logging | **OPEN** | Canonical component model exists, but AC-05/AC-07 remain in progress and historical Dashboard/Inbox log surfaces require retirement proof. | One component inventory; zero writable/selectable/lifecycle legacy aliases; CENTRAL-only logs with no local fallback. |
-| Armed repair/restart | **OPEN** | AC-01 prevents false restart advertisement; AC-12 lacks retroactive installed end-to-end evidence. | Each visible action has Server route → service → owner → mutation → postcondition → audit; otherwise absent from Console. |
+| Armed repair/restart | **PARTIALLY QUALIFIED** | AC-01 prevents false restart advertisement. AC-12 now verifies Server route → canonical lifecycle owner → mutation → bounded running postcondition → CENTRAL requested/completed/failed audit events for the only supported restartable component. | Run an installed physical LaunchAgent positive/negative/restart canary without widening component authority. |
 | Localization / Console | **OPEN** | AC-10 retains a broader Server-generated-surface and stale watcher-copy audit. | Browser/localization suite proves zero supported localization violations and no stale Dashboard/Watcher/Finder action. |
 | Human receipt / provenance | **OPEN** | AC-09 has receipt fields but lacks run linkage and durable audit verification. | Positive/negative durable provenance canary proves complete receipt-to-run chain. |
 | LR-09 isolation | **UNRESOLVED, isolated** | Dependabot successor is explicitly out of scope; it must not retain unrelated legacy authority. | `LR09_CAPABILITY_LOSS=0` and `UNRELATED_LEGACY_RUNTIME_RETAINED_FOR_LR09=0`, without successor implementation. |
@@ -99,6 +99,17 @@ rerun at that exact head.
 No row above is evidence for human UI review, Owner Authorization, merge, or
 final technical closure until its stated criterion is demonstrated on the
 exact candidate head.
+
+### Final retirement re-audit — 2026-09-05
+
+The re-audit is intentionally **not closed**. Current source still contains
+two Server calls to `server_console_services._dashboard_html` and
+`server_console_services` still imports `historical_dashboard_configuration`.
+The historical checkout-bound runtime-directory action remains explicitly
+unreachable (`410`) and the local-data, component-model and route-ownership
+guards pass, but that is not sufficient evidence to retire the retained direct
+Dashboard wrapper/configuration runtime. AC-06 therefore remains the closure
+blocker for final retirement.
 
 ## Legacy branch successor reconciliation
 

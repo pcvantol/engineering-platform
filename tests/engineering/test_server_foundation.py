@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -432,13 +432,40 @@ class StandaloneServerFoundationTest(unittest.TestCase):
         with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
             "engineering_platform.server.log_event"
         ) as logged:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", True, "LaunchAgent process is active"
+            )
             result = server._restart_platform_component(self.root, "dashboard_relay")
         launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
-        self.assertEqual(result, {"restarting": "dashboard_relay", "scope": "PLATFORM"})
-        logged.assert_called_once()
+        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        self.assertEqual(result, {
+            "restarting": "dashboard_relay", "scope": "PLATFORM",
+            "postcondition": "LIFECYCLE_OWNER_RUNNING",
+        })
+        self.assertEqual(
+            [call.args[2] for call in logged.call_args_list],
+            ["component_restart_requested", "component_restart_completed"],
+        )
         for component in ("ep_server", "file_inbox_ingress", "unknown_component"):
             with self.subTest(component=component), self.assertRaisesRegex(ValueError, "COMPONENT_RESTART_NOT_SUPPORTED"):
                 server._restart_platform_component(self.root, component)
+
+    def test_relay_restart_fails_closed_and_records_failure_when_owner_does_not_run(self) -> None:
+        server.initialize(self.root)
+        with patch("engineering_platform.server.LaunchdProvider") as launchd, patch(
+            "engineering_platform.server.log_event"
+        ) as logged:
+            launchd.return_value.runtime_status.return_value = ProviderStatus(
+                "launchd", "configured", False, "LaunchAgent is loaded but has no active process"
+            )
+            with self.assertRaisesRegex(OSError, "COMPONENT_RESTART_POSTCONDITION_FAILED"):
+                server._restart_platform_component(self.root, "dashboard_relay")
+        launchd.return_value.restart.assert_called_once_with("com.djconnect.engineering-dashboard-relay")
+        launchd.return_value.runtime_status.assert_called_with("com.djconnect.engineering-dashboard-relay")
+        self.assertEqual(
+            [call.args[2] for call in logged.call_args_list],
+            ["component_restart_requested", "component_restart_failed"],
+        )
 
     def test_server_cli_installs_relay_through_server_owned_lifecycle(self) -> None:
         with patch("engineering_platform.server.server_relay.install", return_value={
