@@ -8,6 +8,7 @@ from unittest.mock import patch
 from engineering_platform.agent_state import StateStore, TransactionState
 from engineering_platform.execution_lease import acquire, history
 from engineering_platform.execution_timing import phase_spans, start_phase
+from engineering_platform import provider_interruption
 from engineering_platform.provider_interruption import prepare_same_run_recovery_after_host_exit, terminalize_after_host_exit
 from engineering_platform.provider_recovery import load_recovery_state
 from engineering_platform.provider_usage import ProviderInvocation, persist_provider_invocation
@@ -121,3 +122,19 @@ class ProviderInterruptionRecoveryTests(unittest.TestCase):
         assert durable is not None
         self.assertEqual(durable["state"], "RECOVERY_AVAILABLE")
         self.assertIsNone(prepare_same_run_recovery_after_host_exit(self.root, self.state.run_id))
+
+    def test_interruption_evidence_fails_closed_when_storage_is_unavailable_or_malformed(self) -> None:
+        with patch("engineering_platform.provider_interruption.open_storage", side_effect=OSError("offline")):
+            self.assertIsNone(provider_interruption._latest_interrupted_invocation(self.root, self.state.run_id))
+        self._interrupted_invocation()
+        with provider_interruption.open_storage(self.root) as connection:
+            connection.execute("UPDATE provider_invocations SET churn='not-json' WHERE run_id=?", (self.state.run_id,))
+        self.assertIsNone(provider_interruption._latest_interrupted_invocation(self.root, self.state.run_id))
+
+    def test_terminalizer_preserves_recoverable_or_terminal_state_without_mutation(self) -> None:
+        self._interrupted_invocation()
+        with patch("engineering_platform.provider_interruption.load_recovery_state", return_value={"state": "RECOVERY_IN_PROGRESS"}):
+            self.assertIsNone(terminalize_after_host_exit(self.root, self.state.run_id))
+        terminal = self.state.__class__(**{**self.state.__dict__, "phase": "FAILED", "terminal": True})
+        self.store.save(terminal)
+        self.assertEqual(terminalize_after_host_exit(self.root, self.state.run_id), terminal)
