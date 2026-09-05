@@ -184,6 +184,14 @@ class CentralStoreMigrationTests(unittest.TestCase):
         self.assertIn("table_counts", result["differences"])
         self.assertEqual(result["blocking_codes"], ["TARGET_STORE_CONFLICT"])
 
+    def test_lock_classification_never_trusts_an_unheld_or_unattributed_lock(self) -> None:
+        lock = Path(self.temporary.name) / "candidate.lock"
+        lock.write_text(json.dumps({"component": "unknown", "pid": os.getpid()}), encoding="utf-8")
+        self.assertEqual(migration._classify_lock(lock, pre_stop=False, services=None), "STALE_UNOWNED_LOCK")
+        with lock.open("r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            self.assertEqual(migration._classify_lock(lock, pre_stop=False, services=None), "UNKNOWN_LOCK")
+
     def test_discovery_cardinality_is_fail_closed(self) -> None:
         self.assertEqual(migration.discover_legacy_stores(self.root.parent / "missing"), ())
         absent = migration.preflight(self.root.parent / "missing")
