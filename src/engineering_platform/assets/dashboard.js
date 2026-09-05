@@ -597,9 +597,9 @@ function rateLimits(x, history = latestDashboardSnapshot?.ai_capacity_history) {
   $("rateLimitProvider").textContent = provider + " · " + version;
   let providerPathElement = $("rateLimitProviderPath");
   if (!(providerPathElement instanceof HTMLAnchorElement)) {
-    providerPathElement = replaceWithManagedInstallationLink(providerPathElement);
+    providerPathElement = replaceWithLocalFilesystemLink(providerPathElement, providerPath);
   }
-  configureManagedInstallationLink(providerPathElement, providerPath);
+  configureLocalFilesystemLink(providerPathElement, providerPath);
   let lines = windows.map((window) => {
     const remaining = Math.max(0, 100 - Number(window.used_percent || 0)),
       reset = Number(window.resets_at);
@@ -1475,27 +1475,10 @@ function executionContextValue(value) {
   if (value && typeof value === "object") return value.title || value.objective || value.id || value.message || value.reference || value.value || "";
   return "";
 }
-function configureRuntimeDirectoryButton(button, value, runtime) {
-  configureReadOnlyLocation(button, value || "—");
+function configureRuntimeDirectoryLink(link, value) {
+  configureLocalFilesystemLink(link, value || "—");
 }
-function configureReadOnlyLocation(button, value) {
-  button.classList.remove("local-folder-link", "runtime-directory-link");
-  button.type = "button";
-  button.textContent = String(value || t("format.not_available"));
-  button.disabled = true;
-  button.onclick = null;
-  button.removeAttribute("title");
-  button.removeAttribute("aria-label");
-}
-function replaceWithReadOnlyLocation(element) {
-  if (!element) return null;
-  const button = document.createElement("button");
-  configureReadOnlyLocation(button, element.textContent.trim());
-  if (element.id) button.id = element.id;
-  element.replaceWith(button);
-  return button;
-}
-function configureManagedInstallationLink(link, value) {
+function configureLocalFilesystemLink(link, value) {
   const path = typeof value === "string" ? value.trim() : "";
   link.classList.add("local-folder-link");
   link.textContent = path || t("format.not_available");
@@ -1511,10 +1494,16 @@ function configureManagedInstallationLink(link, value) {
   link.target = "_blank";
   link.rel = "noopener";
 }
-function replaceWithManagedInstallationLink(element) {
-  if (!element) return null;
+function localFilesystemLink(value) {
   const link = document.createElement("a");
-  configureManagedInstallationLink(link, element.textContent.trim());
+  configureLocalFilesystemLink(link, value);
+  return link;
+}
+function replaceWithLocalFilesystemLink(element, replacementValue = element?.textContent.trim()) {
+  if (!element) return null;
+  if (!String(replacementValue || "").trim().startsWith("/")) return element;
+  const link = document.createElement("a");
+  configureLocalFilesystemLink(link, replacementValue);
   if (element.id) link.id = element.id;
   element.replaceWith(link);
   return link;
@@ -1525,7 +1514,7 @@ function executionContextField(label, value, badge = false, folder = false) {
   caption.className = "label";
   caption.textContent = label;
   const supplied = executionContextValue(value);
-  const output = content;
+  const output = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : content;
   if (output === content) content.textContent = supplied || t("execution_context.not_supplied");
   if (badge) output.classList.add("execution-context__phase");
   field.append(caption, output);
@@ -2498,7 +2487,9 @@ function renderWorkspaceWorktrees(projection) {
   worktrees.forEach((worktree) => {
     const item = document.createElement("li");
     const branch = document.createElement("code");
-    const path = document.createElement("span");
+    const path = typeof worktree?.path === "string" && worktree.path.startsWith("/")
+      ? localFilesystemLink(worktree.path)
+      : document.createElement("span");
     const commit = document.createElement("code");
     branch.className = "workspace-worktrees__branch";
     path.className = "workspace-worktrees__path";
@@ -2513,7 +2504,7 @@ function renderWorkspaceWorktrees(projection) {
       active.title = t("workspace.active_worktree");
       branch.prepend(active);
     }
-    path.textContent = worktree?.checked_out === false
+    if (!(path instanceof HTMLAnchorElement)) path.textContent = worktree?.checked_out === false
       ? t("workspace.not_checked_out")
       : String(worktree?.path || t("format.not_available"));
     commit.textContent = String(worktree?.commit || t("format.not_available"));
@@ -5767,8 +5758,8 @@ document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".dashboard-locale__picker")) setLocaleMenuOpen(false);
 });
 const workspaceLocation = document.querySelector('[data-workspace-label="ui.workspace_location"] + pre');
-replaceWithReadOnlyLocation(workspaceLocation);
-replaceWithManagedInstallationLink($("rateLimitProviderPath"));
+replaceWithLocalFilesystemLink(workspaceLocation);
+replaceWithLocalFilesystemLink($("rateLimitProviderPath"));
 applyDashboardLocale();
 let dashboardConfiguration = {}, dashboardConfigurationLoaded = false;
 const configurationFields = Object.freeze({
@@ -5961,7 +5952,7 @@ function providerLoginStatusBlock() {
 function validationEnvironmentDetail(label, attribute, runtime = null) {
   const detail = document.createElement("span");
   detail.className = "configuration-validation-environment__detail";
-  const value = document.createElement(runtime ? "button" : "code");
+  const value = document.createElement(runtime ? "a" : "code");
   value.dataset[attribute] = "true";
   if (runtime) value.dataset.runtimeDirectory = runtime;
   value.textContent = "—";
@@ -6066,7 +6057,7 @@ function renderProviderLoginStatus(block, providers) {
     row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.provider_status.${state}`, {}, t("configuration.provider_status.CHECK_FAILED"));
     const path = row.querySelector("[data-provider-cli-path]");
     const providerVersion = row.querySelector("[data-provider-cli-version]");
-    if (path) configureRuntimeDirectoryButton(path, executable, provider);
+    if (path) configureRuntimeDirectoryLink(path, executable);
     if (providerVersion) providerVersion.textContent = version || "—";
     logout.hidden = state !== "READY";
     logout.disabled = state !== "READY";
@@ -6092,7 +6083,7 @@ function renderExecutionRuntimeStatus(runtime) {
   row.querySelector(".configuration-provider-status__label").textContent = t(`configuration.execution_runtime_status.${state}`, {}, t("configuration.execution_runtime_status.CHECK_FAILED"));
   const path = validation?.querySelector("[data-execution-runtime-path]");
   const runtimeVersion = validation?.querySelector("[data-execution-runtime-version]");
-  if (path) configureRuntimeDirectoryButton(path, executable, "python");
+  if (path) configureRuntimeDirectoryLink(path, executable);
   if (runtimeVersion) runtimeVersion.textContent = version || "—";
   const needsRepair = state !== "READY";
   repair.hidden = !needsRepair;
@@ -7074,7 +7065,7 @@ function detailField(label, value, preformatted = false, folder = false) {
   name.className = "label";
   name.textContent = label;
   const supplied = String(value ?? "—");
-  const content = output;
+  const content = folder && supplied.startsWith("/") ? localFilesystemLink(supplied) : output;
   if (content === output) output.textContent = supplied;
   field.append(name, content);
   return field;

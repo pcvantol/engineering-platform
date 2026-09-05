@@ -446,9 +446,10 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(block.locator('[data-provider="CODEX"]')).toHaveAttribute("data-provider-state", "READY");
     await expect(block.locator('[data-provider="GITHUB"]')).toHaveAttribute("data-provider-state", "AUTH_REQUIRED");
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveText("/ep/codex/bin/codex");
-    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toBeDisabled();
+    await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-path]')).toHaveAttribute("href", "file:///ep/codex/bin/codex");
     await expect(block.locator('[data-provider="CODEX"] [data-provider-cli-version]')).toHaveText("0.152.1");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveText("/opt/homebrew/bin/gh");
+    await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-path]')).toHaveAttribute("href", "file:///opt/homebrew/bin/gh");
     await expect(block.locator('[data-provider="GITHUB"] [data-provider-cli-version]')).toHaveText("2.82.1");
     const login = block.locator('[data-provider="GITHUB"] [data-provider-repair]');
     await expect(login).toBeVisible();
@@ -465,7 +466,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(runtime).toContainText(DASHBOARD_MESSAGES.nl["configuration.execution_runtime_status.READY"]);
     await expect(runtime.locator(".configuration-provider-status__dot")).toHaveCSS("background-color", "rgb(84, 214, 160)");
     await expect(validation.locator("[data-execution-runtime-path]")).toHaveText("/opt/engineering-platform/bin/python");
-    await expect(validation.locator("[data-execution-runtime-path]")).toBeDisabled();
+    await expect(validation.locator("[data-execution-runtime-path]")).toHaveAttribute("href", "file:///opt/engineering-platform/bin/python");
     await expect(validation.locator("[data-execution-runtime-version]")).toHaveText("3.14.1");
     await expect(validation.locator("[data-execution-runtime-repair]")).toBeHidden();
     await expect(page.locator("#executionRuntimeBanner")).toBeHidden();
@@ -775,7 +776,7 @@ test.describe("Engineering Status browser smoke", () => {
     await expect(worktrees).not.toContainText("codex/polish");
   });
 
-  test("keeps displayed local paths read-only without a Finder route", async ({ page }) => {
+  test("keeps local filesystem links free of a Finder route", async ({ page }) => {
     const requestedDirectories = [];
     await page.route("**/api/open-local-directory", async (route) => {
       requestedDirectories.push(JSON.parse(route.request().postData()).directory_path);
@@ -784,10 +785,9 @@ test.describe("Engineering Status browser smoke", () => {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     await page.locator("#autoRefresh").uncheck();
     await page.locator("#workspaceCard").evaluate((element) => { element.open = true; });
-    const workspace = page.locator("#workspaceCard button").first();
+    const workspace = page.locator("#workspaceCard pre").first();
     const workspacePath = await workspace.textContent();
     expect(workspacePath).toBe("Physical binding is not Console authority.");
-    await expect(workspace).toBeDisabled();
 
     await page.evaluate(() => rateLimits({
       provider: "Codex CLI", provider_version: "0.150.1",
@@ -807,9 +807,16 @@ test.describe("Engineering Status browser smoke", () => {
       checkout_path: "/Users/example/Documents/GitHub/djconnect",
       active_branch: "main",
     }, {}));
-    const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("span").last();
+    const checkout = page.locator("#executionContext .field").filter({ hasText: "/Users/example/Documents/GitHub/djconnect" }).locator("a");
     await expect(checkout).toHaveText("/Users/example/Documents/GitHub/djconnect");
-    await expect(page.locator("#workspaceCard .local-folder-link, #executionContext .local-folder-link")).toHaveCount(0);
+    await expect(checkout).toHaveAttribute("href", "file:///Users/example/Documents/GitHub/djconnect");
+
+    await page.evaluate(() => renderWorkspaceWorktrees({ available: true, worktrees: [
+      { path: "/Users/example/Documents/GitHub/djconnect", branch: "main", commit: "123456789abc" },
+    ] }));
+    await expect(page.locator("#workspaceWorktrees .workspace-worktrees__path")).toHaveAttribute(
+      "href", "file:///Users/example/Documents/GitHub/djconnect",
+    );
     await expect.poll(() => requestedDirectories).toEqual([]);
   });
 
