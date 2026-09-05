@@ -1612,6 +1612,15 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertFalse(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed"},))))
         self.assertTrue(runner._is_environmental_validation_instability(AgentResult("FAILED", validation_disposition="environmental_instability", validation_evidence=({"result": "passed once; timed out once"},))))
 
+    def test_validation_failure_and_commit_evidence_helpers_refuse_unverified_inputs(self) -> None:
+        runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED")))
+        self.assertFalse(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=("not-a-record",))))
+        self.assertTrue(runner._has_failed_validation_evidence(AgentResult("FAILED", validation_evidence=({"result": "timed out"},))))
+        self.assertEqual(runner._append_verified_commit_evidence(TransactionState("commit-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT"), phase="EXECUTE_AGENT", commit_sha="not-a-sha", description="bad" ).commit_evidence, ())
+        self.assertEqual(runner._validation_kind("python -m unittest discover"), "tests")
+        self.assertEqual(runner._validation_kind("echo harmless"), None)
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
