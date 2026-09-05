@@ -1731,6 +1731,10 @@ class LocalAgentRunnerTest(unittest.TestCase):
         projected = runner.reviewer_runtime[0]
         self.assertEqual(projected["status"], "completed")
         self.assertEqual(projected["codex_commands_executed"], 0)
+        runner.reviewer_runtime = [{"reviewer": "other", "status": "queued"}]
+        with patch("engineering_platform.execution_host.write_live_status"):
+            runner._publish_reviewer_progress(state, selection, "started")
+        self.assertEqual(runner.reviewer_runtime[0]["status"], "queued")
 
     def test_heartbeat_and_required_validation_profile_fail_closed_before_provider_work(self) -> None:
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
@@ -1744,6 +1748,9 @@ class LocalAgentRunnerTest(unittest.TestCase):
             runner._heartbeat()
         self.assertIs(runner.active_lease, replacement)
         self.assertIs(runner.lease_heartbeat.lease, replacement)
+        runner.lease_heartbeat = None
+        with patch("engineering_platform.execution_host.heartbeat_lease", return_value=replacement):
+            runner._heartbeat()
         state = TransactionState("profile-run", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         with patch.object(runner, "_save_terminal", side_effect=lambda *_args: _args[0]) as terminal:
             with patch("engineering_platform.execution_host.load_validation_context", return_value=None):
