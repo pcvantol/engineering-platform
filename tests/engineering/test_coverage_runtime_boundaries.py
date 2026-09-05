@@ -1399,6 +1399,12 @@ class InstallationBoundaryTests(unittest.TestCase):
         self.assertEqual(records[0]["worker_eligible"], True)
         self.assertEqual(records[0]["transport_provenance"], "COMPLETE")
         self.assertEqual(records[0]["early_failure"], {"diagnostic_code": "EARLY_FAILURE_EVIDENCE_UNAVAILABLE"})
+        with sqlite3.connect(root / server.SERVER_DATABASE_FILENAME) as connection:
+            connection.execute("INSERT INTO ep_submissions(submission_id,project_id,repository_id,producer_id,producer_type,transport,prompt,prompt_digest,constraints,state,admission,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ("sub-incomplete", "project-a", "repo-a", "test", "TEST", "FILE_INBOX", "p", "digest", "{}", "QUEUED", "ADMITTED", "now"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(server.main(["submission-diagnose", "--data-root", str(root), "--submission-id", "sub-incomplete"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["transport_provenance"], "INCOMPLETE")
         checkout = root.parent / "declared-checkout"; checkout.mkdir()
         provision = io.StringIO()
         with redirect_stdout(provision):
