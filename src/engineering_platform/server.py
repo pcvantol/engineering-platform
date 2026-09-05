@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -101,6 +102,8 @@ _SAFE_ATTACHMENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_REPORT_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _PROVIDER_LOGIN_LOCK = Lock()
 _PROVIDER_INSTALL_LOCK = Lock()
+_CODEX_RATE_LIMIT_CACHE: tuple[float, bytes] | None = None
+_CODEX_RATE_LIMIT_CACHE_LOCK = Lock()
 
 
 def _attachment_content_disposition(filename: object) -> str:
@@ -172,6 +175,42 @@ def _github_rate_limit_status() -> dict[str, object]:
         return {"limited": False}
     reset_at = min((reset for _, reset in exhausted if reset > 0), default=None)
     return {"limited": True, "reset_at": reset_at}
+
+
+def _codex_rate_limits() -> bytes:
+    """Read quota through the Server-owned app-server protocol/cache."""
+    global _CODEX_RATE_LIMIT_CACHE
+    now = time.monotonic()
+    with _CODEX_RATE_LIMIT_CACHE_LOCK:
+        if _CODEX_RATE_LIMIT_CACHE and now - _CODEX_RATE_LIMIT_CACHE[0] < 60:
+            return _CODEX_RATE_LIMIT_CACHE[1]
+    identity = dashboard._codex_provider_identity()
+    provider = CodexCliProvider(); process = None
+    try:
+        process = provider.app_server()
+        if process.stdin is None or process.stdout is None:
+            return json.dumps(identity, separators=(",", ":")).encode()
+        process.stdin.write(json.dumps({"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "engineering-platform-server", "title": "EP Operations", "version": "2.0.0"}}}) + "\n")
+        process.stdin.flush(); deadline = time.monotonic() + 5; requested = False
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select((process.stdout,), (), (), max(0, deadline - time.monotonic()))
+            if not ready: break
+            line = process.stdout.readline()
+            if not line: break
+            response = json.loads(line)
+            if response.get("id") == 1 and not requested:
+                process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                process.stdin.write(json.dumps({"method": "account/rateLimits/read", "id": 2, "params": {}}) + "\n")
+                process.stdin.flush(); requested = True
+            elif response.get("id") == 2:
+                encoded = json.dumps({**identity, **dashboard._normalize_rate_limits(response.get("result"))}, separators=(",", ":")).encode()
+                with _CODEX_RATE_LIMIT_CACHE_LOCK: _CODEX_RATE_LIMIT_CACHE = (time.monotonic(), encoded)
+                return encoded
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    finally:
+        if process is not None: provider.close_app_server(process)
+    return json.dumps(identity, separators=(",", ":")).encode()
 
 
 def _start_provider_login(data_root: Path, provider: str) -> None:
@@ -1558,7 +1597,7 @@ def _with_console_queue(payload: bytes, *, queue: dict[str, object], data_root: 
 def _provider_capacity_projection(data_root: Path) -> dict[str, object]:
     """Read the account-owned quota once and project it from CENTRAL."""
     try:
-        payload = json.loads(dashboard._codex_rate_limits())
+        payload = json.loads(_codex_rate_limits())
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
     if not isinstance(payload, dict):
