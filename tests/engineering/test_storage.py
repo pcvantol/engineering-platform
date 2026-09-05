@@ -85,6 +85,17 @@ class EngineeringStorageTest(unittest.TestCase):
             store.remove(state.run_id)
             self.assertFalse(path.exists())
             self.assertEqual(store.run_ids(), ())
+
+    def test_checkpoint_save_and_central_database_errors_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = TransactionState("save-error-run", "pcvantol/djconnect", "prompt.md", "EXECUTE_AGENT")
+            with patch("engineering_platform.agent_state.open_storage", side_effect=OSError("disk unavailable")):
+                with self.assertRaisesRegex(StateError, "could not save checkpoint"):
+                    StateStore(root / ".engineering" / "engineering-runs").save(state)
+            corrupt = root / "corrupt-central.db"; corrupt.write_text("not a sqlite database", encoding="utf-8")
+            with self.assertRaisesRegex(StateError, "canonical engineering storage is unavailable"):
+                StateStore(root / "central-runs", central_database=corrupt).run_ids()
     def test_schema_39_adds_verifier_only_local_api_credential_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
