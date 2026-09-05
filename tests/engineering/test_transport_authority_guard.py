@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 import unittest
 
+from engineering_platform.platform_components import PLATFORM_COMPONENT_IDS
+
 class TransportAuthorityGuardTest(unittest.TestCase):
     """Source-level canaries for the supported ingress authority boundary."""
 
@@ -33,6 +35,27 @@ class TransportAuthorityGuardTest(unittest.TestCase):
         for name in supported:
             source = (source_root / name).read_text(encoding="utf-8")
             self.assertNotIn("inbox_watcher", source, name)
+
+    def test_supported_component_log_writers_use_canonical_component_ids(self) -> None:
+        """A writer cannot silently recreate a retired Inbox/Dashboard stream."""
+        source_root = Path(__file__).resolve().parents[2] / "src" / "engineering_platform"
+        supported = (
+            "dashboard.py",
+            "host_preflight.py",
+            "file_inbox.py",
+            "dependabot_producer.py",
+            "server.py",
+        )
+        for name in supported:
+            tree = ast.parse((source_root / name).read_text(encoding="utf-8"))
+            for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+                if not isinstance(call.func, ast.Name) or call.func.id != "component_logger":
+                    continue
+                if len(call.args) < 2 or not isinstance(call.args[1], ast.Constant):
+                    continue
+                component = call.args[1].value
+                if isinstance(component, str):
+                    self.assertIn(component, PLATFORM_COMPONENT_IDS, f"{name}: {component}")
 
     def test_retired_root_bound_human_producer_paths_are_absent(self) -> None:
         """Human files enter only through Server-owned File Inbox intake."""
