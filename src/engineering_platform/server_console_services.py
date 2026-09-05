@@ -24,6 +24,7 @@ import time
 import uuid
 from urllib.parse import parse_qs, urlsplit
 from .platform_api import PlatformConfiguration
+from . import central_database
 from .platform_bootstrap import provision_runtime_workspace as provision_workspace
 from .providers import CodexCliProvider, GitHubProvider, GitProvider, LaunchdProvider, LocalProcessProvider, TailscaleProvider, codex_cli_executable, engineering_platform_codex_cli_prefix
 from .provider_readiness import runtime_details as provider_runtime_details, status as provider_readiness_status
@@ -66,11 +67,6 @@ from .execution_activity import terminal_activity_summary
 from .execution_lifecycle import projection as lifecycle_projection
 from .platform_version import EngineeringPlatformManifest
 from .resources import package_path
-from .historical_dashboard_configuration import (
-    DashboardConfigurationConflict,
-    get as dashboard_configuration,
-    update as update_dashboard_configuration,
-)
 from .platform_components import PLATFORM_COMPONENT_BY_ID, PLATFORM_COMPONENTS
 from . import dashboard_state
 from . import managed_codex_runtime
@@ -105,7 +101,7 @@ def _validate_codex_capacity_reserve_update(root: Path, key: object, value: obje
     """Fail closed before a reserve increase can make future admission impossible."""
     if key != "codex_capacity_reserve_percent" or not isinstance(value, int) or isinstance(value, bool):
         return
-    previous = int(dashboard_configuration(root)["codex_capacity_reserve_percent"])
+    previous = int(central_database.capacity_configuration(root)["codex_capacity_reserve_percent"])
     if value <= previous:
         return
     remaining = read_remaining_percent()
@@ -231,7 +227,8 @@ def _sse_snapshot(root: Path) -> bytes:
         runtime_metadata_reader=_last_executed_runtime_metadata,
         report_analysis_available_reader=_report_analysis_available_for_run,
         telemetry_reader=lambda workspace: daily_statistics(
-            workspace, days=int(dashboard_configuration(workspace)["telemetry_retention_days"])
+            workspace,
+            days=int(central_database.console_interval_configuration(workspace)["telemetry_retention_days"]),
         ),
         process_metrics_reader=_codex_process_metrics,
         build_commit_reader=_build_commit,
@@ -1897,7 +1894,7 @@ def _workspace_worktrees(root: Path) -> dict[str, object]:
     return {"available": True, "worktrees": worktrees}
 
 
-def _dashboard_html(
+def render_console_document(
     title: str,
     build_commit: str = "onbekend",
     workspace_id: str = "onbekend",

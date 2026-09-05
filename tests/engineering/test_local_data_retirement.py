@@ -11,7 +11,7 @@ class LocalDataRetirementTest(unittest.TestCase):
         self.assertIn("_central_console_project_snapshot(self.server.data_root, project_id)", source)
         references = [line.strip() for line in source.splitlines() if "server_console_services." in line]
         self.assertEqual(len(references), 2)
-        self.assertTrue(all("_dashboard_html" in line for line in references))
+        self.assertTrue(all("render_console_document" in line for line in references))
 
     def test_runtime_resolver_has_no_dashboard_configuration_or_inbox_override(self) -> None:
         source = (Path(__file__).parents[2] / "src" / "engineering_platform" / "platform_api.py").read_text(encoding="utf-8")

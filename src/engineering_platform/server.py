@@ -1839,7 +1839,7 @@ def _console_project_boundary(project_id: str, options: str) -> str:
 
 def _no_project_console_document(projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render global Console controls without selecting project-owned data."""
-    document = server_console_services._dashboard_html(
+    document = server_console_services.render_console_document(
         "EP Operations",
         workspace_id="none",
         project_name="<geen>",
@@ -1892,7 +1892,7 @@ body[data-project-id="none"] #workspaceCard { display: none !important; }
 
 def _selected_project_console_document(project_id: str, projects: list[dict[str, str]], data_root: Path) -> bytes:
     """Render the installed Console shell without loading a project checkout."""
-    document = server_console_services._dashboard_html(
+    document = server_console_services.render_console_document(
         "EP Operations", workspace_id=project_id, project_name=project_id,
         workspace_location="Physical binding is not Console authority.",
         configuration_inbox="Not available from the CENTRAL Console.",
