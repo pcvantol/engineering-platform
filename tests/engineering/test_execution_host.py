@@ -1670,6 +1670,18 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(restored.next_action, "invoke_agent")
         self.assertIsNone(restored.auth_recovery_phase)
 
+    def test_reported_provider_commits_require_matching_clean_repository_evidence(self) -> None:
+        sha = "b" * 40
+        repository = FakeRepository(branch="feature/verified")
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", "feature/verified", sha, True, True)
+        runner = EngineeringRunner(self.root, self.store, repository, FakeGitHub([]), FakeAgent(AgentResult("WAITING")), lambda _: None)
+        state = TransactionState("reported-commit", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT", branch="feature/verified")
+        result = AgentResult("COMPLETE", branch="feature/verified", commit_sha=sha)
+        verified = runner._record_verified_result_commit(state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified")
+        self.assertEqual(verified.commit_evidence[0]["commit_sha"], sha)
+        repository.evidence = RepositoryEvidence("pcvantol/djconnect", "feature/verified", sha, False, True)
+        self.assertEqual(runner._record_verified_result_commit(state, result, phase="EXECUTE_AGENT", description="implementation_agent_commit_verified"), state)
+
     def test_watcher_missing_admission_blocks_before_reviewer_or_agent_dispatch(self) -> None:
         agent = ReviewCapableFakeAgent(AgentResult("COMPLETE"))
         runner = EngineeringRunner(self.root, self.store, FakeRepository(), FakeGitHub([]), agent, lambda _: None)
