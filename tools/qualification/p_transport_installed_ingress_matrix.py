@@ -456,13 +456,16 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 digest = __import__("hashlib").sha256(body.encode()).hexdigest(); receipt_path = data_root / "file-inbox" / "accepted" / f"{digest}.receipt.json"
                 wait_for_file(receipt_path); receipt = json.loads(receipt_path.read_text()); diagnosis = wait_for_dispatch(server, data_root, str(receipt["submission_id"]))
-                evidence[f"FILE_HUMAN_{human_mode}"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "normalization": "submission-intake-v1"}
+                if diagnosis.get("receipt_run_provenance") != "PRESENT" or diagnosis.get("dispatch_scope_provenance") != "COMPLETE":
+                    raise RuntimeError("HUMAN_RECEIPT_RUN_PROVENANCE_UNAVAILABLE")
+                evidence[f"FILE_HUMAN_{human_mode}"] = {"pass": True, "source": source.name, "submission_id": receipt["submission_id"], "run_id": diagnosis["run_id"], "normalization": "submission-intake-v1", "receipt_run_provenance": "PRESENT"}
                 if human_mode == "MANAGED":
                     source.write_text(body, encoding="utf-8")
                     deadline = time.monotonic() + 15
                     while source.exists() and time.monotonic() < deadline: time.sleep(.1)
-                    if source.exists() or central_counts(data_root, project) != (1, 1): raise RuntimeError("HUMAN_FILE_REPLAY_DUPLICATED")
-                    evidence["HUMAN_FILE_REPLAY"] = {"pass": True, "duplicate_actions": 0, "duplicate_runs": 0}
+                    replay = command(server, "submission-diagnose", "--data-root", str(data_root), "--submission-id", str(receipt["submission_id"]))
+                    if source.exists() or central_counts(data_root, project) != (1, 1) or replay.get("run_id") != diagnosis["run_id"] or replay.get("receipt_run_provenance") != "PRESENT": raise RuntimeError("HUMAN_FILE_REPLAY_DUPLICATED")
+                    evidence["HUMAN_FILE_REPLAY"] = {"pass": True, "duplicate_actions": 0, "duplicate_runs": 0, "receipt_run_provenance": "PRESENT"}
                     quarantine = data_root / "file-inbox" / "quarantine"
                     physical = lambda: [path for path in quarantine.glob("*.json") if not path.name.endswith(".receipt.json")]
                     before_quarantine = len(physical())
