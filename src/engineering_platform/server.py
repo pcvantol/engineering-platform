@@ -203,7 +203,7 @@ def _codex_rate_limits() -> bytes:
                 process.stdin.write(json.dumps({"method": "account/rateLimits/read", "id": 2, "params": {}}) + "\n")
                 process.stdin.flush(); requested = True
             elif response.get("id") == 2:
-                encoded = json.dumps({**identity, **dashboard._normalize_rate_limits(response.get("result"))}, separators=(",", ":")).encode()
+                encoded = json.dumps({**identity, **_normalize_rate_limits(response.get("result"))}, separators=(",", ":")).encode()
                 with _CODEX_RATE_LIMIT_CACHE_LOCK: _CODEX_RATE_LIMIT_CACHE = (time.monotonic(), encoded)
                 return encoded
     except (OSError, ValueError, json.JSONDecodeError):
@@ -211,6 +211,31 @@ def _codex_rate_limits() -> bytes:
     finally:
         if process is not None: provider.close_app_server(process)
     return json.dumps(identity, separators=(",", ":")).encode()
+
+
+def _normalize_rate_limits(payload: object) -> dict[str, object]:
+    """Keep only bounded display values from the read-only quota response."""
+    limits = payload.get("rateLimits") if isinstance(payload, dict) else None
+    if not isinstance(limits, dict): return {}
+    windows: list[dict[str, int | str]] = []
+    for key in ("primary", "secondary"):
+        item = limits.get(key)
+        if not isinstance(item, dict): continue
+        used, duration, resets = item.get("usedPercent"), item.get("windowDurationMins"), item.get("resetsAt")
+        if not isinstance(used, (int, float)) or isinstance(used, bool) or not isinstance(duration, int) or isinstance(duration, bool) or not isinstance(resets, int) or isinstance(resets, bool): continue
+        windows.append({"label": _rate_limit_window_label(duration), "used_percent": max(0, min(100, round(used))), "window_minutes": duration, "resets_at": resets})
+    credits = payload.get("rateLimitResetCredits"); available = credits.get("availableCount") if isinstance(credits, dict) else None
+    result: dict[str, object] = {"windows": windows}
+    if isinstance(available, int) and not isinstance(available, bool) and available >= 0: result["reset_credits"] = available
+    return result if windows or "reset_credits" in result else {}
+
+
+def _rate_limit_window_label(duration: int) -> str:
+    if duration == 300: return "5-uursvenster"
+    if duration == 10_080: return "Weekvenster"
+    if duration % 1_440 == 0: return f"{duration // 1_440}-daags venster"
+    if duration % 60 == 0: return f"{duration // 60}-uursvenster"
+    return f"{duration}-minutenvenster"
 
 
 def _start_provider_login(data_root: Path, provider: str) -> None:
