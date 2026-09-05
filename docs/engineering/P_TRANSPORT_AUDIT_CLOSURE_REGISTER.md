@@ -107,3 +107,17 @@ row may move to `QUALIFIED`.
 No row above is evidence for human UI review, Owner Authorization, merge, or
 final technical closure until its stated criterion is demonstrated on the
 exact candidate head.
+
+## Legacy branch successor reconciliation
+
+```ini
+LEGACY_BRANCH_SUCCESSOR_RECONCILIATION = PASS
+ACTIVE_INTEGRATION_BRANCH_COUNT = 1
+WHOLESALE_LEGACY_MERGE_REQUIRED = FALSE
+TARGETED_MISSING_INVARIANT_COUNT = 0
+FORENSIC_BRANCHES_ARE_RUNTIME_AUTHORITY = FALSE
+```
+
+`codex/phase-p-transport` remains the sole active integration branch.  This
+records successor reconciliation only; it does not change any outstanding
+technical-closure, installed-candidate, ingress, migration, or coverage gate.
