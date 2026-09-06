@@ -33,7 +33,7 @@ from engineering_platform import provider_recovery
 from engineering_platform import prompt_history
 from engineering_platform import investigation_ledger, legacy_inbox_migration, provider_process_identity, provider_readiness, resources, validation_identity, worktree_tooling
 from engineering_platform.local_api import valid_port
-from engineering_platform.local_api_credentials import (
+from engineering_platform.ep_consumer_credentials import (
     CredentialAuthority,
     disable_consumer,
     issue_credential,

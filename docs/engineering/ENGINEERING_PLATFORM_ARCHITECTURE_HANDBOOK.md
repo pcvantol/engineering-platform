@@ -208,17 +208,19 @@ EP-managed repair or an official external help link for matters EP cannot fix.
 It never treats missing provider login as a successful installation or admits
 work while that condition remains unresolved.
 
-The installer creates no project by inference. A consumer connects a new or
-existing Git checkout only by supplying canonical project identity; EP then
-validates the selected checkout and project File Inbox route. The supported
-submission ingress set is exactly HTTP JSON, installed CLI and File Inbox.
-Each normalizes through Engineering Platform Server and the Submission Service
-before CENTRAL. Consumers never install a user host, manipulate EP SQLite,
-start LaunchAgents or authenticate Codex/GitHub in CI.
+The installer creates no project by inference. A Workspace consumer connects a
+new or existing Git checkout only by supplying canonical project identity; EP
+then validates the selected checkout and project Inbox route. Consumers pin the
+wheel and submit only through the supported HTTP JSON, installed CLI or File
+Inbox ingresses. They never install a user host, manipulate EP SQLite, start
+LaunchAgents or authenticate Codex/GitHub in CI. The historical Local Consumer
+API is retired; it is neither an ingress nor a loopback service.
 
-The historical Local Consumer API service and its lifecycle are retired. Its
-credential tables remain Server-owned HTTP-consumer authentication persistence;
-they do not establish an independently runnable Local API authority.
+ADR-0022 authorizes the consumer boundary: EP-owned registration for an exact
+`consumer_id` and `project_id`, production verifier-only credentials, and
+consumer-side macOS Keychain storage where a supported consumer requires it.
+Those credentials authorize the canonical Server boundary; they do not create
+a Local Consumer API lifecycle, bind or service authority.
 
 ### Common lifecycle invariants
 
@@ -400,7 +402,7 @@ Genesis target
 | Scope | current Managed checkout or Genesis target | immutable `project_id` plus registered workspace/repository |
 | Display name | current workspace metadata | mutable Workspace-supplied `project_name`, used only as a label |
 | Queues and Inbox | current configured route | one isolated Inbox route, FIFO queue and lease domain per project |
-| Submission ingress | legacy local routes and dashboard | exactly HTTP JSON, installed CLI and File Inbox, normalized by Server → Submission Service → CENTRAL |
+| Consumers and submission ingress | legacy local routes and dashboard | independently authenticated consumers through exactly HTTP JSON, installed CLI and File Inbox, normalized by Server → Submission Service → CENTRAL |
 | UI position | local Operations Console | same Operations Console semantics, selectable project projection |
 
 In EP 2.x, `project_id` becomes the canonical cross-system scope. A path,

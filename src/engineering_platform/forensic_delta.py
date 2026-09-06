@@ -33,6 +33,7 @@ _SENSITIVE_WORDS = frozenset({
 # These are only used after a table has no declared primary or total UNIQUE key.
 # They are canonical EP identities, not a row-order fallback.
 _CANONICAL_COMPOSITE_KEYS = {
+    "ep_consumer_registrations": ("consumer_id", "project_id"),
     "local_api_consumer_registrations": ("consumer_id", "project_id"),
 }
 

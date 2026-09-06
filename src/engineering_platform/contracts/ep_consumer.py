@@ -1,4 +1,4 @@
-"""Deterministic, transport-free Local Consumer API v1 contract values.
+"""Deterministic, transport-free EP consumer v1 contract values.
 
 This module defines only the consumer boundary.  It neither dispatches an
 operation nor authenticates a credential, opens a listener, reads storage, or
@@ -14,8 +14,8 @@ import unicodedata
 from typing import Any, Mapping
 
 
-LOCAL_CONSUMER_API_CONTRACT_VERSION = "1.0"
-LOCAL_CONSUMER_API_REQUEST_TYPE = "contract.foundation"
+EP_CONSUMER_CONTRACT_VERSION = "1.0"
+EP_CONSUMER_REQUEST_TYPE = "contract.foundation"
 MAX_PROJECT_ID_LENGTH = 128
 MAX_CONSUMER_ID_LENGTH = 128
 MAX_REQUEST_ID_LENGTH = 128
@@ -35,7 +35,7 @@ _ERROR_FIELDS = frozenset({"code", "message", "field", "path"})
 
 
 class ErrorCode:
-    """Stable, public Local Consumer API v1 error codes."""
+    """Stable, public EP consumer v1 error codes."""
 
     INVALID_CONTRACT_VERSION = "INVALID_CONTRACT_VERSION"
     MISSING_PROJECT_ID = "MISSING_PROJECT_ID"
@@ -53,7 +53,7 @@ class ErrorCode:
 
 
 _MESSAGES = {
-    ErrorCode.INVALID_CONTRACT_VERSION: "The Local Consumer API contract version is invalid or unsupported.",
+    ErrorCode.INVALID_CONTRACT_VERSION: "The EP consumer contract version is invalid or unsupported.",
     ErrorCode.MISSING_PROJECT_ID: "project_id is required.",
     ErrorCode.INVALID_PROJECT_ID: "project_id is invalid.",
     ErrorCode.INVALID_CONSUMER_IDENTITY: "consumer identity is invalid.",
@@ -65,7 +65,7 @@ _MESSAGES = {
     ErrorCode.MALFORMED_REQUEST: "The request is malformed.",
     ErrorCode.UNAUTHENTICATED: "Authentication is required or invalid.",
     ErrorCode.PROJECT_NOT_AUTHORIZED: "The credential is not authorized for this project.",
-    ErrorCode.SERVICE_NOT_READY: "The Local Consumer API is not ready.",
+    ErrorCode.SERVICE_NOT_READY: "The EP consumer boundary is not ready.",
 }
 
 
@@ -79,7 +79,7 @@ class ContractError(ValueError):
 
     def __post_init__(self) -> None:
         if self.code not in _MESSAGES:
-            raise ValueError("unknown Local Consumer API error code")
+            raise ValueError("unknown EP consumer error code")
 
     @property
     def message(self) -> str:
@@ -233,14 +233,14 @@ class RequestEnvelope:
         request = _require_mapping(value, code=ErrorCode.MALFORMED_REQUEST, field="request")
         _reject_unknown_fields(request, _REQUEST_FIELDS, path="request")
         version = request.get("contract_version")
-        if version != LOCAL_CONSUMER_API_CONTRACT_VERSION:
+        if version != EP_CONSUMER_CONTRACT_VERSION:
             raise ContractError(
                 ErrorCode.INVALID_CONTRACT_VERSION,
                 field="contract_version",
                 path="contract_version",
             )
         request_type = request.get("request_type")
-        if request_type != LOCAL_CONSUMER_API_REQUEST_TYPE:
+        if request_type != EP_CONSUMER_REQUEST_TYPE:
             raise ContractError(
                 ErrorCode.UNSUPPORTED_REQUEST_TYPE, field="request_type", path="request_type"
             )
@@ -288,11 +288,11 @@ class RequestEnvelope:
 class ResponseEnvelope:
     request_id: str
     payload: dict[str, object]
-    contract_version: str = LOCAL_CONSUMER_API_CONTRACT_VERSION
+    contract_version: str = EP_CONSUMER_CONTRACT_VERSION
     status: str = "success"
 
     def __post_init__(self) -> None:
-        if self.contract_version != LOCAL_CONSUMER_API_CONTRACT_VERSION or self.status != "success":
+        if self.contract_version != EP_CONSUMER_CONTRACT_VERSION or self.status != "success":
             raise ContractError(ErrorCode.INVALID_CONTRACT_VERSION, field="contract_version")
         _identifier(
             self.request_id,
@@ -320,12 +320,12 @@ class ErrorEnvelope:
     code: str
     field: str | None = None
     path: str | None = None
-    contract_version: str = LOCAL_CONSUMER_API_CONTRACT_VERSION
+    contract_version: str = EP_CONSUMER_CONTRACT_VERSION
     status: str = "error"
 
     def __post_init__(self) -> None:
         if (
-            self.contract_version != LOCAL_CONSUMER_API_CONTRACT_VERSION
+            self.contract_version != EP_CONSUMER_CONTRACT_VERSION
             or self.status != "error"
             or self.code not in _MESSAGES
         ):

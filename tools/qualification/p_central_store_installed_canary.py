@@ -49,11 +49,11 @@ def _assert(condition: bool, code: str) -> None:
 def _source(repo: Path) -> Path:
     with open_storage(repo) as connection:
         connection.execute(
-            "INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)",
             ("canary-client", "project-canary", "ACTIVE", "now", "now"),
         )
         connection.execute(
-            "INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
             ("credential-canary", "canary-client", "project-canary", b"v" * 32, b"f" * 32, "now"),
         )
     return repo / ".engineering" / "engineering.db"

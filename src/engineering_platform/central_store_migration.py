@@ -34,13 +34,15 @@ TOOL_VERSION = "2.0.0-phase2-increment3"
 EXPECTED_SCHEMA = ENGINEERING_STORAGE_SCHEMA_VERSION
 HISTORICAL_ATTESTATION_VERSION = 1
 HISTORICAL_ATTESTATION_CLASSIFIER_VERSION = 1
-REQUIRED_TABLES = frozenset({
+_BASE_REQUIRED_TABLES = frozenset({
     "engineering_schema_migrations", "engineering_metadata", "engineering_transactions",
-    "execution_run_leases", "provider_recovery_attempts", "local_api_credentials",
-    "local_api_consumer_registrations", "execution_runs", "execution_submissions",
+    "execution_run_leases", "provider_recovery_attempts", "execution_runs", "execution_submissions",
     "provider_invocation_receipts", "prompt_execution_history",
     "execution_run_qualification_snapshots",
 })
+_CURRENT_CONSUMER_TABLES = ("ep_consumer_credentials", "ep_consumer_registrations")
+_LEGACY_CONSUMER_TABLES = ("local_api_credentials", "local_api_consumer_registrations")
+REQUIRED_TABLES = _BASE_REQUIRED_TABLES | frozenset(_CURRENT_CONSUMER_TABLES)
 TERMINAL_PHASES = ("COMPLETE", "BLOCKED", "FAILED")
 ACTIVE_RECOVERY_STATES = ("RECOVERY_AVAILABLE", "RECOVERY_STARTING", "RECOVERY_IN_PROGRESS")
 FAILURE_CODES = frozenset({
@@ -248,7 +250,7 @@ def classify_target(path: Path) -> dict[str, object]:
             if not tables:
                 return {"state": "EMPTY_NEW", "path": str(path), "blocking_code": None}
             schema = _schema(connection, tables)
-            if schema == EXPECTED_SCHEMA and REQUIRED_TABLES <= tables:
+            if schema == EXPECTED_SCHEMA and _required_tables(tables) <= tables:
                 return {"state": "COMPATIBLE_EXISTING", "path": str(path), "blocking_code": "TARGET_STORE_CONFLICT"}
             return {"state": "CONFLICTING_EXISTING", "path": str(path), "blocking_code": "TARGET_STORE_CONFLICT"}
     except (OSError, sqlite3.DatabaseError):
@@ -267,10 +269,11 @@ def inspect_source(candidate: StoreCandidate) -> dict[str, object]:
             result.update({"tables": sorted(tables), "schema_version": schema, "integrity": "PASS" if integrity == ["ok"] else "FAILED"})
             if schema != EXPECTED_SCHEMA:
                 result["blocking_codes"].append("SOURCE_SCHEMA_MISMATCH")
-            if integrity != ["ok"] or not REQUIRED_TABLES <= tables:
+            required = _required_tables(tables)
+            if integrity != ["ok"] or not required <= tables:
                 result["blocking_codes"].append("SOURCE_INTEGRITY_FAILED")
-            result["required_tables_present"] = sorted(REQUIRED_TABLES & tables)
-            result["required_tables_missing"] = sorted(REQUIRED_TABLES - tables)
+            result["required_tables_present"] = sorted(required & tables)
+            result["required_tables_missing"] = sorted(required - tables)
             result["journal_mode"] = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).upper()
     except (OSError, sqlite3.DatabaseError):
         result["blocking_codes"].append("SOURCE_INTEGRITY_FAILED")
@@ -279,6 +282,31 @@ def inspect_source(candidate: StoreCandidate) -> dict[str, object]:
 
 def _count(connection: sqlite3.Connection, query: str, params: tuple[object, ...] = ()) -> int:
     return int(connection.execute(query, params).fetchone()[0])
+
+
+def _consumer_authority_tables(tables: set[str]) -> tuple[str, str] | None:
+    """Return the sole authority pair, preferring the current neutral schema.
+
+    The retained historical pair is readable only for pre-schema-53 migration
+    evidence.  Once current tables exist, all migration inspection uses the
+    neutral pair and never falls back to legacy data.
+    """
+
+    if set(_CURRENT_CONSUMER_TABLES) <= tables:
+        return _CURRENT_CONSUMER_TABLES
+    if set(_LEGACY_CONSUMER_TABLES) <= tables:
+        return _LEGACY_CONSUMER_TABLES
+    return None
+
+
+def _required_tables(tables: set[str]) -> frozenset[str]:
+    pair = _consumer_authority_tables(tables)
+    return _BASE_REQUIRED_TABLES | frozenset(pair or _CURRENT_CONSUMER_TABLES)
+
+
+def _consumer_authority_tables_for_path(path: Path) -> tuple[str, str] | None:
+    with _readonly(path) as connection:
+        return _consumer_authority_tables(_tables(connection))
 
 
 def _lock_owner(lock: Path) -> tuple[str, int] | None:
@@ -371,13 +399,18 @@ def project_scope_inventory(path: Path) -> dict[str, object]:
     try:
         with _readonly(path) as connection:
             tables = _tables(connection)
-            if "local_api_consumer_registrations" in tables:
-                rows = connection.execute("SELECT DISTINCT project_id FROM local_api_consumer_registrations ORDER BY project_id").fetchall()
+            pair = _consumer_authority_tables(tables)
+            if pair is None:
+                result["blocking_codes"].append("SOURCE_INTEGRITY_FAILED")
+                return result
+            credentials_table, registrations_table = pair
+            if registrations_table in tables:
+                rows = connection.execute(f"SELECT DISTINCT project_id FROM {registrations_table} ORDER BY project_id").fetchall()
                 result["project_ids"] = [str(row[0]) for row in rows]
-                result["consumer_registrations"] = _count(connection, "SELECT COUNT(*) FROM local_api_consumer_registrations")
-            if "local_api_credentials" in tables:
-                result["credential_scopes"] = _count(connection, "SELECT COUNT(*) FROM local_api_credentials")
-                columns = {str(row[1]).casefold() for row in connection.execute("PRAGMA table_info(local_api_credentials)")}
+                result["consumer_registrations"] = _count(connection, f"SELECT COUNT(*) FROM {registrations_table}")
+            if credentials_table in tables:
+                result["credential_scopes"] = _count(connection, f"SELECT COUNT(*) FROM {credentials_table}")
+                columns = {str(row[1]).casefold() for row in connection.execute(f"PRAGMA table_info({credentials_table})")}
                 result["plaintext_credential_columns"] = sorted(columns & {"credential", "token", "bearer", "secret", "plaintext"})
             for table in ("engineering_transactions", "prompt_execution_history"):
                 if table in tables:
@@ -619,14 +652,18 @@ def _domain_digest(path: Path, table: str, columns: tuple[str, ...]) -> str:
 
 def authority_independent_baseline_attestation(baseline: Path, central: Path) -> dict[str, object]:
     """ADR-0025 exact baseline-delta classifier; never invents row origin."""
+    baseline_pair = _consumer_authority_tables_for_path(baseline)
+    central_pair = _consumer_authority_tables_for_path(central)
+    if baseline_pair is None or central_pair is None:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "consumer authority tables are unavailable")
     domains = {
-        "credentials": ("local_api_credentials", ("credential_id", "consumer_id", "project_id", "verifier", "fingerprint", "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id")),
-        "registrations": ("local_api_consumer_registrations", ("consumer_id", "project_id", "status", "created_at", "updated_at", "disabled_at", "revoked_at")),
-        "project_scope": ("local_api_consumer_registrations", ("consumer_id", "project_id", "status")),
+        "credentials": (baseline_pair[0], central_pair[0], ("credential_id", "consumer_id", "project_id", "verifier", "fingerprint", "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id")),
+        "registrations": (baseline_pair[1], central_pair[1], ("consumer_id", "project_id", "status", "created_at", "updated_at", "disabled_at", "revoked_at")),
+        "project_scope": (baseline_pair[1], central_pair[1], ("consumer_id", "project_id", "status")),
     }
     result: dict[str, object] = {"attestation_version": 1, "domains": {}, "credential_delta": False, "registration_delta": False, "project_scope_delta": False}
-    for name, (table, columns) in domains.items():
-        baseline_digest, central_digest = _domain_digest(baseline, table, columns), _domain_digest(central, table, columns)
+    for name, (baseline_table, central_table, columns) in domains.items():
+        baseline_digest, central_digest = _domain_digest(baseline, baseline_table, columns), _domain_digest(central, central_table, columns)
         delta = baseline_digest != central_digest
         result["domains"][name] = {"baseline_digest": baseline_digest, "central_digest": central_digest, "classification": "CONTAMINATION_PROVENANCE_UNRESOLVED" if delta else "NO_POST_CUTOVER_MUTATION"}
         result[f"{name[:-1] if name.endswith('s') else name}_delta"] = delta
@@ -681,10 +718,14 @@ def _historical_fixture_components(baseline: Path, central: Path) -> list[dict[s
     """Mechanically recognize only the four authorized historical test subjects."""
     credentials = ("credential_id", "consumer_id", "project_id", "verifier", "fingerprint", "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id")
     registrations = ("consumer_id", "project_id", "status", "created_at", "updated_at", "disabled_at", "revoked_at", "audit_metadata")
-    old_credentials = _authority_rows(baseline, "local_api_credentials", credentials, ("credential_id",))
-    new_credentials = _authority_rows(central, "local_api_credentials", credentials, ("credential_id",))
-    old_registrations = _authority_rows(baseline, "local_api_consumer_registrations", registrations, ("consumer_id", "project_id"))
-    new_registrations = _authority_rows(central, "local_api_consumer_registrations", registrations, ("consumer_id", "project_id"))
+    baseline_pair = _consumer_authority_tables_for_path(baseline)
+    central_pair = _consumer_authority_tables_for_path(central)
+    if baseline_pair is None or central_pair is None:
+        raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "consumer authority tables are unavailable")
+    old_credentials = _authority_rows(baseline, baseline_pair[0], credentials, ("credential_id",))
+    new_credentials = _authority_rows(central, central_pair[0], credentials, ("credential_id",))
+    old_registrations = _authority_rows(baseline, baseline_pair[1], registrations, ("consumer_id", "project_id"))
+    new_registrations = _authority_rows(central, central_pair[1], registrations, ("consumer_id", "project_id"))
     if any(old_credentials[key] != new_credentials.get(key) for key in old_credentials) or any(old_registrations[key] != new_registrations.get(key) for key in old_registrations):
         raise CutoverError("CONTAMINATION_PROVENANCE_UNRESOLVED", "baseline authority rows changed")
     if set(new_credentials) - set(old_credentials) and not set(old_credentials) <= set(new_credentials):

@@ -21,7 +21,7 @@ import sys
 
 WORKSPACE_DIRECTORY = ".engineering"
 DATABASE_FILENAME = "engineering.db"
-ENGINEERING_STORAGE_SCHEMA_VERSION = 40
+ENGINEERING_STORAGE_SCHEMA_VERSION = 41
 STORE_AUTHORITY_POINTER = "store-authority.json"
 JOURNAL_MODES = frozenset({"DELETE", "MEMORY"})
 LEGACY_DISMISSALS_PATH = Path(".engineering/status/execution_dismissals.json")
@@ -1033,27 +1033,27 @@ def _schema_v38(connection: sqlite3.Connection) -> None:
 
 
 def _schema_v39(connection: sqlite3.Connection) -> None:
-    """Add verifier-only Local Consumer API credential authority metadata."""
+    """Add verifier-only EP consumer credential authority metadata."""
     connection.execute(
-        "CREATE TABLE IF NOT EXISTS local_api_credentials ("
+        "CREATE TABLE IF NOT EXISTS ep_consumer_credentials ("
         "credential_id TEXT PRIMARY KEY CHECK(length(credential_id) BETWEEN 1 AND 128),"
         "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
         "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
         "verifier BLOB NOT NULL UNIQUE CHECK(length(verifier)=32),"
         "fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint)=32),"
         "issued_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT,"
-        "replaced_by_credential_id TEXT REFERENCES local_api_credentials(credential_id))"
+        "replaced_by_credential_id TEXT REFERENCES ep_consumer_credentials(credential_id))"
     )
     connection.execute(
-        "CREATE INDEX IF NOT EXISTS local_api_credentials_scope_lookup "
-        "ON local_api_credentials(consumer_id,project_id,revoked_at)"
+        "CREATE INDEX IF NOT EXISTS ep_consumer_credentials_scope_lookup "
+        "ON ep_consumer_credentials(consumer_id,project_id,revoked_at)"
     )
 
 
 def _schema_v40(connection: sqlite3.Connection) -> None:
-    """Add the non-secret Local Consumer API registration authority."""
+    """Add the non-secret EP consumer registration authority."""
     connection.execute(
-        "CREATE TABLE IF NOT EXISTS local_api_consumer_registrations ("
+        "CREATE TABLE IF NOT EXISTS ep_consumer_registrations ("
         "consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 1 AND 128),"
         "project_id TEXT NOT NULL CHECK(length(project_id) BETWEEN 1 AND 128),"
         "status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED','REVOKED')),"
@@ -1062,9 +1062,115 @@ def _schema_v40(connection: sqlite3.Connection) -> None:
         "PRIMARY KEY(consumer_id,project_id))"
     )
     connection.execute(
-        "CREATE INDEX IF NOT EXISTS local_api_consumer_registrations_status_lookup "
-        "ON local_api_consumer_registrations(consumer_id,project_id,status)"
+        "CREATE INDEX IF NOT EXISTS ep_consumer_registrations_status_lookup "
+        "ON ep_consumer_registrations(consumer_id,project_id,status)"
     )
+
+
+_CONSUMER_CREDENTIAL_COLUMNS = (
+    "credential_id", "consumer_id", "project_id", "verifier", "fingerprint",
+    "issued_at", "expires_at", "revoked_at", "replaced_by_credential_id",
+)
+_CONSUMER_REGISTRATION_COLUMNS = (
+    "consumer_id", "project_id", "status", "created_at", "updated_at",
+    "disabled_at", "revoked_at", "audit_metadata",
+)
+
+
+def _consumer_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    return tuple(str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})"))
+
+
+def _require_consumer_table_shape(
+    connection: sqlite3.Connection, *, credentials: str, registrations: str,
+) -> None:
+    if _consumer_columns(connection, credentials) != _CONSUMER_CREDENTIAL_COLUMNS:
+        raise EngineeringStorageError("EP consumer credential table shape is invalid.")
+    if _consumer_columns(connection, registrations) != _CONSUMER_REGISTRATION_COLUMNS:
+        raise EngineeringStorageError("EP consumer registration table shape is invalid.")
+    credential_pk = tuple(
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({credentials})") if int(row[5]) > 0
+    )
+    registration_pk = tuple(
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({registrations})") if int(row[5]) > 0
+    )
+    if credential_pk != ("credential_id",) or registration_pk != ("consumer_id", "project_id"):
+        raise EngineeringStorageError("EP consumer credential table identity is invalid.")
+
+
+def _assert_exact_consumer_transfer(
+    connection: sqlite3.Connection, *, source: str, destination: str, columns: tuple[str, ...],
+) -> None:
+    column_list = ",".join(columns)
+    source_count = int(connection.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0])
+    destination_count = int(connection.execute(f"SELECT COUNT(*) FROM {destination}").fetchone()[0])
+    if source_count != destination_count:
+        raise EngineeringStorageError("EP consumer credential transfer cardinality is invalid.")
+    missing = connection.execute(
+        f"SELECT {column_list} FROM {source} EXCEPT SELECT {column_list} FROM {destination} LIMIT 1"
+    ).fetchone()
+    extra = connection.execute(
+        f"SELECT {column_list} FROM {destination} EXCEPT SELECT {column_list} FROM {source} LIMIT 1"
+    ).fetchone()
+    if missing is not None or extra is not None:
+        raise EngineeringStorageError("EP consumer credential transfer identity is invalid.")
+
+
+def _schema_v41(connection: sqlite3.Connection) -> None:
+    """Transfer historical credential tables to the neutral authority namespace.
+
+    The storage migration framework encloses this function and metadata version
+    advance in one immediate transaction. Legacy tables are retained untouched
+    only as migration/rollback evidence; no runtime reader falls back to them.
+    """
+
+    legacy_credentials, legacy_registrations = (
+        "local_api_credentials", "local_api_consumer_registrations",
+    )
+    current_credentials, current_registrations = (
+        "ep_consumer_credentials", "ep_consumer_registrations",
+    )
+    tables = {
+        str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    legacy = {legacy_credentials, legacy_registrations} & tables
+    current = {current_credentials, current_registrations} & tables
+    if legacy and legacy != {legacy_credentials, legacy_registrations}:
+        raise EngineeringStorageError("EP consumer credential migration source is incomplete.")
+    if current and current != {current_credentials, current_registrations}:
+        raise EngineeringStorageError("EP consumer credential migration destination is incomplete.")
+    if legacy and current:
+        raise EngineeringStorageError("EP consumer credential migration has ambiguous parallel authority.")
+    if legacy:
+        _require_consumer_table_shape(
+            connection, credentials=legacy_credentials, registrations=legacy_registrations,
+        )
+        _schema_v39(connection)
+        _schema_v40(connection)
+        connection.execute(
+            "INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,disabled_at,revoked_at,audit_metadata) "
+            "SELECT consumer_id,project_id,status,created_at,updated_at,disabled_at,revoked_at,audit_metadata "
+            "FROM local_api_consumer_registrations"
+        )
+        connection.execute(
+            "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at,replaced_by_credential_id) "
+            "SELECT credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at,revoked_at,replaced_by_credential_id "
+            "FROM local_api_credentials"
+        )
+        _assert_exact_consumer_transfer(
+            connection, source=legacy_registrations, destination=current_registrations,
+            columns=_CONSUMER_REGISTRATION_COLUMNS,
+        )
+        _assert_exact_consumer_transfer(
+            connection, source=legacy_credentials, destination=current_credentials,
+            columns=_CONSUMER_CREDENTIAL_COLUMNS,
+        )
+    elif current:
+        _require_consumer_table_shape(
+            connection, credentials=current_credentials, registrations=current_registrations,
+        )
+    else:
+        raise EngineeringStorageError("EP consumer credential migration source is absent.")
 
 
 def _import_legacy_execution_dismissals(root: Path, connection: sqlite3.Connection) -> None:
@@ -1154,6 +1260,7 @@ MIGRATIONS: dict[int, Migration] = {
     38: _schema_v38,
     39: _schema_v39,
     40: _schema_v40,
+    41: _schema_v41,
 }
 
 
@@ -2259,7 +2366,15 @@ def install_central_operational_compatibility_schema(connection: sqlite3.Connect
         connection.execute(
             "ALTER TABLE prompt_execution_history RENAME TO ep_bootstrap_prompt_history"
         )
+    server_owned_tables = {
+        str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
     for version in range(1, ENGINEERING_STORAGE_SCHEMA_VERSION + 1):
+        # Server schema 53 owns the credential namespace transfer inside its
+        # own atomic migration.  The retained runner compatibility installer
+        # must never create a competing destination table first.
+        if version == 41 and "ep_installations" in server_owned_tables:
+            continue
         MIGRATIONS[version](connection)
 
 

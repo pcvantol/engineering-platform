@@ -1,4 +1,4 @@
-"""Verifier-only Local Consumer API credentials and qualification seam.
+"""Verifier-only Engineering Platform consumer credentials and qualification seam.
 
 Increment 2a permits one short-lived, operator-created qualification credential.
 It is not consumer registration or a general credential-issuance workflow.
@@ -16,9 +16,13 @@ import json
 from pathlib import Path
 import secrets
 
-from .contracts.local_consumer_api import RequestEnvelope
+from .contracts.ep_consumer import RequestEnvelope
 from .storage import open_storage
 
+# These fixed predecessor domains preserve existing verifier and fingerprint
+# values during the namespace migration.  Renaming the domains would invalidate
+# otherwise valid bearer credentials, so the opaque values are intentionally
+# retained as migration compatibility material rather than current authority.
 VERIFIER_DOMAIN = b"engineering-platform.local-api.verifier.v1\0"
 FINGERPRINT_DOMAIN = b"engineering-platform.local-api.fingerprint.v1\0"
 QUALIFICATION_PREFIX = "qualification-"
@@ -103,14 +107,14 @@ def create_qualification_credential(
     connection = open_storage(root)
     try:
         active = connection.execute(
-            "SELECT 1 FROM local_api_credentials WHERE credential_id LIKE ? "
+            "SELECT 1 FROM ep_consumer_credentials WHERE credential_id LIKE ? "
             "AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) LIMIT 1",
             (f"{QUALIFICATION_PREFIX}%",),
         ).fetchone()
         if active is not None:
             raise ValueError("An active qualification credential already exists; revoke it first.")
         connection.execute(
-            "INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at) "
+            "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at,expires_at) "
             "VALUES(?,?,?,?,?,?,?)",
             (
                 credential_id,
@@ -142,7 +146,7 @@ def qualification_status(root: Path) -> list[dict[str, str | bool | None]]:
     try:
         rows = connection.execute(
             "SELECT credential_id,consumer_id,project_id,fingerprint,issued_at,expires_at,revoked_at "
-            "FROM local_api_credentials WHERE credential_id LIKE ? ORDER BY issued_at DESC",
+            "FROM ep_consumer_credentials WHERE credential_id LIKE ? ORDER BY issued_at DESC",
             (f"{QUALIFICATION_PREFIX}%",),
         ).fetchall()
     finally:
@@ -172,7 +176,7 @@ def revoke_qualification_credential(root: Path, credential_id: str) -> bool:
     connection = open_storage(root)
     try:
         result = connection.execute(
-            "UPDATE local_api_credentials SET revoked_at=? WHERE credential_id=? AND revoked_at IS NULL",
+            "UPDATE ep_consumer_credentials SET revoked_at=? WHERE credential_id=? AND revoked_at IS NULL",
             (_timestamp(datetime.now(timezone.utc)), credential_id),
         )
         return result.rowcount == 1
@@ -185,7 +189,7 @@ def _registration(root: Path, consumer_id: str, project_id: str) -> tuple[str, .
     try:
         return connection.execute(
             "SELECT consumer_id,project_id,status,created_at,updated_at,disabled_at,revoked_at "
-            "FROM local_api_consumer_registrations WHERE consumer_id=? AND project_id=?",
+            "FROM ep_consumer_registrations WHERE consumer_id=? AND project_id=?",
             (consumer_id, project_id),
         ).fetchone()
     finally:
@@ -198,12 +202,12 @@ def register_consumer(root: Path, *, consumer_id: str, project_id: str) -> dict[
     connection = open_storage(root)
     try:
         row = connection.execute(
-            "SELECT status,created_at,updated_at,disabled_at,revoked_at FROM local_api_consumer_registrations "
+            "SELECT status,created_at,updated_at,disabled_at,revoked_at FROM ep_consumer_registrations "
             "WHERE consumer_id=? AND project_id=?", (consumer_id, project_id)
         ).fetchone()
         if row is None:
             connection.execute(
-                "INSERT INTO local_api_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,audit_metadata) "
+                "INSERT INTO ep_consumer_registrations(consumer_id,project_id,status,created_at,updated_at,audit_metadata) "
                 "VALUES(?,?, 'ACTIVE',?,?,?)", (consumer_id, project_id, now, now, json.dumps({"action":"REGISTER"}, sort_keys=True))
             )
             return {"consumer_id":consumer_id,"project_id":project_id,"status":"ACTIVE","created_at":now,"updated_at":now,"idempotent":False}
@@ -222,7 +226,7 @@ def consumer_status(root: Path, *, consumer_id: str, project_id: str) -> dict[st
     connection = open_storage(root)
     try:
         count = connection.execute(
-            "SELECT count(*) FROM local_api_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? "
+            "SELECT count(*) FROM ep_consumer_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? "
             "AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)",
             (consumer_id, project_id, f"{PRODUCTION_PREFIX}%"),
         ).fetchone()[0]
@@ -238,11 +242,11 @@ def _set_registration_state(root: Path, *, consumer_id: str, project_id: str, st
     connection = open_storage(root)
     try:
         result = connection.execute(
-            f"UPDATE local_api_consumer_registrations SET status=?,updated_at=?,{column}=?,audit_metadata=? "
+            f"UPDATE ep_consumer_registrations SET status=?,updated_at=?,{column}=?,audit_metadata=? "
             "WHERE consumer_id=? AND project_id=? AND status='ACTIVE'",
             (state, now, now, json.dumps({"action": "DISABLE" if state == "DISABLED" else "REVOKE_REGISTRATION"}, sort_keys=True), consumer_id, project_id),
         )
-        existing = connection.execute("SELECT status FROM local_api_consumer_registrations WHERE consumer_id=? AND project_id=?", (consumer_id, project_id)).fetchone()
+        existing = connection.execute("SELECT status FROM ep_consumer_registrations WHERE consumer_id=? AND project_id=?", (consumer_id, project_id)).fetchone()
         if existing is None:
             raise ValueError("consumer registration is absent.")
         if existing[0] != state and result.rowcount != 1:
@@ -283,10 +287,10 @@ def issue_credential(root: Path, *, consumer_id: str, project_id: str) -> Produc
     credential_id = PRODUCTION_PREFIX + secrets.token_hex(16)
     connection = open_storage(root)
     try:
-        count = connection.execute("SELECT count(*) FROM local_api_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)", (consumer_id,project_id,f"{PRODUCTION_PREFIX}%")).fetchone()[0]
+        count = connection.execute("SELECT count(*) FROM ep_consumer_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)", (consumer_id,project_id,f"{PRODUCTION_PREFIX}%")).fetchone()[0]
         if count >= MAX_ACTIVE_PRODUCTION_CREDENTIALS:
             raise ValueError("active production credential limit reached.")
-        connection.execute("INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", (credential_id,consumer_id,project_id,verifier(token),fingerprint(token),now))
+        connection.execute("INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)", (credential_id,consumer_id,project_id,verifier(token),fingerprint(token),now))
     finally:
         connection.close()
     return ProductionCredential(credential_id,consumer_id,project_id,fingerprint(token).hex(),now,token)
@@ -296,7 +300,7 @@ def credential_status(root: Path, *, consumer_id: str, project_id: str) -> list[
     consumer_id, project_id = _scope(consumer_id, project_id)
     connection = open_storage(root)
     try:
-        rows = connection.execute("SELECT credential_id,fingerprint,issued_at,expires_at,revoked_at FROM local_api_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? ORDER BY issued_at DESC", (consumer_id,project_id,f"{PRODUCTION_PREFIX}%")).fetchall()
+        rows = connection.execute("SELECT credential_id,fingerprint,issued_at,expires_at,revoked_at FROM ep_consumer_credentials WHERE consumer_id=? AND project_id=? AND credential_id LIKE ? ORDER BY issued_at DESC", (consumer_id,project_id,f"{PRODUCTION_PREFIX}%")).fetchall()
     finally:
         connection.close()
     now = _timestamp(datetime.now(timezone.utc))
@@ -308,9 +312,9 @@ def revoke_credential(root: Path, credential_id: str) -> bool:
         raise ValueError("credential_id is not a production credential.")
     connection = open_storage(root)
     try:
-        result = connection.execute("UPDATE local_api_credentials SET revoked_at=? WHERE credential_id=? AND revoked_at IS NULL", (_timestamp(datetime.now(timezone.utc)),credential_id))
+        result = connection.execute("UPDATE ep_consumer_credentials SET revoked_at=? WHERE credential_id=? AND revoked_at IS NULL", (_timestamp(datetime.now(timezone.utc)),credential_id))
         if result.rowcount == 0 and connection.execute(
-            "SELECT 1 FROM local_api_credentials WHERE credential_id=?", (credential_id,)
+            "SELECT 1 FROM ep_consumer_credentials WHERE credential_id=?", (credential_id,)
         ).fetchone() is None:
             raise ValueError("production credential is absent.")
         return result.rowcount == 1
@@ -353,8 +357,8 @@ class CredentialAuthority:
         try:
             connection = open_storage(self.root)
             try:
-                connection.execute("SELECT 1 FROM local_api_credentials LIMIT 1").fetchone()
-                connection.execute("SELECT 1 FROM local_api_consumer_registrations LIMIT 1").fetchone()
+                connection.execute("SELECT 1 FROM ep_consumer_credentials LIMIT 1").fetchone()
+                connection.execute("SELECT 1 FROM ep_consumer_registrations LIMIT 1").fetchone()
             finally:
                 connection.close()
             return True
@@ -376,7 +380,7 @@ class CredentialAuthority:
             connection = open_storage(self.root)
             try:
                 row = connection.execute(
-                    "SELECT credential_id,consumer_id,project_id,verifier FROM local_api_credentials "
+                    "SELECT credential_id,consumer_id,project_id,verifier FROM ep_consumer_credentials "
                     "WHERE verifier=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)",
                     (candidate,),
                 ).fetchone()
@@ -397,7 +401,7 @@ class CredentialAuthority:
             connection = open_storage(self.root)
             try:
                 row = connection.execute(
-                    "SELECT credential_id FROM local_api_credentials WHERE verifier=?",
+                    "SELECT credential_id FROM ep_consumer_credentials WHERE verifier=?",
                     (scope.verifier_value,),
                 ).fetchone()
             finally:
@@ -411,7 +415,7 @@ class CredentialAuthority:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="engineering-local-api-credentials")
+    parser = argparse.ArgumentParser(prog="engineering-ep-consumer-credentials")
     parser.add_argument(
         "command",
         choices=(

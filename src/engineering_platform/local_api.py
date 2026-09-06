@@ -12,14 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 
-from .contracts.local_consumer_api import (
+from .contracts.ep_consumer import (
     ContractError,
     ErrorCode,
     ErrorEnvelope,
     RequestEnvelope,
     ResponseEnvelope,
 )
-from .local_api_credentials import CredentialAuthority
+from .ep_consumer_credentials import CredentialAuthority
 from .storage import open_storage
 
 # These labels are historical identities only.  They are deliberately not

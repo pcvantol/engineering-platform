@@ -1682,7 +1682,7 @@ class LocalAgentRunnerTest(unittest.TestCase):
         self.assertEqual(runner._confirm_deterministic_admission(admitted), (admitted, None))
         pending = TransactionState("watcher-admission", "pcvantol/djconnect", str(self.prompt), "EXECUTE_AGENT")
         environment = {
-            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": "40",
+            "ENGINEERING_PLATFORM_ADMITTED_STORAGE_SCHEMA": str(ENGINEERING_STORAGE_SCHEMA_VERSION),
             "ENGINEERING_PLATFORM_ADMITTED_STORAGE_ROOT": str(self.root),
         }
         with patch.dict(os.environ, environment, clear=False), \

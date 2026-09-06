@@ -97,9 +97,9 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         handbook = (ROOT / "docs" / "engineering" / "ENGINEERING_PLATFORM_ARCHITECTURE_HANDBOOK.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("The historical Local Consumer API service and its lifecycle are retired.", handbook)
+        self.assertIn("The historical Local Consumer\nAPI is retired; it is neither an ingress nor a loopback service.", handbook)
         self.assertIn("exactly HTTP JSON, installed CLI and File Inbox", handbook)
-        self.assertIn("Engineering Platform Server and the Submission Service\nbefore CENTRAL", handbook)
+        self.assertIn("Server → Submission Service → CENTRAL", handbook)
 
     def test_roadmap_and_active_backlog_distinguish_completed_1_5_from_maintenance(self) -> None:
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(

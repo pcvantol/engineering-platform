@@ -59,6 +59,7 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
         """Construct a real pre-52 database shape for the installed upgrade canary."""
         with sqlite3.connect(self.database) as db:
             db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("PRAGMA legacy_alter_table=ON")
             db.execute("DROP TRIGGER ep_receipt_run_provenance_scope_insert")
             db.execute("DROP TRIGGER ep_receipt_run_provenance_immutable_update")
             db.execute("DROP TRIGGER ep_receipt_run_provenance_immutable_delete")
@@ -67,8 +68,9 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
             db.execute("CREATE TABLE ep_installations (instance_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version IN (41,42,43,44,45,46,47,48,49,50,51)))")
             db.execute("INSERT INTO ep_installations(instance_id,created_at,schema_version) SELECT instance_id,created_at,51 FROM ep_installations_schema52")
             db.execute("DROP TABLE ep_installations_schema52")
-            db.execute("DELETE FROM engineering_schema_migrations WHERE version=52")
+            db.execute("DELETE FROM engineering_schema_migrations WHERE version IN (52,53)")
             db.execute("UPDATE engineering_metadata SET value='51' WHERE key='installation.schema_version'")
+            db.execute("PRAGMA legacy_alter_table=OFF")
 
     def test_schema_51_upgrade_backfills_every_verified_canonical_binding(self) -> None:
         """A pre-52 installed database upgrades in place without a second authority."""
@@ -76,7 +78,7 @@ class ReceiptRunProvenancePersistenceTest(unittest.TestCase):
         server.initialize(self.root)
         with sqlite3.connect(self.database) as db:
             self.assertEqual(db.execute("SELECT submission_id,run_id,project_id,repository_id,installation_id FROM ep_receipt_run_provenance ORDER BY submission_id").fetchall(), [("sub-a", "run-a", "project-a", "repo-a", self.installation), ("sub-b", "run-b", "project-b", "repo-b", self.installation)])
-            self.assertEqual(db.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 52)
+            self.assertEqual(db.execute("SELECT MAX(version) FROM engineering_schema_migrations").fetchone()[0], 53)
 
     def test_schema_51_upgrade_rejects_an_incomplete_or_conflicting_import(self) -> None:
         self._downgrade_to_schema_51()

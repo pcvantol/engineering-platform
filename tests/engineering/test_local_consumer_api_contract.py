@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import unittest
 
-from engineering_platform.contracts.local_consumer_api import (
+from engineering_platform.contracts.ep_consumer import (
     ContractError,
     ErrorCode,
     ErrorEnvelope,
-    LOCAL_CONSUMER_API_CONTRACT_VERSION,
+    EP_CONSUMER_CONTRACT_VERSION,
     RequestEnvelope,
     ResponseEnvelope,
     deserialize_request,
@@ -21,7 +21,7 @@ SECRET = "recognizable-contract-secret-DO-NOT-LEAK"
 
 def request(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
-        "contract_version": LOCAL_CONSUMER_API_CONTRACT_VERSION,
+        "contract_version": EP_CONSUMER_CONTRACT_VERSION,
         "request_type": "contract.foundation",
         "request_id": "request-123",
         "project_id": "project-123",

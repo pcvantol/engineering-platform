@@ -140,7 +140,7 @@ class EngineeringStorageTest(unittest.TestCase):
             with activate_storage_schema(root) as activated:
                 columns = {
                     str(row[1])
-                    for row in activated.execute("PRAGMA table_info(local_api_credentials)")
+                    for row in activated.execute("PRAGMA table_info(ep_consumer_credentials)")
                 }
                 self.assertEqual(
                     columns,
@@ -158,7 +158,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 )
                 self.assertFalse({"credential", "token", "secret", "plaintext"} & columns)
                 activated.execute(
-                    "INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
+                    "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
                     (
                         "credential-one",
                         "consumer-one",
@@ -170,7 +170,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     activated.execute(
-                        "INSERT INTO local_api_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
+                        "INSERT INTO ep_consumer_credentials(credential_id,consumer_id,project_id,verifier,fingerprint,issued_at) VALUES(?,?,?,?,?,?)",
                         (
                             "credential-two",
                             "consumer-one",
@@ -551,6 +551,7 @@ class EngineeringStorageTest(unittest.TestCase):
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=38")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=39")
                 connection.execute("DELETE FROM engineering_schema_migrations WHERE version=40")
+                connection.execute("DELETE FROM engineering_schema_migrations WHERE version=41")
             with activate_storage_schema(root) as connection:
                 columns = {
                     row[1]
