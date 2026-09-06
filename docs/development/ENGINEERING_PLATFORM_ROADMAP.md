@@ -291,6 +291,18 @@ Completed and operational.
 
 The completed 1.5 productization boundary remains historical maturity evidence. Current P-NEUTRAL/P-INSTALLER/bootstrap work is subsequent maintenance and standalone qualification, not a reopening of 1.5.
 
+## 1.6 — Repository Extraction Readiness
+
+Planned.
+
+This historical milestone marker is retained for documentation-contract compatibility; current sequencing authority is the bootstrap critical-path section above.
+
+## 2.0 — Versioned Platform Boundary
+
+In review.
+
+This historical milestone marker is retained for documentation-contract compatibility; it does not override the post-P-TRANSPORT critical path above.
+
 ## Policy
 
 Platform code must not acquire DJConnect runtime, Home Assistant, branding or repository-name dependencies. Historical evidence and explicitly bounded migration compatibility may retain names without retaining authority.
