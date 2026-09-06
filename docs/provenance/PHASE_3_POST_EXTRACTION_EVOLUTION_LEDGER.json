@@ -14,10 +14,12 @@
   "graph": {
     "nodes": [
       {"node_id":"baseline:dashboard","node_type":"BASELINE","path":"src/engineering_platform/dashboard.py","responsibilities":["src/engineering_platform/dashboard.py::module"]},
-      {"node_id":"current:dashboard","node_type":"CURRENT_TARGET","path":"src/engineering_platform/dashboard.py","sha256":"5b9951c70096aab595a40f0084f031874cea7a952881dde754fde626769d35c5"}
+      {"node_id":"current:dashboard","node_type":"INTERMEDIATE_TARGET","path":"src/engineering_platform/dashboard.py","sha256":"5b9951c70096aab595a40f0084f031874cea7a952881dde754fde626769d35c5"},
+      {"node_id":"retired:dashboard","node_type":"RETIRED","path":"src/engineering_platform/dashboard.py"}
     ],
     "edges": [
-      {"from":"baseline:dashboard","to":"current:dashboard","kind":"MODIFY","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"0a4c95d021c63921ca96c5617be24dac48fb7390","supporting_pr":22}
+      {"from":"baseline:dashboard","to":"current:dashboard","kind":"MODIFY","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"0a4c95d021c63921ca96c5617be24dac48fb7390","supporting_pr":22},
+      {"from":"current:dashboard","to":"retired:dashboard","kind":"RETIRE","responsibilities":["src/engineering_platform/dashboard.py::module"],"governed_commit":"4b566619b5d8c645f5673a494b56cceab908d0c2","supporting_pr":33}
     ]
   },
   "governed_phase_seals": [
@@ -156,5 +158,534 @@
     {"historical_target_path":"src/engineering_platform/storage.py","baseline_sha256":"bbdc51b04b18bca0b98035002e1248e5f9b3aa8c763dfe689798d73205c8b2a8","evolution_type":"GOVERNED_MODIFICATION","first_governed_commit":"f8aa3e61fdb7297d9e687337d3edd5465d48ff7c","last_governed_commit":"f8aa3e61fdb7297d9e687337d3edd5465d48ff7c","supporting_pr":27,"reason_category":"P_CENTRAL_CORE_AUTHORITY","destinations":[{"path":"src/engineering_platform/storage.py","current_sha256":"01e6149d8e2885bf7cb6862c42827da27d472c813b49a03c9156464148604af7","responsibilities":["src/engineering_platform/storage.py::module"]}],"disposition":"P-CENTRAL-CORE limits root storage to guarded historical compatibility."},
     {"historical_target_path":"src/engineering_platform/telemetry.py","baseline_sha256":"3c5578e5c4ec4afe508beabf4920cac5bbc3cdec8d2034adf22d6f038e860529","evolution_type":"GOVERNED_MODIFICATION","first_governed_commit":"e9f04cafa889f27adf0a09d3f01043ec7833be57","last_governed_commit":"e9f04cafa889f27adf0a09d3f01043ec7833be57","supporting_pr":27,"reason_category":"P_CENTRAL_CORE_AUTHORITY","destinations":[{"path":"src/engineering_platform/telemetry.py","current_sha256":"1e80fb6274ede517577a253d3c4a568232f748d4bb703010e99765fe13e22c90","responsibilities":["src/engineering_platform/telemetry.py::module"]}],"disposition":"P-CENTRAL-CORE uses CENTRAL terminal telemetry materialization."},
     {"historical_target_path":"src/engineering_platform/validation_profile.py","baseline_sha256":"98e1ce7cdfb3ace5d8c5afe31128dae93d0d828be14a177878f344faea886619","evolution_type":"GOVERNED_MODIFICATION","first_governed_commit":"750ce945cdc50b32f4d11e166e06e47a339aab4a","last_governed_commit":"750ce945cdc50b32f4d11e166e06e47a339aab4a","supporting_pr":27,"reason_category":"P_CENTRAL_CORE_QUALIFICATION_BOUNDARY","destinations":[{"path":"src/engineering_platform/validation_profile.py","current_sha256":"71cfb80e9f27eee853692c094eacaee26b099d5ba29a01ecf559902dcf393f36","responsibilities":["src/engineering_platform/validation_profile.py::module"]}],"disposition":"The governed P-CENTRAL-CORE profile defers only the P-CENTRAL-CONSOLE browser responsibility while preserving all other runtime profiles."}
+  ],
+  "successor_evolutions": [
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-AGENT-STATE",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/agent_state.py",
+    "predecessor_sha256": "ad5f9ae2c01d78e9f570735eead295c723827171b2ab4b5aa5b4308755ebe37c",
+    "first_successor_commit": "0db086075fa4316f59bf0f102731fdaeae74975e",
+    "last_successor_commit": "0db086075fa4316f59bf0f102731fdaeae74975e",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/agent_state.py",
+        "current_sha256": "fc3d8606edaf66992408350e3f542f41cb536070daabb7cc4bb68ca8024804af",
+        "responsibilities": [
+          "src/engineering_platform/agent_state.py::module"
+  ],
+  "successor_phase_completions": [
+    {
+      "phase_id": "P-TRANSPORT",
+      "predecessor_phase_id": "P-CENTRAL-CORE",
+      "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+      "completion_sha": "cc6b07effc2077db7736469ba0d89107a7bb979d",
+      "receipt_ids": [
+        "P-TRANSPORT-SUCCESSOR-AGENT-STATE",
+        "P-TRANSPORT-SUCCESSOR-CENTRAL-STORE-MIGRATION",
+        "P-TRANSPORT-SUCCESSOR-COMPONENT-LOGGING",
+        "P-TRANSPORT-SUCCESSOR-DASHBOARD",
+        "P-TRANSPORT-SUCCESSOR-DASHBOARD-CONFIGURATION",
+        "P-TRANSPORT-SUCCESSOR-DEPENDABOT-ADMISSION",
+        "P-TRANSPORT-SUCCESSOR-EMERGENCY-RECOVERY",
+        "P-TRANSPORT-SUCCESSOR-EXECUTION-EXECUTOR",
+        "P-TRANSPORT-SUCCESSOR-EXECUTION-HOST",
+        "P-TRANSPORT-SUCCESSOR-EXECUTION-REPORTING",
+        "P-TRANSPORT-SUCCESSOR-FORENSIC-ATTRIBUTION",
+        "P-TRANSPORT-SUCCESSOR-GOLDEN-SCENARIO",
+        "P-TRANSPORT-SUCCESSOR-HOST-PREFLIGHT",
+        "P-TRANSPORT-SUCCESSOR-HUMAN-TEXT-INGRESS",
+        "P-TRANSPORT-SUCCESSOR-INBOX-WATCHER",
+        "P-TRANSPORT-SUCCESSOR-LOCAL-API-CREDENTIALS",
+        "P-TRANSPORT-SUCCESSOR-PLATFORM-API",
+        "P-TRANSPORT-SUCCESSOR-PROVIDER-READINESS",
+        "P-TRANSPORT-SUCCESSOR-QUALIFICATION",
+        "P-TRANSPORT-SUCCESSOR-STORAGE",
+        "P-TRANSPORT-SUCCESSOR-VALIDATION-PROFILE",
+        "P-TRANSPORT-SUCCESSOR-WORKSPACE-INBOX-API"
+      ],
+      "receipts_sha256": "099e07f97a9e576ace842a84fa06fc2fa87f86ecf8370ed852a34cfcc73849ea"
+    }
   ]
+}
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-CENTRAL-STORE-MIGRATION",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/central_store_migration.py",
+    "predecessor_sha256": "f462d7a5f32d0d2d7da1a6dd2e9af1af5bbcc00ffc463032d4449256ba101e4d",
+    "first_successor_commit": "30beb7eaa8de525c7e80a94ecd9909df55f39c18",
+    "last_successor_commit": "30beb7eaa8de525c7e80a94ecd9909df55f39c18",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/central_store_migration.py",
+        "current_sha256": "36a6a50daae64644e3a5a3185c8c0d57d332045785a35f3e40da94f06388b254",
+        "responsibilities": [
+          "src/engineering_platform/central_store_migration.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-COMPONENT-LOGGING",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/component_logging.py",
+    "predecessor_sha256": "9e23c118f58c26db4123f529a002504c89bed10228e44fd9a3e6810ff4516d6d",
+    "first_successor_commit": "0bec3fe22639411c1c9dea0519d90a122566790c",
+    "last_successor_commit": "655052adcb7a61ad45e2f107793a6273fd93da78",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/component_logging.py",
+        "current_sha256": "451dfbe7f6899e0b7afd887d82d4ca563e8410c1f1beea860b0262c513800aab",
+        "responsibilities": [
+          "src/engineering_platform/component_logging.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-DASHBOARD",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/dashboard.py",
+    "predecessor_sha256": "5b9951c70096aab595a40f0084f031874cea7a952881dde754fde626769d35c5",
+    "first_successor_commit": "fa5b89acc923be3904c707331332bf06b6bc3561",
+    "last_successor_commit": "4b566619b5d8c645f5673a494b56cceab908d0c2",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/dashboard.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-DASHBOARD-CONFIGURATION",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/dashboard_configuration.py",
+    "predecessor_sha256": "afcc5224c494c3c1b54e588dc1dd7371549972871562443bce8ffd7c43b013e9",
+    "first_successor_commit": "0c0b5209f62597fcb19845a61963d959666047c7",
+    "last_successor_commit": "0c0b5209f62597fcb19845a61963d959666047c7",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/dashboard_configuration.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-DEPENDABOT-ADMISSION",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/dependabot_admission.py",
+    "predecessor_sha256": "93bdd6ab772ef42598a2d25a9897d40b3c5b069be572580acd7f6386338cf117",
+    "first_successor_commit": "9acbcd1bf2f2b93607a7612ad1005b676c2fca26",
+    "last_successor_commit": "9acbcd1bf2f2b93607a7612ad1005b676c2fca26",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/dependabot_admission.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-EMERGENCY-RECOVERY",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/emergency_recovery.py",
+    "predecessor_sha256": "281e623ac2e94ba83d20cfac2587b9cbb086adb0fa06210d36c04cefab0318ec",
+    "first_successor_commit": "dcd28583595b73f9fe019ebfd57fc0e4a8cfd44b",
+    "last_successor_commit": "dcd28583595b73f9fe019ebfd57fc0e4a8cfd44b",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/emergency_recovery.py",
+        "current_sha256": "a66849fbb80d86daadff818d0213c0399b376cd4531cab7d017ba9e4895a81e0",
+        "responsibilities": [
+          "src/engineering_platform/emergency_recovery.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-EXECUTION-EXECUTOR",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/execution_executor.py",
+    "predecessor_sha256": "d49e11faaec86418784c4add736ca11b560bf7878dea033760a68203902cd460",
+    "first_successor_commit": "af0cc0705de07a8700ef9d4e522d62fd87c1073b",
+    "last_successor_commit": "af0cc0705de07a8700ef9d4e522d62fd87c1073b",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/execution_executor.py",
+        "current_sha256": "2bac1c53ca3c0bcb0a3835ddeaeba202f921efe33ac2a7a238e2b15459577c39",
+        "responsibilities": [
+          "src/engineering_platform/execution_executor.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-EXECUTION-HOST",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/execution_host.py",
+    "predecessor_sha256": "2e8f585380349736d98b294755cfb242a7fc4f7f09b04f0fc689a246d2f204a8",
+    "first_successor_commit": "655052adcb7a61ad45e2f107793a6273fd93da78",
+    "last_successor_commit": "af0cc0705de07a8700ef9d4e522d62fd87c1073b",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/execution_host.py",
+        "current_sha256": "f947918d5c40cbb713dfb4115fe6f671b3ac19f16dba6090aa3adc42284b5aa1",
+        "responsibilities": [
+          "src/engineering_platform/execution_host.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-EXECUTION-REPORTING",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/execution_reporting.py",
+    "predecessor_sha256": "209c1b4f6085c6fb55ca1c77dee9e3728f425a4039b0b7aec4ec6bcb01cac554",
+    "first_successor_commit": "4b566619b5d8c645f5673a494b56cceab908d0c2",
+    "last_successor_commit": "4b566619b5d8c645f5673a494b56cceab908d0c2",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/execution_reporting.py",
+        "current_sha256": "b3b265eed8f6e8e57e3861a278547d11986d6b7251511e322363b21f833f6ec9",
+        "responsibilities": [
+          "src/engineering_platform/execution_reporting.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-FORENSIC-ATTRIBUTION",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/forensic_attribution.py",
+    "predecessor_sha256": "d4c8a3a1b17a17d11be3ec84f1151fb4f17db92f60c8dcf43e1659fe638d4035",
+    "first_successor_commit": "f9c8d291709365d289c2be425b84e8cdc3caf87f",
+    "last_successor_commit": "0c0b5209f62597fcb19845a61963d959666047c7",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/forensic_attribution.py",
+        "current_sha256": "16f493932cb2ac3008ff5093e3a893656fc6d26a6ce57b8a7ded80225827ddb0",
+        "responsibilities": [
+          "src/engineering_platform/forensic_attribution.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-GOLDEN-SCENARIO",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/golden_scenario.py",
+    "predecessor_sha256": "bda9b7bae6be7fc6b9c1b3ed8cb0c9365b2a41c41640c74b94583abfcfa28166",
+    "first_successor_commit": "16632893471fd067132898069e05b4bd5708ce80",
+    "last_successor_commit": "16632893471fd067132898069e05b4bd5708ce80",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/golden_scenario.py",
+        "current_sha256": "bf5c4b0b2cf194cfad62e9a9ddaf31741eb11e963bb12eef667cbebc95d7dd3a",
+        "responsibilities": [
+          "src/engineering_platform/golden_scenario.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-HOST-PREFLIGHT",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/host_preflight.py",
+    "predecessor_sha256": "3da16642b4a16f65187a5b1d60ab739c2e63fb031de45df87dbb16cd06c4b42e",
+    "first_successor_commit": "5e0ae559ce8ddeac46e9312e23919968fc08dc51",
+    "last_successor_commit": "5e0ae559ce8ddeac46e9312e23919968fc08dc51",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/host_preflight.py",
+        "current_sha256": "093079a87b6b6d5c71cdcdcef189d44b2f0bd58a2bb71ff3f214c5eb46430fe9",
+        "responsibilities": [
+          "src/engineering_platform/host_preflight.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-HUMAN-TEXT-INGRESS",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/human_text_ingress.py",
+    "predecessor_sha256": "4d15439100fb26076b7f9cdac968d9a2b9fe7efc91aa3ca676df9115fe46e7d3",
+    "first_successor_commit": "fe7a5f9dac23b214ae35c7fbc155dd7122616b20",
+    "last_successor_commit": "fe7a5f9dac23b214ae35c7fbc155dd7122616b20",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/human_text_ingress.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-INBOX-WATCHER",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/inbox_watcher.py",
+    "predecessor_sha256": "c8a7acb0b639c4ef054243c7d96bfe25937868f44de0aefffac6cf6184decf53",
+    "first_successor_commit": "59bf861fb051dd91bac7cfbec5ccdfa590958328",
+    "last_successor_commit": "f9c8d291709365d289c2be425b84e8cdc3caf87f",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/inbox_watcher.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-LOCAL-API-CREDENTIALS",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/local_api_credentials.py",
+    "predecessor_sha256": "53210f1e78554228a756b33c7ab5352d658a8497d659dc943dff162905254feb",
+    "first_successor_commit": "e8af52b771daae0c539e1a01d138302127aa1327",
+    "last_successor_commit": "e8af52b771daae0c539e1a01d138302127aa1327",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/local_api_credentials.py",
+        "current_sha256": "46e582919a9310df0ec711068c7db9c84bac5ab770aa77319addcc6ea257fd86",
+        "responsibilities": [
+          "src/engineering_platform/local_api_credentials.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-PLATFORM-API",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/platform_api.py",
+    "predecessor_sha256": "538dd3b81cfa2f5fd2c454c0354200f01860eff00d4cd0c3caf312baa3fca9a9",
+    "first_successor_commit": "0c0b5209f62597fcb19845a61963d959666047c7",
+    "last_successor_commit": "0c0b5209f62597fcb19845a61963d959666047c7",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/platform_api.py",
+        "current_sha256": "3def14bb400f93fb0a96668fef12f296bb73149dc5c24e8740b518ccb0f6f9f9",
+        "responsibilities": [
+          "src/engineering_platform/platform_api.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-PROVIDER-READINESS",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/provider_readiness.py",
+    "predecessor_sha256": "c27292efab147f9686b45959d13f569f7cb84d623d45aa68bcc7d5fd7552b922",
+    "first_successor_commit": "d2f44ecb79ed1095f9d1f685f93be9031f7161d0",
+    "last_successor_commit": "d2f44ecb79ed1095f9d1f685f93be9031f7161d0",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/provider_readiness.py",
+        "current_sha256": "c24cce63f5716d8ca0316c9b79f7163402a453c7a3851ad904c54751e8117174",
+        "responsibilities": [
+          "src/engineering_platform/provider_readiness.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-QUALIFICATION",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/qualification.py",
+    "predecessor_sha256": "2ec2a5f9acf8483bcdf0e415e49396b151cd86d7fda53bfbc5de2bd4748774c2",
+    "first_successor_commit": "cdeadc3e72ec8472967f268d94d2ee1913f97333",
+    "last_successor_commit": "16632893471fd067132898069e05b4bd5708ce80",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/qualification.py",
+        "current_sha256": "d372c062e737f0bb7722d151fb954df82afa937c85adafed482890d5534449e1",
+        "responsibilities": [
+          "src/engineering_platform/qualification.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-STORAGE",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/storage.py",
+    "predecessor_sha256": "01e6149d8e2885bf7cb6862c42827da27d472c813b49a03c9156464148604af7",
+    "first_successor_commit": "2471cd14a3742f084f7202775fe1b90d54595797",
+    "last_successor_commit": "2471cd14a3742f084f7202775fe1b90d54595797",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/storage.py",
+        "current_sha256": "c18fb5e16f256895d948b6fd293efabc3010d95dee8af6187cab03574dfeb9da",
+        "responsibilities": [
+          "src/engineering_platform/storage.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-VALIDATION-PROFILE",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/validation_profile.py",
+    "predecessor_sha256": "71cfb80e9f27eee853692c094eacaee26b099d5ba29a01ecf559902dcf393f36",
+    "first_successor_commit": "4ba55877eccf7eb94ec1cc65432e0d39b4b1e3f0",
+    "last_successor_commit": "4b566619b5d8c645f5673a494b56cceab908d0c2",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "GOVERNED_MODIFICATION",
+    "destinations": [
+      {
+        "path": "src/engineering_platform/validation_profile.py",
+        "current_sha256": "ea6cf0c3e788dbb5c73ef4fa96e160d8ae509cdfc0194813e2a6ab98110126b4",
+        "responsibilities": [
+          "src/engineering_platform/validation_profile.py::module"
+        ]
+      }
+    ]
+  },
+  {
+    "receipt_id": "P-TRANSPORT-SUCCESSOR-WORKSPACE-INBOX-API",
+    "phase_id": "P-TRANSPORT",
+    "predecessor_phase_id": "P-CENTRAL-CORE",
+    "predecessor_completion_sha": "a0694530ea54fac9a47e0898738105dfc719b935",
+    "historical_target_path": "src/engineering_platform/workspace_inbox_api.py",
+    "predecessor_sha256": "74fa23dd8982f2b57351a0e3c535bd035b627f6ab163f1015c488909542f5a73",
+    "first_successor_commit": "fe7a5f9dac23b214ae35c7fbc155dd7122616b20",
+    "last_successor_commit": "fe7a5f9dac23b214ae35c7fbc155dd7122616b20",
+    "supporting_pr": 33,
+    "reason_category": "P_TRANSPORT_GOVERNED_SUCCESSOR",
+    "rationale": "P-TRANSPORT successor evolution after the immutable P-CENTRAL-CORE completion baseline.",
+    "evolution_type": "INTENTIONAL_RETIREMENT",
+    "destinations": [],
+    "retirements": [
+      {
+        "responsibility": "src/engineering_platform/workspace_inbox_api.py::module",
+        "reason": "P-TRANSPORT explicitly retired the historical runtime authority."
+      }
+    ]
+  }
+]
 }

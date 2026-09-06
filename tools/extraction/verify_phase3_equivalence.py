@@ -45,6 +45,85 @@ def valid_commit(value: object) -> bool:
 def current_phase_chain_reachable(target: Path, anchor: str, head: str, first: object, last: object) -> bool:
     return all(valid_commit(commit) and ancestor(target, anchor, commit) and ancestor(target, commit, head) for commit in (first, last))
 
+def successor_receipts(ledger: dict, errors: list[str]) -> dict[str, dict]:
+    """Index append-only receipts without changing sealed predecessor records."""
+    values = ledger.get("successor_evolutions", [])
+    if not isinstance(values, list):
+        errors.append("successor evolutions must be a list")
+        return {}
+    indexed: dict[str, dict] = {}
+    for receipt in values:
+        path = receipt.get("historical_target_path") if isinstance(receipt, dict) else None
+        if not isinstance(path, str) or not safe(path) or path in indexed:
+            errors.append(f"malformed or duplicate successor receipt: {path}")
+            continue
+        indexed[path] = receipt
+    return indexed
+
+def successor_phase_completions(target: Path, anchor: str, head: str, ledger: dict, receipts: dict[str, dict], errors: list[str]) -> dict[str, str]:
+    """Return immutable phase completions for generic successor chaining."""
+    phases = {seal.get("phase_id"): seal.get("completion_baseline") for seal in ledger.get("governed_phase_seals", []) if isinstance(seal, dict)}
+    values = ledger.get("successor_phase_completions", [])
+    if not isinstance(values, list):
+        errors.append("successor phase completions must be a list")
+        return phases
+    for completion in values:
+        if not isinstance(completion, dict): errors.append("malformed successor phase completion"); continue
+        phase, previous, previous_sha, sha_value = (completion.get(key) for key in ("phase_id", "predecessor_phase_id", "predecessor_completion_sha", "completion_sha"))
+        ids = completion.get("receipt_ids", [])
+        selected = [receipt for receipt in receipts.values() if receipt.get("receipt_id") in ids]
+        if (not isinstance(phase, str) or phase in phases or phases.get(previous) != previous_sha or not valid_commit(sha_value)
+                or not isinstance(ids, list) or len(ids) != len(set(ids)) or len(selected) != len(ids)
+                or completion.get("receipts_sha256") != canonical_digest(selected)):
+            errors.append(f"invalid successor phase completion: {phase}"); continue
+        if not ancestor(target, anchor, sha_value) or not ancestor(target, sha_value, head):
+            errors.append(f"unreachable successor phase completion: {phase}"); continue
+        phases[phase] = sha_value
+    return phases
+
+def validate_successor_receipt(target: Path, anchor: str, head: str, path: str, predecessor: bytes | None, receipt: dict, phases: dict[str, str], errors: list[str]) -> None:
+    """Validate a later phase against an immutable predecessor completion."""
+    phase, previous_phase, completion = receipt.get("phase_id"), receipt.get("predecessor_phase_id"), receipt.get("predecessor_completion_sha")
+    first, last = receipt.get("first_successor_commit"), receipt.get("last_successor_commit")
+    if not isinstance(receipt.get("receipt_id"), str) or not all(isinstance(value, str) and value for value in (phase, previous_phase)) or not valid_commit(completion):
+        errors.append(f"invalid successor predecessor binding: {path}")
+        return
+    try:
+        if phases.get(previous_phase) != completion:
+            raise ValueError("predecessor phase or completion mismatch")
+        if not ancestor(target, anchor, completion) or not ancestor(target, completion, head):
+            raise ValueError("unreachable predecessor completion")
+        actual_predecessor = blob(target, completion, path)
+        if predecessor is None or sha(actual_predecessor) != receipt.get("predecessor_sha256"):
+            raise ValueError("predecessor source hash mismatch")
+        if not current_phase_chain_reachable(target, completion, head, first, last):
+            raise ValueError("invalid successor commit chain")
+        changed = subprocess.run(["git", "-C", str(target), "diff", "--quiet", f"{completion}..{last}", "--", path], check=False).returncode != 0
+        if not changed:
+            raise ValueError("successor range does not change affected path")
+    except ValueError as error:
+        errors.append(f"invalid successor receipt: {path}: {error}")
+        return
+    kind, destinations = receipt.get("evolution_type"), receipt.get("destinations")
+    if kind not in TYPES or not isinstance(destinations, list):
+        errors.append(f"invalid successor evolution: {path}")
+        return
+    validate_responsibilities({responsibility_id(path)}, destinations, receipt.get("retirements", []), errors, path)
+    if kind == "INTENTIONAL_RETIREMENT" and destinations:
+        errors.append(f"retirement has destination: {path}")
+    if kind != "INTENTIONAL_RETIREMENT" and not destinations:
+        errors.append(f"successor has no destination: {path}")
+    for destination in destinations:
+        try:
+            current = file(target, destination["path"]).read_bytes()
+            if sha(current) != destination.get("current_sha256"):
+                errors.append(f"successor destination hash mismatch: {path}")
+            if sha(blob(target, last, destination["path"])) != destination.get("current_sha256"):
+                errors.append(f"successor commit range does not prove destination: {path}")
+        except (KeyError, OSError, ValueError):
+            errors.append(f"missing successor destination: {path}")
+
+
 def validate_phase_seals(target: Path, anchor: str, head: str, records: list[dict], seals: object, errors: list[str]) -> dict[str, dict]:
     """Return explicitly sealed predecessor receipts after fail-closed validation."""
     if seals is None:
@@ -252,6 +331,8 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
     if not isinstance(records, list): errors.append("ledger evolutions must be a list"); return []
     baseline, head = identity.get("standalone_lineage_anchor_commit", identity.get("target_baseline_commit")), run(target, "rev-parse", "HEAD")
     sealed = validate_phase_seals(target, baseline, head, records, ledger.get("governed_phase_seals"), errors)
+    successors = successor_receipts(ledger, errors)
+    phases = successor_phase_completions(target, baseline, head, ledger, successors, errors)
     indexed = {}
     for record in records:
         key = record.get("historical_target_path") if isinstance(record, dict) else None
@@ -266,6 +347,17 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
         try: current = sha(file(target, path).read_bytes()) if file(target, path).is_file() else None
         except (OSError, ValueError): current = None
         if current == old: inventory.append({"path":path,"classification":"UNCHANGED"}); continue
+        successor = successors.pop(path, None)
+        if successor is not None:
+            # The sealed/base receipt remains validated above.  Its later
+            # successor is the current accounting owner, so it is not stale.
+            indexed.pop(path, None)
+            predecessor = None
+            try: predecessor = blob(target, successor.get("predecessor_completion_sha"), path)
+            except (ValueError, TypeError): pass
+            validate_successor_receipt(target, baseline, head, path, predecessor, successor, phases, errors)
+            inventory.append({"path":path,"classification":successor.get("evolution_type", "INVALID"),"provenance_scope":"SUCCESSOR_PHASE_EVOLUTION","phase_id":successor.get("phase_id")})
+            continue
         record=indexed.pop(path, None)
         if not record: errors.append(f"unaccounted current target mutation, deletion, or rename: {path}"); inventory.append({"path":path,"classification":"UNACCOUNTED"}); continue
         kind, destinations = record.get("evolution_type"), record.get("destinations")
@@ -288,6 +380,7 @@ def stage2(target: Path, rows: list[dict], ledger: dict, errors: list[str]) -> l
                 except ValueError as error: errors.append(str(error))
         inventory.append({"path":path,"classification":kind,"provenance_scope":"SEALED_PREDECESSOR_PHASE_EVOLUTION" if sealed_predecessor else "CURRENT_PHASE_PROVENANCE"})
     for path in indexed: errors.append(f"evolution receipt has no historical target: {path}")
+    for path in successors: errors.append(f"successor receipt has no historical target: {path}")
     return inventory
 
 def main() -> int:
