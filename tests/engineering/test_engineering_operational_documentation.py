@@ -93,11 +93,13 @@ class EngineeringOperationalDocumentationTest(unittest.TestCase):
         self.assertIn("not a\nretry submission", architecture)
         self.assertIn("A second interruption or any ambiguous recovery evidence fails closed", architecture)
 
-    def test_platform_architecture_handbook_bounds_local_consumer_api_to_loopback(self) -> None:
+    def test_platform_architecture_handbook_marks_local_consumer_api_retired(self) -> None:
         handbook = (ROOT / "docs" / "engineering" / "ENGINEERING_PLATFORM_ARCHITECTURE_HANDBOOK.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("The Local Consumer API is loopback-only.", handbook)
+        self.assertIn("The historical Local Consumer API service and its lifecycle are retired.", handbook)
+        self.assertIn("exactly HTTP JSON, installed CLI and File Inbox", handbook)
+        self.assertIn("Engineering Platform Server and the Submission Service\nbefore CENTRAL", handbook)
 
     def test_roadmap_and_active_backlog_distinguish_completed_1_5_from_maintenance(self) -> None:
         roadmap = (ROOT / "docs" / "development" / "ENGINEERING_PLATFORM_ROADMAP.md").read_text(
