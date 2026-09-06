@@ -7,7 +7,7 @@
 ## Purpose
 
 Engineering Platform is the stable, producer-neutral execution platform for
-DJConnect engineering work. It accepts compliant Engineering Actions from a
+engineering work. It accepts compliant Engineering Actions from a
 Human Architect, Forge or a future Producer and applies one generic execution
 architecture regardless of origin.
 
@@ -192,10 +192,10 @@ own host runtime. The app is a user-facing wrapper around the one idempotent
 `engineering-platform-host --install` engine; it does not duplicate host
 mutation logic. That engine installs the pinned EP package and supported
 provider CLIs, creates an empty installation-owned data root/database,
-configures dashboard and watcher services, verifies one-writer health and then
+configures Server-owned lifecycle services, verifies one-writer health and then
 opens the loopback Console for explicit first-run provider login. This is
-distinct from DJConnect developer-machine bootstrap: EP does not inherit Apple
-signing, Home Assistant lab or product-specific runner requirements.
+distinct from predecessor developer-machine bootstrap: EP does not inherit
+product-specific signing, lab or runner requirements.
 
 One macOS user has one EP installation. The engine acquires an
 installation-wide lock and detects any existing installation marker, writer and
@@ -208,19 +208,17 @@ EP-managed repair or an official external help link for matters EP cannot fix.
 It never treats missing provider login as a successful installation or admits
 work while that condition remains unresolved.
 
-The installer creates no project by inference. A Workspace consumer connects a
-new or existing Git checkout only by supplying canonical project identity; EP
-then validates the selected checkout and project Inbox route. Consumers pin the
-wheel and use the Local Consumer API, while their CI exercises that adapter
-against an ephemeral EP store. They never install a user host, manipulate EP
-SQLite, start LaunchAgents or authenticate Codex/GitHub in CI.
-The Local Consumer API is loopback-only.
+The installer creates no project by inference. A consumer connects a new or
+existing Git checkout only by supplying canonical project identity; EP then
+validates the selected checkout and project File Inbox route. The supported
+submission ingress set is exactly HTTP JSON, installed CLI and File Inbox.
+Each normalizes through Engineering Platform Server and the Submission Service
+before CENTRAL. Consumers never install a user host, manipulate EP SQLite,
+start LaunchAgents or authenticate Codex/GitHub in CI.
 
-ADR-0022 authorizes the next, still-unimplemented consumer boundary: EP-owned
-registration for an exact `consumer_id` and `project_id`, production
-verifier-only credentials, and consumer-side macOS Keychain storage. It does
-not change this API's read-only surface, loopback bind, lifecycle authority or
-current Forge, Workspace and DJConnect integrations.
+The historical Local Consumer API service and its lifecycle are retired. Its
+credential tables remain Server-owned HTTP-consumer authentication persistence;
+they do not establish an independently runnable Local API authority.
 
 ### Common lifecycle invariants
 
@@ -402,7 +400,7 @@ Genesis target
 | Scope | current Managed checkout or Genesis target | immutable `project_id` plus registered workspace/repository |
 | Display name | current workspace metadata | mutable Workspace-supplied `project_name`, used only as a label |
 | Queues and Inbox | current configured route | one isolated Inbox route, FIFO queue and lease domain per project |
-| Consumers | current local routes and dashboard | independently authenticated DJConnect, Forge and Workspace consumers through a versioned Local Consumer API |
+| Submission ingress | legacy local routes and dashboard | exactly HTTP JSON, installed CLI and File Inbox, normalized by Server → Submission Service → CENTRAL |
 | UI position | local Operations Console | same Operations Console semantics, selectable project projection |
 
 In EP 2.x, `project_id` becomes the canonical cross-system scope. A path,
